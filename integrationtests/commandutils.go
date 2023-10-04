@@ -17,7 +17,7 @@ func runCommand(ctx context.Context, t *testing.T, stdoutFile, cmdStr string,
 	args ...string) (int, error) {
 
 	if _, err := os.Stat(cmdStr); err != nil {
-		return 0, fmt.Errorf("no such executable '%s', please compile first: %v", cmdStr, err)
+		return 0, fmt.Errorf("no such executable '%s', please compile first: %w", cmdStr, err)
 	}
 
 	t.Log("Creating stdout file", stdoutFile)
@@ -56,7 +56,7 @@ func startCommand(ctx context.Context, t *testing.T, inPipeFile,
 
 	if _, err := os.Stat(cmdStr); err != nil {
 		return stdoutCh, stderrCh, nil,
-			fmt.Errorf("no such executable '%s', please compile first: %v", cmdStr, err)
+			fmt.Errorf("no such executable '%s', please compile first: %w", cmdStr, err)
 	}
 
 	t.Log(cmdStr, strings.Join(args, " "))
@@ -150,5 +150,5 @@ func exitCodeFromError(err error) int {
 		ws := exitError.Sys().(syscall.WaitStatus)
 		return ws.ExitStatus()
 	}
-	panic(fmt.Sprintf("Unable to get process exit code from error: %v", err))
+	panic(fmt.Errorf("Unable to get process exit code from error: %w", err))
 }

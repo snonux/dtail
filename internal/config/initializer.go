@@ -46,17 +46,17 @@ func (in *initializer) parseConfig(args *Args) error {
 func (in *initializer) parseSpecificConfig(configFile string) error {
 	fd, err := os.Open(configFile)
 	if err != nil {
-		return fmt.Errorf("Unable to read config file: %v", err)
+		return fmt.Errorf("Unable to read config file: %w", err)
 	}
 	defer fd.Close()
 
 	cfgBytes, err := ioutil.ReadAll(fd)
 	if err != nil {
-		return fmt.Errorf("Unable to read config file %s: %v", configFile, err)
+		return fmt.Errorf("Unable to read config file %s: %w", configFile, err)
 	}
 
 	if err := json.Unmarshal([]byte(cfgBytes), in); err != nil {
-		return fmt.Errorf("Unable to parse config file %s: %v", configFile, err)
+		return fmt.Errorf("Unable to parse config file %s: %w", configFile, err)
 	}
 
 	return nil
