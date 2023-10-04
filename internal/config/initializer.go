@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"strings"
 
@@ -34,8 +34,11 @@ func (in *initializer) parseConfig(args *Args) error {
 		paths = append(paths, fmt.Sprintf("%s/.config/dtail/dtail.conf", homeDir))
 		paths = append(paths, fmt.Sprintf("%s/.dtail.conf", homeDir))
 		for _, configPath := range paths {
-			if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-				in.parseSpecificConfig(configPath)
+			if _, err := os.Stat(configPath); os.IsNotExist(err) {
+				continue
+			}
+			if err := in.parseSpecificConfig(configPath); err != nil {
+				return err
 			}
 		}
 	}
@@ -50,7 +53,7 @@ func (in *initializer) parseSpecificConfig(configFile string) error {
 	}
 	defer fd.Close()
 
-	cfgBytes, err := ioutil.ReadAll(fd)
+	cfgBytes, err := io.ReadAll(fd)
 	if err != nil {
 		return fmt.Errorf("Unable to read config file %s: %w", configFile, err)
 	}
@@ -116,7 +119,9 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 	}
 
 	setupLogDirectory(in)
-	sourceCb(in, args, additionalArgs)
+	if err := sourceCb(in, args, additionalArgs); err != nil {
+		return err
+	}
 	if args.Plain {
 		setupPlainMode(in, args)
 	}

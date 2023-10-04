@@ -31,7 +31,7 @@ func runCommand(ctx context.Context, t *testing.T, stdoutFile, cmdStr string,
 	cmd := exec.CommandContext(ctx, cmdStr, args...)
 	out, err := cmd.CombinedOutput()
 	t.Log("Done running command!", err)
-	fd.Write(out)
+	_, _ = fd.Write(out)
 
 	return exitCodeFromError(err), err
 }
@@ -85,13 +85,13 @@ func startCommand(ctx context.Context, t *testing.T, inPipeFile,
 
 	// Read input file and send to stdin pipe?
 	if inPipeFile != "" {
-		t.Log(fmt.Sprintf("Piping %s to stdin pipe", inPipeFile))
+		t.Logf("Piping %s to stdin pipe", inPipeFile)
 		fd, err := os.Open(inPipeFile)
 		if err != nil {
 			return stdoutCh, stderrCh, nil, err
 		}
 		go func() {
-			io.Copy(stdinPipe, bufio.NewReader(fd))
+			_, _ = io.Copy(stdinPipe, bufio.NewReader(fd))
 			stdinPipe.Close()
 			fd.Close()
 		}()
@@ -135,8 +135,8 @@ func waitForCommand(ctx context.Context, t *testing.T,
 				t.Log(line)
 			}
 		case cmdErr := <-cmdErrCh:
-			t.Log(fmt.Sprintf("Command finished with with exit code %d: %v",
-				exitCodeFromError(cmdErr), cmdErr))
+			t.Logf("Command finished with with exit code %d: %v",
+				exitCodeFromError(cmdErr), cmdErr)
 			return
 		}
 	}
