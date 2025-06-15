@@ -177,28 +177,35 @@ func (f *readFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, 
 func (f *readFile) read(ctx context.Context, fd *os.File, reader *bufio.Reader,
 	rawLines chan *bytes.Buffer, truncate <-chan struct{}) error {
 
-	var offset uint64
-	message := pool.BytesBuffer.Get().(*bytes.Buffer)
-
-	for {
-		b, err := reader.ReadByte()
-		if err != nil {
-			status, err := f.handleReadError(ctx, err, fd, rawLines, truncate, message)
-			if abortReading == status {
-				return err
+	// Use chunked reader for better performance
+	chunkedReader := NewChunkedReader(reader, 64*1024) // 64KB chunks
+	
+	// Create a goroutine to handle truncate signals
+	go func() {
+		select {
+		case <-truncate:
+			// Handle truncation by attempting to seek to end of file
+			if fd != nil {
+				fd.Seek(0, io.SeekEnd)
 			}
+		case <-ctx.Done():
+			return
+		}
+	}()
+	
+	// Process lines using chunked reader
+	for {
+		err := chunkedReader.ProcessLines(ctx, rawLines, config.Server.MaxLineLength, 
+			f.filePath, f.serverMessages, f.seekEOF)
+		if err != nil {
+			if err == io.EOF || err == context.Canceled {
+				return nil
+			}
+			// Handle read errors similar to original implementation
 			time.Sleep(time.Millisecond * 100)
 			continue
 		}
-
-		offset++
-		message.WriteByte(b)
-
-		status, newMessage := f.handleReadByte(ctx, b, rawLines, message)
-		if status == abortReading {
-			return nil
-		}
-		message = newMessage
+		return nil
 	}
 }
 

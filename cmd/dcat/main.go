@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"os"
+	"runtime/pprof"
 	"sync"
 
 	"net/http"
@@ -23,7 +24,8 @@ import (
 func main() {
 	var args config.Args
 	var displayVersion bool
-	var pprof string
+	var pprofAddr string
+	var cpuprofile string
 
 	userName := user.Name()
 
@@ -44,7 +46,8 @@ func main() {
 	flag.StringVar(&args.ServersStr, "servers", "", "Remote servers to connect")
 	flag.StringVar(&args.UserName, "user", userName, "Your system user name")
 	flag.StringVar(&args.What, "files", "", "File(s) to read")
-	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
+	flag.StringVar(&pprofAddr, "pprof", "", "Start PProf server this address")
+	flag.StringVar(&cpuprofile, "cpuprofile", "", "Write CPU profile to file")
 
 	flag.Parse()
 	config.Setup(source.Client, &args, flag.Args())
@@ -53,14 +56,26 @@ func main() {
 		version.PrintAndExit()
 	}
 
+	if cpuprofile != "" {
+		f, err := os.Create(cpuprofile)
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+		if err := pprof.StartCPUProfile(f); err != nil {
+			panic(err)
+		}
+		defer pprof.StopCPUProfile()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
 	dlog.Start(ctx, &wg, source.Client)
 
-	if pprof != "" {
-		go http.ListenAndServe(pprof, nil)
-		dlog.Client.Info("Started PProf", pprof)
+	if pprofAddr != "" {
+		go http.ListenAndServe(pprofAddr, nil)
+		dlog.Client.Info("Started PProf", pprofAddr)
 	}
 
 	client, err := clients.NewCatClient(args)
@@ -72,5 +87,10 @@ func main() {
 	cancel()
 
 	wg.Wait()
+	
+	if cpuprofile != "" {
+		pprof.StopCPUProfile()
+	}
+	
 	os.Exit(status)
 }
