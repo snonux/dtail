@@ -105,6 +105,9 @@ func (d *DLog) start(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func (d *DLog) log(level level, args []interface{}) string {
+	if d == nil {
+		return ""
+	}
 	if d.maxLevel < level {
 		return ""
 	}
@@ -155,6 +158,9 @@ func (d *DLog) writeArgStrings(sb *strings.Builder, args []interface{}) {
 
 // FatalPanic terminates the process with a fatal error.
 func (d *DLog) FatalPanic(args ...interface{}) {
+	if d == nil {
+		return
+	}
 	d.log(Fatal, args)
 	d.Flush()
 
@@ -165,36 +171,57 @@ func (d *DLog) FatalPanic(args ...interface{}) {
 
 // Fatal logs a fatal error.
 func (d *DLog) Fatal(args ...interface{}) string {
+	if d == nil {
+		return ""
+	}
 	return d.log(Fatal, args)
 }
 
 // Error logging.
 func (d *DLog) Error(args ...interface{}) string {
+	if d == nil {
+		return ""
+	}
 	return d.log(Error, args)
 }
 
 // Warn logs a warning message.
 func (d *DLog) Warn(args ...interface{}) string {
+	if d == nil {
+		return ""
+	}
 	return d.log(Warn, args)
 }
 
 // Info logging.
 func (d *DLog) Info(args ...interface{}) string {
+	if d == nil {
+		return ""
+	}
 	return d.log(Info, args)
 }
 
 // Verbose logging.
 func (d *DLog) Verbose(args ...interface{}) string {
+	if d == nil {
+		return ""
+	}
 	return d.log(Verbose, args)
 }
 
 // Debug logging.
 func (d *DLog) Debug(args ...interface{}) string {
+	if d == nil {
+		return ""
+	}
 	return d.log(Debug, args)
 }
 
 // Trace logging.
 func (d *DLog) Trace(args ...interface{}) string {
+	if d == nil {
+		return ""
+	}
 	_, file, line, _ := runtime.Caller(1)
 	args = append(args, fmt.Sprintf("at %s:%d", file, line))
 	return d.log(Trace, args)
@@ -202,6 +229,9 @@ func (d *DLog) Trace(args ...interface{}) string {
 
 // Devel used for development purpose only logging (e.g. "print" debugging).
 func (d *DLog) Devel(args ...interface{}) string {
+	if d == nil {
+		return ""
+	}
 	_, file, line, _ := runtime.Caller(1)
 	args = append(args, fmt.Sprintf("at %s:%d", file, line))
 	return d.log(Devel, args)
@@ -209,6 +239,9 @@ func (d *DLog) Devel(args ...interface{}) string {
 
 // Raw message logging.
 func (d *DLog) Raw(message string) string {
+	if d == nil {
+		return ""
+	}
 	if !config.Client.TermColorsEnable || !d.logger.SupportsColors() {
 		d.logger.Raw(time.Now(), message)
 		return message
@@ -219,6 +252,9 @@ func (d *DLog) Raw(message string) string {
 
 // Mapreduce logging.
 func (d *DLog) Mapreduce(table string, data map[string]interface{}) string {
+	if d == nil {
+		return ""
+	}
 	args := make([]interface{}, len(data)+1)
 
 	if d.sourceProcess == source.Server {
@@ -263,10 +299,25 @@ func (d *DLog) Mapreduce(table string, data map[string]interface{}) string {
 }
 
 // Flush the log buffers.
-func (d *DLog) Flush() { d.logger.Flush() }
+func (d *DLog) Flush() {
+	if d == nil {
+		return
+	}
+	d.logger.Flush()
+}
 
 // Pause the logging.
-func (d *DLog) Pause() { d.logger.Pause() }
+func (d *DLog) Pause() {
+	if d == nil {
+		return
+	}
+	d.logger.Pause()
+}
 
 // Resume the logging.
-func (d *DLog) Resume() { d.logger.Resume() }
+func (d *DLog) Resume() {
+	if d == nil {
+		return
+	}
+	d.logger.Resume()
+}
