@@ -48,12 +48,14 @@ make lint
 make pbo
 
 # This target will:
-# - Create test file (100MB with 1M lines) if needed
+# - Create test file (100MB with 1M lines) in scripts/ if needed
 # - Run baseline profiling (CPU and memory)
 # - Run performance benchmarks
-# - Generate optimized profiles
-# - Create detailed comparison report (pbo_report.txt)
+# - Generate optimized profiles in scripts/ directory
+# - Create detailed comparison report (scripts/pbo_report.txt)
 # - Show key optimizations implemented
+# 
+# All PBO files are organized in scripts/ directory to keep project root clean
 ```
 
 ### Installation

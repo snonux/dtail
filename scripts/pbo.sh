@@ -6,34 +6,53 @@
 
 set -e
 
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Get the project root directory (parent of scripts)
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+# Change to project root to run commands
+cd "$PROJECT_ROOT"
+
+# Define paths for all PBO files in scripts directory
+PBO_DIR="$SCRIPT_DIR"
+TEST_FILE="$PBO_DIR/test_100mb.txt"
+BASELINE_CPU_PROF="$PBO_DIR/pbo_baseline_cpu.prof"
+BASELINE_MEM_PROF="$PBO_DIR/pbo_baseline_mem.prof"
+OPTIMIZED_CPU_PROF="$PBO_DIR/pbo_optimized_cpu.prof"
+OPTIMIZED_MEM_PROF="$PBO_DIR/pbo_optimized_mem.prof"
+REPORT_FILE="$PBO_DIR/pbo_report.txt"
+
 echo "=== Starting Profile-Based Optimization (PBO) for dgrep ==="
+echo "Working directory: $PROJECT_ROOT"
+echo "PBO files location: $PBO_DIR"
 
 # 1. Create test file if needed
 echo "1. Creating test file if needed..."
-if [ ! -f test_100mb.txt ]; then
+if [ ! -f "$TEST_FILE" ]; then
     echo "Creating 100MB test file with 1M lines..."
     for i in $(seq 1 1000000); do
         echo "$i: This is a test line with INFO level logging and some extra content to make it realistic"
-    done > test_100mb.txt
+    done > "$TEST_FILE"
 fi
 
 # 2. Run baseline performance test (assumes current state is baseline)
 echo "2. Running baseline performance test..."
 echo "   - Generating CPU profile (baseline)..."
-./dgrep --plain -regex "INFO" -files test_100mb.txt -cpuprofile pbo_baseline_cpu.prof -memprofile pbo_baseline_mem.prof > /dev/null
+./dgrep --plain -regex "INFO" -files "$TEST_FILE" -cpuprofile "$BASELINE_CPU_PROF" -memprofile "$BASELINE_MEM_PROF" > /dev/null
 
 echo "   - Analyzing baseline profiles..."
-echo "   CPU Profile (baseline):" > pbo_report.txt
-go tool pprof -top pbo_baseline_cpu.prof | head -10 >> pbo_report.txt
-echo "   Memory Profile (baseline):" >> pbo_report.txt  
-go tool pprof -top pbo_baseline_mem.prof | head -10 >> pbo_report.txt
+echo "   CPU Profile (baseline):" > "$REPORT_FILE"
+go tool pprof -top "$BASELINE_CPU_PROF" | head -10 >> "$REPORT_FILE"
+echo "   Memory Profile (baseline):" >> "$REPORT_FILE"  
+go tool pprof -top "$BASELINE_MEM_PROF" | head -10 >> "$REPORT_FILE"
 
 # 3. Run performance benchmark
 echo "3. Running performance benchmark (3 iterations)..."
-echo "   Baseline timings:" >> pbo_report.txt
+echo "   Baseline timings:" >> "$REPORT_FILE"
 for i in 1 2 3; do
     echo "   Iteration $i:"
-    (time ./dgrep --plain -regex "INFO" -files test_100mb.txt > /dev/null) 2>&1 | grep real >> pbo_report.txt
+    (time ./dgrep --plain -regex "INFO" -files "$TEST_FILE" > /dev/null) 2>&1 | grep real >> "$REPORT_FILE"
 done
 
 # 4. Note optimizations (already implemented in code)
@@ -45,40 +64,44 @@ echo "   - Memory allocation improvements (buffer pooling)"
 # 5. Run optimized performance test
 echo "5. Running optimized performance test..."
 echo "   - Generating CPU profile (optimized)..."
-./dgrep --plain -regex "INFO" -files test_100mb.txt -cpuprofile pbo_optimized_cpu.prof -memprofile pbo_optimized_mem.prof > /dev/null
+./dgrep --plain -regex "INFO" -files "$TEST_FILE" -cpuprofile "$OPTIMIZED_CPU_PROF" -memprofile "$OPTIMIZED_MEM_PROF" > /dev/null
 
 echo "   - Analyzing optimized profiles..."
-echo "   CPU Profile (optimized):" >> pbo_report.txt
-go tool pprof -top pbo_optimized_cpu.prof | head -10 >> pbo_report.txt
-echo "   Memory Profile (optimized):" >> pbo_report.txt
-go tool pprof -top pbo_optimized_mem.prof | head -10 >> pbo_report.txt  
+echo "   CPU Profile (optimized):" >> "$REPORT_FILE"
+go tool pprof -top "$OPTIMIZED_CPU_PROF" | head -10 >> "$REPORT_FILE"
+echo "   Memory Profile (optimized):" >> "$REPORT_FILE"
+go tool pprof -top "$OPTIMIZED_MEM_PROF" | head -10 >> "$REPORT_FILE"  
 
 # 6. Run optimized benchmark
 echo "6. Running optimized benchmark (3 iterations)..."
-echo "   Optimized timings:" >> pbo_report.txt
+echo "   Optimized timings:" >> "$REPORT_FILE"
 for i in 1 2 3; do
     echo "   Iteration $i:"
-    (time ./dgrep --plain -regex "INFO" -files test_100mb.txt > /dev/null) 2>&1 | grep real >> pbo_report.txt
+    (time ./dgrep --plain -regex "INFO" -files "$TEST_FILE" > /dev/null) 2>&1 | grep real >> "$REPORT_FILE"
 done
 
 # 7. Generate comparison report
 echo "7. Generating comparison report..."
-echo "=== PROFILE-BASED OPTIMIZATION REPORT ===" >> pbo_report.txt
-echo "Baseline memory usage:" >> pbo_report.txt
-go tool pprof -top pbo_baseline_mem.prof | grep "Showing nodes" >> pbo_report.txt || echo "N/A" >> pbo_report.txt
-echo "Optimized memory usage:" >> pbo_report.txt  
-go tool pprof -top pbo_optimized_mem.prof | grep "Showing nodes" >> pbo_report.txt || echo "N/A" >> pbo_report.txt
-echo "Baseline CPU samples:" >> pbo_report.txt
-go tool pprof -top pbo_baseline_cpu.prof | grep "Total samples" >> pbo_report.txt || echo "N/A" >> pbo_report.txt
-echo "Optimized CPU samples:" >> pbo_report.txt
-go tool pprof -top pbo_optimized_cpu.prof | grep "Total samples" >> pbo_report.txt || echo "N/A" >> pbo_report.txt
+echo "=== PROFILE-BASED OPTIMIZATION REPORT ===" >> "$REPORT_FILE"
+echo "Baseline memory usage:" >> "$REPORT_FILE"
+go tool pprof -top "$BASELINE_MEM_PROF" | grep "Showing nodes" >> "$REPORT_FILE" || echo "N/A" >> "$REPORT_FILE"
+echo "Optimized memory usage:" >> "$REPORT_FILE"  
+go tool pprof -top "$OPTIMIZED_MEM_PROF" | grep "Showing nodes" >> "$REPORT_FILE" || echo "N/A" >> "$REPORT_FILE"
+echo "Baseline CPU samples:" >> "$REPORT_FILE"
+go tool pprof -top "$BASELINE_CPU_PROF" | grep "Total samples" >> "$REPORT_FILE" || echo "N/A" >> "$REPORT_FILE"
+echo "Optimized CPU samples:" >> "$REPORT_FILE"
+go tool pprof -top "$OPTIMIZED_CPU_PROF" | grep "Total samples" >> "$REPORT_FILE" || echo "N/A" >> "$REPORT_FILE"
 
 # 8. Summary
 echo "=== PBO Complete! ==="
-echo "Results saved to: pbo_report.txt"
+echo "Results saved to: $REPORT_FILE"
 echo "Profile files generated:"
-echo "  - pbo_baseline_cpu.prof, pbo_baseline_mem.prof"  
-echo "  - pbo_optimized_cpu.prof, pbo_optimized_mem.prof"
+echo "  - $BASELINE_CPU_PROF"
+echo "  - $BASELINE_MEM_PROF"  
+echo "  - $OPTIMIZED_CPU_PROF"
+echo "  - $OPTIMIZED_MEM_PROF"
+echo ""
+echo "Test file location: $TEST_FILE"
 echo ""
 echo "Key improvements implemented:"
 echo "  ✓ Timer allocation reduction (eliminated time.After() calls)"
@@ -87,4 +110,4 @@ echo "  ✓ Memory allocation improvements (buffer pooling, pre-allocation)"
 echo ""
 
 # Show summary from report
-tail -20 pbo_report.txt
+tail -20 "$REPORT_FILE"
