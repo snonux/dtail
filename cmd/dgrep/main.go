@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"os"
+	"runtime/pprof"
 	"sync"
 
 	"net/http"
@@ -24,7 +25,9 @@ func main() {
 	var args config.Args
 	var displayVersion bool
 	var grep string
-	var pprof string
+	var pprofAddr string
+	var cpuprofile string
+	var memprofile string
 	userName := user.Name()
 
 	flag.BoolVar(&args.NoColor, "noColor", false, "Disable ANSII terminal colors")
@@ -50,13 +53,26 @@ func main() {
 	flag.StringVar(&args.UserName, "user", userName, "Your system user name")
 	flag.StringVar(&args.What, "files", "", "File(s) to read")
 	flag.StringVar(&grep, "grep", "", "Alias for -regex")
-	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
+	flag.StringVar(&pprofAddr, "pprof", "", "Start PProf server this address")
+	flag.StringVar(&cpuprofile, "cpuprofile", "", "Write CPU profile to file")
+	flag.StringVar(&memprofile, "memprofile", "", "Write memory profile to file")
 
 	flag.Parse()
 	config.Setup(source.Client, &args, flag.Args())
 
 	if displayVersion {
 		version.PrintAndExit()
+	}
+
+	// CPU profiling
+	if cpuprofile != "" {
+		f, err := os.Create(cpuprofile)
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -68,9 +84,9 @@ func main() {
 		args.RegexStr = grep
 	}
 
-	if pprof != "" {
-		go http.ListenAndServe(pprof, nil)
-		dlog.Client.Info("Started PProf", pprof)
+	if pprofAddr != "" {
+		go http.ListenAndServe(pprofAddr, nil)
+		dlog.Client.Info("Started PProf", pprofAddr)
 	}
 
 	client, err := clients.NewGrepClient(args)
@@ -80,6 +96,21 @@ func main() {
 
 	status := client.Start(ctx, signal.InterruptCh(ctx))
 	cancel()
+
+	// Stop CPU profiling before exit
+	if cpuprofile != "" {
+		pprof.StopCPUProfile()
+	}
+
+	// Memory profiling  
+	if memprofile != "" {
+		f, err := os.Create(memprofile)
+		if err != nil {
+			panic(err)
+		}
+		defer f.Close()
+		pprof.WriteHeapProfile(f)
+	}
 
 	wg.Wait()
 	os.Exit(status)

@@ -10,6 +10,9 @@ import (
 	"github.com/mimecast/dtail/internal/io/pool"
 )
 
+// Reusable timer to reduce allocations - PBO optimization
+var sharedTimer = time.NewTimer(10 * time.Millisecond)
+
 // ChunkedReader reads data in large chunks and processes it line by line
 // This replaces the byte-by-byte reading approach for better performance
 type ChunkedReader struct {
@@ -18,6 +21,9 @@ type ChunkedReader struct {
 	remaining  []byte // Partial line from previous chunk
 	chunkSize  int
 	eof        bool
+	// PBO optimization: Pre-allocate line buffer to reduce allocations
+	lineBuffer []byte
+	lineLen    int
 }
 
 // NewChunkedReader creates a new chunked reader with the specified chunk size
@@ -26,9 +32,11 @@ func NewChunkedReader(reader io.Reader, chunkSize int) *ChunkedReader {
 		chunkSize = 64 * 1024 // Default 64KB chunks
 	}
 	return &ChunkedReader{
-		reader:    reader,
-		buffer:    make([]byte, chunkSize),
-		chunkSize: chunkSize,
+		reader:     reader,
+		buffer:     make([]byte, chunkSize),
+		chunkSize:  chunkSize,
+		// PBO optimization: Pre-allocate line buffer
+		lineBuffer: make([]byte, 0, 8192), // 8KB initial capacity
 	}
 }
 
@@ -60,11 +68,19 @@ func (cr *ChunkedReader) ProcessLines(ctx context.Context, rawLines chan *bytes.
 						return nil
 					} else {
 						// In tailing mode - EOF means wait and try again
-						// Use shorter polling interval for better responsiveness to rapid writes
+						// Use shared timer to reduce allocations - PBO optimization
+						if !sharedTimer.Stop() {
+							// Drain timer channel if it fired
+							select {
+							case <-sharedTimer.C:
+							default:
+							}
+						}
+						sharedTimer.Reset(10 * time.Millisecond)
 						select {
 						case <-ctx.Done():
 							return ctx.Err()
-						case <-time.After(10 * time.Millisecond):
+						case <-sharedTimer.C:
 							// Continue reading after brief pause
 							continue
 						}
@@ -97,37 +113,64 @@ func (cr *ChunkedReader) ProcessLines(ctx context.Context, rawLines chan *bytes.
 			return nil
 		}
 		
-		// Process data and extract complete lines
+		// Process data and extract complete lines - PBO optimized
+		// Reset line buffer for this chunk
+		cr.lineBuffer = cr.lineBuffer[:0]
+		cr.lineLen = 0
+		
 		for _, b := range cr.remaining {
-			message.WriteByte(b)
+			// Use pre-allocated buffer to reduce byte-by-byte WriteByte calls
+			if cr.lineLen < len(cr.lineBuffer) {
+				cr.lineBuffer[cr.lineLen] = b
+			} else {
+				cr.lineBuffer = append(cr.lineBuffer, b)
+			}
+			cr.lineLen++
 			
 			switch b {
 			case '\n':
-				// Send the complete line
+				// Send the complete line using Write for bulk operation
+				message.Write(cr.lineBuffer[:cr.lineLen])
 				select {
 				case rawLines <- message:
 					message = pool.BytesBuffer.Get().(*bytes.Buffer)
 					warnedAboutLongLine = false
+					// Reset line buffer for next line
+					cr.lineLen = 0
 				case <-ctx.Done():
 					return ctx.Err()
 				}
 			default:
 				// Check line length limit
-				if message.Len() >= maxLineLength {
+				if cr.lineLen >= maxLineLength {
 					if !warnedAboutLongLine {
 						serverMessages <- dlog.Common.Warn(filePath,
 							"Long log line, splitting into multiple lines") + "\n"
 						warnedAboutLongLine = true
 					}
-					message.WriteByte('\n')
+					// Add newline to current buffer and send
+					if cr.lineLen < len(cr.lineBuffer) {
+						cr.lineBuffer[cr.lineLen] = '\n'
+					} else {
+						cr.lineBuffer = append(cr.lineBuffer, '\n')
+					}
+					cr.lineLen++
+					message.Write(cr.lineBuffer[:cr.lineLen])
 					select {
 					case rawLines <- message:
 						message = pool.BytesBuffer.Get().(*bytes.Buffer)
+						// Reset line buffer for next line
+						cr.lineLen = 0
 					case <-ctx.Done():
 						return ctx.Err()
 					}
 				}
 			}
+		}
+		
+		// If we have remaining data in line buffer, add it to message
+		if cr.lineLen > 0 {
+			message.Write(cr.lineBuffer[:cr.lineLen])
 		}
 		
 		// Clear the remaining buffer - any partial line is now in the message buffer

@@ -15,6 +15,9 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+// Reusable timer for retry delays - PBO optimization  
+var retryTimer = time.NewTimer(2 * time.Second)
+
 // This is the main client data structure.
 type baseClient struct {
 	config.Args
@@ -124,8 +127,20 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 		default:
 		}
 
-		// Yes, we want to retry.
-		time.Sleep(time.Second * 2)
+		// Yes, we want to retry using reusable timer - PBO optimization
+		if !retryTimer.Stop() {
+			// Drain timer channel if it fired
+			select {
+			case <-retryTimer.C:
+			default:
+			}
+		}
+		retryTimer.Reset(2 * time.Second)
+		select {
+		case <-retryTimer.C:
+		case <-ctx.Done():
+			return
+		}
 		dlog.Client.Debug(conn.Server(), "Reconnecting")
 		conn = c.makeConnection(conn.Server(), c.sshAuthMethods, c.hostKeyCallback)
 		c.connections[i] = conn

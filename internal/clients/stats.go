@@ -14,6 +14,9 @@ import (
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
+// Reusable timer to reduce allocations - PBO optimization
+var statsTimer = time.NewTimer(3 * time.Second)
+
 // Used to collect and display various client stats.
 type stats struct {
 	// Total amount servers to connect to.
@@ -44,11 +47,21 @@ func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 		var force bool
 		var messages []string
 
+		// Reset the reusable timer to reduce allocations - PBO optimization
+		if !statsTimer.Stop() {
+			// Drain timer channel if it fired
+			select {
+			case <-statsTimer.C:
+			default:
+			}
+		}
+		statsTimer.Reset(3 * time.Second)
+		
 		select {
 		case message := <-statsCh:
 			messages = append(messages, message)
 			force = true
-		case <-time.After(time.Second * 3):
+		case <-statsTimer.C:
 		case <-ctx.Done():
 			return
 		}

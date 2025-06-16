@@ -42,6 +42,20 @@ make vet
 make lint
 ```
 
+### Performance Optimization
+```bash
+# Run Profile-Based Optimization (PBO) for dgrep
+make pbo
+
+# This target will:
+# - Create test file (100MB with 1M lines) if needed
+# - Run baseline profiling (CPU and memory)
+# - Run performance benchmarks
+# - Generate optimized profiles
+# - Create detailed comparison report (pbo_report.txt)
+# - Show key optimizations implemented
+```
+
 ### Installation
 ```bash
 # Install all binaries to $GOPATH/bin

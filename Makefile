@@ -6,6 +6,21 @@ ifdef DTAIL_USE_PROPRIETARY
 GO_TAGS+=proprietary
 endif
 all: build
+
+# Display available targets
+help:
+	@echo "Available Makefile targets:"
+	@echo "  all       - Build all binaries (default)"
+	@echo "  build     - Build all binaries"
+	@echo "  clean     - Remove built binaries"
+	@echo "  test      - Run all unit tests"
+	@echo "  vet       - Run go vet on all packages"
+	@echo "  lint      - Run golint on all packages"
+	@echo "  install   - Install all binaries to \$$GOPATH/bin"
+	@echo "  pbo       - Run Profile-Based Optimization for dgrep"
+	@echo ""
+	@echo "Individual binary targets:"
+	@echo "  dserver, dcat, dgrep, dmap, dtail, dtailhealth"
 build: dserver dcat dgrep dmap dtail dtailhealth
 dserver:
 	${GO} build ${GO_FLAGS} -tags '${GO_TAGS}' -o dserver ./cmd/dserver/main.go
@@ -47,3 +62,7 @@ test:
 	${GO} clean -testcache
 	set -e; find . -name '*_test.go' | while read file; do dirname $$file; done | \
 		sort -u | while read dir; do ${GO} test -tags '${GO_TAGS}' --race -v -failfast $$dir || exit 2; done
+
+# Profile-Based Optimization (PBO) target for dgrep
+pbo: clean build
+	@./scripts/pbo.sh
