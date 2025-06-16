@@ -60,11 +60,11 @@ func (cr *ChunkedReader) ProcessLines(ctx context.Context, rawLines chan *bytes.
 						return nil
 					} else {
 						// In tailing mode - EOF means wait and try again
-						// This mimics the original behavior of sleeping 100ms on EOF
+						// Use shorter polling interval for better responsiveness to rapid writes
 						select {
 						case <-ctx.Done():
 							return ctx.Err()
-						case <-time.After(100 * time.Millisecond):
+						case <-time.After(10 * time.Millisecond):
 							// Continue reading after brief pause
 							continue
 						}
