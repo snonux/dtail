@@ -1,0 +1,68 @@
+=== PROFILE GUIDED OPTIMIZATION REPORT ===
+Generated: Mon 16 Jun 23:18:37 EEST 2025
+
+BASELINE (without PGO):
+Baseline performance (5 iterations):
+real	0m3.040s
+real	0m3.029s
+real	0m3.032s
+real	0m3.030s
+real	0m3.031s
+
+PGO-OPTIMIZED:
+PGO-optimized performance (5 iterations):
+real	0m3.035s
+real	0m3.033s
+real	0m3.033s
+real	0m3.034s
+real	0m3.031s
+
+DETAILED ANALYSIS:
+
+Baseline CPU Profile:
+File: dgrep
+Build ID: c4f25989f74683061bfabfc72b383431d1aeeb23
+Type: cpu
+Time: 2025-06-16 23:17:42 EEST
+Duration: 3.20s, Total samples = 8.73s (272.51%)
+Showing nodes accounting for 7.32s, 83.85% of 8.73s total
+Dropped 174 nodes (cum <= 0.04s)
+      flat  flat%   sum%        cum   cum%
+     2.23s 25.54% 25.54%      2.23s 25.54%  internal/runtime/syscall.Syscall6
+     0.37s  4.24% 29.78%      1.01s 11.57%  runtime.selectgo
+
+PGO-Optimized CPU Profile:
+File: dgrep_pgo
+Build ID: 106bf00e9fe2a0beaaf9b0e80a5e7e14aae84c40
+Type: cpu
+Time: 2025-06-16 23:18:34 EEST
+Duration: 3.11s, Total samples = 8.66s (278.78%)
+Showing nodes accounting for 7.41s, 85.57% of 8.66s total
+Dropped 152 nodes (cum <= 0.04s)
+      flat  flat%   sum%        cum   cum%
+     2.17s 25.06% 25.06%      2.17s 25.06%  internal/runtime/syscall.Syscall6
+     0.51s  5.89% 30.95%      1.31s 15.13%  runtime.selectgo
+
+Baseline Memory Profile:
+File: dgrep
+Build ID: c4f25989f74683061bfabfc72b383431d1aeeb23
+Type: inuse_space
+Time: 2025-06-16 23:17:45 EEST
+Showing nodes accounting for 66.08MB, 100% of 66.08MB total
+      flat  flat%   sum%        cum   cum%
+      33MB 49.94% 49.94%    60.84MB 92.06%  time.NewTimer
+   27.83MB 42.12% 92.06%    27.83MB 42.12%  time.newTimer
+    1.72MB  2.61% 94.67%     1.72MB  2.61%  runtime/pprof.StartCPUProfile
+    1.50MB  2.27% 96.94%     1.50MB  2.27%  runtime.allocm
+
+PGO-Optimized Memory Profile:
+File: dgrep_pgo
+Build ID: 106bf00e9fe2a0beaaf9b0e80a5e7e14aae84c40
+Type: inuse_space
+Time: 2025-06-16 23:18:37 EEST
+Showing nodes accounting for 80.57MB, 100% of 80.57MB total
+      flat  flat%   sum%        cum   cum%
+   42.35MB 52.57% 52.57%    42.35MB 52.57%  time.newTimer
+   32.50MB 40.34% 92.91%    74.86MB 92.91%  time.NewTimer
+       2MB  2.49% 95.39%        2MB  2.49%  runtime.allocm
+    1.16MB  1.44% 96.83%     1.16MB  1.44%  runtime/pprof.StartCPUProfile

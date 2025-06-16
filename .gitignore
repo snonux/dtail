@@ -20,6 +20,5 @@ ssh_host_key
 
 # PGO (Performance Guided Optimization) temporary files
 scripts/pgo_*.prof
-scripts/pgo_report.txt
 scripts/test_100mb.txt
 dgrep_pgo
