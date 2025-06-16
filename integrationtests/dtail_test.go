@@ -74,10 +74,11 @@ func TestDTailWithServer(t *testing.T) {
 		var circular int
 		for {
 			select {
-			case <-time.After(time.Second * 2):
+			case <-time.After(time.Second * 1):
 				fd.WriteString(time.Now().String())
 				message := fmt.Sprintf(" - Hello %s\n", greetings[circular])
 				fd.WriteString(message)
+				fd.Sync() // Force flush to disk for immediate availability
 				t.Logf("Wrote '%s' into file", message)
 				circular = (circular + 1) % len(greetings)
 			case <-ctx.Done():
