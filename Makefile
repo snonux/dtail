@@ -17,7 +17,7 @@ help:
 	@echo "  vet       - Run go vet on all packages"
 	@echo "  lint      - Run golint on all packages"
 	@echo "  install   - Install all binaries to \$$GOPATH/bin"
-	@echo "  pbo       - Run Profile-Based Optimization for dgrep"
+	@echo "  pgo       - Run Performance Guided Optimization for dgrep"
 	@echo ""
 	@echo "Individual binary targets:"
 	@echo "  dserver, dcat, dgrep, dmap, dtail, dtailhealth"
@@ -63,6 +63,6 @@ test:
 	set -e; find . -name '*_test.go' | while read file; do dirname $$file; done | \
 		sort -u | while read dir; do ${GO} test -tags '${GO_TAGS}' --race -v -failfast $$dir || exit 2; done
 
-# Profile-Based Optimization (PBO) target for dgrep
-pbo: clean build
-	@./scripts/pbo.sh
+# Performance Guided Optimization (PGO) target for dgrep
+pgo: clean build
+	@./scripts/pgo.sh

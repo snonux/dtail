@@ -44,18 +44,18 @@ make lint
 
 ### Performance Optimization
 ```bash
-# Run Profile-Based Optimization (PBO) for dgrep
-make pbo
+# Run Performance Guided Optimization (PGO) for dgrep
+make pgo
 
-# This target will:
+# This implements true PGO using Go's -pgo compiler flag:
 # - Create test file (100MB with 1M lines) in scripts/ if needed
-# - Run baseline profiling (CPU and memory)
-# - Run performance benchmarks
-# - Generate optimized profiles in scripts/ directory
-# - Create detailed comparison report (scripts/pbo_report.txt)
-# - Show key optimizations implemented
+# - Build baseline version without PGO
+# - Collect CPU profile for training data
+# - Rebuild dgrep with -pgo flag using the training profile
+# - Compare baseline vs PGO-optimized performance (5 iterations each)
+# - Generate detailed before/after analysis report (scripts/pgo_report.txt)
 # 
-# All PBO files are organized in scripts/ directory to keep project root clean
+# All PGO files are organized in scripts/ directory to keep project root clean
 ```
 
 ### Installation

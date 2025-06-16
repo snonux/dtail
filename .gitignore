@@ -18,7 +18,8 @@ id_rsa
 id_rsa.pub
 ssh_host_key
 
-# PBO (Profile-Based Optimization) temporary files
-scripts/pbo_*.prof
-scripts/pbo_report.txt
+# PGO (Performance Guided Optimization) temporary files
+scripts/pgo_*.prof
+scripts/pgo_report.txt
 scripts/test_100mb.txt
+dgrep_pgo
