@@ -48,7 +48,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	}
 
 	// Check if channelless mode is enabled
-	useChannelless := os.Getenv("DTAIL_USE_CHANNELLESS") == "true"
+	useChannelless := os.Getenv("DTAIL_USE_CHANNELLESS") == "yes"
 	
 	if useChannelless {
 		dlog.Server.Debug("Using channelless processing mode")
@@ -289,7 +289,7 @@ func (r *readCommand) readFilesChannelless(ctx context.Context, ltx lcontext.LCo
 	output := NewNetworkOutputWriter(nil, r.server.serverMessages, r.server.user)
 
 	// Create appropriate processor based on mode
-	processor := r.createChannellessProcessor(re)
+	processor := r.createChannellessProcessor(re, ltx)
 
 	// Process each file
 	for _, path := range paths {
@@ -321,7 +321,7 @@ func (r *readCommand) readChannellessStdin(ctx context.Context, ltx lcontext.LCo
 	output := NewNetworkOutputWriter(nil, r.server.serverMessages, r.server.user)
 
 	// Create appropriate processor based on mode
-	processor := r.createChannellessProcessor(re)
+	processor := r.createChannellessProcessor(re, ltx)
 	
 	// Create direct processor with "-" as globID for stdin
 	directProcessor := fs.NewDirectProcessor(processor, output, "-", ltx)
@@ -336,14 +336,14 @@ func (r *readCommand) readChannellessStdin(ctx context.Context, ltx lcontext.LCo
 }
 
 // createChannellessProcessor creates the appropriate processor based on command mode
-func (r *readCommand) createChannellessProcessor(re regex.Regex) fs.LineProcessor {
+func (r *readCommand) createChannellessProcessor(re regex.Regex, ltx lcontext.LContext) fs.LineProcessor {
 	hostname := r.server.hostname // Use server hostname
 	plain := r.server.plain       // Use actual plain mode from server
 	noColor := false              // Enable colors by default in channelless mode
 
 	switch r.mode {
 	case omode.GrepClient:
-		return fs.NewGrepProcessor(re, plain, noColor, hostname)
+		return fs.NewGrepProcessor(re, plain, noColor, hostname, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount)
 	case omode.CatClient:
 		return fs.NewCatProcessor(plain, noColor, hostname)
 	case omode.TailClient:
@@ -353,6 +353,6 @@ func (r *readCommand) createChannellessProcessor(re regex.Regex) fs.LineProcesso
 		return fs.NewMapProcessor(plain, hostname)
 	default:
 		// Default to grep behavior
-		return fs.NewGrepProcessor(re, plain, noColor, hostname)
+		return fs.NewGrepProcessor(re, plain, noColor, hostname, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount)
 	}
 }
