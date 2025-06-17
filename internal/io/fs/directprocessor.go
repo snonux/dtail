@@ -356,18 +356,18 @@ func (gp *GrepProcessor) Cleanup() error {
 func (gp *GrepProcessor) ProcessLine(line []byte, lineNum int, filePath string, stats *stats, sourceID string) ([]byte, bool) {
 	isMatch := gp.regex.Match(line)
 	
-	// Handle after context lines
-	if gp.afterRemaining > 0 {
-		gp.afterRemaining--
-		// Send this line as context even if it doesn't match
-		if stats != nil {
-			stats.updateLineMatched() // Count context lines as transmitted
-		}
-		return gp.formatLine(line, lineNum, filePath, stats, sourceID), true
-	}
 	
 	// Handle lines that don't match the regex
 	if !isMatch {
+		// Handle after context lines (only for non-matching lines)
+		if gp.afterRemaining > 0 {
+			gp.afterRemaining--
+			// Send this line as context
+			if stats != nil {
+				stats.updateLineMatched() // Count context lines as transmitted
+			}
+			return gp.formatLine(line, lineNum, filePath, stats, sourceID), true
+		}
 		// If we have before context, buffer this line
 		if gp.beforeContext > 0 {
 			// Make a copy of the line for buffering
