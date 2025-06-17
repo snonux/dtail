@@ -47,6 +47,15 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 
+	// Check if channelless mode is enabled
+	useChannelless := os.Getenv("DTAIL_USE_CHANNELLESS") == "true"
+	
+	if useChannelless {
+		dlog.Server.Debug("Using channelless processing mode")
+		r.startChannelless(ctx, ltx, args, re, retries)
+		return
+	}
+
 	// In serverless mode, can also read data from pipe
 	// e.g.: grep foo bar.log | dmap 'from STATS select ...'
 	// Only read from stdin if no file is specified AND input is from pipe
@@ -219,4 +228,131 @@ func (r *readCommand) isInputFromPipe() bool {
 	}
 	fileInfo, _ := os.Stdin.Stat()
 	return fileInfo.Mode()&os.ModeCharDevice == 0
+}
+
+// startChannelless implements channelless processing for better performance
+func (r *readCommand) startChannelless(ctx context.Context, ltx lcontext.LContext,
+	args []string, re regex.Regex, retries int) {
+
+	// Handle stdin input in serverless mode
+	if (args[1] == "" || args[1] == "-") && r.isInputFromPipe() {
+		dlog.Server.Debug("Reading data from stdin pipe (channelless)")
+		r.readChannellessStdin(ctx, ltx, re)
+		return
+	}
+
+	dlog.Server.Debug("Reading data from file(s) (channelless)")
+	r.readGlobChannelless(ctx, ltx, args[1], re, retries)
+}
+
+// readGlobChannelless processes files using channelless approach
+func (r *readCommand) readGlobChannelless(ctx context.Context, ltx lcontext.LContext,
+	glob string, re regex.Regex, retries int) {
+
+	retryInterval := time.Second * 5
+	glob = filepath.Clean(glob)
+
+	for retryCount := 0; retryCount < retries; retryCount++ {
+		paths, err := filepath.Glob(glob)
+		if err != nil {
+			dlog.Server.Warn(r.server.user, glob, err)
+			time.Sleep(retryInterval)
+			continue
+		}
+
+		if numPaths := len(paths); numPaths == 0 {
+			dlog.Server.Error(r.server.user, "No such file(s) to read", glob)
+			r.server.sendln(r.server.serverMessages, dlog.Server.Warn(r.server.user,
+				"Unable to read file(s), check server logs"))
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+			time.Sleep(retryInterval)
+			continue
+		}
+
+		r.readFilesChannelless(ctx, ltx, paths, glob, re)
+		return
+	}
+
+	r.server.sendln(r.server.serverMessages, dlog.Server.Warn(r.server.user,
+		"Giving up to read file(s)"))
+}
+
+// readFilesChannelless processes multiple files using channelless approach
+func (r *readCommand) readFilesChannelless(ctx context.Context, ltx lcontext.LContext,
+	paths []string, glob string, re regex.Regex) {
+
+	// Create network output writer (use nil connection for now - will write to stdout)
+	output := NewNetworkOutputWriter(nil, r.server.serverMessages, r.server.user)
+
+	// Create appropriate processor based on mode
+	processor := r.createChannellessProcessor(re)
+
+	// Process each file
+	for _, path := range paths {
+		// Generate globID just like the original system
+		globID := r.makeGlobID(path, glob)
+		
+		// Create direct processor with proper globID
+		directProcessor := fs.NewDirectProcessor(processor, output, globID, ltx)
+		if !r.server.user.HasFilePermission(path, "readfiles") {
+			dlog.Server.Error(r.server.user, "No permission to read file", path)
+			r.server.sendln(r.server.serverMessages, dlog.Server.Warn(r.server.user,
+				"Unable to read file(s), check server logs"))
+			continue
+		}
+
+		dlog.Server.Info(r.server.user, "Start reading (channelless)", path)
+		
+		if err := directProcessor.ProcessFile(ctx, path); err != nil {
+			dlog.Server.Error(r.server.user, path, err)
+			r.server.sendln(r.server.serverMessages, dlog.Server.Error(r.server.user,
+				"Error processing file", path, err))
+		}
+	}
+}
+
+// readChannellessStdin processes stdin using channelless approach
+func (r *readCommand) readChannellessStdin(ctx context.Context, ltx lcontext.LContext, re regex.Regex) {
+	// Create network output writer (use nil connection for now - will write to stdout)
+	output := NewNetworkOutputWriter(nil, r.server.serverMessages, r.server.user)
+
+	// Create appropriate processor based on mode
+	processor := r.createChannellessProcessor(re)
+	
+	// Create direct processor with "-" as globID for stdin
+	directProcessor := fs.NewDirectProcessor(processor, output, "-", ltx)
+
+	dlog.Server.Info(r.server.user, "Start reading from stdin (channelless)")
+	
+	if err := directProcessor.ProcessReader(ctx, os.Stdin, "-"); err != nil {
+		dlog.Server.Error(r.server.user, "stdin", err)
+		r.server.sendln(r.server.serverMessages, dlog.Server.Error(r.server.user,
+			"Error processing stdin", err))
+	}
+}
+
+// createChannellessProcessor creates the appropriate processor based on command mode
+func (r *readCommand) createChannellessProcessor(re regex.Regex) fs.LineProcessor {
+	hostname := r.server.hostname // Use server hostname
+	plain := r.server.plain       // Use actual plain mode from server
+	noColor := false              // Enable colors by default in channelless mode
+
+	switch r.mode {
+	case omode.GrepClient:
+		return fs.NewGrepProcessor(re, plain, noColor, hostname)
+	case omode.CatClient:
+		return fs.NewCatProcessor(plain, noColor, hostname)
+	case omode.TailClient:
+		// For now, basic tail without follow functionality
+		return fs.NewTailProcessor(re, plain, noColor, hostname, false, false, 0)
+	case omode.MapClient:
+		return fs.NewMapProcessor(plain, hostname)
+	default:
+		// Default to grep behavior
+		return fs.NewGrepProcessor(re, plain, noColor, hostname)
+	}
 }
