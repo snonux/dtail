@@ -23,6 +23,11 @@ func (r Regex) String() string {
 		r.regexStr, r.flags, r.initialized, r.re == nil)
 }
 
+// IsNoop returns true if this regex is a noop regex
+func (r Regex) IsNoop() bool {
+	return len(r.flags) > 0 && r.flags[0] == Noop
+}
+
 // NewNoop is a noop regex (doing nothing).
 func NewNoop() Regex {
 	return Regex{

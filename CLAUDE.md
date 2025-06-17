@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### Building
 ```bash
 # Build all binaries
-make build
+make clean; make build
 
 # Build individual binaries
 make dserver    # Server daemon
@@ -32,6 +32,8 @@ make clean build && DTAIL_INTEGRATION_TEST_RUN_MODE=yes go test -v ./integration
 # Clean test cache before running
 go clean -testcache
 ```
+
+Before deciding work is done, ensure that all tests pass (including integration tests) and that the code is well-documented. Before testing, always rebuild all binaries.
 
 ### Code Quality
 ```bash

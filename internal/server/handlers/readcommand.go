@@ -48,13 +48,19 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	}
 
 	// Check if channelless mode is enabled
-	useChannelless := os.Getenv("DTAIL_USE_CHANNELLESS") == "yes"
+	// Note: MapReduce operations require the full channel-based aggregation infrastructure
+	// Note: Tail operations require continuous monitoring and real-time streaming 
+	isMapReduceCmd := r.mode == omode.MapClient || r.isMapReduceCommand(re)
+	isTailCmd := r.mode == omode.TailClient
+	useChannelless := os.Getenv("DTAIL_USE_CHANNELLESS") == "yes" && !isMapReduceCmd && !isTailCmd
 	
 	if useChannelless {
-		dlog.Server.Debug("Using channelless processing mode")
+		dlog.Server.Debug("Using channelless processing mode for mode:", r.mode)
 		r.startChannelless(ctx, ltx, args, re, retries)
 		return
 	}
+	
+	dlog.Server.Debug("Using channel-based processing mode for mode:", r.mode)
 
 	// In serverless mode, can also read data from pipe
 	// e.g.: grep foo bar.log | dmap 'from STATS select ...'
@@ -333,6 +339,19 @@ func (r *readCommand) readChannellessStdin(ctx context.Context, ltx lcontext.LCo
 		r.server.sendln(r.server.serverMessages, dlog.Server.Error(r.server.user,
 			"Error processing stdin", err))
 	}
+}
+
+// isMapReduceCommand checks if this is a command that's part of a MapReduce operation
+func (r *readCommand) isMapReduceCommand(re regex.Regex) bool {
+	// Only cat and tail commands can be part of MapReduce operations
+	if r.mode != omode.CatClient && r.mode != omode.TailClient {
+		return false
+	}
+	
+	// Check if the regex contains MAPREDUCE pattern OR if it's a noop regex
+	// (noop regex is used for CSV logformat in MapReduce operations)
+	pattern := re.String()
+	return strings.Contains(pattern, "MAPREDUCE:") || re.IsNoop()
 }
 
 // createChannellessProcessor creates the appropriate processor based on command mode
