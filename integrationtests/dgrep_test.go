@@ -16,13 +16,13 @@ func TestDGrep1(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
 		{"WithServer", true},
 	}
-	
+
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
 			if err := testDGrep1(t, mode.useServer); err != nil {
@@ -35,17 +35,15 @@ func TestDGrep1(t *testing.T) {
 
 func testDGrep1(t *testing.T, useServer bool) error {
 	outFile := "dgrep.stdout.tmp"
-	
+
+	inFile := "mapr_testdata.log"
+	expectedOutFile := "dgrep1.txt.expected"
+
 	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile := "small_mapr_testdata.log"
-		expectedOutFile := "small_dgrep1.txt.expected"
 		args := []string{"--plain", "--cfg", "none", "--grep", "1002-071947", inFile}
 		return testDGrepWithServer(t, args, outFile, expectedOutFile)
 	} else {
-		inFile := "mapr_testdata.log"
-		expectedOutFile := "dgrep1.txt.expected"
-		
+
 		_, err := runCommand(context.TODO(), t, outFile,
 			"../dgrep",
 			"--plain",
@@ -74,13 +72,13 @@ func TestDGrep2(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
 		{"WithServer", true},
 	}
-	
+
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
 			if err := testDGrep2(t, mode.useServer); err != nil {
@@ -93,17 +91,15 @@ func TestDGrep2(t *testing.T) {
 
 func testDGrep2(t *testing.T, useServer bool) error {
 	outFile := "dgrep2.stdout.tmp"
-	
+
+	inFile := "mapr_testdata.log"
+	expectedOutFile := "dgrep2.txt.expected"
+
 	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile := "small_mapr_testdata.log"
-		expectedOutFile := "small_dgrep2.txt.expected"
 		args := []string{"--plain", "--cfg", "none", "--grep", "1002-071947", "--invert", inFile}
 		return testDGrepWithServer(t, args, outFile, expectedOutFile)
 	} else {
-		inFile := "mapr_testdata.log"
-		expectedOutFile := "dgrep2.txt.expected"
-		
+
 		_, err := runCommand(context.TODO(), t, outFile,
 			"../dgrep",
 			"--plain",
@@ -133,13 +129,13 @@ func TestDGrepContext1(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
 		{"WithServer", true},
 	}
-	
+
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
 			if err := testDGrepContext1(t, mode.useServer); err != nil {
@@ -152,17 +148,15 @@ func TestDGrepContext1(t *testing.T) {
 
 func testDGrepContext1(t *testing.T, useServer bool) error {
 	outFile := "dgrepcontext1.stdout.tmp"
-	
+
+	inFile := "mapr_testdata.log"
+	expectedOutFile := "dgrepcontext1.txt.expected"
+
 	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile := "small_mapr_testdata.log"
-		expectedOutFile := "small_dgrepcontext1.txt.expected"
 		args := []string{"--plain", "--cfg", "none", "--grep", "1002-071947", "--after", "3", "--before", "3", inFile}
 		return testDGrepWithServer(t, args, outFile, expectedOutFile)
 	} else {
-		inFile := "mapr_testdata.log"
-		expectedOutFile := "dgrepcontext1.txt.expected"
-		
+
 		_, err := runCommand(context.TODO(), t, outFile,
 			"../dgrep",
 			"--plain",
@@ -192,13 +186,13 @@ func TestDGrepContext2(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
 		{"WithServer", true},
 	}
-	
+
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
 			if err := testDGrepContext2(t, mode.useServer); err != nil {
@@ -211,17 +205,15 @@ func TestDGrepContext2(t *testing.T) {
 
 func testDGrepContext2(t *testing.T, useServer bool) error {
 	outFile := "dgrepcontext2.stdout.tmp"
-	
+
+	inFile := "mapr_testdata.log"
+	expectedOutFile := "dgrepcontext2.txt.expected"
+
 	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile := "small_mapr_testdata.log"
-		expectedOutFile := "small_dgrepcontext2.txt.expected"
 		args := []string{"--plain", "--cfg", "none", "--grep", "1002", "--max", "3", inFile}
 		return testDGrepWithServer(t, args, outFile, expectedOutFile)
 	} else {
-		inFile := "mapr_testdata.log"
-		expectedOutFile := "dgrepcontext2.txt.expected"
-		
+
 		_, err := runCommand(context.TODO(), t, outFile,
 			"../dgrep",
 			"--plain",

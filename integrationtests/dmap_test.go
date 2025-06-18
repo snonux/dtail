@@ -17,7 +17,7 @@ func TestDMap1(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
@@ -66,21 +66,11 @@ func testDMap1(t *testing.T, useServer bool) error {
 }
 
 func testDmap1Sub(t *testing.T, query, subtestName string, usePipe bool, useServer bool) error {
-	var inFile, expectedCsvFile, expectedQueryFile, csvFile string
-	
-	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile = "small_mapr_testdata.log"
-		csvFile = fmt.Sprintf("small_dmap1%s.csv.tmp", subtestName)
-		expectedCsvFile = fmt.Sprintf("small_dmap1%s.csv.expected", subtestName)
-		expectedQueryFile = fmt.Sprintf("small_dmap1%s.csv.query.expected", subtestName)
-	} else {
-		inFile = "mapr_testdata.log"
-		csvFile = fmt.Sprintf("dmap1%s.csv.tmp", subtestName)
-		expectedCsvFile = fmt.Sprintf("dmap1%s.csv.expected", subtestName)
-		expectedQueryFile = fmt.Sprintf("dmap1%s.csv.query.expected", subtestName)
-	}
-	
+	inFile := "mapr_testdata.log"
+	csvFile := fmt.Sprintf("dmap1%s.csv.tmp", subtestName)
+	expectedCsvFile := fmt.Sprintf("dmap1%s.csv.expected", subtestName)
+	expectedQueryFile := fmt.Sprintf("dmap1%s.csv.query.expected", subtestName)
+
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 	query = fmt.Sprintf("%s outfile %s", query, csvFile)
 
@@ -151,7 +141,7 @@ func TestDMap2(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
@@ -169,22 +159,12 @@ func TestDMap2(t *testing.T) {
 }
 
 func testDMap2(t *testing.T, useServer bool) error {
-	var inFile, expectedCsvFile, expectedQueryFile, csvFile string
+	inFile := "mapr_testdata.log"
+	csvFile := "dmap2.csv.tmp"
+	expectedCsvFile := "dmap2.csv.expected"
+	expectedQueryFile := "dmap2.csv.query.expected"
 	outFile := "dmap2.stdout.tmp"
 
-	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile = "small_mapr_testdata.log"
-		csvFile = "small_dmap2.csv.tmp"
-		expectedCsvFile = "small_dmap2.csv.expected"
-		expectedQueryFile = "small_dmap2.csv.query.expected"
-	} else {
-		inFile = "mapr_testdata.log"
-		csvFile = "dmap2.csv.tmp"
-		expectedCsvFile = "dmap2.csv.expected"
-		expectedQueryFile = "dmap2.csv.query.expected"
-	}
-	
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 
 	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
@@ -225,7 +205,7 @@ func TestDMap3(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
@@ -243,61 +223,36 @@ func TestDMap3(t *testing.T) {
 }
 
 func testDMap3(t *testing.T, useServer bool) error {
-	var inFile, expectedCsvFile, expectedQueryFile, csvFile string
+	inFile := "mapr_testdata.log"
+	csvFile := "dmap3.csv.tmp"
+	expectedCsvFile := "dmap3.csv.expected"
+	expectedQueryFile := "dmap3.csv.query.expected"
 	outFile := "dmap3.stdout.tmp"
 
-	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile = "small_mapr_testdata.log"
-		csvFile = "small_dmap3.csv.tmp"
-		expectedCsvFile = "small_dmap3.csv.expected"
-		expectedQueryFile = "small_dmap3.csv.query.expected"
-	} else {
-		inFile = "mapr_testdata.log"
-		csvFile = "dmap3.csv.tmp"
-		expectedCsvFile = "dmap3.csv.expected"
-		expectedQueryFile = "dmap3.csv.query.expected"
-	}
-	
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 
 	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
 		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
 		"outfile %s", csvFile)
 
+	// Create file list - use same count for both modes
+	fileList := make([]string, 10)
+	for i := range fileList {
+		fileList[i] = inFile
+	}
+
 	if useServer {
-		// Server mode testing - use only 3 files instead of 100 to avoid channel overflow
-		args := []string{
-			"--query", query,
-			"--cfg", "none",
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor",
-			inFile, inFile, inFile,
-		}
+		args := []string{"--query", query, "--cfg", "none", "--logger", "stdout", "--logLevel", "info", "--noColor"}
+		args = append(args, fileList...)
 		return testDMapWithServer(t, args, csvFile, expectedCsvFile, queryFile, expectedQueryFile)
 	} else {
-		// Serverless mode testing (original code with 100 files)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t,
-			"", "../dmap",
-			"--query", query,
-			"--cfg", "none",
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor",
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile,
-			inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile, inFile)
+		args := []string{"--query", query, "--cfg", "none", "--logger", "stdout", "--logLevel", "info", "--noColor"}
+		args = append(args, fileList...)
+		
+		stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t, "", "../dmap", args...)
 
 		if err != nil {
 			return err
@@ -326,7 +281,7 @@ func TestDMap4Append(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
@@ -344,22 +299,12 @@ func TestDMap4Append(t *testing.T) {
 }
 
 func testDMap4Append(t *testing.T, useServer bool) error {
-	var inFile, expectedCsvFile, expectedQueryFile, csvFile string
+	inFile := "mapr_testdata.log"
+	csvFile := "dmap4.csv.tmp"
+	expectedCsvFile := "dmap4.csv.expected"
+	expectedQueryFile := "dmap4.csv.query.expected"
 	outFile := "dmap4.stdout.tmp"
 
-	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile = "small_mapr_testdata.log"
-		csvFile = "small_dmap4.csv.tmp"
-		expectedCsvFile = "small_dmap4.csv.expected"
-		expectedQueryFile = "small_dmap4.csv.query.expected"
-	} else {
-		inFile = "mapr_testdata.log"
-		csvFile = "dmap4.csv.tmp"
-		expectedCsvFile = "dmap4.csv.expected"
-		expectedQueryFile = "dmap4.csv.query.expected"
-	}
-	
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 
 	// Delete in case it exists already. Otherwise, test will fail.
@@ -425,7 +370,7 @@ func TestDMap5CSV(t *testing.T) {
 
 	// Test both serverless and server modes
 	modes := []struct {
-		name string
+		name      string
 		useServer bool
 	}{
 		{"Serverless", false},
@@ -443,22 +388,12 @@ func TestDMap5CSV(t *testing.T) {
 }
 
 func testDMap5CSV(t *testing.T, useServer bool) error {
-	var inFile, expectedCsvFile, expectedQueryFile, csvFile string
+	inFile := "dmap5.csv.in"
+	csvFile := "dmap5.csv.tmp"
+	expectedCsvFile := "dmap5.csv.expected"
+	expectedQueryFile := "dmap5.csv.query.expected"
 	outFile := "dmap5.stdout.tmp"
 
-	if useServer {
-		// Use small test data for server mode to avoid channel overflow
-		inFile = "small_dmap5.csv.in"
-		csvFile = "small_dmap5.csv.tmp"
-		expectedCsvFile = "small_dmap5.csv.expected"
-		expectedQueryFile = "small_dmap5.csv.query.expected"
-	} else {
-		inFile = "dmap5.csv.in"
-		csvFile = "dmap5.csv.tmp"
-		expectedCsvFile = "dmap5.csv.expected"
-		expectedQueryFile = "dmap5.csv.query.expected"
-	}
-	
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 
 	// Delete in case it exists already. Otherwise, test will fail.
