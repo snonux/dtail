@@ -51,8 +51,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 
-	// Always use channelless mode now - channel-based code is deprecated
-	dlog.Server.Debug("Using channelless processing mode for mode:", r.mode)
+	dlog.Server.Debug("Processing mode:", r.mode)
 	r.startChannelless(ctx, ltx, args, re, retries, queryStr)
 }
 

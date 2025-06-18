@@ -1,6 +1,7 @@
 *_proprietary.go
 *.csv
 *.tmp
+*.query
 *.out
 cache/
 log/
