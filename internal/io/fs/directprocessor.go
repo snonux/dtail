@@ -21,7 +21,7 @@ import (
 	"github.com/mimecast/dtail/internal/regex"
 )
 
-// LineProcessor interface for channelless line-by-line processing
+// LineProcessor interface for direct line-by-line processing
 type LineProcessor interface {
 	ProcessLine(line []byte, lineNum int, filePath string, stats *stats, sourceID string) (result []byte, shouldSend bool)
 	Flush() []byte // For any buffered output (e.g., MapReduce)
@@ -153,7 +153,7 @@ func (dp *DirectProcessor) processReaderPreservingLineEndings(ctx context.Contex
 					// Check if the accumulated data exceeds max line length
 					if len(data) >= maxLineLength {
 						if !warnedAboutLongLine {
-							// Note: we don't have server messages channel in channelless mode
+							// Note: we don't have server messages channel in direct processing mode
 							// so we'll just split without warning
 							warnedAboutLongLine = true
 						}

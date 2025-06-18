@@ -52,7 +52,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	}
 
 	dlog.Server.Debug("Processing mode:", r.mode)
-	r.startChannelless(ctx, ltx, args, re, retries, queryStr)
+	r.start(ctx, ltx, args, re, retries, queryStr)
 }
 
 
@@ -87,23 +87,23 @@ func (r *readCommand) isInputFromPipe() bool {
 	return fileInfo.Mode()&os.ModeCharDevice == 0
 }
 
-// startChannelless implements channelless processing for better performance
-func (r *readCommand) startChannelless(ctx context.Context, ltx lcontext.LContext,
+// start implements direct processing for better performance
+func (r *readCommand) start(ctx context.Context, ltx lcontext.LContext,
 	args []string, re regex.Regex, retries int, queryStr string) {
 
 	// Handle stdin input in serverless mode
 	if (args[1] == "" || args[1] == "-") && r.isInputFromPipe() {
-		dlog.Server.Debug("Reading data from stdin pipe (channelless)")
-		r.readChannellessStdin(ctx, ltx, re, queryStr)
+		dlog.Server.Debug("Reading data from stdin pipe")
+		r.readStdin(ctx, ltx, re, queryStr)
 		return
 	}
 
-	dlog.Server.Debug("Reading data from file(s) (channelless)")
-	r.readGlobChannelless(ctx, ltx, args[1], re, retries, queryStr)
+	dlog.Server.Debug("Reading data from file(s)")
+	r.readGlob(ctx, ltx, args[1], re, retries, queryStr)
 }
 
-// readGlobChannelless processes files using channelless approach
-func (r *readCommand) readGlobChannelless(ctx context.Context, ltx lcontext.LContext,
+// readGlob processes files using direct processing
+func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 	glob string, re regex.Regex, retries int, queryStr string) {
 
 	retryInterval := time.Second * 5
@@ -130,7 +130,7 @@ func (r *readCommand) readGlobChannelless(ctx context.Context, ltx lcontext.LCon
 			continue
 		}
 
-		r.readFilesChannelless(ctx, ltx, paths, glob, re, queryStr)
+		r.readFiles(ctx, ltx, paths, glob, re, queryStr)
 		return
 	}
 
@@ -138,8 +138,8 @@ func (r *readCommand) readGlobChannelless(ctx context.Context, ltx lcontext.LCon
 		"Giving up to read file(s)"))
 }
 
-// readFilesChannelless processes multiple files using channelless approach
-func (r *readCommand) readFilesChannelless(ctx context.Context, ltx lcontext.LContext,
+// readFiles processes multiple files using direct processing
+func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	paths []string, glob string, re regex.Regex, queryStr string) {
 
 	// Choose output writer based on server mode
@@ -153,7 +153,7 @@ func (r *readCommand) readFilesChannelless(ctx context.Context, ltx lcontext.LCo
 	}
 
 	// Create appropriate processor based on mode
-	processor, needsFollowing := r.createChannellessProcessor(re, ltx, output, queryStr)
+	processor, needsFollowing := r.createProcessor(re, ltx, output, queryStr)
 
 	// Process each file
 	for _, path := range paths {
@@ -167,7 +167,7 @@ func (r *readCommand) readFilesChannelless(ctx context.Context, ltx lcontext.LCo
 			continue
 		}
 
-		dlog.Server.Info(r.server.user, "Start reading (channelless)", path)
+		dlog.Server.Info(r.server.user, "Start reading", path)
 		
 		// Handle file following for tail operations
 		if needsFollowing {
@@ -208,8 +208,8 @@ func (r *readCommand) readFilesChannelless(ctx context.Context, ltx lcontext.LCo
 	}
 }
 
-// readChannellessStdin processes stdin using channelless approach
-func (r *readCommand) readChannellessStdin(ctx context.Context, ltx lcontext.LContext, re regex.Regex, queryStr string) {
+// readStdin processes stdin using direct processing
+func (r *readCommand) readStdin(ctx context.Context, ltx lcontext.LContext, re regex.Regex, queryStr string) {
 	// Choose output writer based on server mode
 	var output io.Writer
 	if r.server.serverless {
@@ -221,12 +221,12 @@ func (r *readCommand) readChannellessStdin(ctx context.Context, ltx lcontext.LCo
 	}
 
 	// Create appropriate processor based on mode
-	processor, _ := r.createChannellessProcessor(re, ltx, output, queryStr)
+	processor, _ := r.createProcessor(re, ltx, output, queryStr)
 	
 	// Create direct processor with "-" as globID for stdin
 	directProcessor := fs.NewDirectProcessor(processor, output, "-", ltx)
 
-	dlog.Server.Info(r.server.user, "Start reading from stdin (channelless)")
+	dlog.Server.Info(r.server.user, "Start reading from stdin")
 	
 	if err := directProcessor.ProcessReader(ctx, os.Stdin, "-"); err != nil {
 		dlog.Server.Error(r.server.user, "stdin", err)
@@ -248,16 +248,16 @@ func (r *readCommand) isMapReduceCommand(re regex.Regex) bool {
 	return strings.Contains(pattern, "MAPREDUCE:") || re.IsNoop()
 }
 
-// createChannellessProcessor creates the appropriate processor based on command mode
-func (r *readCommand) createChannellessProcessor(re regex.Regex, ltx lcontext.LContext, output io.Writer, queryStr string) (fs.LineProcessor, bool) {
+// createProcessor creates the appropriate processor based on command mode
+func (r *readCommand) createProcessor(re regex.Regex, ltx lcontext.LContext, output io.Writer, queryStr string) (fs.LineProcessor, bool) {
 	hostname := r.server.hostname // Use server hostname
 	plain := r.server.plain       // Use actual plain mode from server
-	noColor := false              // Enable colors by default in channelless mode
+	noColor := false              // Enable colors by default
 	
 	// If there's an existing aggregate (from a 'map' command), we need to feed data to it
 	// Create a lines channel and connect it to the aggregate
 	if r.server.aggregate != nil {
-		dlog.Server.Debug("Using existing aggregate, creating bridge processor for channelless mode")
+		dlog.Server.Debug("Using existing aggregate, creating bridge processor")
 		// Create a lines channel for the aggregate with larger buffer
 		linesCh := make(chan *line.Line, 1000)
 		// Connect the lines channel to the aggregate

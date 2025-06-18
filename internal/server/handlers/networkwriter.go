@@ -11,7 +11,7 @@ import (
 	"github.com/mimecast/dtail/internal/user/server"
 )
 
-// NetworkOutputWriter provides direct network streaming for channelless processing
+// NetworkOutputWriter provides direct network streaming
 type NetworkOutputWriter struct {
 	conn           net.Conn
 	serverMessages chan<- string // Keep existing channel for server messages (low frequency)
@@ -201,7 +201,7 @@ func (cow *ChannelOutputWriter) Write(data []byte) (int, error) {
 	
 	// Create a line object using the proper constructor
 	contentBuffer := bytes.NewBuffer(data)
-	lineObj := line.New(contentBuffer, 0, 100, "channelless")
+	lineObj := line.New(contentBuffer, 0, 100, "direct")
 	
 	select {
 	case cow.linesCh <- lineObj:
@@ -288,7 +288,7 @@ func (shw *ServerHandlerWriter) Write(data []byte) (int, error) {
 	
 	// Create a line object and send it through the server's lines channel
 	contentBuffer := bytes.NewBuffer(data)
-	lineObj := line.New(contentBuffer, 0, 100, "channelless")
+	lineObj := line.New(contentBuffer, 0, 100, "direct")
 	
 	select {
 	case shw.server.lines <- lineObj:

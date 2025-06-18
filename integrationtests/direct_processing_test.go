@@ -8,15 +8,15 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 )
 
-func TestDGrepChannelless(t *testing.T) {
+func TestDGrepDirect(t *testing.T) {
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
 	
-	// Test dgrep with channelless mode (now the default)
+	// Test dgrep with direct processing (now the default)
 	inFile := "mapr_testdata.log"
-	outFile := "dgrepchannelless.stdout.tmp"
+	outFile := "dgrepdirect.stdout.tmp"
 	expectedOutFile := "dgrepcontext1.txt.expected"
 
 	_, err := runCommand(context.TODO(), t, outFile,
@@ -41,15 +41,15 @@ func TestDGrepChannelless(t *testing.T) {
 	os.Remove(outFile)
 }
 
-func TestDCatChannelless(t *testing.T) {
+func TestDCatDirect(t *testing.T) {
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
 	
-	// Test dcat with channelless mode (now the default)
+	// Test dcat with direct processing (now the default)
 	inFile := "dcat1a.txt"
-	outFile := "dcatchannelless.stdout.tmp"
+	outFile := "dcatdirect.stdout.tmp"
 
 	_, err := runCommand(context.TODO(), t, outFile,
 		"../dcat",
@@ -70,17 +70,17 @@ func TestDCatChannelless(t *testing.T) {
 	os.Remove(outFile)
 }
 
-func TestChannellessMode(t *testing.T) {
+func TestDirectProcessingMode(t *testing.T) {
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
 	
-	// Test that channelless mode (now default) works correctly
+	// Test that direct processing (now default) works correctly
 	
 	// Test grep
 	inFile := "mapr_testdata.log"
-	outFile := "grep_channelless.tmp"
+	outFile := "grep_direct.tmp"
 	expectedOutFile := "dgrep1.txt.expected"
 
 	_, err := runCommand(context.TODO(), t, outFile,
