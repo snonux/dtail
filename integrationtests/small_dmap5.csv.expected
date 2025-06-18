@@ -1,0 +1,2 @@
+sum($timecount),last($time),min($min_goroutines)
+43.000000,1002-071213,12.000000
