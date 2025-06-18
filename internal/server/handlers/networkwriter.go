@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/user/server"
 )
 
@@ -173,4 +175,178 @@ func (bnw *BufferedNetworkWriter) Close() error {
 		return err
 	}
 	return bnw.NetworkOutputWriter.Close()
+}
+
+// ChannelOutputWriter sends output to the server's lines channel instead of direct network
+type ChannelOutputWriter struct {
+	linesCh        chan<- *line.Line
+	serverMessages chan<- string
+	user           *server.User
+}
+
+// NewChannelOutputWriter creates a new channel output writer
+func NewChannelOutputWriter(linesCh chan<- *line.Line, serverMessages chan<- string, user *server.User) *ChannelOutputWriter {
+	return &ChannelOutputWriter{
+		linesCh:        linesCh,
+		serverMessages: serverMessages,
+		user:           user,
+	}
+}
+
+// Write implements io.Writer interface by sending data through the lines channel
+func (cow *ChannelOutputWriter) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	
+	// Create a line object using the proper constructor
+	contentBuffer := bytes.NewBuffer(data)
+	lineObj := line.New(contentBuffer, 0, 100, "channelless")
+	
+	select {
+	case cow.linesCh <- lineObj:
+		return len(data), nil
+	default:
+		// Channel is full, report error
+		cow.sendServerMessage("Lines channel full, dropping data")
+		return 0, fmt.Errorf("lines channel full")
+	}
+}
+
+// sendServerMessage sends a message through the existing server message channel
+func (cow *ChannelOutputWriter) sendServerMessage(message string) {
+	if cow.serverMessages == nil {
+		return
+	}
+	
+	select {
+	case cow.serverMessages <- message:
+		// Message sent successfully
+	default:
+		// Channel full, log the issue
+		dlog.Server.Warn(cow.user, "Server message channel full, dropping message:", message)
+	}
+}
+
+// SendLine sends a formatted line through the lines channel
+func (cow *ChannelOutputWriter) SendLine(hostname, filePath string, lineNum int, content []byte) error {
+	// Create a line object with proper metadata
+	contentBuffer := bytes.NewBuffer(content)
+	lineObj := line.New(contentBuffer, uint64(lineNum), 100, filePath)
+	
+	select {
+	case cow.linesCh <- lineObj:
+		return nil
+	default:
+		cow.sendServerMessage(fmt.Sprintf("Lines channel full, dropping line from %s:%d", filePath, lineNum))
+		return fmt.Errorf("lines channel full")
+	}
+}
+
+// SendPlainLine sends a plain line through the lines channel
+func (cow *ChannelOutputWriter) SendPlainLine(content []byte) error {
+	_, err := cow.Write(content)
+	return err
+}
+
+// SendServerStat sends a server statistics message
+func (cow *ChannelOutputWriter) SendServerStat(message string) {
+	cow.sendServerMessage(message)
+}
+
+// SendError sends an error message
+func (cow *ChannelOutputWriter) SendError(err error) {
+	cow.sendServerMessage(fmt.Sprintf("ERROR: %v", err))
+}
+
+// Close is a no-op for channel output writer
+func (cow *ChannelOutputWriter) Close() error {
+	return nil
+}
+
+// ServerHandlerWriter writes output directly to the server handler's lines channel
+type ServerHandlerWriter struct {
+	server         *ServerHandler
+	serverMessages chan<- string
+	user           *server.User
+}
+
+// NewServerHandlerWriter creates a new server handler writer
+func NewServerHandlerWriter(serverHandler *ServerHandler, serverMessages chan<- string, user *server.User) *ServerHandlerWriter {
+	return &ServerHandlerWriter{
+		server:         serverHandler,
+		serverMessages: serverMessages,
+		user:           user,
+	}
+}
+
+// Write implements io.Writer interface by sending data through the server's lines channel
+func (shw *ServerHandlerWriter) Write(data []byte) (int, error) {
+	if len(data) == 0 {
+		return 0, nil
+	}
+	
+	// Create a line object and send it through the server's lines channel
+	contentBuffer := bytes.NewBuffer(data)
+	lineObj := line.New(contentBuffer, 0, 100, "channelless")
+	
+	select {
+	case shw.server.lines <- lineObj:
+		return len(data), nil
+	default:
+		// Channel is full, report error
+		shw.sendServerMessage("Server lines channel full, dropping data")
+		return 0, fmt.Errorf("server lines channel full")
+	}
+}
+
+// sendServerMessage sends a message through the existing server message channel
+func (shw *ServerHandlerWriter) sendServerMessage(message string) {
+	if shw.serverMessages == nil {
+		return
+	}
+	
+	select {
+	case shw.serverMessages <- message:
+		// Message sent successfully
+	default:
+		// Channel full, log the issue
+		dlog.Server.Warn(shw.user, "Server message channel full, dropping message:", message)
+	}
+}
+
+// SendLine sends a formatted line through the server's lines channel
+func (shw *ServerHandlerWriter) SendLine(hostname, filePath string, lineNum int, content []byte) error {
+	// Create a line object with proper metadata
+	contentBuffer := bytes.NewBuffer(content)
+	lineObj := line.New(contentBuffer, uint64(lineNum), 100, filePath)
+	
+	select {
+	case shw.server.lines <- lineObj:
+		return nil
+	default:
+		shw.sendServerMessage(fmt.Sprintf("Server lines channel full, dropping line from %s:%d", filePath, lineNum))
+		return fmt.Errorf("server lines channel full")
+	}
+}
+
+// SendPlainLine sends a plain line through the server's lines channel
+func (shw *ServerHandlerWriter) SendPlainLine(content []byte) error {
+	_, err := shw.Write(content)
+	return err
+}
+
+// SendServerStat sends a server statistics message
+func (shw *ServerHandlerWriter) SendServerStat(message string) {
+	shw.sendServerMessage(message)
+}
+
+// SendError sends an error message
+func (shw *ServerHandlerWriter) SendError(err error) {
+	shw.sendServerMessage(fmt.Sprintf("ERROR: %v", err))
+}
+
+// Close is a no-op for server handler writer
+func (shw *ServerHandlerWriter) Close() error {
+	return nil
 }

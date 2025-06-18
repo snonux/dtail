@@ -7,10 +7,16 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/mapr"
+	"github.com/mimecast/dtail/internal/mapr/logformat"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
 )
@@ -618,7 +624,8 @@ func (tp *TailProcessor) ProcessLine(line []byte, lineNum int, filePath string, 
 	}
 	
 	// Regular tailing mode - send matching lines immediately
-	return tp.formatLine(line, lineNum, filePath), true
+	formatted := tp.formatLine(line, lineNum, filePath)
+	return formatted, true
 }
 
 func (tp *TailProcessor) formatLine(line []byte, lineNum int, filePath string) []byte {
@@ -660,25 +667,248 @@ func (tp *TailProcessor) Flush() []byte {
 	return nil
 }
 
-// MapProcessor handles MapReduce-style aggregation
-type MapProcessor struct {
-	plain      bool
-	hostname   string
-	aggregator interface{} // Will be set to actual aggregator from mapr package
-	buffer     []byte
+// FollowingTailProcessor extends DirectProcessor with file following capability
+type FollowingTailProcessor struct {
+	*DirectProcessor
+	tailProcessor *TailProcessor
 }
 
-// NewMapProcessor creates a new map processor
-func NewMapProcessor(plain bool, hostname string) *MapProcessor {
-	return &MapProcessor{
-		plain:    plain,
-		hostname: hostname,
-		buffer:   make([]byte, 0, 1024*1024), // 1MB buffer for aggregation
+// NewFollowingTailProcessor creates a processor that can follow files
+func NewFollowingTailProcessor(processor *TailProcessor, output io.Writer, globID string, ltx lcontext.LContext) *FollowingTailProcessor {
+	dp := NewDirectProcessor(processor, output, globID, ltx)
+	return &FollowingTailProcessor{
+		DirectProcessor: dp,
+		tailProcessor:   processor,
 	}
 }
 
+// ProcessFileWithFollowing processes a file with following capability
+func (ftp *FollowingTailProcessor) ProcessFileWithFollowing(ctx context.Context, filePath string) error {
+	if !ftp.tailProcessor.follow {
+		// No following required, use regular processing
+		return ftp.ProcessFile(ctx, filePath)
+	}
+
+	// Implement file following logic
+	return ftp.followFile(ctx, filePath)
+}
+
+func (ftp *FollowingTailProcessor) followFile(ctx context.Context, filePath string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// Initialize processor
+	if err := ftp.processor.Initialize(ctx); err != nil {
+		return err
+	}
+	defer ftp.processor.Cleanup()
+
+	// If seekEOF is true, seek to end first
+	if ftp.tailProcessor.seekEOF {
+		if _, err := file.Seek(0, io.SeekEnd); err != nil {
+			return err
+		}
+	}
+
+	return ftp.followReader(ctx, file, filePath)
+}
+
+func (ftp *FollowingTailProcessor) followReader(ctx context.Context, file *os.File, filePath string) error {
+	// Set buffer size respecting MaxLineLength configuration
+	maxLineLength := config.Server.MaxLineLength
+	initialBufSize := 64 * 1024
+	if maxLineLength < initialBufSize {
+		initialBufSize = maxLineLength
+	}
+	
+	lineNum := 0
+	lastPosition := int64(0)
+	readBuffer := make([]byte, initialBufSize)
+	lineBuffer := make([]byte, 0, initialBufSize)
+	
+	// Get initial position
+	if pos, err := file.Seek(0, io.SeekCurrent); err == nil {
+		lastPosition = pos
+	}
+	
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		
+		// Check if file has grown
+		if stat, err := file.Stat(); err == nil {
+			if stat.Size() > lastPosition {
+				// Read new content
+				n, err := file.Read(readBuffer)
+				if err != nil && err != io.EOF {
+					return err
+				}
+				
+				if n > 0 {
+					// Process the data, looking for complete lines
+					for i := 0; i < n; i++ {
+						b := readBuffer[i]
+						if b == '\n' {
+							// Found a complete line
+							lineNum++
+							line := make([]byte, len(lineBuffer))
+							copy(line, lineBuffer)
+							
+							// Update position stats
+							if ftp.stats != nil {
+								ftp.stats.updatePosition()
+							}
+							
+							// Process line directly  
+							if result, shouldSend := ftp.processor.ProcessLine(line, lineNum, filePath, ftp.stats, ftp.sourceID); shouldSend {
+								if _, err := ftp.output.Write(result); err != nil {
+									return err
+								}
+								
+								// Update transmission stats
+								if ftp.stats != nil {
+									ftp.stats.updateLineTransmitted()
+								}
+							}
+							
+							// Reset line buffer for next line
+							lineBuffer = lineBuffer[:0]
+						} else {
+							// Add byte to current line
+							lineBuffer = append(lineBuffer, b)
+						}
+					}
+					
+					// Update last position
+					if pos, err := file.Seek(0, io.SeekCurrent); err == nil {
+						lastPosition = pos
+					}
+					
+					continue
+				}
+			}
+		}
+		
+		// No more content available, check if file was truncated/rotated
+		if ftp.checkFileRotation(file, filePath, &lastPosition) {
+			// File was rotated, reopen and continue
+			file.Close()
+			var err error
+			file, err = os.Open(filePath)
+			if err != nil {
+				return err
+			}
+			defer file.Close()
+			
+			lastPosition = 0
+			lineBuffer = lineBuffer[:0]
+			continue
+		}
+		
+		// Wait a bit before checking for new content
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			// Continue the loop to check for new content
+		}
+	}
+}
+
+func (ftp *FollowingTailProcessor) checkFileRotation(file *os.File, filePath string, lastPosition *int64) bool {
+	// Get current file info
+	currentInfo, err := file.Stat()
+	if err != nil {
+		return false
+	}
+	
+	// Get file info by path
+	pathInfo, err := os.Stat(filePath)
+	if err != nil {
+		return false
+	}
+	
+	// Check if file was truncated (size is smaller than our position)
+	if pathInfo.Size() < *lastPosition {
+		return true
+	}
+	
+	// Check if file was rotated (different inode/device)
+	if !os.SameFile(currentInfo, pathInfo) {
+		return true
+	}
+	
+	return false
+}
+
+// MapProcessor handles MapReduce-style aggregation
+type MapProcessor struct {
+	plain           bool
+	hostname        string
+	query           *mapr.Query
+	parser          logformat.Parser
+	groupSet        *mapr.GroupSet
+	buffer          []byte
+	output          io.Writer
+	lastSerialized  time.Time
+	serializeFunc   func(groupSet *mapr.GroupSet)
+}
+
+// NewMapProcessor creates a new map processor
+func NewMapProcessor(plain bool, hostname string, queryStr string, output io.Writer) (*MapProcessor, error) {
+	query, err := mapr.NewQuery(queryStr)
+	if err != nil {
+		return nil, err
+	}
+
+	var parserName string
+	switch query.LogFormat {
+	case "":
+		parserName = config.Server.MapreduceLogFormat
+		if query.Table == "" {
+			parserName = "generic"
+		}
+	default:
+		parserName = query.LogFormat
+	}
+
+	logParser, err := logformat.NewParser(parserName, query)
+	if err != nil {
+		dlog.Server.Error("Could not create log format parser. Falling back to 'generic'", err)
+		if logParser, err = logformat.NewParser("generic", query); err != nil {
+			return nil, fmt.Errorf("could not create log format parser: %w", err)
+		}
+	}
+
+	mp := &MapProcessor{
+		plain:          plain,
+		hostname:       hostname,
+		query:          query,
+		parser:         logParser,
+		groupSet:       mapr.NewGroupSet(),
+		buffer:         make([]byte, 0, 1024*1024), // 1MB buffer for aggregation
+		output:         output,
+		lastSerialized: time.Now(),
+	}
+	
+	// Set up serialization function
+	mp.serializeFunc = mp.defaultSerializeFunc
+	
+	return mp, nil
+}
+
+// SetSerializeFunc allows custom serialization (for testing or different output formats)
+func (mp *MapProcessor) SetSerializeFunc(fn func(groupSet *mapr.GroupSet)) {
+	mp.serializeFunc = fn
+}
+
 func (mp *MapProcessor) Initialize(ctx context.Context) error {
-	// TODO: Initialize MapReduce aggregator when implementing
 	return nil
 }
 
@@ -687,15 +917,118 @@ func (mp *MapProcessor) Cleanup() error {
 }
 
 func (mp *MapProcessor) ProcessLine(line []byte, lineNum int, filePath string, stats *stats, sourceID string) ([]byte, bool) {
-	// For MapReduce, we accumulate lines and process in batch
-	// TODO: Pass line to aggregator when implementing MapReduce integration
-	return nil, false // No immediate output for MapReduce
+	// Convert line to string and parse fields
+	maprLine := strings.TrimSpace(string(line))
+	
+	fields, err := mp.parser.MakeFields(maprLine)
+	if err != nil {
+		// Should fields be ignored anyway?
+		if err != logformat.ErrIgnoreFields {
+			dlog.Server.Error("Error parsing line for MapReduce", err)
+		}
+		return nil, false
+	}
+	
+	// Apply WHERE clause filter
+	if !mp.query.WhereClause(fields) {
+		return nil, false
+	}
+	
+	// Apply SET clause (add additional fields)
+	if len(mp.query.Set) > 0 {
+		if err := mp.query.SetClause(fields); err != nil {
+			dlog.Server.Error("Error applying SET clause", err)
+			return nil, false
+		}
+	}
+	
+	// Aggregate the fields
+	mp.aggregateFields(fields)
+	
+	// Check if we should serialize results periodically (every 5 seconds by default)
+	now := time.Now()
+	if now.Sub(mp.lastSerialized) >= mp.query.Interval {
+		mp.periodicSerialize()
+		mp.lastSerialized = now
+	}
+	
+	return nil, false // No immediate output for MapReduce - output happens periodically
+}
+
+func (mp *MapProcessor) aggregateFields(fields map[string]string) {
+	var sb strings.Builder
+	for i, field := range mp.query.GroupBy {
+		if i > 0 {
+			sb.WriteString(protocol.AggregateGroupKeyCombinator)
+		}
+		if val, ok := fields[field]; ok {
+			sb.WriteString(val)
+		}
+	}
+	groupKey := sb.String()
+	set := mp.groupSet.GetSet(groupKey)
+
+	var addedSample bool
+	for _, sc := range mp.query.Select {
+		if val, ok := fields[sc.Field]; ok {
+			if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
+				dlog.Server.Error("Error aggregating field", err)
+				continue
+			}
+			addedSample = true
+		}
+	}
+
+	if addedSample {
+		set.Samples++
+	}
+}
+
+// periodicSerialize sends current aggregation results and resets the group set
+func (mp *MapProcessor) periodicSerialize() {
+	if mp.serializeFunc != nil {
+		mp.serializeFunc(mp.groupSet)
+	}
+	// Reset group set for next interval
+	mp.groupSet = mapr.NewGroupSet()
+}
+
+// defaultSerializeFunc implements the default serialization behavior
+func (mp *MapProcessor) defaultSerializeFunc(groupSet *mapr.GroupSet) {
+	// Use a channel to collect serialized data
+	ch := make(chan string, 100)
+	done := make(chan struct{})
+	
+	go func() {
+		defer close(done)
+		for msg := range ch {
+			// Format as protocol message: A|{serialized_data}¬
+			var output strings.Builder
+			output.WriteString("A")
+			output.WriteString(protocol.FieldDelimiter)
+			output.WriteString(msg)
+			output.WriteByte(protocol.MessageDelimiter)
+			
+			// Write to output immediately
+			if mp.output != nil {
+				mp.output.Write([]byte(output.String()))
+			}
+		}
+	}()
+	
+	// Serialize the group set
+	ctx := context.Background()
+	groupSet.Serialize(ctx, ch)
+	close(ch)
+	<-done
 }
 
 func (mp *MapProcessor) Flush() []byte {
-	// TODO: Return aggregated results from MapReduce processor
-	// For now, return empty to maintain interface
-	return nil
+	// Final flush - serialize any remaining data
+	if mp.serializeFunc != nil {
+		mp.serializeFunc(mp.groupSet)
+	}
+	return nil // Output is handled by serializeFunc
 }
 
 // Helper function to append integer to byte slice
@@ -717,4 +1050,174 @@ func appendInt(dst []byte, i int) []byte {
 	}
 	
 	return append(dst, str...)
+}
+
+// AggregateLineProcessor feeds lines to an existing aggregate via channels
+type AggregateLineProcessor struct {
+	linesCh    chan<- *line.Line
+	re         regex.Regex
+	hostname   string
+	ltx        lcontext.LContext
+	lineNum    int
+	isTailing  bool // Whether this is for a tail operation that should keep running
+}
+
+// NewAggregateLineProcessor creates a processor that feeds lines to an aggregate
+func NewAggregateLineProcessor(linesCh chan<- *line.Line, re regex.Regex, hostname string, ltx lcontext.LContext) *AggregateLineProcessor {
+	return &AggregateLineProcessor{
+		linesCh:   linesCh,
+		re:        re,
+		hostname:  hostname,
+		ltx:       ltx,
+		lineNum:   0,
+		isTailing: false,
+	}
+}
+
+// NewAggregateLineProcessorForTail creates a processor for tail operations that feeds lines to an aggregate
+func NewAggregateLineProcessorForTail(linesCh chan<- *line.Line, re regex.Regex, hostname string, ltx lcontext.LContext) *AggregateLineProcessor {
+	return &AggregateLineProcessor{
+		linesCh:   linesCh,
+		re:        re,
+		hostname:  hostname,
+		ltx:       ltx,
+		lineNum:   0,
+		isTailing: true,
+	}
+}
+
+func (p *AggregateLineProcessor) ProcessLine(lineBuf []byte, lineNum int, filePath string, stats *stats, sourceID string) (result []byte, shouldSend bool) {
+	p.lineNum++
+	
+	// For MapReduce operations, don't apply regex filtering here - let the aggregate handle it
+	// The aggregate's log parser and WHERE clause will do the proper filtering
+	
+	// Create a line object similar to what the channel-based system creates
+	// Make a copy of the line buffer to avoid issues with slice reuse
+	lineCopy := make([]byte, len(lineBuf))
+	copy(lineCopy, lineBuf)
+	content := bytes.NewBuffer(lineCopy)
+	l := line.New(content, uint64(p.lineNum), 100, sourceID)
+	
+	// Send the line to the aggregate via the channel (blocking send to avoid data loss)
+	p.linesCh <- l
+	
+	// Don't send output directly since the aggregate will handle serialization
+	return nil, false
+}
+
+func (p *AggregateLineProcessor) Flush() []byte {
+	// For tail operations, don't close the channel as we want to keep following
+	if !p.isTailing {
+		// Close the lines channel to signal end of input
+		// Add a small delay to ensure all lines are processed before closing
+		time.Sleep(10 * time.Millisecond)
+		close(p.linesCh)
+	}
+	return nil
+}
+
+func (p *AggregateLineProcessor) Initialize(ctx context.Context) error {
+	return nil
+}
+
+func (p *AggregateLineProcessor) Cleanup() error {
+	return nil
+}
+
+// ProcessFileWithTailing processes a file with tailing capability
+func (dp *DirectProcessor) ProcessFileWithTailing(ctx context.Context, filePath string) error {
+	// Use the same logic as FollowingTailProcessor but with our DirectProcessor
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	// First, process existing content
+	if err := dp.ProcessReader(ctx, file, filePath); err != nil {
+		return err
+	}
+
+	// Then follow the file for new content
+	return dp.followFile(ctx, filePath)
+}
+
+// followFile implements file following logic similar to FollowingTailProcessor
+func (dp *DirectProcessor) followFile(ctx context.Context, filePath string) error {
+	// Track our current position in the file
+	var lastSize int64
+	
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+			// Check if file has grown
+			fileInfo, err := os.Stat(filePath)
+			if err != nil {
+				continue
+			}
+			
+			currentSize := fileInfo.Size()
+			if currentSize > lastSize {
+				// File has new content, read it
+				file, err := os.Open(filePath)
+				if err != nil {
+					continue
+				}
+				
+				// Seek to where we left off
+				if _, err := file.Seek(lastSize, 0); err != nil {
+					file.Close()
+					continue
+				}
+				
+				// Process new content
+				if err := dp.processNewContent(ctx, file, filePath); err != nil {
+					file.Close()
+					continue
+				}
+				
+				lastSize = currentSize
+				file.Close()
+			}
+		}
+	}
+}
+
+// processNewContent processes new content that was added to the file
+func (dp *DirectProcessor) processNewContent(ctx context.Context, file *os.File, filePath string) error {
+	scanner := bufio.NewScanner(file)
+	
+	// Start line counting from where we left off (simplified approach)
+	lineNum := 1
+	
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		
+		lineBuf := scanner.Bytes()
+		if result, shouldSend := dp.processor.ProcessLine(lineBuf, lineNum, filePath, dp.stats, dp.sourceID); shouldSend {
+			if _, err := dp.output.Write(result); err != nil {
+				return err
+			}
+			
+			// Update transmission stats
+			if dp.stats != nil {
+				dp.stats.updateLineTransmitted()
+			}
+		}
+		lineNum++
+		
+		// Update position stats
+		if dp.stats != nil {
+			dp.stats.updatePosition()
+		}
+	}
+	
+	return scanner.Err()
 }
