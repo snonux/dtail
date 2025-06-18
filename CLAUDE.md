@@ -35,6 +35,11 @@ go clean -testcache
 
 Before deciding work is done, ensure that all tests pass (including integration tests) and that the code is well-documented. Before testing, always rebuild all binaries.
 
+## Important Development Guidelines
+
+- **Think Hard**: Always analyze problems thoroughly before implementing solutions. Consider edge cases, performance implications, and how changes affect the entire system.
+- **Test All Changes**: Every code change must be tested with both unit tests and integration tests. Build and test immediately after making changes to catch issues early.
+
 ### Code Quality
 ```bash
 # Run go vet on all packages
@@ -127,3 +132,7 @@ DTail is a distributed log processing system with client-server architecture usi
 - Structured logging with multiple levels and output targets
 - Graceful degradation when servers are unavailable
 - Context-aware operations using Go's context package
+
+## Integration Testing Guidelines
+
+- Integration tests for serverless and server mode should always rely on exact the same test files. Same count, same content, same sizes. No exceptions.
