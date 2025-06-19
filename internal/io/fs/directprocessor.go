@@ -218,13 +218,13 @@ func (dp *DirectProcessor) processReaderPreservingLineEndings(ctx context.Contex
 							lineContent = nil
 						}
 
-						// Update position stats
-						if dp.stats != nil {
-							dp.stats.updatePosition()
-						}
-
 						// Process the chunk
 						if result, shouldSend := dp.processor.ProcessLine(chunk, lineNum, filePath, dp.stats, dp.sourceID); shouldSend {
+							// Update position stats only for lines that will be sent
+							if dp.stats != nil {
+								dp.stats.updatePosition()
+								dp.stats.updateLineMatched()
+							}
 							if _, err := dp.output.Write(result); err != nil {
 								return err
 							}
@@ -239,13 +239,13 @@ func (dp *DirectProcessor) processReaderPreservingLineEndings(ctx context.Contex
 					// Normal line processing
 					lineNum++
 
-					// Update position stats
-					if dp.stats != nil {
-						dp.stats.updatePosition()
-					}
-
 					// Process line directly (line includes original line ending)
 					if result, shouldSend := dp.processor.ProcessLine(line, lineNum, filePath, dp.stats, dp.sourceID); shouldSend {
+						// Update position stats only for lines that will be sent
+						if dp.stats != nil {
+							dp.stats.updatePosition()
+							dp.stats.updateLineMatched()
+						}
 						if _, err := dp.output.Write(result); err != nil {
 							return err
 						}
@@ -290,6 +290,9 @@ func (dp *DirectProcessor) processReaderPreservingLineEndings(ctx context.Contex
 					// Update transmission stats
 					if dp.stats != nil {
 						dp.stats.updateLineTransmitted()
+						// DEBUG: Log stats
+						// fmt.Printf("DEBUG: After transmission - matchCount=%d, transmitCount=%d, percentage=%d\n", 
+						//     dp.stats.matchCount, dp.stats.transmitCount, dp.stats.transmittedPerc())
 					}
 				}
 			}

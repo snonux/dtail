@@ -70,9 +70,6 @@ func (gp *GrepProcessor) ProcessLine(line []byte, lineNum int, filePath string, 
 		if gp.afterRemaining > 0 {
 			gp.afterRemaining--
 			// Send this line as context
-			if stats != nil {
-				stats.updateLineMatched() // Count context lines as transmitted
-			}
 			return gp.formatLine(line, lineNum, filePath, stats, sourceID), true
 		}
 		// If we have before context, buffer this line
@@ -100,10 +97,7 @@ func (gp *GrepProcessor) ProcessLine(line []byte, lineNum int, filePath string, 
 		return nil, false
 	}
 
-	// Update stats for matched line
-	if stats != nil {
-		stats.updateLineMatched()
-	}
+	// Stats will be updated by DirectProcessor when the line is actually sent
 
 	// Build result with before context, current line, and set up after context
 	var result []byte
