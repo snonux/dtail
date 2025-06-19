@@ -1,3 +1,25 @@
+// Package errors provides comprehensive error handling utilities for DTail.
+// It defines sentinel errors for common error conditions, error wrapping
+// functions for adding context, and multi-error support for operations
+// that can encounter multiple failures.
+//
+// Key features:
+// - Predefined sentinel errors for common DTail error conditions
+// - Error wrapping with context for better debugging
+// - Multi-error support for batch operations
+// - Standard error interface compatibility
+// - Error type checking and unwrapping utilities
+//
+// Error categories:
+// - Connection: Network and SSH connection errors
+// - Authentication: Permission and credential errors
+// - Configuration: Config parsing and validation errors
+// - File/IO: File system access and operation errors
+// - Protocol: Communication protocol errors
+// - Resource: Resource exhaustion and timeout errors
+//
+// This package enables consistent error handling across the DTail codebase
+// and provides clear error categorization for troubleshooting.
 package errors
 
 import (

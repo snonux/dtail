@@ -1,3 +1,17 @@
+// Package main provides the DCat (Distributed Cat) command-line tool.
+// DCat is a distributed version of the Unix cat command that can read and
+// concatenate files across multiple remote servers simultaneously via SSH.
+//
+// Key features:
+// - Distributed file reading across multiple servers
+// - SSH-based secure connections
+// - Configurable connection pooling
+// - CPU and memory profiling support
+// - Color-coded output (can be disabled)
+// - Quiet and plain output modes
+//
+// DCat is particularly useful for quickly examining log files or configuration
+// files across a fleet of servers without having to SSH to each one individually.
 package main
 
 import (
@@ -20,7 +34,11 @@ import (
 	"github.com/mimecast/dtail/internal/version"
 )
 
-// The evil begins here.
+// main is the entry point for the DCat application.
+// It parses command-line arguments, optionally starts CPU profiling,
+// initializes logging, creates a CatClient, and processes files across
+// the specified servers. The function handles graceful shutdown and
+// waits for all operations to complete.
 func main() {
 	var args config.Args
 	var displayVersion bool

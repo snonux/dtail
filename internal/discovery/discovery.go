@@ -1,3 +1,23 @@
+// Package discovery provides pluggable server discovery mechanisms for DTail clients.
+// It allows clients to automatically discover available DTail servers using various
+// methods including static lists, file-based configuration, and custom discovery modules.
+//
+// Key features:
+// - Pluggable discovery architecture using reflection
+// - Built-in discovery methods: comma-separated lists, file-based, regex filtering
+// - Server list filtering with regular expressions
+// - Automatic deduplication of discovered servers
+// - Optional random shuffling for load distribution
+// - Support for custom discovery modules via reflection
+//
+// Discovery methods:
+// - COMMA: Comma-separated list of server hostnames
+// - FILE: Read server list from a text file (one per line)
+// - Custom modules: Implement ServerListFromMODULENAME() methods
+//
+// The discovery system enables DTail deployments to scale dynamically by
+// automatically finding available servers without requiring manual configuration
+// updates when servers are added or removed from the fleet.
 package discovery
 
 import (

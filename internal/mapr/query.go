@@ -1,3 +1,31 @@
+// Package mapr provides the MapReduce query system for DTail, implementing
+// SQL-like distributed query processing over log files. The package supports
+// distributed aggregation with server-side local processing and client-side
+// final result combination.
+//
+// Key features:
+// - SQL-like query syntax (SELECT...FROM...WHERE...GROUP BY...ORDER BY)
+// - Distributed query processing across multiple servers
+// - Pluggable log format parsers (CSV, JSON, custom formats)
+// - Time-based interval aggregation for continuous monitoring
+// - Output file support with append mode for result persistence
+// - Memory-efficient streaming processing for large datasets
+//
+// Query syntax supports:
+// - SELECT: Field selection with aggregation functions (COUNT, SUM, etc.)
+// - FROM: Log file pattern matching
+// - WHERE: Filtering conditions with regex support
+// - SET: Dynamic field assignment and transformation
+// - GROUP BY: Grouping for aggregation operations
+// - ORDER BY/RORDER BY: Result sorting (ascending/descending)
+// - LIMIT: Result count limiting
+// - INTERVAL: Time-based aggregation intervals
+// - OUTFILE: CSV output file specification
+// - LOGFORMAT: Parser selection for different log formats
+//
+// The query engine performs distributed processing where each server processes
+// its local files and returns aggregated results, which are then combined
+// at the client for final output.
 package mapr
 
 import (
@@ -15,9 +43,13 @@ const (
 	unexpectedEnd string = "Unexpected end of query"
 )
 
-// Outfile represents the output file of a mapreduce query.
+// Outfile represents the output file configuration for MapReduce query results.
+// Results can be written to CSV files with optional append mode for accumulating
+// results from multiple query executions.
 type Outfile struct {
+	// FilePath specifies the output file path where query results will be written
 	FilePath   string
+	// AppendMode determines whether to append to existing files (true) or overwrite (false)
 	AppendMode bool
 }
 
@@ -25,21 +57,37 @@ func (o Outfile) String() string {
 	return fmt.Sprintf("Outfile(FilePath:%v,AppendMode:%v)", o.FilePath, o.AppendMode)
 }
 
-// Query represents a parsed mapr query.
+// Query represents a parsed MapReduce query with all clauses and options.
+// It contains the complete query specification including field selection,
+// filtering conditions, grouping parameters, and output configuration.
 type Query struct {
+	// Select contains the field selection conditions with aggregation functions
 	Select       []selectCondition
+	// Table specifies the log file pattern to process (FROM clause)
 	Table        string
+	// Where contains filtering conditions applied to log lines
 	Where        []whereCondition
+	// Set contains dynamic field assignments for computed values
 	Set          []setCondition
+	// GroupBy specifies the fields used for result grouping
 	GroupBy      []string
+	// OrderBy specifies the field used for result sorting
 	OrderBy      string
+	// ReverseOrder indicates descending sort order (RORDER BY clause)
 	ReverseOrder bool
+	// GroupKey is the combined key for grouping operations
 	GroupKey     string
+	// Interval specifies the time duration for interval-based aggregation
 	Interval     time.Duration
+	// Limit restricts the number of results returned
 	Limit        int
+	// Outfile configuration for writing results to CSV files
 	Outfile      *Outfile
+	// RawQuery contains the original unparsed query string
 	RawQuery     string
+	// tokens contains the tokenized query for parsing
 	tokens       []token
+	// LogFormat specifies the parser to use for log file interpretation
 	LogFormat    string
 }
 

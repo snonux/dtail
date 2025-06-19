@@ -1,3 +1,25 @@
+// Package server provides the DTail server implementation that handles SSH
+// connections from DTail clients and processes distributed log operations.
+// The server acts as an SSH daemon listening on port 2222 by default, providing
+// secure multi-user access to log files with proper authentication and resource management.
+//
+// Key features:
+// - SSH server with configurable authentication methods
+// - Multi-user support with different privilege levels
+// - Resource management with configurable connection and operation limits
+// - Background services for scheduled and continuous monitoring jobs
+// - Handler routing system for different client operations
+// - Real-time statistics and connection tracking
+//
+// The server supports several user types:
+// - Regular users: Standard SSH public key authentication
+// - Health users: Special authentication for health checking
+// - Scheduled users: Background jobs with IP-based access control
+// - Continuous users: Long-running monitoring jobs with IP-based access control
+//
+// Each connection is handled in its own goroutine with proper resource cleanup
+// and statistics tracking. The server enforces connection limits to prevent
+// resource exhaustion and provides graceful shutdown capabilities.
 package server
 
 import (
@@ -18,23 +40,50 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// Server is the main server data structure.
+// Server represents the main DTail server instance that manages SSH connections,
+// user authentication, and distributed log operations. It coordinates multiple
+// subsystems including connection handling, resource limiting, and background services.
 type Server struct {
-	// Various server statistics counters.
+	// stats tracks real-time server statistics including connection counts,
+	// active operations, and resource utilization metrics
 	stats stats
-	// SSH server configuration.
+	
+	// sshServerConfig contains the SSH server configuration including
+	// supported key exchanges, ciphers, MACs, and authentication callbacks
 	sshServerConfig *gossh.ServerConfig
-	// To control the max amount of concurrent cats.
+	
+	// catLimiter controls the maximum number of concurrent cat operations
+	// to prevent resource exhaustion from too many simultaneous file reads
 	catLimiter chan struct{}
-	// To control the max amount of concurrent tails.
+	
+	// tailLimiter controls the maximum number of concurrent tail operations
+	// to manage long-running file monitoring connections
 	tailLimiter chan struct{}
-	// To run scheduled tasks (if configured)
+	
+	// sched manages scheduled MapReduce jobs that run at specified intervals
+	// with configurable authentication and access control
 	sched *scheduler
-	// Mointor log files for pattern (if configured)
+	
+	// cont manages continuous monitoring jobs that watch log files for
+	// specific patterns and trigger actions when matches are found
 	cont *continuous
 }
 
-// New returns a new server.
+// New creates and initializes a new DTail server instance with all necessary
+// components configured. This constructor sets up SSH server configuration,
+// resource limiters, authentication callbacks, and background services.
+//
+// Returns:
+//   *Server: Fully configured server instance ready to start
+//
+// The initialization process:
+// 1. Creates SSH server configuration with cryptographic settings
+// 2. Sets up resource limiters for concurrent operations
+// 3. Configures authentication callbacks for different user types
+// 4. Generates or loads SSH host keys
+// 5. Initializes background services (scheduler and continuous monitoring)
+//
+// The server is ready to call Start() after construction.
 func New() *Server {
 	dlog.Server.Info("Starting server", version.String())
 
@@ -64,7 +113,23 @@ func New() *Server {
 	return &s
 }
 
-// Start the server.
+// Start begins the server operation by binding to the configured address,
+// starting background services, and entering the main connection acceptance loop.
+// This method handles the complete server lifecycle including graceful shutdown.
+//
+// Parameters:
+//   ctx: Context for controlling server shutdown and cancellation
+//
+// Returns:
+//   int: Exit status code (currently always returns 0)
+//
+// The startup process:
+// 1. Binds to the configured SSH port and address
+// 2. Starts statistics collection in background
+// 3. Starts scheduled job processor
+// 4. Starts continuous monitoring processor
+// 5. Begins the main connection acceptance loop
+// 6. Blocks until context cancellation triggers shutdown
 func (s *Server) Start(ctx context.Context) int {
 	dlog.Server.Info("Starting server")
 	bindAt := fmt.Sprintf("%s:%d", config.Server.SSHBindAddress, config.Common.SSHPort)

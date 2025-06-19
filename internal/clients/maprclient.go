@@ -17,32 +17,79 @@ import (
 	"github.com/mimecast/dtail/internal/omode"
 )
 
-// MaprClientMode determines whether to use cumulative mode or not.
+// MaprClientMode determines how MapReduce results are accumulated between
+// periodic reporting intervals. This affects whether results build up over
+// time or reset for each interval.
 type MaprClientMode int
 
 const (
-	// DefaultMode behaviour
+	// DefaultMode uses the default behavior based on client mode and output settings.
+	// Cumulative for MapClient or when outfile is specified, non-cumulative otherwise.
 	DefaultMode MaprClientMode = iota
-	// CumulativeMode means results are added to prev interval
+	
+	// CumulativeMode accumulates results across intervals, adding new results
+	// to previous totals. Useful for building aggregate statistics over time.
 	CumulativeMode MaprClientMode = iota
-	// NonCumulativeMode means results are from 0 for each interval
+	
+	// NonCumulativeMode resets results for each interval, showing only the
+	// data processed during that specific time period.
 	NonCumulativeMode MaprClientMode = iota
 )
 
-// MaprClient is used for running mapreduce aggregations on remote files.
+// MaprClient provides distributed MapReduce functionality for log analysis
+// and aggregation across multiple servers. It supports SQL-like queries with
+// SELECT, FROM, WHERE, GROUP BY, and HAVING clauses for complex log analysis.
+//
+// Key features:
+// - SQL-like query syntax for intuitive log analysis
+// - Distributed aggregation with server-side local processing
+// - Client-side final aggregation of results from all servers
+// - Periodic result reporting with configurable intervals
+// - Support for both cumulative and interval-based result modes
+// - Output to files or terminal with configurable row limits
+//
+// MaprClient directly embeds baseClient for core functionality and implements
+// specialized command generation and result processing for MapReduce operations.
 type MaprClient struct {
 	baseClient
-	// Global group set for merged mapr aggregation results
+	
+	// globalGroup manages the merged aggregation results from all servers,
+	// performing final client-side aggregation and result formatting
 	globalGroup *mapr.GlobalGroupSet
-	// The query object (constructed from queryStr)
+	
+	// query contains the parsed SQL-like query structure with all clauses
+	// and configuration options extracted from the query string
 	query *mapr.Query
-	// Additative result or new result every interval run?
+	
+	// cumulative determines whether results accumulate across intervals
+	// (true) or reset for each reporting period (false)
 	cumulative bool
-	// The last result string received
+	
+	// lastResult caches the last formatted result string to avoid
+	// duplicate output when results haven't changed
 	lastResult string
 }
 
-// NewMaprClient returns a new mapreduce client.
+// NewMaprClient creates a new MaprClient configured for distributed MapReduce operations.
+// This constructor parses the SQL-like query, validates the configuration, and sets up
+// the client for aggregation operations with the specified accumulation mode.
+//
+// Parameters:
+//   args: Complete configuration arguments including servers, query string, and options
+//   maprClientMode: How to handle result accumulation between intervals
+//
+// Returns:
+//   *MaprClient: Configured client ready to start MapReduce operations
+//   error: Query parsing or configuration error, if any
+//
+// Configuration process:
+// - Validates and parses the SQL-like query string
+// - Determines retry behavior based on mode and output settings
+// - Sets cumulative mode based on maprClientMode parameter
+// - Configures regex pattern based on query table specification
+// - Initializes global aggregation state and server connections
+//
+// The returned client is fully initialized and ready to call Start().
 func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient, error) {
 	if args.QueryStr == "" {
 		return nil, errors.New("No mapreduce query specified, use '-query' flag")
@@ -95,7 +142,22 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 	return &c, nil
 }
 
-// Start starts the mapreduce client.
+// Start begins the MapReduce operation by launching periodic result reporting
+// and initiating connections to all servers. This method coordinates the entire
+// MapReduce lifecycle including query execution, result aggregation, and output.
+//
+// Parameters:
+//   ctx: Context for cancellation and timeout control
+//   statsCh: Channel for receiving statistics display requests
+//
+// Returns:
+//   int: Exit status code (0 for success, non-zero for various error conditions)
+//
+// Operation flow:
+// 1. Starts periodic result reporting in a separate goroutine
+// 2. Launches base client connections to all servers
+// 3. If in cumulative mode, reports final aggregated results
+// 4. Returns the highest status code from any server connection
 func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
 	go c.periodicReportResults(ctx)
 
@@ -108,12 +170,37 @@ func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status i
 	return
 }
 
-// NEXT: Make this a callback function rather trying to use polymorphism to call
-// this. This applies to all clients. It will make the code easier to read.
+// makeHandler creates a MapReduce-specific handler for processing aggregation
+// operations on the specified server. This method implements the maker interface
+// requirement and provides the handler used for MapReduce query execution.
+//
+// Parameters:
+//   server: The server hostname/address for this handler
+//
+// Returns:
+//   handlers.Handler: A MaprHandler configured for the specified server and query
+//
+// The returned handler manages MapReduce protocol communication, query execution,
+// and local aggregation on the server side before sending results back to the client.
 func (c MaprClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewMaprHandler(server, c.query, c.globalGroup)
 }
 
+// makeCommands generates the appropriate DTail server commands for MapReduce
+// operations. This method implements the maker interface requirement and creates
+// commands for distributed query execution across all specified files.
+//
+// Returns:
+//   []string: List of commands to send to DTail servers
+//
+// Command generation process:
+// 1. Creates a "map" command with the raw query string
+// 2. Determines the appropriate mode (cat or tail) based on client configuration
+// 3. Generates file-specific commands with regex patterns and timeouts
+// 4. Includes all necessary options for proper server-side execution
+//
+// The generated commands follow the DTail protocol format and enable
+// distributed MapReduce query execution across all target servers.
 func (c MaprClient) makeCommands() (commands []string) {
 	commands = append(commands, fmt.Sprintf("map %s", c.query.RawQuery))
 	modeStr := "cat"
@@ -137,6 +224,21 @@ func (c MaprClient) makeCommands() (commands []string) {
 	return
 }
 
+// periodicReportResults runs in a separate goroutine to provide regular
+// result reporting at configured intervals. This method handles the timing
+// and coordination of result aggregation and output during long-running
+// MapReduce operations.
+//
+// Parameters:
+//   ctx: Context for cancellation control
+//
+// Operation flow:
+// 1. Waits for an initial ramp-up period (half the configured interval)
+// 2. Reports results at regular intervals until context cancellation
+// 3. Ensures results are available before the first reporting period
+//
+// This method is essential for providing real-time feedback during
+// long-running aggregation operations.
 func (c *MaprClient) periodicReportResults(ctx context.Context) {
 	rampUpSleep := c.query.Interval / 2
 	dlog.Client.Debug("Ramp up sleeping before processing mapreduce results", rampUpSleep)
@@ -153,6 +255,16 @@ func (c *MaprClient) periodicReportResults(ctx context.Context) {
 	}
 }
 
+// reportResults outputs the current aggregation results either to a file
+// or to the terminal, depending on the query configuration. This method
+// handles the final result formatting and output routing.
+//
+// Output routing:
+// - If query specifies an output file, writes results to that file
+// - Otherwise, formats and prints results to the terminal
+//
+// This method is called both periodically during operation and once
+// at the end for final result output.
 func (c *MaprClient) reportResults() {
 	if c.query.HasOutfile() {
 		c.writeResultsToOutfile()
@@ -161,6 +273,19 @@ func (c *MaprClient) reportResults() {
 	c.printResults()
 }
 
+// printResults formats and displays aggregation results to the terminal
+// with appropriate formatting, coloring, and row limiting. This method
+// handles all aspects of terminal output including duplicate detection
+// and user-friendly result presentation.
+//
+// Terminal output features:
+// - Colored query display when terminal colors are enabled
+// - Automatic row limiting for terminal display (default 10 rows)
+// - Duplicate result detection to avoid redundant output
+// - Warning messages when results exceed display limits
+// - Proper formatting of aggregated data tables
+//
+// This method is called when no output file is specified in the query.
 func (c *MaprClient) printResults() {
 	var result string
 	var err error
@@ -209,6 +334,17 @@ func (c *MaprClient) printResults() {
 	dlog.Client.Raw(fmt.Sprintf("%s\n", result))
 }
 
+// writeResultsToOutfile saves aggregation results to the file specified
+// in the query configuration. This method handles file output with proper
+// accumulation mode handling for persistent result storage.
+//
+// File output behavior:
+// - Cumulative mode: Appends/updates results in the output file
+// - Non-cumulative mode: Writes interval-specific results
+// - Proper error handling for file operations
+//
+// This method is called when the query specifies an output file path,
+// enabling long-term storage and analysis of aggregation results.
 func (c *MaprClient) writeResultsToOutfile() {
 	if c.cumulative {
 		if err := c.globalGroup.WriteResult(c.query); err != nil {

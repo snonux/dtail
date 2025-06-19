@@ -1,3 +1,20 @@
+// Package main provides the DGrep (Distributed Grep) command-line tool.
+// DGrep is a distributed version of the Unix grep command that can search
+// for patterns in files across multiple remote servers simultaneously via SSH.
+//
+// Key features:
+// - Distributed pattern matching across multiple servers
+// - Regular expression support with invert option
+// - Context lines (before/after matching lines)
+// - Maximum match count limiting
+// - SSH-based secure connections
+// - Color-coded output with pattern highlighting
+// - CPU and memory profiling support
+// - Configurable connection pooling
+//
+// DGrep is particularly useful for searching log patterns across a fleet
+// of servers, making it easy to correlate events or troubleshoot issues
+// distributed across multiple systems.
 package main
 
 import (
@@ -20,7 +37,11 @@ import (
 	"github.com/mimecast/dtail/internal/version"
 )
 
-// The evil begins here.
+// main is the entry point for the DGrep application.
+// It parses command-line arguments, optionally starts CPU/memory profiling,
+// initializes logging, creates a GrepClient, and searches for patterns across
+// the specified servers. The function handles graceful shutdown and
+// waits for all operations to complete.
 func main() {
 	var args config.Args
 	var displayVersion bool

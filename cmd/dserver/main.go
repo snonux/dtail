@@ -1,3 +1,18 @@
+// Package main provides the DTail server daemon (dserver).
+// The dserver is an SSH-based server that processes distributed log operations
+// from DTail clients. It handles incoming SSH connections, authenticates users,
+// and processes various commands like tail, cat, grep, and MapReduce operations.
+//
+// Key features:
+// - SSH server with multi-user support and resource management
+// - Handler system that routes requests to appropriate processors
+// - Background services for scheduled jobs and continuous monitoring
+// - Configurable connection limits and timeouts
+// - Health checking and profiling support
+// - Signal handling for graceful shutdown
+//
+// The server runs on port 2222 by default and supports both public key
+// and password authentication depending on the user type.
 package main
 
 import (
@@ -20,7 +35,10 @@ import (
 	"github.com/mimecast/dtail/internal/version"
 )
 
-// The evil begins here.
+// main is the entry point for the DTail server daemon.
+// It parses command-line arguments, sets up signal handling for graceful shutdown,
+// initializes logging, and starts the SSH server. The function handles both
+// timeout-based and signal-based shutdown scenarios.
 func main() {
 	var args config.Args
 	var color bool

@@ -1,3 +1,20 @@
+// Package main provides the DTail Health Check utility.
+// DTailHealth is a specialized tool for monitoring the health and availability
+// of DTail servers. It connects to servers and performs basic connectivity
+// and functionality tests to ensure they are operating correctly.
+//
+// Key features:
+// - Server connectivity testing via SSH
+// - Basic functionality verification
+// - Minimal logging output (suitable for monitoring scripts)
+// - Single server health checking
+// - Exit codes suitable for monitoring systems
+// - Built-in profiling support for diagnostics
+//
+// DTailHealth is typically used by monitoring systems like Nagios, Zabbix,
+// or custom health check scripts to verify that DTail servers are responding
+// and functioning properly. It was separated from the main dtail binary
+// to provide a lightweight, focused health checking tool.
 package main
 
 import (
@@ -18,7 +35,11 @@ import (
 	"github.com/mimecast/dtail/internal/version"
 )
 
-// The evil begins here.
+// main is the entry point for the DTail Health Check utility.
+// It parses command-line arguments, initializes minimal logging,
+// creates a HealthClient, and performs a health check against the
+// specified server. The function exits with appropriate status codes
+// for use in monitoring systems.
 func main() {
 	var args config.Args
 	var displayVersion bool

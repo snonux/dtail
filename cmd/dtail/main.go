@@ -1,3 +1,19 @@
+// Package main provides the DTail client command-line interface.
+// DTail is a distributed log tailing tool that allows users to tail log files
+// across multiple remote servers simultaneously. It supports both basic log
+// tailing and MapReduce-style queries for log analysis.
+//
+// The main binary can operate in two modes:
+// 1. Tail mode: Real-time log tailing with grep-like functionality
+// 2. MapReduce mode: SQL-like queries for log analysis and aggregation
+//
+// Key features:
+// - Distributed log tailing across multiple servers via SSH
+// - Real-time log streaming with color-coded output
+// - Regex-based filtering and context lines
+// - MapReduce queries for log analysis
+// - Configurable connection pooling and timeouts
+// - Health checking and profiling support
 package main
 
 import (
@@ -22,7 +38,11 @@ import (
 	"github.com/mimecast/dtail/internal/version"
 )
 
-// The evil begins here.
+// main is the entry point for the DTail client application.
+// It parses command-line arguments, initializes logging, and creates either
+// a TailClient for log tailing or a MaprClient for MapReduce queries.
+// The function handles graceful shutdown via context cancellation and
+// waits for all goroutines to complete before exiting.
 func main() {
 	var args config.Args
 	var checkHealth bool

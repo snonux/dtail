@@ -1,3 +1,20 @@
+// Package main provides the DMap (Distributed MapReduce) command-line tool.
+// DMap is a specialized client for running MapReduce-style queries across
+// distributed log files on multiple servers simultaneously via SSH.
+//
+// Key features:
+// - SQL-like query syntax (SELECT...FROM...WHERE...GROUP BY)
+// - Distributed log processing and aggregation
+// - Server-side local aggregation with client-side final aggregation
+// - Pluggable log format parsers (CSV, JSON, custom formats)
+// - SSH-based secure connections
+// - Configurable connection pooling and timeouts
+// - Color-coded output for better readability
+// - Built-in profiling support
+//
+// DMap is particularly useful for analyzing log patterns, generating
+// reports, and performing statistical analysis across large distributed
+// log datasets without having to collect all logs to a central location.
 package main
 
 import (
@@ -20,7 +37,11 @@ import (
 	"github.com/mimecast/dtail/internal/version"
 )
 
-// The evil begins here.
+// main is the entry point for the DMap application.
+// It parses command-line arguments, initializes logging, creates a MaprClient
+// for executing MapReduce queries, and processes results from distributed
+// servers. The function handles graceful shutdown and waits for all
+// operations to complete.
 func main() {
 	var displayVersion bool
 	var pprof string

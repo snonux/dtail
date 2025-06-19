@@ -97,7 +97,6 @@ DTail is a distributed log processing system with client-server architecture usi
 ## Development Patterns
 
 ### Resource Management
-- Channel-based coordination and goroutine lifecycle management
 - Connection throttling using configurable limits per CPU core
 - Object recycling and buffer pools for high-throughput scenarios
 
