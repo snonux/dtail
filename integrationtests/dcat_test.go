@@ -27,7 +27,7 @@ func TestDCat1(t *testing.T) {
 
 	for _, mode := range modes {
 		t.Run(mode.name, func(t *testing.T) {
-			// Test all files in both modes now that channel buffer issue is fixed
+			// Test all files in both modes, restarting server for each file in server mode
 			for _, inFile := range inFiles {
 				if err := testDCat1(t, inFile, mode.useServer); err != nil {
 					t.Error(err)
@@ -43,7 +43,7 @@ func testDCat1(t *testing.T, inFile string, useServer bool) error {
 
 	if useServer {
 		// Now that channel buffer issue is fixed, use the actual test file
-		return testDCatWithServer(t, []string{"--plain", "--cfg", "none", inFile}, outFile, inFile)
+		return testDCatWithServer(t, []string{"--plain", "--cfg", "none", "--quiet", inFile}, outFile, inFile)
 	} else {
 		_, err := runCommand(context.TODO(), t, outFile,
 			"../dcat", "--plain", "--cfg", "none", inFile)

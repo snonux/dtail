@@ -107,9 +107,12 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			h.readBuf.WriteString(protocol.FieldDelimiter)
 			h.readBuf.WriteString(line.SourceID)
 			h.readBuf.WriteString(protocol.FieldDelimiter)
+			h.readBuf.WriteString(line.Content.String())
+			h.readBuf.WriteByte(protocol.MessageDelimiter)
+		} else {
+			// In plain mode, preserve exact line content including line endings
+			h.readBuf.WriteString(line.Content.String())
 		}
-		h.readBuf.WriteString(line.Content.String())
-		h.readBuf.WriteByte(protocol.MessageDelimiter)
 		n = copy(p, h.readBuf.Bytes())
 		pool.RecycleBytesBuffer(line.Content)
 		line.Recycle()

@@ -251,7 +251,7 @@ func testDMap3(t *testing.T, useServer bool) error {
 
 		args := []string{"--query", query, "--cfg", "none", "--logger", "stdout", "--logLevel", "info", "--noColor"}
 		args = append(args, fileList...)
-		
+
 		stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t, "", "../dmap", args...)
 
 		if err != nil {

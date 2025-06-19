@@ -10,18 +10,18 @@ import (
 
 // CatProcessor handles cat-style output
 type CatProcessor struct {
-	plain    bool
-	noColor  bool
-	hostname string
+	plain       bool
+	noColor     bool
+	hostname    string
 	isFirstLine bool
 }
 
 // NewCatProcessor creates a new cat processor
 func NewCatProcessor(plain, noColor bool, hostname string) *CatProcessor {
 	return &CatProcessor{
-		plain:    plain,
-		noColor:  noColor,
-		hostname: hostname,
+		plain:       plain,
+		noColor:     noColor,
+		hostname:    hostname,
 		isFirstLine: true,
 	}
 }
@@ -34,12 +34,16 @@ func (cp *CatProcessor) Cleanup() error {
 	return nil
 }
 
+// ProcessLine processes a single line for cat output.
+// In plain mode, it preserves the original line exactly including line endings.
+// In non-plain mode, it formats the line according to DTail protocol with optional colorization.
+// Returns the formatted line and true (cat always outputs all lines).
 func (cp *CatProcessor) ProcessLine(line []byte, lineNum int, filePath string, stats *stats, sourceID string) ([]byte, bool) {
 	// Update stats for matched line (cat always matches all lines)
 	if stats != nil {
 		stats.updateLineMatched()
 	}
-	
+
 	// Format output to match existing behavior
 	if cp.plain {
 		// In plain mode, preserve the original line exactly as it is
@@ -48,7 +52,7 @@ func (cp *CatProcessor) ProcessLine(line []byte, lineNum int, filePath string, s
 		copy(result, line)
 		return result, true
 	}
-	
+
 	// Format exactly like original basehandler.go for non-plain mode
 	// REMOTE|{hostname}|{TransmittedPerc}|{Count}|{SourceID}|{Content}¬
 	var transmittedPerc int
@@ -58,17 +62,17 @@ func (cp *CatProcessor) ProcessLine(line []byte, lineNum int, filePath string, s
 		transmittedPerc = 100
 		count = stats.totalLineCount()
 	}
-	
+
 	// Build the protocol line
 	protocolLine := fmt.Sprintf("REMOTE%s%s%s%3d%s%v%s%s%s%s",
 		protocol.FieldDelimiter, cp.hostname, protocol.FieldDelimiter,
 		transmittedPerc, protocol.FieldDelimiter, count, protocol.FieldDelimiter,
 		sourceID, protocol.FieldDelimiter, string(line))
-	
+
 	// Apply ANSI color formatting if not in plain mode and not noColor mode
 	if !cp.plain && !cp.noColor {
 		colorized := brush.Colorfy(protocolLine)
-		
+
 		// Add color reset prefix for all lines except the first
 		var result []byte
 		if cp.isFirstLine {
@@ -86,12 +90,12 @@ func (cp *CatProcessor) ProcessLine(line []byte, lineNum int, filePath string, s
 		}
 		return result, true
 	}
-	
+
 	// No color formatting
 	result := make([]byte, len(protocolLine)+1)
 	copy(result, protocolLine)
 	result[len(protocolLine)] = '\n'
-	
+
 	return result, true
 }
 

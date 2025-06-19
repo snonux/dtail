@@ -16,15 +16,15 @@ import (
 
 // MapProcessor handles MapReduce-style aggregation
 type MapProcessor struct {
-	plain           bool
-	hostname        string
-	query           *mapr.Query
-	parser          logformat.Parser
-	groupSet        *mapr.GroupSet
-	buffer          []byte
-	output          io.Writer
-	lastSerialized  time.Time
-	serializeFunc   func(groupSet *mapr.GroupSet)
+	plain          bool
+	hostname       string
+	query          *mapr.Query
+	parser         logformat.Parser
+	groupSet       *mapr.GroupSet
+	buffer         []byte
+	output         io.Writer
+	lastSerialized time.Time
+	serializeFunc  func(groupSet *mapr.GroupSet)
 }
 
 // NewMapProcessor creates a new map processor
@@ -63,10 +63,10 @@ func NewMapProcessor(plain bool, hostname string, queryStr string, output io.Wri
 		output:         output,
 		lastSerialized: time.Now(),
 	}
-	
+
 	// Set up serialization function
 	mp.serializeFunc = mp.defaultSerializeFunc
-	
+
 	return mp, nil
 }
 
@@ -83,10 +83,13 @@ func (mp *MapProcessor) Cleanup() error {
 	return nil
 }
 
+// ProcessLine processes a single line for MapReduce aggregation.
+// Parses the line, applies WHERE and SET clauses, aggregates matching fields,
+// and handles periodic serialization. Returns nil (no immediate output for MapReduce).
 func (mp *MapProcessor) ProcessLine(line []byte, lineNum int, filePath string, stats *stats, sourceID string) ([]byte, bool) {
 	// Convert line to string and parse fields
 	maprLine := strings.TrimSpace(string(line))
-	
+
 	fields, err := mp.parser.MakeFields(maprLine)
 	if err != nil {
 		// Should fields be ignored anyway?
@@ -95,12 +98,12 @@ func (mp *MapProcessor) ProcessLine(line []byte, lineNum int, filePath string, s
 		}
 		return nil, false
 	}
-	
+
 	// Apply WHERE clause filter
 	if !mp.query.WhereClause(fields) {
 		return nil, false
 	}
-	
+
 	// Apply SET clause (add additional fields)
 	if len(mp.query.Set) > 0 {
 		if err := mp.query.SetClause(fields); err != nil {
@@ -108,20 +111,23 @@ func (mp *MapProcessor) ProcessLine(line []byte, lineNum int, filePath string, s
 			return nil, false
 		}
 	}
-	
+
 	// Aggregate the fields
 	mp.aggregateFields(fields)
-	
+
 	// Check if we should serialize results periodically (every 5 seconds by default)
 	now := time.Now()
 	if now.Sub(mp.lastSerialized) >= mp.query.Interval {
 		mp.periodicSerialize()
 		mp.lastSerialized = now
 	}
-	
+
 	return nil, false // No immediate output for MapReduce - output happens periodically
 }
 
+// aggregateFields groups parsed fields by the GROUP BY clause and aggregates values
+// according to the SELECT operations. Creates a group key from GROUP BY fields
+// and updates the corresponding aggregation set with SELECT field values.
 func (mp *MapProcessor) aggregateFields(fields map[string]string) {
 	var sb strings.Builder
 	for i, field := range mp.query.GroupBy {
@@ -160,12 +166,15 @@ func (mp *MapProcessor) periodicSerialize() {
 	mp.groupSet = mapr.NewGroupSet()
 }
 
-// defaultSerializeFunc implements the default serialization behavior
+// defaultSerializeFunc implements the default serialization behavior for MapReduce results.
+// This function is called periodically to send aggregated data to the client.
+// It uses a channel-based approach to serialize the group set and format output
+// according to the DTail protocol (A|serialized_data¬) for transmission.
 func (mp *MapProcessor) defaultSerializeFunc(groupSet *mapr.GroupSet) {
 	// Use a channel to collect serialized data
 	ch := make(chan string, 100)
 	done := make(chan struct{})
-	
+
 	go func() {
 		defer close(done)
 		for msg := range ch {
@@ -175,14 +184,14 @@ func (mp *MapProcessor) defaultSerializeFunc(groupSet *mapr.GroupSet) {
 			output.WriteString(protocol.FieldDelimiter)
 			output.WriteString(msg)
 			output.WriteByte(protocol.MessageDelimiter)
-			
+
 			// Write to output immediately
 			if mp.output != nil {
 				mp.output.Write([]byte(output.String()))
 			}
 		}
 	}()
-	
+
 	// Serialize the group set
 	ctx := context.Background()
 	groupSet.Serialize(ctx, ch)
