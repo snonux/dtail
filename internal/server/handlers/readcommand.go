@@ -254,12 +254,14 @@ func (r *readCommand) createProcessor(re regex.Regex, ltx lcontext.LContext, out
 	plain := r.server.plain       // Use actual plain mode from server
 	noColor := false              // Enable colors by default
 	
+	dlog.Server.Debug(r.server.user, "createProcessor: plain mode is", plain)
+	
 	// If there's an existing aggregate (from a 'map' command), we need to feed data to it
 	// Create a lines channel and connect it to the aggregate
 	if r.server.aggregate != nil {
 		dlog.Server.Debug("Using existing aggregate, creating bridge processor")
 		// Create a lines channel for the aggregate with larger buffer
-		linesCh := make(chan *line.Line, 1000)
+		linesCh := make(chan *line.Line, 10000)
 		// Connect the lines channel to the aggregate
 		go func() {
 			r.server.aggregate.NextLinesCh <- linesCh

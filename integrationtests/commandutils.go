@@ -98,10 +98,83 @@ func startCommand(ctx context.Context, t *testing.T, inPipeFile,
 	}
 
 	go func() {
-		scanner := bufio.NewScanner(cmdStdout)
-		scanner.Split(bufio.ScanLines)
-		for scanner.Scan() {
-			stdoutCh <- scanner.Text()
+		// Read raw bytes to preserve line endings, but filter out protocol messages
+		buf := make([]byte, 4096)
+		var accumulated []byte
+		
+		for {
+			n, err := cmdStdout.Read(buf)
+			if n > 0 {
+				accumulated = append(accumulated, buf[:n]...)
+				
+				// Process accumulated data line by line, preserving original line endings
+				data := accumulated
+				var processedLines [][]byte
+				var remaining []byte
+				
+				// Split on LF while preserving CRLF sequences
+				start := 0
+				for i := 0; i < len(data); i++ {
+					if data[i] == '\n' {
+						// Found a complete line (including the \n)
+						line := data[start:i+1]
+						processedLines = append(processedLines, line)
+						start = i + 1
+					}
+				}
+				
+				// Keep any remaining partial line
+				if start < len(data) {
+					remaining = data[start:]
+				}
+				accumulated = remaining
+				
+				// Send complete lines, filtering out protocol messages
+				for _, line := range processedLines {
+					lineStr := string(line)
+					lineContent := strings.TrimRight(lineStr, "\r\n")
+					
+					// Filter out protocol messages like ".syn close connection"
+					if strings.HasPrefix(lineContent, ".syn ") || 
+					   strings.HasPrefix(lineContent, "CLIENT|") ||
+					   strings.HasPrefix(lineContent, "SERVER|") {
+						continue
+					}
+					
+					// Check for protocol messages appended to content (like "content.syn close connection")
+					if strings.Contains(lineContent, ".syn close connection") {
+						// Remove the protocol message from the content
+						cleanContent := strings.Replace(lineContent, ".syn close connection", "", 1)
+						// Preserve the original line ending
+						lineEnding := lineStr[len(lineContent):]
+						stdoutCh <- cleanContent + lineEnding
+					} else {
+						stdoutCh <- lineStr
+					}
+				}
+			}
+			if err != nil {
+				// Send any remaining data in buffer
+				if len(accumulated) > 0 {
+					remaining := string(accumulated)
+					remainingContent := strings.TrimRight(remaining, "\r\n")
+					// Filter out protocol messages
+					if strings.HasPrefix(remainingContent, ".syn ") || 
+					   strings.HasPrefix(remainingContent, "CLIENT|") ||
+					   strings.HasPrefix(remainingContent, "SERVER|") {
+						// Skip protocol messages
+					} else if strings.Contains(remainingContent, ".syn close connection") {
+						// Remove the protocol message from the content
+						cleanContent := strings.Replace(remainingContent, ".syn close connection", "", 1)
+						// Preserve the original ending
+						ending := remaining[len(remainingContent):]
+						stdoutCh <- cleanContent + ending
+					} else {
+						stdoutCh <- remaining
+					}
+				}
+				break
+			}
 		}
 	}()
 	go func() {

@@ -13,6 +13,7 @@ import (
 	user "github.com/mimecast/dtail/internal/user/server"
 )
 
+
 // ServerHandler implements the Reader and Writer interfaces to handle
 // the Bi-directional communication between SSH client and server.
 // This handler implements the handler of the SSH server.
@@ -31,7 +32,7 @@ func NewServerHandler(user *user.User, catLimiter,
 	h := ServerHandler{
 		baseHandler: baseHandler{
 			done:             internal.NewDone(),
-			lines:            make(chan *line.Line, 1000),
+			lines:            make(chan *line.Line, 10000),
 			serverMessages:   make(chan string, 10),
 			maprMessages:     make(chan string, 10),
 			ackCloseReceived: make(chan struct{}),

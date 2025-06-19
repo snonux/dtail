@@ -262,6 +262,8 @@ func (h *baseHandler) handleOptions(options map[string]string) {
 		if plain, _ := options["plain"]; plain == "true" {
 			dlog.Server.Debug(h.user, "Enabling plain mode")
 			h.plain = true
+		} else {
+			dlog.Server.Debug(h.user, "Plain mode not enabled", "plain option:", plain)
 		}
 		if serverless, _ := options["serverless"]; serverless == "true" {
 			dlog.Server.Debug(h.user, "Enabling serverless mode")

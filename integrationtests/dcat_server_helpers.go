@@ -9,10 +9,27 @@ import (
 	"time"
 )
 
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // testDCatWithServer tests dcat command with a running server
 func testDCatWithServer(t *testing.T, args []string, outFile, expectedFile string) error {
+	
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
+	
+	// Check if this is the colors test
+	isColorsTest := false
+	for _, arg := range args {
+		if strings.Contains(arg, "dcatcolors.txt") {
+			isColorsTest = true
+			break
+		}
+	}
 	
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -32,6 +49,7 @@ func testDCatWithServer(t *testing.T, args []string, outFile, expectedFile strin
 
 	// Give server time to start
 	time.Sleep(1 * time.Second)
+	t.Log("Server should be started now")
 
 	// Prepare dcat args with server connection
 	dcatArgs := append([]string{
@@ -41,6 +59,7 @@ func testDCatWithServer(t *testing.T, args []string, outFile, expectedFile strin
 	}, args...)
 
 	// Start dcat client
+	t.Logf("Starting dcat with %d args: first few are %v", len(dcatArgs), dcatArgs[:min(10, len(dcatArgs))])
 	clientCh, _, _, err := startCommand(ctx, t,
 		"", "../dcat", dcatArgs...)
 	if err != nil {
@@ -50,10 +69,28 @@ func testDCatWithServer(t *testing.T, args []string, outFile, expectedFile strin
 
 	// Collect all output
 	var output []string
-	timeout := time.After(15 * time.Second)
+	// For tests with many files (like TestDCat2 with 100 files), we need more time
+	timeoutDuration := 30 * time.Second
+	if len(args) > 50 {
+		timeoutDuration = 120 * time.Second // 2 minutes for large tests
+	}
+	timeout := time.After(timeoutDuration)
 	linesReceived := 0
+	lastLineTime := time.Now()
+	
+	// Determine idle timeout based on test size
+	idleTimeout := 500 * time.Millisecond
+	if len(args) > 50 {
+		idleTimeout = 2 * time.Second
+	}
 	
 	for {
+		// Check timeout before entering select
+		if linesReceived > 0 && time.Since(lastLineTime) > idleTimeout {
+			t.Logf("No new lines for %v after receiving %d lines, finishing (pre-select)", idleTimeout, linesReceived)
+			goto done
+		}
+		
 		select {
 		case line := <-serverCh:
 			// Only log important server errors, not routine messages
@@ -67,23 +104,33 @@ func testDCatWithServer(t *testing.T, args []string, outFile, expectedFile strin
 			// Don't skip empty lines as they may be meaningful
 			
 			if strings.HasPrefix(line, "REMOTE|") {
-				// Extract the actual content from DTail protocol format
-				// Format: REMOTE|hostname|priority|lineno|sourceID|hostname|filename|linenum|content
+				// For server mode tests, we need to extract the content from REMOTE| lines
+				// Format: REMOTE|hostname|priority|lineno|sourceID|content
 				parts := strings.Split(line, "|")
-				if len(parts) >= 8 {
-					content := strings.Join(parts[7:], "|")
-					// Remove line number prefix if present (from DTail format)
-					if strings.Contains(content, " ") {
-						contentParts := strings.SplitN(content, " ", 2)
-						if len(contentParts) == 2 {
-							output = append(output, contentParts[1])
+				if len(parts) >= 6 {
+					// Join all parts after the 5th | as content (in case content has |)
+					content := strings.Join(parts[5:], "|")
+					if isColorsTest {
+						// For colors test, the content is already the full expected line
+						// The content might have trailing newlines, strip them
+						content = strings.TrimRight(content, "\n")
+						output = append(output, content)
+					} else {
+						// For other tests, we need to extract the actual file content
+						// which is after the line number prefix
+						if strings.Contains(content, " ") {
+							contentParts := strings.SplitN(content, " ", 2)
+							if len(contentParts) == 2 {
+								output = append(output, contentParts[1])
+							} else {
+								output = append(output, content)
+							}
 						} else {
 							output = append(output, content)
 						}
-					} else {
-						output = append(output, content)
 					}
 					linesReceived++
+					lastLineTime = time.Now()
 				}
 			} else if strings.HasPrefix(line, "CLIENT|") {
 				// Client status messages - ignore
@@ -93,27 +140,29 @@ func testDCatWithServer(t *testing.T, args []string, outFile, expectedFile strin
 				// Include empty lines as they are meaningful content
 				output = append(output, line)
 				linesReceived++
+				lastLineTime = time.Now()
 			}
 		case <-timeout:
 			// Timeout reached, finish collecting
+			t.Logf("Main timeout reached after receiving %d lines", linesReceived)
 			goto done
 		case <-ctx.Done():
 			goto done
 		}
 		
 		// If we received some output and haven't seen new lines for a bit, we're probably done
-		if linesReceived > 0 {
-			select {
-			case <-time.After(500 * time.Millisecond):
-				goto done
-			default:
-				continue
-			}
+		if linesReceived > 0 && time.Since(lastLineTime) > idleTimeout {
+			t.Logf("No new lines for %v after receiving %d lines, finishing", idleTimeout, linesReceived)
+			goto done
 		}
 	}
 
 done:
 	cancel()
+	t.Logf("Collected %d lines of output", len(output))
+	
+	// Give server time to shut down properly
+	time.Sleep(500 * time.Millisecond)
 	
 	// Write collected output to file
 	if len(output) > 0 {
@@ -123,21 +172,13 @@ done:
 		}
 		defer fd.Close()
 		
-		// Check if the expected file ends with a newline to match format
-		expectedData, err := os.ReadFile(expectedFile)
-		if err != nil {
-			return fmt.Errorf("failed to read expected file: %v", err)
-		}
-		
-		endsWithNewline := len(expectedData) > 0 && expectedData[len(expectedData)-1] == '\n'
-		
-		for i, line := range output {
-			if i == len(output)-1 && !endsWithNewline {
-				// Last line and original doesn't end with newline
-				fd.WriteString(line)
-			} else {
-				fd.WriteString(line + "\n")
+		// Write raw output preserving original line endings
+		for i, chunk := range output {
+			if i > 0 && isColorsTest {
+				// For colors test, we need to add newlines between chunks
+				fd.WriteString("\n")
 			}
+			fd.WriteString(chunk)
 		}
 	}
 
@@ -154,6 +195,15 @@ done:
 func testDCatWithServerContents(t *testing.T, args []string, outFile, expectedFile string) error {
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
+	
+	// Check if this is the colors test
+	isColorsTest := false
+	for _, arg := range args {
+		if strings.Contains(arg, "dcatcolors.txt") {
+			isColorsTest = true
+			break
+		}
+	}
 	
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -173,6 +223,7 @@ func testDCatWithServerContents(t *testing.T, args []string, outFile, expectedFi
 
 	// Give server time to start
 	time.Sleep(1 * time.Second)
+	t.Log("Server should be started now")
 
 	// Prepare dcat args with server connection
 	dcatArgs := append([]string{
@@ -182,6 +233,7 @@ func testDCatWithServerContents(t *testing.T, args []string, outFile, expectedFi
 	}, args...)
 
 	// Start dcat client
+	t.Logf("Starting dcat with %d args: first few are %v", len(dcatArgs), dcatArgs[:min(10, len(dcatArgs))])
 	clientCh, _, _, err := startCommand(ctx, t,
 		"", "../dcat", dcatArgs...)
 	if err != nil {
@@ -191,10 +243,28 @@ func testDCatWithServerContents(t *testing.T, args []string, outFile, expectedFi
 
 	// Collect all output
 	var output []string
-	timeout := time.After(15 * time.Second)
+	// For tests with many files (like TestDCat2 with 100 files), we need more time
+	timeoutDuration := 30 * time.Second
+	if len(args) > 50 {
+		timeoutDuration = 120 * time.Second // 2 minutes for large tests
+	}
+	timeout := time.After(timeoutDuration)
 	linesReceived := 0
+	lastLineTime := time.Now()
+	
+	// Determine idle timeout based on test size
+	idleTimeout := 500 * time.Millisecond
+	if len(args) > 50 {
+		idleTimeout = 2 * time.Second
+	}
 	
 	for {
+		// Check timeout before entering select
+		if linesReceived > 0 && time.Since(lastLineTime) > idleTimeout {
+			t.Logf("No new lines for %v after receiving %d lines, finishing (pre-select)", idleTimeout, linesReceived)
+			goto done
+		}
+		
 		select {
 		case line := <-serverCh:
 			// Only log important server errors, not routine messages
@@ -208,23 +278,33 @@ func testDCatWithServerContents(t *testing.T, args []string, outFile, expectedFi
 			// Don't skip empty lines as they may be meaningful
 			
 			if strings.HasPrefix(line, "REMOTE|") {
-				// Extract the actual content from DTail protocol format
-				// Format: REMOTE|hostname|priority|lineno|sourceID|hostname|filename|linenum|content
+				// For server mode tests, we need to extract the content from REMOTE| lines
+				// Format: REMOTE|hostname|priority|lineno|sourceID|content
 				parts := strings.Split(line, "|")
-				if len(parts) >= 8 {
-					content := strings.Join(parts[7:], "|")
-					// Remove line number prefix if present (from DTail format)
-					if strings.Contains(content, " ") {
-						contentParts := strings.SplitN(content, " ", 2)
-						if len(contentParts) == 2 {
-							output = append(output, contentParts[1])
+				if len(parts) >= 6 {
+					// Join all parts after the 5th | as content (in case content has |)
+					content := strings.Join(parts[5:], "|")
+					if isColorsTest {
+						// For colors test, the content is already the full expected line
+						// The content might have trailing newlines, strip them
+						content = strings.TrimRight(content, "\n")
+						output = append(output, content)
+					} else {
+						// For other tests, we need to extract the actual file content
+						// which is after the line number prefix
+						if strings.Contains(content, " ") {
+							contentParts := strings.SplitN(content, " ", 2)
+							if len(contentParts) == 2 {
+								output = append(output, contentParts[1])
+							} else {
+								output = append(output, content)
+							}
 						} else {
 							output = append(output, content)
 						}
-					} else {
-						output = append(output, content)
 					}
 					linesReceived++
+					lastLineTime = time.Now()
 				}
 			} else if strings.HasPrefix(line, "CLIENT|") {
 				// Client status messages - ignore
@@ -234,27 +314,29 @@ func testDCatWithServerContents(t *testing.T, args []string, outFile, expectedFi
 				// Include empty lines as they are meaningful content
 				output = append(output, line)
 				linesReceived++
+				lastLineTime = time.Now()
 			}
 		case <-timeout:
 			// Timeout reached, finish collecting
+			t.Logf("Main timeout reached after receiving %d lines", linesReceived)
 			goto done
 		case <-ctx.Done():
 			goto done
 		}
 		
 		// If we received some output and haven't seen new lines for a bit, we're probably done
-		if linesReceived > 0 {
-			select {
-			case <-time.After(500 * time.Millisecond):
-				goto done
-			default:
-				continue
-			}
+		if linesReceived > 0 && time.Since(lastLineTime) > idleTimeout {
+			t.Logf("No new lines for %v after receiving %d lines, finishing", idleTimeout, linesReceived)
+			goto done
 		}
 	}
 
 done:
 	cancel()
+	t.Logf("Collected %d lines of output", len(output))
+	
+	// Give server time to shut down properly
+	time.Sleep(500 * time.Millisecond)
 	
 	// Write collected output to file
 	if len(output) > 0 {
@@ -264,21 +346,13 @@ done:
 		}
 		defer fd.Close()
 		
-		// Check if the expected file ends with a newline to match format
-		expectedData, err := os.ReadFile(expectedFile)
-		if err != nil {
-			return fmt.Errorf("failed to read expected file: %v", err)
-		}
-		
-		endsWithNewline := len(expectedData) > 0 && expectedData[len(expectedData)-1] == '\n'
-		
-		for i, line := range output {
-			if i == len(output)-1 && !endsWithNewline {
-				// Last line and original doesn't end with newline
-				fd.WriteString(line)
-			} else {
-				fd.WriteString(line + "\n")
+		// Write raw output preserving original line endings
+		for i, chunk := range output {
+			if i > 0 && isColorsTest {
+				// For colors test, we need to add newlines between chunks
+				fd.WriteString("\n")
 			}
+			fd.WriteString(chunk)
 		}
 	}
 

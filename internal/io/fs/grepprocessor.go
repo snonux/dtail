@@ -140,10 +140,20 @@ func (gp *GrepProcessor) Flush() []byte {
 func (gp *GrepProcessor) formatLine(line []byte, lineNum int, filePath string, stats *stats, sourceID string) []byte {
 	// Format output to match existing behavior
 	if gp.plain {
-		result := make([]byte, len(line)+1)
-		copy(result, line)
-		result[len(line)] = '\n'
-		return result
+		// If line already ends with a line ending, preserve it as-is
+		// Otherwise, add LF for consistency with bufio.Scanner behavior
+		if len(line) > 0 && (line[len(line)-1] == '\n' || (len(line) > 1 && line[len(line)-2] == '\r' && line[len(line)-1] == '\n')) {
+			// Line already has line ending, preserve it exactly
+			result := make([]byte, len(line))
+			copy(result, line)
+			return result
+		} else {
+			// Line doesn't have line ending, add LF
+			result := make([]byte, len(line)+1)
+			copy(result, line)
+			result[len(line)] = '\n'
+			return result
+		}
 	}
 
 	// Format exactly like original basehandler.go for non-plain mode

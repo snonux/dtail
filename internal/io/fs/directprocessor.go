@@ -59,8 +59,17 @@ func (dp *DirectProcessor) ProcessFile(ctx context.Context, filePath string) err
 
 // ProcessReader processes an io.Reader directly without channels
 func (dp *DirectProcessor) ProcessReader(ctx context.Context, reader io.Reader, filePath string) error {
-	// Check if we need to preserve line endings (for cat in plain mode)
+	// Check if we need to preserve line endings (for any processor in plain mode)
+	needsLineEndingPreservation := false
+	
 	if catProcessor, ok := dp.processor.(*CatProcessor); ok && catProcessor.plain {
+		needsLineEndingPreservation = true
+	} else if grepProcessor, ok := dp.processor.(*GrepProcessor); ok && grepProcessor.plain {
+		needsLineEndingPreservation = true
+	}
+	// Note: MapProcessor doesn't have a plain mode that requires line ending preservation
+	
+	if needsLineEndingPreservation {
 		return dp.processReaderPreservingLineEndings(ctx, reader, filePath)
 	}
 
