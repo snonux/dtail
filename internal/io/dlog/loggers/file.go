@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 )
 
 type fileWriter struct{}
@@ -36,7 +37,7 @@ type file struct {
 
 func newFile(strategy Strategy) *file {
 	return &file{
-		bufferCh: make(chan *fileMessageBuf, runtime.NumCPU()*100),
+		bufferCh: make(chan *fileMessageBuf, runtime.NumCPU()*constants.LoggerBufferChannelMultiplier),
 		pauseCh:  make(chan struct{}),
 		resumeCh: make(chan struct{}),
 		rotateCh: make(chan struct{}),

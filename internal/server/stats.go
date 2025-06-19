@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
@@ -67,7 +68,7 @@ func (s *stats) serverLimitExceeded() error {
 func (s *stats) start(ctx context.Context) {
 	for {
 		select {
-		case <-time.NewTimer(time.Second * 10).C:
+		case <-time.NewTimer(constants.ServerStatsTimerDuration).C:
 			s.logServerStats()
 		case <-ctx.Done():
 			return
@@ -78,7 +79,7 @@ func (s *stats) start(ctx context.Context) {
 func (s *stats) waitForConnections() {
 	for {
 		select {
-		case <-time.NewTimer(time.Second).C:
+		case <-time.NewTimer(constants.ReadTimeout).C:
 			if !s.hasConnections() {
 				return
 			}

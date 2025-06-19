@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/lcontext"
 )
 
@@ -77,7 +78,7 @@ func (dp *DirectProcessor) ProcessReader(ctx context.Context, reader io.Reader, 
 
 	// Set buffer size respecting MaxLineLength configuration
 	maxLineLength := config.Server.MaxLineLength
-	initialBufSize := 64 * 1024
+	initialBufSize := constants.InitialBufferSize
 	if maxLineLength < initialBufSize {
 		initialBufSize = maxLineLength
 	}
@@ -337,7 +338,7 @@ func (dp *DirectProcessor) followFile(ctx context.Context, filePath string) erro
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(constants.ProcessorTimeoutDuration):
 			// Check if file has grown
 			fileInfo, err := os.Stat(filePath)
 			if err != nil {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -47,7 +48,7 @@ func (h *baseHandler) SendMessage(command string) error {
 
 	select {
 	case h.commands <- fmt.Sprintf("protocol %s base64 %v;", protocol.ProtocolCompat, encoded):
-	case <-time.After(time.Second * 5):
+	case <-time.After(constants.HandlerTimeout):
 		return fmt.Errorf("Timed out sending command '%s' (base64: '%s')", command, encoded)
 	case <-h.Done():
 		return nil

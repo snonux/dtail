@@ -10,12 +10,13 @@ import (
 
 	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
 // Reusable timer to reduce allocations - PBO optimization
-var statsTimer = time.NewTimer(3 * time.Second)
+var statsTimer = time.NewTimer(constants.StatsTimerDuration)
 
 // Used to collect and display various client stats.
 type stats struct {
@@ -55,7 +56,7 @@ func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 			default:
 			}
 		}
-		statsTimer.Reset(3 * time.Second)
+		statsTimer.Reset(constants.StatsTimerDuration)
 		
 		select {
 		case message := <-statsCh:
@@ -104,7 +105,7 @@ func (s *stats) printStatsDueInterrupt(messages []string) {
 		}
 		fmt.Println(fmt.Sprintf(" %s", message))
 	}
-	time.Sleep(time.Second * time.Duration(config.InterruptTimeoutS))
+	time.Sleep(time.Second * time.Duration(constants.InterruptTimeoutSeconds))
 	dlog.Client.Resume()
 }
 
@@ -149,7 +150,7 @@ func (s *stats) numConnected() int {
 
 func percentOf(total float64, value float64) float64 {
 	if total == 0 || total == value {
-		return 100
+		return constants.PercentageMultiplier
 	}
-	return value / (total / 100.0)
+	return value / (total / constants.PercentageMultiplier)
 }

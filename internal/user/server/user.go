@@ -8,11 +8,12 @@ import (
 	"strings"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs/permissions"
 )
 
-const maxLinkDepth int = 100
+const maxLinkDepth int = constants.MaxSymlinkDepth
 
 // User represents an end-user which connected to the server via the DTail client.
 type User struct {

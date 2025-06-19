@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/prompt"
 
@@ -125,7 +126,7 @@ func (c KnownHostsCallback) PromptAddHosts(ctx context.Context) {
 				c.promptAddHosts(hosts)
 				hosts = []unknownHost{}
 			}
-		case <-time.After(2 * time.Second):
+		case <-time.After(constants.KnownHostsCallbackTimeout):
 			// Or ask when after 2 seconds no new unknown hosts were added.
 			if len(hosts) > 0 {
 				c.promptAddHosts(hosts)

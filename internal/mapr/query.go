@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mimecast/dtail/internal/constants"
 )
 
 const (
@@ -70,8 +72,8 @@ func NewQuery(queryStr string) (*Query, error) {
 	q := Query{
 		RawQuery: queryStr,
 		tokens:   tokens,
-		Interval: time.Second * 5,
-		Limit:    -1,
+		Interval: constants.DefaultMapReduceInterval,
+		Limit:    constants.MapReduceUnlimited,
 	}
 
 	// If log format is CSV, then use "." as the table. It means, that

@@ -7,6 +7,7 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -167,7 +168,7 @@ func (a *Aggregate) fieldsFromLines(ctx context.Context) <-chan map[string]strin
 				if noMoreChannels {
 					return
 				}
-				time.Sleep(time.Millisecond * 100)
+				time.Sleep(constants.MapReduceSleepDuration)
 				continue
 			}
 

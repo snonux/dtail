@@ -2,6 +2,8 @@ package config
 
 import (
 	"errors"
+
+	"github.com/mimecast/dtail/internal/constants"
 )
 
 // Permissions map. Each SSH user has a list of permissions which log files it
@@ -74,13 +76,13 @@ func newDefaultServerConfig() *ServerConfig {
 	defaultPermissions := []string{"^/.*"}
 	defaultBindAddress := "0.0.0.0"
 	return &ServerConfig{
-		HostKeyBits:        4096,
+		HostKeyBits:        constants.HostKeyBits,
 		HostKeyFile:        "./cache/ssh_host_key",
 		MapreduceLogFormat: "default",
-		MaxConcurrentCats:  2,
-		MaxConcurrentTails: 50,
-		MaxConnections:     10,
-		MaxLineLength:      1024 * 1024,
+		MaxConcurrentCats:  constants.MaxConcurrentCats,
+		MaxConcurrentTails: constants.MaxConcurrentTails,
+		MaxConnections:     constants.MaxConnections,
+		MaxLineLength:      constants.ServerMaxLineLength,
 		SSHBindAddress:     defaultBindAddress,
 		Permissions: Permissions{
 			Default: defaultPermissions,

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 
@@ -24,8 +25,8 @@ func newScheduler() *scheduler {
 
 func (s *scheduler) start(ctx context.Context) {
 	dlog.Server.Info("Starting scheduled job runner after 2s")
-	// First run after just 10s!
-	time.Sleep(time.Second * 2)
+	// First run after just 2s!
+	time.Sleep(constants.SchedulerStartDelay)
 	s.runJobs(ctx)
 	for {
 		select {

@@ -1,6 +1,9 @@
 package config
 
-import "github.com/mimecast/dtail/internal/source"
+import (
+	"github.com/mimecast/dtail/internal/constants"
+	"github.com/mimecast/dtail/internal/source"
+)
 
 const (
 	// HealthUser is used for the health check
@@ -10,11 +13,11 @@ const (
 	// ContinuousUser is used for non-interactive continuous mapreduce queries.
 	ContinuousUser string = "DTAIL-CONTINUOUS"
 	// InterruptTimeoutS specifies the Ctrl+C log pause interval.
-	InterruptTimeoutS int = 3
+	InterruptTimeoutS int = constants.InterruptTimeoutSeconds
 	// DefaultConnectionsPerCPU controls how many connections are established concurrently.
-	DefaultConnectionsPerCPU int = 10
+	DefaultConnectionsPerCPU int = constants.DefaultConnectionsPerCPU
 	// DefaultSSHPort is the default DServer port.
-	DefaultSSHPort int = 2222
+	DefaultSSHPort int = constants.DefaultSSHPort
 	// DefaultLogLevel specifies the default log level (obviously)
 	DefaultLogLevel string = "info"
 	// DefaultClientLogger specifies the default logger for the client commands.

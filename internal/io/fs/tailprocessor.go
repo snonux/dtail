@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
 )
@@ -163,7 +164,7 @@ func (ftp *FollowingTailProcessor) followFile(ctx context.Context, filePath stri
 func (ftp *FollowingTailProcessor) followReader(ctx context.Context, file *os.File, filePath string) error {
 	// Set buffer size respecting MaxLineLength configuration
 	maxLineLength := config.Server.MaxLineLength
-	initialBufSize := 64 * 1024
+	initialBufSize := constants.InitialBufferSize
 	if maxLineLength < initialBufSize {
 		initialBufSize = maxLineLength
 	}
@@ -259,7 +260,7 @@ func (ftp *FollowingTailProcessor) followReader(ctx context.Context, file *os.Fi
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(constants.ProcessorTimeoutDuration):
 			// Continue the loop to check for new content
 		}
 	}

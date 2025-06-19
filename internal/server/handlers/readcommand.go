@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/line"
@@ -106,7 +107,7 @@ func (r *readCommand) start(ctx context.Context, ltx lcontext.LContext,
 func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 	glob string, re regex.Regex, retries int, queryStr string) {
 
-	retryInterval := time.Second * 5
+	retryInterval := constants.ReadCommandRetryInterval
 	glob = filepath.Clean(glob)
 
 	for retryCount := 0; retryCount < retries; retryCount++ {

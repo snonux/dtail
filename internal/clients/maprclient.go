@@ -11,6 +11,7 @@ import (
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/omode"
@@ -164,12 +165,12 @@ func (c *MaprClient) printResults() {
 	var result string
 	var err error
 	var numRows int
-	rowsLimit := -1
+	rowsLimit := constants.MapReduceUnlimited
 
-	if c.query.Limit == -1 {
+	if c.query.Limit == constants.MapReduceUnlimited {
 		// Limit output to 10 rows when the result is printed to stdout.
 		// This can be overriden with the limit clause though.
-		rowsLimit = 10
+		rowsLimit = constants.DefaultMapReduceRowsLimit
 	}
 
 	if c.cumulative {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/source"
 )
 
@@ -83,7 +84,7 @@ func (in *initializer) transformConfig(sourceProcess source.Source, args *Args,
 func (in *initializer) processEnvVars(args *Args) {
 	if Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		os.Setenv("DTAIL_HOSTNAME_OVERRIDE", "integrationtest")
-		in.Server.MaxLineLength = 1024
+		in.Server.MaxLineLength = constants.DefaultMaxLineLength
 	}
 	sshPrivateKeyPathFile := os.Getenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH")
 	if len(sshPrivateKeyPathFile) > 0 && args.SSHPrivateKeyFilePath == "" {

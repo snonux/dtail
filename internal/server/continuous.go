@@ -8,6 +8,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 	gossh "golang.org/x/crypto/ssh"
@@ -21,7 +22,7 @@ func newContinuous() *continuous {
 
 func (c *continuous) start(ctx context.Context) {
 	dlog.Server.Info("Starting continuous job runner after 2s")
-	time.Sleep(time.Second * 2)
+	time.Sleep(constants.ContinuousJobsStartDelay)
 	c.runJobs(ctx)
 }
 

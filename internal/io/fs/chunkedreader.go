@@ -6,12 +6,13 @@ import (
 	"io"
 	"time"
 
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/pool"
 )
 
 // Reusable timer to reduce allocations - PBO optimization
-var sharedTimer = time.NewTimer(10 * time.Millisecond)
+var sharedTimer = time.NewTimer(constants.ProcessorSleepDuration)
 
 // ChunkedReader reads data in large chunks and processes it line by line
 // This replaces the byte-by-byte reading approach for better performance
@@ -29,14 +30,14 @@ type ChunkedReader struct {
 // NewChunkedReader creates a new chunked reader with the specified chunk size
 func NewChunkedReader(reader io.Reader, chunkSize int) *ChunkedReader {
 	if chunkSize <= 0 {
-		chunkSize = 64 * 1024 // Default 64KB chunks
+		chunkSize = constants.DefaultChunkSize // Default 64KB chunks
 	}
 	return &ChunkedReader{
 		reader:     reader,
 		buffer:     make([]byte, chunkSize),
 		chunkSize:  chunkSize,
 		// PBO optimization: Pre-allocate line buffer
-		lineBuffer: make([]byte, 0, 8192), // 8KB initial capacity
+		lineBuffer: make([]byte, 0, constants.LineBufferInitialCapacity), // 8KB initial capacity
 	}
 }
 
@@ -76,7 +77,7 @@ func (cr *ChunkedReader) ProcessLines(ctx context.Context, rawLines chan *bytes.
 							default:
 							}
 						}
-						sharedTimer.Reset(10 * time.Millisecond)
+						sharedTimer.Reset(constants.ProcessorSleepDuration)
 						select {
 						case <-ctx.Done():
 							return ctx.Err()

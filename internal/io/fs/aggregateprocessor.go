@@ -5,6 +5,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
@@ -69,7 +70,7 @@ func (p *AggregateLineProcessor) Flush() []byte {
 	if !p.isTailing {
 		// Close the lines channel to signal end of input
 		// Add a small delay to ensure all lines are processed before closing
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(constants.ProcessorSleepDuration)
 		close(p.linesCh)
 	}
 	return nil

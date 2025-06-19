@@ -15,6 +15,7 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -117,7 +118,7 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 		pool.RecycleBytesBuffer(line.Content)
 		line.Recycle()
 
-	case <-time.After(time.Second):
+	case <-time.After(constants.ReadTimeout):
 		select {
 		case <-h.done.Done():
 			err = io.EOF
@@ -288,13 +289,13 @@ func (h *baseHandler) flush() {
 	numUnsentMessages := func() int {
 		return len(h.lines) + len(h.serverMessages) + len(h.maprMessages)
 	}
-	for i := 0; i < 10; i++ {
+	for i := 0; i < constants.MaxFlushRetries; i++ {
 		if numUnsentMessages() == 0 {
 			dlog.Server.Debug(h.user, "ALL lines sent", fmt.Sprintf("%p", h))
 			return
 		}
 		dlog.Server.Debug(h.user, "Still lines to be sent")
-		time.Sleep(time.Millisecond * 10)
+		time.Sleep(constants.ProcessorSleepDuration)
 	}
 	dlog.Server.Warn(h.user, "Some lines remain unsent", numUnsentMessages())
 }
@@ -312,7 +313,7 @@ func (h *baseHandler) shutdown() {
 
 	select {
 	case <-h.ackCloseReceived:
-	case <-time.After(time.Second * 5):
+	case <-time.After(constants.HandlerTimeout):
 		dlog.Server.Debug(h.user, "Shutdown timeout reached, enforcing shutdown")
 	case <-h.done.Done():
 	}

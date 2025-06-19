@@ -7,6 +7,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/discovery"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/regex"
@@ -16,7 +17,7 @@ import (
 )
 
 // Reusable timer for retry delays - PBO optimization  
-var retryTimer = time.NewTimer(2 * time.Second)
+var retryTimer = time.NewTimer(constants.RetryTimerDuration)
 
 // This is the main client data structure.
 type baseClient struct {
@@ -135,7 +136,7 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 			default:
 			}
 		}
-		retryTimer.Reset(2 * time.Second)
+		retryTimer.Reset(constants.RetryTimerDuration)
 		select {
 		case <-retryTimer.C:
 		case <-ctx.Done():

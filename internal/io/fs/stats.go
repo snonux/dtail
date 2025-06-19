@@ -1,14 +1,16 @@
 package fs
 
+import "github.com/mimecast/dtail/internal/constants"
+
 // Used to calculate how many log lines matched the regular expression
 // and how many log files could be transmitted from the server to the client.
 // Hit and transmit percentage takes only the last 100 log lines into calculation.
 type stats struct {
 	pos           int
 	lineCount     uint64
-	matched       [100]bool
+	matched       [constants.StatsArraySize]bool
 	matchCount    uint64
-	transmitted   [100]bool
+	transmitted   [constants.StatsArraySize]bool
 	transmitCount int
 }
 
@@ -25,7 +27,7 @@ func (f *stats) transmittedPerc() int {
 // Update bucket position. We only take into consideration the last 100
 // lines for stats.
 func (f *stats) updatePosition() {
-	f.pos = (f.pos + 1) % 100
+	f.pos = (f.pos + 1) % constants.StatsArraySize
 	f.lineCount++
 }
 
@@ -63,7 +65,7 @@ func (f *stats) updateLineNotTransmitted() {
 
 func percentOf(total float64, value float64) float64 {
 	if total == 0 || total == value {
-		return 100
+		return constants.PercentageMultiplier
 	}
-	return value / (total / 100.0)
+	return value / (total / constants.PercentageMultiplier)
 }

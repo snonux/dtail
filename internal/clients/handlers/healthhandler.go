@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/mimecast/dtail/internal"
+	"github.com/mimecast/dtail/internal/constants"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -22,7 +23,7 @@ func NewHealthHandler(server string) *HealthHandler {
 			server:       server,
 			shellStarted: false,
 			commands:     make(chan string),
-			status:       2, // Assume CRITICAL status by default.
+			status:       constants.HealthCriticalStatus, // Assume CRITICAL status by default.
 			done:         internal.NewDone(),
 		},
 	}
@@ -51,6 +52,6 @@ func (h *HealthHandler) handleMessage(message string) {
 	s := strings.Split(message, protocol.FieldDelimiter)
 	message = s[len(s)-1]
 	if message == "OK" {
-		h.baseHandler.status = 0
+		h.baseHandler.status = constants.HealthOKStatus
 	}
 }
