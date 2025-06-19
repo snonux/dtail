@@ -4,25 +4,20 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
 // CatProcessor handles cat-style output
 type CatProcessor struct {
-	plain       bool
-	noColor     bool
-	hostname    string
-	isFirstLine bool
+	plain    bool
+	hostname string
 }
 
 // NewCatProcessor creates a new cat processor
 func NewCatProcessor(plain, noColor bool, hostname string) *CatProcessor {
 	return &CatProcessor{
-		plain:       plain,
-		noColor:     noColor,
-		hostname:    hostname,
-		isFirstLine: true,
+		plain:    plain,
+		hostname: hostname,
 	}
 }
 
@@ -69,29 +64,7 @@ func (cp *CatProcessor) ProcessLine(line []byte, lineNum int, filePath string, s
 		transmittedPerc, protocol.FieldDelimiter, count, protocol.FieldDelimiter,
 		sourceID, protocol.FieldDelimiter, string(line))
 
-	// Apply ANSI color formatting if not in plain mode and not noColor mode
-	if !cp.plain && !cp.noColor {
-		colorized := brush.Colorfy(protocolLine)
-
-		// Add color reset prefix for all lines except the first
-		var result []byte
-		if cp.isFirstLine {
-			cp.isFirstLine = false
-			result = make([]byte, len(colorized)+1)
-			copy(result, colorized)
-			result[len(colorized)] = '\n'
-		} else {
-			// Add color reset prefix: [39m[49m[49m[39m
-			colorResetPrefix := "\x1b[39m\x1b[49m\x1b[49m\x1b[39m"
-			result = make([]byte, len(colorResetPrefix)+len(colorized)+1)
-			copy(result, colorResetPrefix)
-			copy(result[len(colorResetPrefix):], colorized)
-			result[len(colorResetPrefix)+len(colorized)] = '\n'
-		}
-		return result, true
-	}
-
-	// No color formatting
+	// Server should never send colored output - client handles all colorization
 	result := make([]byte, len(protocolLine)+1)
 	copy(result, protocolLine)
 	result[len(protocolLine)] = '\n'
@@ -100,10 +73,6 @@ func (cp *CatProcessor) ProcessLine(line []byte, lineNum int, filePath string, s
 }
 
 func (cp *CatProcessor) Flush() []byte {
-	// Add final color reset line to match original behavior (no trailing newline)
-	// Only in non-plain mode with colors enabled
-	if !cp.plain && !cp.noColor {
-		return []byte("\x1b[39m\x1b[49m\x1b[49m\x1b[39m")
-	}
+	// Server should not send color codes - client handles colorization
 	return nil
 }

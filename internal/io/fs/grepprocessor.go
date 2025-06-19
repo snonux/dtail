@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
 )
@@ -13,7 +12,6 @@ import (
 type GrepProcessor struct {
 	regex    regex.Regex
 	plain    bool
-	noColor  bool
 	hostname string
 
 	// Context handling
@@ -33,7 +31,6 @@ func NewGrepProcessor(re regex.Regex, plain, noColor bool, hostname string, befo
 	gp := &GrepProcessor{
 		regex:          re,
 		plain:          plain,
-		noColor:        noColor,
 		hostname:       hostname,
 		beforeContext:  beforeContext,
 		afterContext:   afterContext,
@@ -165,16 +162,7 @@ func (gp *GrepProcessor) formatLine(line []byte, lineNum int, filePath string, s
 		transmittedPerc, protocol.FieldDelimiter, count, protocol.FieldDelimiter,
 		sourceID, protocol.FieldDelimiter, string(line))
 
-	// Apply ANSI color formatting if not in plain mode and not noColor mode.
-	if !gp.plain && !gp.noColor {
-		colorized := brush.Colorfy(protocolLine)
-		result := make([]byte, len(colorized)+1)
-		copy(result, colorized)
-		result[len(colorized)] = '\n'
-		return result
-	}
-
-	// No color formatting
+	// Server should never send colored output - client handles all colorization
 	result := make([]byte, len(protocolLine)+1)
 	copy(result, protocolLine)
 	result[len(protocolLine)] = '\n'

@@ -238,6 +238,8 @@ func (d *DLog) Devel(args ...interface{}) string {
 }
 
 // Raw message logging.
+// Raw logs messages from the server without the standard log formatting.
+// Since server never sends colored output, client handles all colorization.
 func (d *DLog) Raw(message string) string {
 	if d == nil {
 		return ""
