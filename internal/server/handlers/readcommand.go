@@ -151,6 +151,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	} else {
 		// In client-server mode, write to server handler lines channel
 		output = NewServerHandlerWriter(r.server, r.server.serverMessages, r.server.user)
+		
 	}
 
 	// Create appropriate processor based on mode
@@ -160,6 +161,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	for _, path := range paths {
 		// Generate globID just like the original system
 		globID := r.makeGlobID(path, glob)
+		
 		
 		if !r.server.user.HasFilePermission(path, "readfiles") {
 			dlog.Server.Error(r.server.user, "No permission to read file", path)

@@ -21,6 +21,12 @@ type LineProcessor interface {
 	Cleanup() error
 }
 
+// LineWriter interface for writers that need sourceID information
+type LineWriter interface {
+	io.Writer
+	WriteLine(data []byte, sourceID string, stats interface{}) error
+}
+
 // DirectProcessor processes files without channels for better performance
 type DirectProcessor struct {
 	processor LineProcessor
@@ -102,8 +108,15 @@ func (dp *DirectProcessor) ProcessReader(ctx context.Context, reader io.Reader, 
 
 		// Process line directly
 		if result, shouldSend := dp.processor.ProcessLine(line, lineNum, filePath, dp.stats, dp.sourceID); shouldSend {
-			if _, err := dp.output.Write(result); err != nil {
-				return err
+			// Check if output writer supports sourceID (for proper protocol formatting)
+			if lineWriter, ok := dp.output.(LineWriter); ok {
+				if err := lineWriter.WriteLine(result, dp.sourceID, dp.stats); err != nil {
+					return err
+				}
+			} else {
+				if _, err := dp.output.Write(result); err != nil {
+					return err
+				}
 			}
 
 			// Update transmission stats

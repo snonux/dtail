@@ -2,9 +2,7 @@ package fs
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
 )
 
@@ -129,43 +127,21 @@ func (gp *GrepProcessor) Flush() []byte {
 
 // formatLine formats a line for output (shared by matching lines and context lines)
 func (gp *GrepProcessor) formatLine(line []byte, lineNum int, filePath string, stats *stats, sourceID string) []byte {
-	// Format output to match existing behavior
-	if gp.plain {
-		// If line already ends with a line ending, preserve it as-is
-		// Otherwise, add LF for consistency with bufio.Scanner behavior
-		if len(line) > 0 && (line[len(line)-1] == '\n' || (len(line) > 1 && line[len(line)-2] == '\r' && line[len(line)-1] == '\n')) {
-			// Line already has line ending, preserve it exactly
-			result := make([]byte, len(line))
-			copy(result, line)
-			return result
-		} else {
-			// Line doesn't have line ending, add LF
-			result := make([]byte, len(line)+1)
-			copy(result, line)
-			result[len(line)] = '\n'
-			return result
-		}
+	// In both plain and non-plain modes, just return the line content
+	// The baseHandler will handle protocol formatting for non-plain mode
+	
+	// If line already ends with a line ending, preserve it as-is
+	// Otherwise, add LF for consistency with bufio.Scanner behavior
+	if len(line) > 0 && (line[len(line)-1] == '\n' || (len(line) > 1 && line[len(line)-2] == '\r' && line[len(line)-1] == '\n')) {
+		// Line already has line ending, preserve it exactly
+		result := make([]byte, len(line))
+		copy(result, line)
+		return result
+	} else {
+		// Line doesn't have line ending, add LF
+		result := make([]byte, len(line)+1)
+		copy(result, line)
+		result[len(line)] = '\n'
+		return result
 	}
-
-	// Format exactly like original basehandler.go for non-plain mode
-	// REMOTE|{hostname}|{TransmittedPerc}|{Count}|{SourceID}|{Content}¬
-	var transmittedPerc int
-	var count uint64
-	if stats != nil {
-		transmittedPerc = stats.transmittedPerc()
-		count = stats.totalLineCount()
-	}
-
-	// Build the protocol line
-	protocolLine := fmt.Sprintf("REMOTE%s%s%s%3d%s%v%s%s%s%s",
-		protocol.FieldDelimiter, gp.hostname, protocol.FieldDelimiter,
-		transmittedPerc, protocol.FieldDelimiter, count, protocol.FieldDelimiter,
-		sourceID, protocol.FieldDelimiter, string(line))
-
-	// Server should never send colored output - client handles all colorization
-	result := make([]byte, len(protocolLine)+1)
-	copy(result, protocolLine)
-	result[len(protocolLine)] = '\n'
-
-	return result
 }

@@ -300,6 +300,34 @@ func (shw *ServerHandlerWriter) Write(data []byte) (int, error) {
 	}
 }
 
+// WriteLine implements LineWriter interface by sending data with proper sourceID
+func (shw *ServerHandlerWriter) WriteLine(data []byte, sourceID string, stats interface{}) error {
+	if len(data) == 0 {
+		return nil
+	}
+	
+	// Create a line object with proper sourceID
+	contentBuffer := bytes.NewBuffer(data)
+	
+	// Extract stats if available
+	var transmittedPerc int = 100
+	var count uint64 = 0
+	
+	// Check if stats is fs.stats type (from internal/io/fs package)
+	// For now, we'll use default values since the stats type is internal to fs package
+	
+	lineObj := line.New(contentBuffer, count, transmittedPerc, sourceID)
+	
+	select {
+	case shw.server.lines <- lineObj:
+		return nil
+	default:
+		// Channel is full, report error
+		shw.sendServerMessage("Server lines channel full, dropping data")
+		return fmt.Errorf("server lines channel full")
+	}
+}
+
 // sendServerMessage sends a message through the existing server message channel
 func (shw *ServerHandlerWriter) sendServerMessage(message string) {
 	if shw.serverMessages == nil {
