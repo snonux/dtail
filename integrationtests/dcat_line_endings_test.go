@@ -26,8 +26,8 @@ func TestDCatLineEndings(t *testing.T) {
 	defer os.Remove(testFile)
 
 	t.Run("Serverless", func(t *testing.T) {
-		// Run dcat in serverless mode
-		cmd := exec.Command("../dcat", "--cfg", "none", testFile)
+		// Run dcat in serverless mode with colors disabled for testing
+		cmd := exec.Command("../dcat", "--cfg", "none", "--noColor", testFile)
 		output, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("dcat command failed: %v", err)
@@ -74,7 +74,7 @@ func TestDCatLineEndings(t *testing.T) {
 		defer os.Remove(testFile3)
 
 		// Run dcat with multiple files
-		cmd := exec.Command("../dcat", "--cfg", "none", testFile, testFile2, testFile3)
+		cmd := exec.Command("../dcat", "--cfg", "none", "--noColor", testFile, testFile2, testFile3)
 		output, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("dcat command failed: %v", err)
@@ -96,7 +96,7 @@ func TestDCatLineEndings(t *testing.T) {
 		}
 		defer os.Remove(emptyFile)
 
-		cmd := exec.Command("../dcat", "--cfg", "none", emptyFile)
+		cmd := exec.Command("../dcat", "--cfg", "none", "--noColor", emptyFile)
 		output, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("dcat command failed: %v", err)
@@ -119,7 +119,7 @@ func TestDCatLineEndings(t *testing.T) {
 		defer os.Remove(crlfFile)
 
 		// Run dcat in regular mode
-		cmd := exec.Command("../dcat", "--cfg", "none", crlfFile)
+		cmd := exec.Command("../dcat", "--cfg", "none", "--noColor", crlfFile)
 		output, err := cmd.Output()
 		if err != nil {
 			t.Fatalf("dcat command failed: %v", err)

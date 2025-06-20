@@ -146,8 +146,8 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	// Choose output writer based on server mode
 	var output io.Writer
 	if r.server.serverless {
-		// In serverless mode, write directly to stdout
-		output = os.Stdout
+		// In serverless mode, write to stdout with color support
+		output = NewColorWriter(os.Stdout, r.server.plain)
 	} else {
 		// In client-server mode, write to server handler lines channel
 		output = NewServerHandlerWriter(r.server, r.server.serverMessages, r.server.user)
@@ -216,8 +216,8 @@ func (r *readCommand) readStdin(ctx context.Context, ltx lcontext.LContext, re r
 	// Choose output writer based on server mode
 	var output io.Writer
 	if r.server.serverless {
-		// In serverless mode, write directly to stdout
-		output = os.Stdout
+		// In serverless mode, write to stdout with color support
+		output = NewColorWriter(os.Stdout, r.server.plain)
 	} else {
 		// In client-server mode, write to server handler lines channel
 		output = NewServerHandlerWriter(r.server, r.server.serverMessages, r.server.user)

@@ -185,10 +185,14 @@ func Colorfy(line string) string {
 		paintServer(sb, line)
 
 	default:
-		color.PaintWithAttr(sb, line,
-			color.FgDefault,
-			color.BgDefault,
-			color.AttrNone)
+		// For lines that don't have protocol prefixes, check for severity levels
+		if !paintSeverity(sb, line) {
+			// No severity prefix found, paint with default colors
+			color.PaintWithAttr(sb, line,
+				color.FgDefault,
+				color.BgDefault,
+				color.AttrNone)
+		}
 	}
 	return sb.String()
 }

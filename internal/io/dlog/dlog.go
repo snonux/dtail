@@ -248,7 +248,8 @@ func (d *DLog) Raw(message string) string {
 		d.logger.Raw(time.Now(), message)
 		return message
 	}
-	d.logger.RawWithColors(time.Now(), message, brush.Colorfy(message))
+	coloredMessage := brush.Colorfy(message)
+	d.logger.RawWithColors(time.Now(), message, coloredMessage)
 	return message
 }
 
