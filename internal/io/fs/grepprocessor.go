@@ -2,15 +2,18 @@ package fs
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
 )
 
 // GrepProcessor handles grep-style filtering
 type GrepProcessor struct {
-	regex    regex.Regex
-	plain    bool
-	hostname string
+	regex      regex.Regex
+	plain      bool
+	hostname   string
+	serverless bool
 
 	// Context handling
 	beforeContext int
@@ -25,11 +28,12 @@ type GrepProcessor struct {
 }
 
 // NewGrepProcessor creates a new grep processor
-func NewGrepProcessor(re regex.Regex, plain, noColor bool, hostname string, beforeContext, afterContext, maxCount int) *GrepProcessor {
+func NewGrepProcessor(re regex.Regex, plain, noColor bool, hostname string, serverless bool, beforeContext, afterContext, maxCount int) *GrepProcessor {
 	gp := &GrepProcessor{
 		regex:          re,
 		plain:          plain,
 		hostname:       hostname,
+		serverless:     serverless,
 		beforeContext:  beforeContext,
 		afterContext:   afterContext,
 		maxCount:       maxCount,
@@ -127,9 +131,54 @@ func (gp *GrepProcessor) Flush() []byte {
 
 // formatLine formats a line for output (shared by matching lines and context lines)
 func (gp *GrepProcessor) formatLine(line []byte, lineNum int, filePath string, stats *stats, sourceID string) []byte {
-	// In both plain and non-plain modes, just return the line content
-	// The baseHandler will handle protocol formatting for non-plain mode
-	
+	// In plain mode, just return the line content
+	if gp.plain {
+		// If line already ends with a line ending, preserve it as-is
+		// Otherwise, add LF for consistency with bufio.Scanner behavior
+		if len(line) > 0 && (line[len(line)-1] == '\n' || (len(line) > 1 && line[len(line)-2] == '\r' && line[len(line)-1] == '\n')) {
+			// Line already has line ending, preserve it exactly
+			result := make([]byte, len(line))
+			copy(result, line)
+			return result
+		} else {
+			// Line doesn't have line ending, add LF
+			result := make([]byte, len(line)+1)
+			copy(result, line)
+			result[len(line)] = '\n'
+			return result
+		}
+	}
+
+	// In non-plain serverless mode, we need to format with REMOTE protocol
+	// since there's no server baseHandler to do it for us
+	if gp.serverless {
+		// Format exactly like original basehandler.go for non-plain mode
+		// REMOTE|{hostname}|{TransmittedPerc}|{Count}|{SourceID}|{Content}
+		var transmittedPerc int
+		var count uint64
+		if stats != nil {
+			transmittedPerc = stats.transmittedPerc()
+			count = stats.totalLineCount()
+		}
+
+		// Use actual hostname from system, not "serverless"
+		actualHostname := getHostname()
+
+		// Build the protocol line without the message delimiter
+		protocolLine := fmt.Sprintf("REMOTE%s%s%s%3d%s%v%s%s%s%s",
+			protocol.FieldDelimiter, actualHostname, protocol.FieldDelimiter,
+			transmittedPerc, protocol.FieldDelimiter, count, protocol.FieldDelimiter,
+			sourceID, protocol.FieldDelimiter, string(line))
+
+		// Return formatted line with newline since we might concatenate multiple lines
+		result := make([]byte, len(protocolLine)+1)
+		copy(result, protocolLine)
+		result[len(protocolLine)] = '\n'
+		return result
+	}
+
+	// In server mode, just return the line content
+	// The baseHandler will handle protocol formatting
 	// If line already ends with a line ending, preserve it as-is
 	// Otherwise, add LF for consistency with bufio.Scanner behavior
 	if len(line) > 0 && (line[len(line)-1] == '\n' || (len(line) > 1 && line[len(line)-2] == '\r' && line[len(line)-1] == '\n')) {

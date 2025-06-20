@@ -115,15 +115,18 @@ func (dp *DirectProcessor) ProcessReader(ctx context.Context, reader io.Reader, 
 				}
 			} else {
 				// Regular write path (e.g., stdout in serverless mode)
-				if _, err := dp.output.Write(result); err != nil {
-					return err
-				}
-				
-				// Only add newline if the processor doesn't already handle it
-				// CatProcessor doesn't add newlines, but GrepProcessor does
+				// Check if we need to add a newline
 				if _, isCat := dp.processor.(*CatProcessor); isCat {
 					// Scanner strips newlines, so we need to add them back for cat
-					if _, err := dp.output.Write([]byte{'\n'}); err != nil {
+					// Combine the result with newline in a single write to avoid
+					// double color processing
+					resultWithNewline := append(result, '\n')
+					if _, err := dp.output.Write(resultWithNewline); err != nil {
+						return err
+					}
+				} else {
+					// For other processors, just write the result as-is
+					if _, err := dp.output.Write(result); err != nil {
 						return err
 					}
 				}

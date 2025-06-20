@@ -147,6 +147,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	var output io.Writer
 	if r.server.serverless {
 		// In serverless mode, write to stdout with color support
+		// Note: plain mode means no colors, so noColor = plain
 		output = NewColorWriter(os.Stdout, r.server.plain)
 	} else {
 		// In client-server mode, write to server handler lines channel
@@ -209,6 +210,11 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 			}
 		}
 	}
+	
+	// Close the output writer if it's a ColorWriter
+	if colorWriter, ok := output.(*ColorWriter); ok {
+		colorWriter.Close()
+	}
 }
 
 // readStdin processes stdin using direct processing
@@ -217,6 +223,7 @@ func (r *readCommand) readStdin(ctx context.Context, ltx lcontext.LContext, re r
 	var output io.Writer
 	if r.server.serverless {
 		// In serverless mode, write to stdout with color support
+		// Note: plain mode means no colors, so noColor = plain
 		output = NewColorWriter(os.Stdout, r.server.plain)
 	} else {
 		// In client-server mode, write to server handler lines channel
@@ -235,6 +242,11 @@ func (r *readCommand) readStdin(ctx context.Context, ltx lcontext.LContext, re r
 		dlog.Server.Error(r.server.user, "stdin", err)
 		r.server.sendln(r.server.serverMessages, dlog.Server.Error(r.server.user,
 			"Error processing stdin", err))
+	}
+	
+	// Close the output writer if it's a ColorWriter
+	if colorWriter, ok := output.(*ColorWriter); ok {
+		colorWriter.Close()
 	}
 }
 
@@ -293,22 +305,22 @@ func (r *readCommand) createProcessor(re regex.Regex, ltx lcontext.LContext, out
 			mapProcessor, err := fs.NewMapProcessor(plain, hostname, queryStr, output)
 			if err != nil {
 				dlog.Server.Error(r.server.user, "Failed to create MapReduce processor", err)
-				return fs.NewGrepProcessor(re, plain, noColor, hostname, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
+				return fs.NewGrepProcessor(re, plain, noColor, hostname, r.server.serverless, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
 			}
 			return mapProcessor, false
 		}
-		return fs.NewGrepProcessor(re, plain, noColor, hostname, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
+		return fs.NewGrepProcessor(re, plain, noColor, hostname, r.server.serverless, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
 	case omode.CatClient:
 		if isMapReduce && queryStr != "" {
 			// This is a standalone MapReduce cat operation
 			mapProcessor, err := fs.NewMapProcessor(plain, hostname, queryStr, output)
 			if err != nil {
 				dlog.Server.Error(r.server.user, "Failed to create MapReduce processor", err)
-				return fs.NewCatProcessor(plain, noColor, hostname), false
+				return fs.NewCatProcessor(plain, noColor, hostname, r.server.serverless), false
 			}
 			return mapProcessor, false
 		}
-		return fs.NewCatProcessor(plain, noColor, hostname), false
+		return fs.NewCatProcessor(plain, noColor, hostname, r.server.serverless), false
 	case omode.TailClient:
 		if isMapReduce && queryStr != "" {
 			// This is a standalone MapReduce tail operation
@@ -327,14 +339,14 @@ func (r *readCommand) createProcessor(re regex.Regex, ltx lcontext.LContext, out
 			mapProcessor, err := fs.NewMapProcessor(plain, hostname, queryStr, output)
 			if err != nil {
 				dlog.Server.Error(r.server.user, "Failed to create MapReduce processor", err)
-				return fs.NewGrepProcessor(re, plain, noColor, hostname, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
+				return fs.NewGrepProcessor(re, plain, noColor, hostname, r.server.serverless, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
 			}
 			return mapProcessor, false
 		}
 		// Fallback
-		return fs.NewGrepProcessor(re, plain, noColor, hostname, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
+		return fs.NewGrepProcessor(re, plain, noColor, hostname, r.server.serverless, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
 	default:
 		// Default to grep behavior
-		return fs.NewGrepProcessor(re, plain, noColor, hostname, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
+		return fs.NewGrepProcessor(re, plain, noColor, hostname, r.server.serverless, ltx.BeforeContext, ltx.AfterContext, ltx.MaxCount), false
 	}
 }

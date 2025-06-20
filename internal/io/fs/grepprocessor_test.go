@@ -12,7 +12,7 @@ func TestGrepProcessorBasic(t *testing.T) {
 	testutil.AssertNoError(t, err)
 
 	// Use plain mode to avoid color formatting issues in tests
-	gp := NewGrepProcessor(re, true, false, "testhost", 0, 0, 0)
+	gp := NewGrepProcessor(re, true, false, "testhost", false, 0, 0, 0)
 
 	tests := []struct {
 		name        string
@@ -46,7 +46,7 @@ func TestGrepProcessorWithContext(t *testing.T) {
 	testutil.AssertNoError(t, err)
 
 	// Test with before context = 2, after context = 1
-	gp := NewGrepProcessor(re, true, false, "testhost", 2, 1, 0)
+	gp := NewGrepProcessor(re, true, false, "testhost", false, 2, 1, 0)
 
 	lines := []string{
 		"line 1",
@@ -83,7 +83,7 @@ func TestGrepProcessorMaxCount(t *testing.T) {
 	testutil.AssertNoError(t, err)
 
 	// Limit to 2 matches
-	gp := NewGrepProcessor(re, true, false, "testhost", 0, 0, 2)
+	gp := NewGrepProcessor(re, true, false, "testhost", false, 0, 0, 2)
 
 	matchCount := 0
 	for i := 0; i < 5; i++ {
@@ -106,7 +106,7 @@ func TestGrepProcessorPlainMode(t *testing.T) {
 	re, err := regex.New("test", regex.Default)
 	testutil.AssertNoError(t, err)
 
-	gp := NewGrepProcessor(re, true, false, "testhost", 0, 0, 0)
+	gp := NewGrepProcessor(re, true, false, "testhost", false, 0, 0, 0)
 
 	// Test that plain mode preserves line endings
 	tests := []struct {
@@ -137,7 +137,7 @@ func TestGrepProcessorFormatLine(t *testing.T) {
 	testutil.AssertNoError(t, err)
 
 	// Test plain mode formatting to avoid color issues
-	gp := NewGrepProcessor(re, true, false, "testhost", 0, 0, 0)
+	gp := NewGrepProcessor(re, true, false, "testhost", false, 0, 0, 0)
 	
 	stats := &stats{}
 	stats.updatePosition()
