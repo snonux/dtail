@@ -114,8 +114,18 @@ func (dp *DirectProcessor) ProcessReader(ctx context.Context, reader io.Reader, 
 					return err
 				}
 			} else {
+				// Regular write path (e.g., stdout in serverless mode)
 				if _, err := dp.output.Write(result); err != nil {
 					return err
+				}
+				
+				// Only add newline if the processor doesn't already handle it
+				// CatProcessor doesn't add newlines, but GrepProcessor does
+				if _, isCat := dp.processor.(*CatProcessor); isCat {
+					// Scanner strips newlines, so we need to add them back for cat
+					if _, err := dp.output.Write([]byte{'\n'}); err != nil {
+						return err
+					}
 				}
 			}
 
