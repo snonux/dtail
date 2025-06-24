@@ -134,6 +134,19 @@ func TestDTailColorTable(t *testing.T) {
 		t.Log("Skipping")
 		return
 	}
+
+	// Test in serverless mode
+	t.Run("Serverless", func(t *testing.T) {
+		testDTailColorTableServerless(t)
+	})
+
+	// Test in server mode
+	t.Run("ServerMode", func(t *testing.T) {
+		testDTailColorTableWithServer(t)
+	})
+}
+
+func testDTailColorTableServerless(t *testing.T) {
 	outFile := "dtailcolortable.stdout.tmp"
 	expectedOutFile := "dtailcolortable.expected"
 
@@ -142,6 +155,50 @@ func TestDTailColorTable(t *testing.T) {
 		t.Error(err)
 		return
 	}
+	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
+		t.Error(err)
+		return
+	}
+	os.Remove(outFile)
+}
+
+func testDTailColorTableWithServer(t *testing.T) {
+	outFile := "dtailcolortable.stdout.tmp"
+	expectedOutFile := "dtailcolortable.expected"
+	port := getUniquePortNumber()
+	bindAddress := "localhost"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start dserver
+	_, _, _, err := startCommand(ctx, t,
+		"", "../dserver",
+		"--cfg", "none",
+		"--logger", "stdout",
+		"--logLevel", "error",
+		"--bindAddress", bindAddress,
+		"--port", fmt.Sprintf("%d", port),
+	)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	// Give server time to start
+	time.Sleep(500 * time.Millisecond)
+
+	_, err = runCommand(ctx, t, outFile, "../dtail", 
+		"--colorTable",
+		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
+		"--trustAllHosts")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	cancel()
+
 	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
 		t.Error(err)
 		return
