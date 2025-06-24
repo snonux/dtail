@@ -76,11 +76,18 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			return
 		}
 
+		// Skip empty server messages when in plain mode
+		if h.plain && (message == "" || message == "\n") {
+			return
+		}
+
 		// Handle normal server message (display to the user)
-		h.readBuf.WriteString("SERVER")
-		h.readBuf.WriteString(protocol.FieldDelimiter)
-		h.readBuf.WriteString(h.hostname)
-		h.readBuf.WriteString(protocol.FieldDelimiter)
+		if !h.plain {
+			h.readBuf.WriteString("SERVER")
+			h.readBuf.WriteString(protocol.FieldDelimiter)
+			h.readBuf.WriteString(h.hostname)
+			h.readBuf.WriteString(protocol.FieldDelimiter)
+		}
 		h.readBuf.WriteString(message)
 		h.readBuf.WriteByte(protocol.MessageDelimiter)
 		n = copy(p, h.readBuf.Bytes())
