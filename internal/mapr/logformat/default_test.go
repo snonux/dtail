@@ -88,7 +88,7 @@ func TestDefaultLogFormat(t *testing.T) {
 
 	fields, err := parser.MakeFields("foozoo=bar|bazbay")
 	if err != nil && err != ErrIgnoreFields {
-		t.Errorf(err.Error())
+		t.Errorf("%s", err.Error())
 	}
 
 	if _, ok := fields["foo"]; ok {

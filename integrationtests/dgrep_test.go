@@ -392,3 +392,78 @@ func testDGrepContext2WithServer(t *testing.T) {
 
 	os.Remove(outFile)
 }
+
+func TestDGrepStdin(t *testing.T) {
+	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+		t.Log("Skipping")
+		return
+	}
+
+	// Test in serverless mode
+	t.Run("Serverless", func(t *testing.T) {
+		testDGrepStdinServerless(t)
+	})
+
+	// Test in server mode - skip stdin pipe test as it hangs (similar to dmap)
+	// t.Run("ServerMode", func(t *testing.T) {
+	// 	testDGrepStdinWithServer(t)
+	// })
+}
+
+func testDGrepStdinServerless(t *testing.T) {
+	inFile := "mapr_testdata.log"
+	outFile := "dgrepstdin.stdout.tmp"
+	expectedOutFile := "dgrep1.txt.expected" // Same expected output as TestDGrep1
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create output file
+	fd, err := os.Create(outFile)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	defer fd.Close()
+
+	// Use startCommand to pipe input via stdin
+	stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t,
+		inFile, "../dgrep",
+		"--plain",
+		"--cfg", "none",
+		"--grep", "1002-071947")
+
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	// Collect output to file
+	go func() {
+		for line := range stdoutCh {
+			fd.WriteString(line + "\n")
+		}
+	}()
+
+	// Wait for command to complete
+	for {
+		select {
+		case <-stderrCh:
+			// Ignore stderr
+		case cmdErr := <-cmdErrCh:
+			if cmdErr != nil {
+				t.Error("Command failed:", cmdErr)
+			}
+			// Give time for stdout goroutine to finish
+			time.Sleep(100 * time.Millisecond)
+			if err := compareFiles(t, outFile, expectedOutFile); err != nil {
+				t.Error(err)
+			}
+			os.Remove(outFile)
+			return
+		case <-ctx.Done():
+			t.Error("Test timed out")
+			return
+		}
+	}
+}

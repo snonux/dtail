@@ -81,7 +81,7 @@ func compareFiles(t *testing.T, fileA, fileB string) error {
 		if bytes, err := exec.Command("diff", "-u", fileA, fileB).Output(); err != nil {
 			sb.Write(bytes)
 		}
-		return fmt.Errorf(sb.String())
+		return fmt.Errorf("%s", sb.String())
 	}
 
 	return nil
