@@ -192,6 +192,7 @@ func testDmap1WithServer(t *testing.T, query, subtestName string, usePipe bool) 
 	return nil
 }
 
+
 func TestDMap2(t *testing.T) {
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")

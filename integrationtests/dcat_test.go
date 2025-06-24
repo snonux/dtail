@@ -101,6 +101,129 @@ func testDCat1WithServer(t *testing.T, inFile string) error {
 	return nil
 }
 
+func TestDCat1Colors(t *testing.T) {
+	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+		t.Log("Skipping")
+		return
+	}
+
+	// Test in serverless mode
+	t.Run("Serverless", func(t *testing.T) {
+		testDCat1ColorsServerless(t)
+	})
+
+	// Test in server mode
+	t.Run("ServerMode", func(t *testing.T) {
+		testDCat1ColorsWithServer(t)
+	})
+}
+
+func testDCat1ColorsServerless(t *testing.T) {
+	inFile := "dcat1a.txt"
+	outFile := "dcat1colors.out"
+
+	// Run without --plain to get colored output
+	_, err := runCommand(context.TODO(), t, outFile,
+		"../dcat", "--cfg", "none", inFile)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	// Just verify it ran successfully and produced output
+	info, err := os.Stat(outFile)
+	if err != nil {
+		t.Error("Output file not created:", err)
+		return
+	}
+	if info.Size() == 0 {
+		t.Error("Output file is empty")
+		return
+	}
+
+	// Verify output contains ANSI color codes
+	content, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Error("Failed to read output file:", err)
+		return
+	}
+	if !strings.Contains(string(content), "\033[") {
+		t.Error("Output does not contain ANSI color codes")
+		return
+	}
+
+	os.Remove(outFile)
+}
+
+func testDCat1ColorsWithServer(t *testing.T) {
+	inFile := "dcat1a.txt"
+	outFile := "dcat1colors.out"
+	port := getUniquePortNumber()
+	bindAddress := "localhost"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start dserver
+	_, _, _, err := startCommand(ctx, t,
+		"", "../dserver",
+		"--cfg", "none",
+		"--logger", "stdout",
+		"--logLevel", "error",
+		"--bindAddress", bindAddress,
+		"--port", fmt.Sprintf("%d", port),
+	)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	// Give server time to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Run without --plain and without --noColor to get colored output
+	_, err = runCommand(ctx, t, outFile,
+		"../dcat", "--cfg", "none",
+		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
+		"--files", inFile,
+		"--trustAllHosts")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	cancel()
+
+	// Just verify it ran successfully and produced output
+	info, err := os.Stat(outFile)
+	if err != nil {
+		t.Error("Output file not created:", err)
+		return
+	}
+	if info.Size() == 0 {
+		t.Error("Output file is empty")
+		return
+	}
+
+	// In server mode, output should contain server metadata unless --plain is used
+	content, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Error("Failed to read output file:", err)
+		return
+	}
+	// In server mode with colors, look for REMOTE or SERVER (without pipe as it may be colored)
+	if !strings.Contains(string(content), "REMOTE") && !strings.Contains(string(content), "SERVER") {
+		preview := string(content)
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		t.Errorf("Server mode output does not contain server metadata. First 500 chars:\n%s", preview)
+		return
+	}
+
+	os.Remove(outFile)
+}
+
 func TestDCat2(t *testing.T) {
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		return

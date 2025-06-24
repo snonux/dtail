@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,136 @@ func testDGrep1WithServer(t *testing.T) {
 
 	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
 		t.Error(err)
+		return
+	}
+
+	os.Remove(outFile)
+}
+
+func TestDGrep1Colors(t *testing.T) {
+	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+		t.Log("Skipping")
+		return
+	}
+
+	// Test in serverless mode
+	t.Run("Serverless", func(t *testing.T) {
+		testDGrep1ColorsServerless(t)
+	})
+
+	// Test in server mode
+	t.Run("ServerMode", func(t *testing.T) {
+		testDGrep1ColorsWithServer(t)
+	})
+}
+
+func testDGrep1ColorsServerless(t *testing.T) {
+	inFile := "mapr_testdata.log"
+	outFile := "dgrep1colors.stdout.tmp"
+
+	// Run without --plain to get colored output
+	_, err := runCommand(context.TODO(), t, outFile,
+		"../dgrep",
+		"--cfg", "none",
+		"--grep", "1002-071947",
+		inFile)
+
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	// Verify it ran successfully and produced output
+	info, err := os.Stat(outFile)
+	if err != nil {
+		t.Error("Output file not created:", err)
+		return
+	}
+	if info.Size() == 0 {
+		t.Error("Output file is empty")
+		return
+	}
+
+	// Verify output contains ANSI color codes
+	content, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Error("Failed to read output file:", err)
+		return
+	}
+	if !strings.Contains(string(content), "\033[") {
+		t.Error("Output does not contain ANSI color codes")
+		return
+	}
+
+	os.Remove(outFile)
+}
+
+func testDGrep1ColorsWithServer(t *testing.T) {
+	inFile := "mapr_testdata.log"
+	outFile := "dgrep1colors.stdout.tmp"
+	port := getUniquePortNumber()
+	bindAddress := "localhost"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start dserver
+	_, _, _, err := startCommand(ctx, t,
+		"", "../dserver",
+		"--cfg", "none",
+		"--logger", "stdout",
+		"--logLevel", "error",
+		"--bindAddress", bindAddress,
+		"--port", fmt.Sprintf("%d", port),
+	)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	// Give server time to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Run without --plain and without --noColor to get colored output
+	_, err = runCommand(ctx, t, outFile,
+		"../dgrep",
+		"--cfg", "none",
+		"--grep", "1002-071947",
+		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
+		"--trustAllHosts",
+		"--files", inFile)
+
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	cancel()
+
+	// Verify it ran successfully and produced output
+	info, err := os.Stat(outFile)
+	if err != nil {
+		t.Error("Output file not created:", err)
+		return
+	}
+	if info.Size() == 0 {
+		t.Error("Output file is empty")
+		return
+	}
+
+	// In server mode, output should contain server metadata
+	content, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Error("Failed to read output file:", err)
+		return
+	}
+	// In server mode with colors, look for REMOTE or SERVER (without pipe as it may be colored)
+	if !strings.Contains(string(content), "REMOTE") && !strings.Contains(string(content), "SERVER") {
+		preview := string(content)
+		if len(preview) > 500 {
+			preview = preview[:500]
+		}
+		t.Errorf("Server mode output does not contain server metadata. First 500 chars:\n%s", preview)
 		return
 	}
 
@@ -399,15 +530,10 @@ func TestDGrepStdin(t *testing.T) {
 		return
 	}
 
-	// Test in serverless mode
+	// Test in serverless mode only - stdin pipe doesn't make sense with server mode
 	t.Run("Serverless", func(t *testing.T) {
 		testDGrepStdinServerless(t)
 	})
-
-	// Test in server mode - skip stdin pipe test as it hangs (similar to dmap)
-	// t.Run("ServerMode", func(t *testing.T) {
-	// 	testDGrepStdinWithServer(t)
-	// })
 }
 
 func testDGrepStdinServerless(t *testing.T) {
