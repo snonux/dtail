@@ -46,4 +46,4 @@ lint:
 test:
 	${GO} clean -testcache
 	set -e; find . -name '*_test.go' | while read file; do dirname $$file; done | \
-		sort -u | while read dir; do ${GO} test -tags '${GO_TAGS}' --race -v $$dir || exit 2; done
+		sort -u | while read dir; do ${GO} test -tags '${GO_TAGS}' --race -v -failfast $$dir || exit 2; done
