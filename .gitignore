@@ -2,7 +2,7 @@
 *.csv
 *.tmp
 *.out
-*.log
+Test*.log
 *.query
 append:*
 cache/
