@@ -1,1 +1,0 @@
-from STATS select count($line) outfile test.csv

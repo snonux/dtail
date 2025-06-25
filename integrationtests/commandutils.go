@@ -50,6 +50,11 @@ func runCommandRetry(ctx context.Context, t *testing.T, retries int, stdoutFile,
 
 func startCommand(ctx context.Context, t *testing.T, inPipeFile,
 	cmdStr string, args ...string) (<-chan string, <-chan string, <-chan error, error) {
+	return startCommandWithEnv(ctx, t, inPipeFile, cmdStr, nil, args...)
+}
+
+func startCommandWithEnv(ctx context.Context, t *testing.T, inPipeFile,
+	cmdStr string, env map[string]string, args ...string) (<-chan string, <-chan string, <-chan error, error) {
 
 	stdoutCh := make(chan string)
 	stderrCh := make(chan string)
@@ -61,6 +66,14 @@ func startCommand(ctx context.Context, t *testing.T, inPipeFile,
 
 	t.Log(cmdStr, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, cmdStr, args...)
+	
+	// Set environment variables if provided
+	if env != nil {
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
 
 	var stdinPipe io.WriteCloser
 	if inPipeFile != "" {

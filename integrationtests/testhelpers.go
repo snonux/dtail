@@ -25,6 +25,7 @@ type ServerConfig struct {
 	BindAddress string
 	LogLevel    string
 	ExtraArgs   []string
+	Env         map[string]string
 }
 
 // DefaultServerConfig returns a default server configuration
@@ -52,7 +53,7 @@ func startTestServer(t *testing.T, ctx context.Context, cfg *ServerConfig) error
 	}
 	args = append(args, cfg.ExtraArgs...)
 
-	_, _, _, err := startCommand(ctx, t, "", "../dserver", args...)
+	_, _, _, err := startCommandWithEnv(ctx, t, "", "../dserver", cfg.Env, args...)
 	if err != nil {
 		return err
 	}

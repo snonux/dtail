@@ -226,8 +226,8 @@ func testDMap3Serverless(t *testing.T) {
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 	cleanupFiles(t, outFile, csvFile, queryFile)
 
-	query := fmt.Sprintf("from STATS select $hostname,count($hostname),avg($queriesPerSecond) "+
-		"group by $hostname order by avg($queriesPerSecond) limit 10 reverse interval 1 "+
+	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),avg($goroutines),min($goroutines) "+
+		"group by $time order by count($time) desc "+
 		"outfile %s", csvFile)
 
 	// Create a large list of input files
@@ -272,8 +272,8 @@ func testDMap3WithServer(t *testing.T) {
 		return
 	}
 
-	query := fmt.Sprintf("from STATS select $hostname,count($hostname),avg($queriesPerSecond) "+
-		"group by $hostname order by avg($queriesPerSecond) limit 10 reverse interval 1 "+
+	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),avg($goroutines),min($goroutines) "+
+		"group by $time order by count($time) desc "+
 		"outfile %s", csvFile)
 
 	// Create a large list of input files
