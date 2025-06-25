@@ -14,6 +14,10 @@ import (
 func TestDMapMultiServer(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDMapMultiServer")
+	defer testLogger.WriteLogFile()
+
 	// Start three servers
 	server1 := NewTestServer(t)
 	server2 := NewTestServer(t)
@@ -50,6 +54,7 @@ func TestDMapMultiServer(t *testing.T) {
 	args.ExtraArgs = []string{"--query", query}
 
 	ctx, cancel := createTestContextWithTimeout(t)
+	ctx = WithTestLogger(ctx, testLogger)
 	defer cancel()
 
 	_, err := runCommand(ctx, t, outFile,
@@ -97,4 +102,7 @@ func TestDMapMultiServer(t *testing.T) {
 
 	t.Logf("Successfully aggregated data from %d servers", 3)
 	t.Logf("Top timestamp '%s' appeared %d times across all servers", fields[0], count)
+
+	// Log file verification
+	testLogger.LogFileComparison(csvFile, "GROUP BY results", "content verification")
 }

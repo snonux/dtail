@@ -4,12 +4,111 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
 )
+
+// TestLogger tracks test execution details for logging
+type TestLogger struct {
+	mu              sync.Mutex
+	commandHistory  []string
+	fileComparisons []string
+	testName        string
+}
+
+// NewTestLogger creates a new test logger
+func NewTestLogger(testName string) *TestLogger {
+	return &TestLogger{
+		testName:        testName,
+		commandHistory:  make([]string, 0),
+		fileComparisons: make([]string, 0),
+	}
+}
+
+// LogCommand logs a command execution
+func (tl *TestLogger) LogCommand(cmd string, args []string) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	fullCmd := fmt.Sprintf("%s %s", cmd, strings.Join(args, " "))
+	tl.commandHistory = append(tl.commandHistory, fullCmd)
+}
+
+// LogFileComparison logs a file comparison
+func (tl *TestLogger) LogFileComparison(fileA, fileB, method string) {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	comparison := fmt.Sprintf("Compared %s with %s using %s", fileA, fileB, method)
+	diffCmd := fmt.Sprintf("diff -u %s %s", fileA, fileB)
+	tl.fileComparisons = append(tl.fileComparisons, comparison)
+	tl.fileComparisons = append(tl.fileComparisons, fmt.Sprintf("Manual verification: %s", diffCmd))
+}
+
+// WriteLogFile writes the test log to a file
+func (tl *TestLogger) WriteLogFile() error {
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	
+	logFile := fmt.Sprintf("%s.log", tl.testName)
+	f, err := os.Create(logFile)
+	if err != nil {
+		return fmt.Errorf("failed to create log file: %w", err)
+	}
+	defer f.Close()
+	
+	fmt.Fprintf(f, "Test: %s\n", tl.testName)
+	fmt.Fprintf(f, "Timestamp: %s\n\n", time.Now().Format(time.RFC3339))
+	
+	fmt.Fprintf(f, "=== EXTERNAL COMMANDS EXECUTED (in order) ===\n")
+	for i, cmd := range tl.commandHistory {
+		fmt.Fprintf(f, "%d. %s\n", i+1, cmd)
+	}
+	
+	fmt.Fprintf(f, "\n=== FILE COMPARISONS ===\n")
+	for _, comparison := range tl.fileComparisons {
+		fmt.Fprintf(f, "%s\n", comparison)
+	}
+	
+	return nil
+}
+
+// testLoggerKey is the context key for storing the test logger
+type testLoggerKey struct{}
+
+// WithTestLogger adds a test logger to the context
+func WithTestLogger(ctx context.Context, logger *TestLogger) context.Context {
+	return context.WithValue(ctx, testLoggerKey{}, logger)
+}
+
+// GetTestLogger retrieves the test logger from the context
+func GetTestLogger(ctx context.Context) *TestLogger {
+	if logger, ok := ctx.Value(testLoggerKey{}).(*TestLogger); ok {
+		return logger
+	}
+	return nil
+}
+
+// cleanupTmpFiles removes all .tmp files in the current directory before test execution
+func cleanupTmpFiles(t *testing.T) {
+	t.Helper()
+	matches, err := filepath.Glob("*.tmp")
+	if err != nil {
+		t.Logf("Warning: failed to glob .tmp files: %v", err)
+		return
+	}
+	
+	for _, file := range matches {
+		if err := os.Remove(file); err != nil {
+			t.Logf("Warning: failed to remove %s: %v", file, err)
+		} else {
+			t.Logf("Cleaned up %s", file)
+		}
+	}
+}
 
 // skipIfNotIntegrationTest skips the test if integration tests are not enabled
 func skipIfNotIntegrationTest(t *testing.T) {
@@ -273,7 +372,7 @@ func runCommandAndVerify(t *testing.T, ctx context.Context, outFile, expectedFil
 		return err
 	}
 
-	if err := compareFiles(t, outFile, expectedFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedFile); err != nil {
 		return err
 	}
 
@@ -289,7 +388,7 @@ func runCommandAndVerifyContents(t *testing.T, ctx context.Context, outFile, exp
 		return err
 	}
 
-	if err := compareFilesContents(t, outFile, expectedFile); err != nil {
+	if err := compareFilesContentsWithContext(ctx, t, outFile, expectedFile); err != nil {
 		return err
 	}
 

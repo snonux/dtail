@@ -17,11 +17,15 @@ func TestDCat1(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDCat1")
+	defer testLogger.WriteLogFile()
+
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
 		inFiles := []string{"dcat1a.txt", "dcat1b.txt", "dcat1c.txt", "dcat1d.txt"}
 		for _, inFile := range inFiles {
-			if err := testDCat1Serverless(t, inFile); err != nil {
+			if err := testDCat1Serverless(t, testLogger, inFile); err != nil {
 				t.Error(err)
 				return
 			}
@@ -32,7 +36,7 @@ func TestDCat1(t *testing.T) {
 	t.Run("ServerMode", func(t *testing.T) {
 		inFiles := []string{"dcat1a.txt", "dcat1b.txt", "dcat1c.txt", "dcat1d.txt"}
 		for _, inFile := range inFiles {
-			if err := testDCat1WithServer(t, inFile); err != nil {
+			if err := testDCat1WithServer(t, testLogger, inFile); err != nil {
 				t.Error(err)
 				return
 			}
@@ -40,28 +44,29 @@ func TestDCat1(t *testing.T) {
 	})
 }
 
-func testDCat1Serverless(t *testing.T, inFile string) error {
-	outFile := "dcat1.out"
+func testDCat1Serverless(t *testing.T, logger *TestLogger, inFile string) error {
+	outFile := "dcat1.tmp"
+	ctx := WithTestLogger(context.Background(), logger)
 
-	_, err := runCommand(context.TODO(), t, outFile,
+	_, err := runCommand(ctx, t, outFile,
 		"../dcat", "--plain", "--cfg", "none", inFile)
 	if err != nil {
 		return err
 	}
-	if err := compareFiles(t, outFile, inFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, inFile); err != nil {
 		return err
 	}
 
-	os.Remove(outFile)
 	return nil
 }
 
-func testDCat1WithServer(t *testing.T, inFile string) error {
-	outFile := "dcat1.out"
+func testDCat1WithServer(t *testing.T, logger *TestLogger, inFile string) error {
+	outFile := "dcat1.tmp"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	// Start dserver
@@ -93,11 +98,10 @@ func testDCat1WithServer(t *testing.T, inFile string) error {
 
 	cancel()
 
-	if err := compareFiles(t, outFile, inFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, inFile); err != nil {
 		return err
 	}
 
-	os.Remove(outFile)
 	return nil
 }
 
@@ -107,23 +111,28 @@ func TestDCat1Colors(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDCat1Colors")
+	defer testLogger.WriteLogFile()
+
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
-		testDCat1ColorsServerless(t)
+		testDCat1ColorsServerless(t, testLogger)
 	})
 
 	// Test in server mode
 	t.Run("ServerMode", func(t *testing.T) {
-		testDCat1ColorsWithServer(t)
+		testDCat1ColorsWithServer(t, testLogger)
 	})
 }
 
-func testDCat1ColorsServerless(t *testing.T) {
+func testDCat1ColorsServerless(t *testing.T, logger *TestLogger) {
 	inFile := "dcat1a.txt"
-	outFile := "dcat1colors.out"
+	outFile := "dcat1colors_serverless.tmp"
+	ctx := WithTestLogger(context.Background(), logger)
 
 	// Run without --plain to get colored output
-	_, err := runCommand(context.TODO(), t, outFile,
+	_, err := runCommand(ctx, t, outFile,
 		"../dcat", "--cfg", "none", inFile)
 	if err != nil {
 		t.Error(err)
@@ -152,16 +161,18 @@ func testDCat1ColorsServerless(t *testing.T) {
 		return
 	}
 
-	os.Remove(outFile)
+	// Log verification
+	logger.LogFileComparison(outFile, "ANSI color codes", "contains check")
 }
 
-func testDCat1ColorsWithServer(t *testing.T) {
+func testDCat1ColorsWithServer(t *testing.T, logger *TestLogger) {
 	inFile := "dcat1a.txt"
-	outFile := "dcat1colors.out"
+	outFile := "dcat1colors_server.tmp"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	// Start dserver
@@ -221,7 +232,8 @@ func testDCat1ColorsWithServer(t *testing.T) {
 		return
 	}
 
-	os.Remove(outFile)
+	// Log verification
+	logger.LogFileComparison(outFile, "server metadata (REMOTE/SERVER)", "contains check")
 }
 
 func TestDCat2(t *testing.T) {
@@ -229,21 +241,26 @@ func TestDCat2(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDCat2")
+	defer testLogger.WriteLogFile()
+
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
-		testDCat2Serverless(t)
+		testDCat2Serverless(t, testLogger)
 	})
 
 	// Test in server mode
 	t.Run("ServerMode", func(t *testing.T) {
-		testDCat2WithServer(t)
+		testDCat2WithServer(t, testLogger)
 	})
 }
 
-func testDCat2Serverless(t *testing.T) {
+func testDCat2Serverless(t *testing.T, logger *TestLogger) {
 	inFile := "dcat2.txt"
 	expectedFile := "dcat2.txt.expected"
-	outFile := "dcat2.out"
+	outFile := "dcat2_serverless.tmp"
+	ctx := WithTestLogger(context.Background(), logger)
 
 	args := []string{"--plain", "--logLevel", "error", "--cfg", "none"}
 
@@ -252,28 +269,27 @@ func testDCat2Serverless(t *testing.T) {
 		args = append(args, inFile)
 	}
 
-	_, err := runCommand(context.TODO(), t, outFile, "../dcat", args...)
+	_, err := runCommand(ctx, t, outFile, "../dcat", args...)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	if err := compareFilesContents(t, outFile, expectedFile); err != nil {
+	if err := compareFilesContentsWithContext(ctx, t, outFile, expectedFile); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }
 
-func testDCat2WithServer(t *testing.T) {
+func testDCat2WithServer(t *testing.T, logger *TestLogger) {
 	inFile := "dcat2.txt"
 	expectedFile := "dcat2.txt.expected"
-	outFile := "dcat2.out"
+	outFile := "dcat2_server.tmp"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	// Start dserver
@@ -311,12 +327,10 @@ func testDCat2WithServer(t *testing.T) {
 
 	cancel()
 
-	if err := compareFilesContents(t, outFile, expectedFile); err != nil {
+	if err := compareFilesContentsWithContext(ctx, t, outFile, expectedFile); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }
 
 func TestDCat3(t *testing.T) {
@@ -324,48 +338,52 @@ func TestDCat3(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDCat3")
+	defer testLogger.WriteLogFile()
+
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
-		testDCat3Serverless(t)
+		testDCat3Serverless(t, testLogger)
 	})
 
 	// Test in server mode
 	t.Run("ServerMode", func(t *testing.T) {
-		testDCat3WithServer(t)
+		testDCat3WithServer(t, testLogger)
 	})
 }
 
-func testDCat3Serverless(t *testing.T) {
+func testDCat3Serverless(t *testing.T, logger *TestLogger) {
 	inFile := "dcat3.txt"
 	expectedFile := "dcat3.txt.expected"
-	outFile := "dcat3.out"
+	outFile := "dcat3_serverless.tmp"
+	ctx := WithTestLogger(context.Background(), logger)
 
 	args := []string{"--plain", "--logLevel", "error", "--cfg", "none", inFile}
 
 	// Notice, with DTAIL_INTEGRATION_TEST_RUN_MODE the DTail max line length is set
 	// to 1024!
-	_, err := runCommand(context.TODO(), t, outFile, "../dcat", args...)
+	_, err := runCommand(ctx, t, outFile, "../dcat", args...)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	if err := compareFilesContents(t, outFile, expectedFile); err != nil {
+	if err := compareFilesContentsWithContext(ctx, t, outFile, expectedFile); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }
 
-func testDCat3WithServer(t *testing.T) {
+func testDCat3WithServer(t *testing.T, logger *TestLogger) {
 	inFile := "dcat3.txt"
 	expectedFile := "dcat3.txt.expected"
-	outFile := "dcat3.out"
+	outFile := "dcat3_server.tmp"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	// Start dserver
@@ -401,12 +419,10 @@ func testDCat3WithServer(t *testing.T) {
 
 	cancel()
 
-	if err := compareFilesContents(t, outFile, expectedFile); err != nil {
+	if err := compareFilesContentsWithContext(ctx, t, outFile, expectedFile); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }
 
 func TestDCatColors(t *testing.T) {
@@ -414,23 +430,28 @@ func TestDCatColors(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDCatColors")
+	defer testLogger.WriteLogFile()
+
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
-		testDCatColorsServerless(t)
+		testDCatColorsServerless(t, testLogger)
 	})
 
 	// Test in server mode
 	t.Run("ServerMode", func(t *testing.T) {
-		testDCatColorsWithServer(t)
+		testDCatColorsWithServer(t, testLogger)
 	})
 }
 
-func testDCatColorsServerless(t *testing.T) {
+func testDCatColorsServerless(t *testing.T, logger *TestLogger) {
 	inFile := "dcatcolors.txt"
-	outFile := "dcatcolors.out"
+	outFile := "dcatcolors_serverless.tmp"
 	expectedFile := "dcatcolors.expected"
+	ctx := WithTestLogger(context.Background(), logger)
 
-	_, err := runCommand(context.TODO(), t, outFile,
+	_, err := runCommand(ctx, t, outFile,
 		"../dcat", "--logLevel", "error", "--cfg", "none", inFile)
 
 	if err != nil {
@@ -438,22 +459,21 @@ func testDCatColorsServerless(t *testing.T) {
 		return
 	}
 
-	if err := compareFiles(t, outFile, expectedFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedFile); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }
 
-func testDCatColorsWithServer(t *testing.T) {
+func testDCatColorsWithServer(t *testing.T, logger *TestLogger) {
 	inFile := "dcatcolors.txt"
-	outFile := "dcatcolors.out"
+	outFile := "dcatcolors_server.tmp"
 	expectedFile := "dcatcolors.server.expected"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	// Start dserver
@@ -487,10 +507,8 @@ func testDCatColorsWithServer(t *testing.T) {
 
 	cancel()
 
-	if err := compareFiles(t, outFile, expectedFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedFile); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }

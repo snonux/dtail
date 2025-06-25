@@ -20,6 +20,11 @@ func runCommand(ctx context.Context, t *testing.T, stdoutFile, cmdStr string,
 		return 0, fmt.Errorf("no such executable '%s', please compile first: %w", cmdStr, err)
 	}
 
+	// Log command execution if logger is available
+	if logger := GetTestLogger(ctx); logger != nil {
+		logger.LogCommand(cmdStr, args)
+	}
+
 	t.Log("Creating stdout file", stdoutFile)
 	fd, err := os.Create(stdoutFile)
 	if err != nil {
@@ -62,6 +67,11 @@ func startCommandWithEnv(ctx context.Context, t *testing.T, inPipeFile,
 	if _, err := os.Stat(cmdStr); err != nil {
 		return stdoutCh, stderrCh, nil,
 			fmt.Errorf("no such executable '%s', please compile first: %w", cmdStr, err)
+	}
+
+	// Log command execution if logger is available
+	if logger := GetTestLogger(ctx); logger != nil {
+		logger.LogCommand(cmdStr, args)
 	}
 
 	t.Log(cmdStr, strings.Join(args, " "))

@@ -12,6 +12,10 @@ import (
 )
 
 func TestDTailWithServer(t *testing.T) {
+	testLogger := NewTestLogger("TestDTailWithServer")
+	defer testLogger.WriteLogFile()
+	cleanupTmpFiles(t)
+	
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
@@ -22,6 +26,7 @@ func TestDTailWithServer(t *testing.T) {
 	greetings := []string{"World!", "Sol-System!", "Milky-Way!", "Universe!", "Multiverse!"}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, testLogger)
 	defer cancel()
 
 	go func() {
@@ -126,7 +131,7 @@ func TestDTailWithServer(t *testing.T) {
 		}
 	}
 
-	os.Remove(followFile)
+	// File cleanup handled by cleanupTmpFiles
 }
 
 func TestDTailColorTable(t *testing.T) {
@@ -135,40 +140,46 @@ func TestDTailColorTable(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDTailColorTable")
+	defer testLogger.WriteLogFile()
+
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
-		testDTailColorTableServerless(t)
+		testDTailColorTableServerless(t, testLogger)
 	})
 
 	// Test in server mode
 	t.Run("ServerMode", func(t *testing.T) {
-		testDTailColorTableWithServer(t)
+		testDTailColorTableWithServer(t, testLogger)
 	})
 }
 
-func testDTailColorTableServerless(t *testing.T) {
+func testDTailColorTableServerless(t *testing.T, logger *TestLogger) {
+	ctx := WithTestLogger(context.Background(), logger)
+	
 	outFile := "dtailcolortable.stdout.tmp"
 	expectedOutFile := "dtailcolortable.expected"
 
-	_, err := runCommand(context.TODO(), t, outFile, "../dtail", "--colorTable")
+	_, err := runCommand(ctx, t, outFile, "../dtail", "--colorTable")
 	if err != nil {
 		t.Error(err)
 		return
 	}
-	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
 		t.Error(err)
 		return
 	}
-	os.Remove(outFile)
 }
 
-func testDTailColorTableWithServer(t *testing.T) {
+func testDTailColorTableWithServer(t *testing.T, logger *TestLogger) {
 	outFile := "dtailcolortable.stdout.tmp"
 	expectedOutFile := "dtailcolortable.expected"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	// Start dserver
@@ -199,9 +210,8 @@ func testDTailColorTableWithServer(t *testing.T) {
 
 	cancel()
 
-	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
 		t.Error(err)
 		return
 	}
-	os.Remove(outFile)
 }

@@ -3,7 +3,6 @@ package integrationtests
 import (
 	"context"
 	"fmt"
-	"os"
 	"testing"
 	"time"
 
@@ -16,43 +15,48 @@ func TestDTailHealth1(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDTailHealth1")
+	defer testLogger.WriteLogFile()
+
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
-		testDTailHealth1Serverless(t)
+		testDTailHealth1Serverless(t, testLogger)
 	})
 
 	// Test in server mode - this test checks when no servers are specified
 	// so server mode behavior should be the same
 	t.Run("ServerMode", func(t *testing.T) {
-		testDTailHealth1WithServer(t)
+		testDTailHealth1WithServer(t, testLogger)
 	})
 }
 
-func testDTailHealth1Serverless(t *testing.T) {
+func testDTailHealth1Serverless(t *testing.T, logger *TestLogger) {
 	outFile := "dtailhealth1.stdout.tmp"
 	expectedOutFile := "dtailhealth1.expected"
+	ctx := WithTestLogger(context.Background(), logger)
 
 	t.Log("Serverless check, is supposed to exit with warning state.")
-	exitCode, err := runCommand(context.TODO(), t, outFile, "../dtailhealth")
+	exitCode, err := runCommand(ctx, t, outFile, "../dtailhealth")
 	if exitCode != 1 {
 		t.Errorf("Expected exit code '1' but got '%d': %v", exitCode, err)
 		return
 	}
 
-	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
 		t.Error(err)
 		return
 	}
-	os.Remove(outFile)
 }
 
-func testDTailHealth1WithServer(t *testing.T) {
+func testDTailHealth1WithServer(t *testing.T, logger *TestLogger) {
 	outFile := "dtailhealth1.stdout.tmp"
 	expectedOutFile := "dtailhealth1.expected"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	// Start dserver
@@ -82,11 +86,10 @@ func testDTailHealth1WithServer(t *testing.T) {
 
 	cancel()
 
-	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
 		t.Error(err)
 		return
 	}
-	os.Remove(outFile)
 }
 
 func TestDTailHealth2(t *testing.T) {
@@ -95,23 +98,28 @@ func TestDTailHealth2(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDTailHealth2")
+	defer testLogger.WriteLogFile()
+
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
-		testDTailHealth2Serverless(t)
+		testDTailHealth2Serverless(t, testLogger)
 	})
 
 	// Test in server mode - testing unreachable server
 	t.Run("ServerMode", func(t *testing.T) {
-		testDTailHealth2WithServer(t)
+		testDTailHealth2WithServer(t, testLogger)
 	})
 }
 
-func testDTailHealth2Serverless(t *testing.T) {
+func testDTailHealth2Serverless(t *testing.T, logger *TestLogger) {
 	outFile := "dtailhealth2.stdout.tmp"
 	expectedOutFile := "dtailhealth2.expected"
+	ctx := WithTestLogger(context.Background(), logger)
 
 	t.Log("Negative test, is supposed to exit with a critical state.")
-	exitCode, err := runCommand(context.TODO(), t, outFile,
+	exitCode, err := runCommand(ctx, t, outFile,
 		"../dtailhealth", "--server", "example:1")
 
 	if exitCode != 2 {
@@ -119,21 +127,20 @@ func testDTailHealth2Serverless(t *testing.T) {
 		return
 	}
 
-	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }
 
-func testDTailHealth2WithServer(t *testing.T) {
+func testDTailHealth2WithServer(t *testing.T, logger *TestLogger) {
 	outFile := "dtailhealth2.stdout.tmp"
 	expectedOutFile := "dtailhealth2.expected"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	// Start dserver  
@@ -165,12 +172,10 @@ func testDTailHealth2WithServer(t *testing.T) {
 
 	cancel()
 
-	if err := compareFiles(t, outFile, expectedOutFile); err != nil {
+	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }
 
 func TestDTailHealthCheck3(t *testing.T) {
@@ -179,19 +184,24 @@ func TestDTailHealthCheck3(t *testing.T) {
 		return
 	}
 
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDTailHealthCheck3")
+	defer testLogger.WriteLogFile()
+
 	// This test only makes sense with a server
 	t.Run("ServerMode", func(t *testing.T) {
-		testDTailHealthCheck3WithServer(t)
+		testDTailHealthCheck3WithServer(t, testLogger)
 	})
 }
 
-func testDTailHealthCheck3WithServer(t *testing.T) {
+func testDTailHealthCheck3WithServer(t *testing.T, logger *TestLogger) {
 	outFile := "dtailhealth3.stdout.tmp"
 	port := getUniquePortNumber()
 	bindAddress := "localhost"
 	expectedOut := fmt.Sprintf("OK: All fine at %s:%d :-)", bindAddress, port)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
 	_, _, _, err := startCommand(ctx, t,
@@ -214,10 +224,8 @@ func testDTailHealthCheck3WithServer(t *testing.T) {
 		return
 	}
 
-	if err := fileContainsStr(t, outFile, expectedOut); err != nil {
+	if err := fileContainsStrWithContext(ctx, t, outFile, expectedOut); err != nil {
 		t.Error(err)
 		return
 	}
-
-	os.Remove(outFile)
 }
