@@ -47,3 +47,9 @@ test:
 	${GO} clean -testcache
 	set -e; find . -name '*_test.go' | while read file; do dirname $$file; done | \
 		sort -u | while read dir; do ${GO} test -tags '${GO_TAGS}' --race -v -failfast $$dir || exit 2; done
+benchmark: build
+	${GO} test -bench=. ./benchmarks
+benchmark-quick: build
+	${GO} test -bench=BenchmarkQuick ./benchmarks
+benchmark-full: build
+	${GO} test -bench=. -benchtime=3x ./benchmarks

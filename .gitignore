@@ -8,6 +8,7 @@ append:*
 cache/
 log/
 tags
+benchmark_results/
 /cache/
 /log/
 /dtail
