@@ -72,6 +72,16 @@ func createTestContext(t *testing.T) (context.Context, context.CancelFunc) {
 	return ctx, cancel
 }
 
+// createTestContextWithTimeout creates a context with a 2-minute timeout that will be cleaned up automatically
+func createTestContextWithTimeout(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	t.Cleanup(func() {
+		cancel()
+	})
+	return ctx, cancel
+}
+
 // cleanupFiles registers files to be removed during test cleanup
 func cleanupFiles(t *testing.T, files ...string) {
 	t.Helper()
@@ -169,6 +179,10 @@ func (c *CommandArgs) ToSlice() []string {
 	if c.NoColor {
 		args = append(args, "--noColor")
 	}
+	
+	// Add ExtraArgs before server/files args for commands like dgrep where order matters
+	args = append(args, c.ExtraArgs...)
+	
 	if len(c.Servers) > 0 {
 		args = append(args, "--servers", strings.Join(c.Servers, ","))
 	}
@@ -179,7 +193,7 @@ func (c *CommandArgs) ToSlice() []string {
 		args = append(args, "--files", strings.Join(c.Files, ","))
 	}
 	
-	return append(args, c.ExtraArgs...)
+	return args
 }
 
 // DualModeTest represents a test that runs in both serverless and server modes
@@ -315,4 +329,21 @@ func GetStandardTestPaths() *StandardTestPaths {
 		DCat3File:    "dcat3.txt",
 		ColorFile:    "dcatcolors.txt",
 	}
+}
+
+// verifyQueryFile checks if the query file contains the expected query content
+func verifyQueryFile(t *testing.T, queryFile, expectedQuery string) error {
+	t.Helper()
+	
+	content, err := os.ReadFile(queryFile)
+	if err != nil {
+		return fmt.Errorf("failed to read query file: %w", err)
+	}
+	
+	actualQuery := string(content)
+	if actualQuery != expectedQuery {
+		return fmt.Errorf("query mismatch:\nExpected: %s\nActual: %s", expectedQuery, actualQuery)
+	}
+	
+	return nil
 }

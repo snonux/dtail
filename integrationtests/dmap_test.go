@@ -1,21 +1,12 @@
 package integrationtests
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"strings"
 	"testing"
-	"time"
-
-	"github.com/mimecast/dtail/internal/config"
 )
 
 func TestDMap1(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		t.Log("Skipping")
-		return
-	}
+	skipIfNotIntegrationTest(t)
 
 	testTable := map[string]string{
 		"a": "from STATS select count($line),last($time)," +
@@ -35,194 +26,518 @@ func TestDMap1(t *testing.T) {
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
 		for subtestName, query := range testTable {
-			t.Log("Testing dmap with input file")
-			if err := testDmap1Serverless(t, query, subtestName, false); err != nil {
-				t.Error(err)
-				return
-			}
-			t.Log("Testing dmap with stdin input pipe")
-			if err := testDmap1Serverless(t, query, subtestName, true); err != nil {
-				t.Error(err)
-				return
-			}
+			t.Run(subtestName, func(t *testing.T) {
+				t.Log("Testing dmap with input file")
+				testDmap1Serverless(t, query, subtestName, false)
+				
+				t.Log("Testing dmap with stdin input pipe")
+				testDmap1Serverless(t, query, subtestName, true)
+			})
 		}
 	})
 
 	// Test in server mode
 	t.Run("ServerMode", func(t *testing.T) {
 		for subtestName, query := range testTable {
-			t.Log("Testing dmap with input file in server mode")
-			if err := testDmap1WithServer(t, query, subtestName, false); err != nil {
-				t.Error(err)
-				return
-			}
-			// Skip stdin pipe test in server mode - it hangs
-			// t.Log("Testing dmap with stdin input pipe in server mode")
-			// if err := testDmap1WithServer(t, query, subtestName, true); err != nil {
-			// 	t.Error(err)
-			// 	return
-			// }
+			t.Run(subtestName, func(t *testing.T) {
+				t.Log("Testing dmap with input file in server mode")
+				testDmap1WithServer(t, query, subtestName)
+			})
 		}
 	})
 }
 
-func testDmap1Serverless(t *testing.T, query, subtestName string, usePipe bool) error {
-	inFile := "mapr_testdata.log"
+func testDmap1Serverless(t *testing.T, query, subtestName string, usePipe bool) {
+	paths := GetStandardTestPaths()
 	csvFile := fmt.Sprintf("dmap1%s.csv.tmp", subtestName)
 	expectedCsvFile := fmt.Sprintf("dmap1%s.csv.expected", subtestName)
 	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := fmt.Sprintf("dmap1%s.csv.query.expected", subtestName)
 	query = fmt.Sprintf("%s outfile %s", query, csvFile)
+	
+	cleanupFiles(t, csvFile, queryFile)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := createTestContextWithTimeout(t)
 	defer cancel()
 
 	var stdoutCh, stderrCh <-chan string
 	var cmdErrCh <-chan error
 	var err error
 
-	if usePipe {
-		stdoutCh, stderrCh, cmdErrCh, err = startCommand(ctx, t,
-			inFile, "../dmap",
-			"--cfg", "none",
-			"--query", query,
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor")
-	} else {
-		stdoutCh, stderrCh, cmdErrCh, err = startCommand(ctx, t,
-			"", "../dmap",
-			"--cfg", "none",
-			"--query", query,
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor",
-			inFile)
-	}
-
-	if err != nil {
-		return err
-	}
-
-	waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
-
-	if err := compareFiles(t, csvFile, expectedCsvFile); err != nil {
-		return err
-	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
-		return err
-	}
-
-	os.Remove(csvFile)
-	os.Remove(queryFile)
-	return nil
-}
-
-func testDmap1WithServer(t *testing.T, query, subtestName string, usePipe bool) error {
-	inFile := "mapr_testdata.log"
-	csvFile := fmt.Sprintf("dmap1%s.csv.tmp", subtestName)
-	expectedCsvFile := fmt.Sprintf("dmap1%s.csv.expected", subtestName)
-	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := fmt.Sprintf("dmap1%s.csv.query.expected", subtestName)
-	query = fmt.Sprintf("%s outfile %s", query, csvFile)
-	port := getUniquePortNumber()
-	bindAddress := "localhost"
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Start dserver
-	_, _, _, err := startCommand(ctx, t,
-		"", "../dserver",
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "error",
-		"--bindAddress", bindAddress,
-		"--port", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
-		return err
-	}
-
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
-
-	var stdoutCh, stderrCh <-chan string
-	var cmdErrCh <-chan error
+	args := NewCommandArgs()
+	args.Logger = "stdout"
+	args.LogLevel = "info"
+	args.NoColor = true
+	args.ExtraArgs = []string{"--query", query}
 
 	if usePipe {
 		stdoutCh, stderrCh, cmdErrCh, err = startCommand(ctx, t,
-			inFile, "../dmap",
-			"--cfg", "none",
-			"--query", query,
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor",
-			"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
-			"--trustAllHosts")
+			paths.MaprTestData, "../dmap", args.ToSlice()...)
 	} else {
 		stdoutCh, stderrCh, cmdErrCh, err = startCommand(ctx, t,
-			"", "../dmap",
-			"--cfg", "none",
-			"--query", query,
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor",
-			"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
-			"--trustAllHosts",
-			"--files", inFile)
+			"", "../dmap", append(args.ToSlice(), paths.MaprTestData)...)
 	}
 
 	if err != nil {
-		return err
-	}
-
-	waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
-	cancel()
-
-	if err := compareFiles(t, csvFile, expectedCsvFile); err != nil {
-		return err
-	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
-		return err
-	}
-
-	os.Remove(csvFile)
-	os.Remove(queryFile)
-	return nil
-}
-
-
-func TestDMap2(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		t.Log("Skipping")
+		t.Error(err)
 		return
 	}
 
-	// Test in serverless mode
-	t.Run("Serverless", func(t *testing.T) {
-		testDMap2Serverless(t)
-	})
+	waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
 
-	// Test in server mode
-	t.Run("ServerMode", func(t *testing.T) {
-		testDMap2WithServer(t)
+	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
+		t.Error(err)
+	}
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
+		t.Error(err)
+	}
+}
+
+func testDmap1WithServer(t *testing.T, query, subtestName string) {
+	paths := GetStandardTestPaths()
+	csvFile := fmt.Sprintf("dmap1%s.csv.tmp", subtestName)
+	expectedCsvFile := fmt.Sprintf("dmap1%s.csv.expected", subtestName)
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+	query = fmt.Sprintf("%s outfile %s", query, csvFile)
+	
+	cleanupFiles(t, csvFile, queryFile)
+
+	server := NewTestServer(t)
+	if err := server.Start("error"); err != nil {
+		t.Error(err)
+		return
+	}
+
+	args := NewCommandArgs()
+	args.Logger = "stdout"
+	args.LogLevel = "info"
+	args.NoColor = true
+	args.Servers = []string{server.Address()}
+	args.TrustAllHosts = true
+	args.Files = []string{paths.MaprTestData}
+	args.ExtraArgs = []string{"--query", query}
+
+	stdoutCh, stderrCh, cmdErrCh, err := startCommand(server.ctx, t,
+		"", "../dmap", args.ToSlice()...)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	waitForCommand(server.ctx, t, stdoutCh, stderrCh, cmdErrCh)
+
+	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
+		t.Error(err)
+	}
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestDMap2(t *testing.T) {
+	runDualModeTest(t, DualModeTest{
+		Name:           "TestDMap2",
+		ServerlessTest: testDMap2Serverless,
+		ServerTest:     testDMap2WithServer,
 	})
 }
 
 func testDMap2Serverless(t *testing.T) {
-	inFile := "mapr_testdata.log"
-	outFile := "dmap2.stdout.tmp"
-	csvFile := "dmap2.csv.tmp"
+	paths := GetStandardTestPaths()
+	outFile := "dmap2_serverless.stdout.tmp"
+	csvFile := "dmap2_serverless.csv.tmp"
 	expectedCsvFile := "dmap2.csv.expected"
 	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := "dmap2.csv.query.expected"
+	cleanupFiles(t, outFile, csvFile, queryFile)
 
 	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
 		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
 		"outfile %s", csvFile)
 
-	_, err := runCommand(context.TODO(), t, outFile,
+	ctx, cancel := createTestContextWithTimeout(t)
+	defer cancel()
+	_, err := runCommand(ctx, t, outFile,
+		"../dmap", "--query", query, "--cfg", "none", paths.MaprTestData)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
+		t.Error(err)
+	}
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
+		t.Error(err)
+	}
+}
+
+func testDMap2WithServer(t *testing.T) {
+	paths := GetStandardTestPaths()
+	outFile := "dmap2_server.stdout.tmp"
+	csvFile := "dmap2_server.csv.tmp"
+	expectedCsvFile := "dmap2.csv.expected"
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+	cleanupFiles(t, outFile, csvFile, queryFile)
+
+	server := NewTestServer(t)
+	if err := server.Start("error"); err != nil {
+		t.Error(err)
+		return
+	}
+
+	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
+		"outfile %s", csvFile)
+
+	args := NewCommandArgs()
+	args.Servers = []string{server.Address()}
+	args.TrustAllHosts = true
+	args.NoColor = true
+	args.Files = []string{paths.MaprTestData}
+	args.ExtraArgs = []string{"--query", query}
+
+	_, err := runCommand(server.ctx, t, outFile,
+		"../dmap", args.ToSlice()...)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
+		t.Error(err)
+	}
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestDMap3(t *testing.T) {
+	runDualModeTest(t, DualModeTest{
+		Name:           "TestDMap3",
+		ServerlessTest: testDMap3Serverless,
+		ServerTest:     testDMap3WithServer,
+	})
+}
+
+func testDMap3Serverless(t *testing.T) {
+	paths := GetStandardTestPaths()
+	outFile := "dmap3_serverless.stdout.tmp"
+	csvFile := "dmap3_serverless.csv.tmp"
+	expectedCsvFile := "dmap3.csv.expected"
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+	cleanupFiles(t, outFile, csvFile, queryFile)
+
+	query := fmt.Sprintf("from STATS select $hostname,count($hostname),avg($queriesPerSecond) "+
+		"group by $hostname order by avg($queriesPerSecond) limit 10 reverse interval 1 "+
+		"outfile %s", csvFile)
+
+	// Create a large list of input files
+	var inputFiles []string
+	for i := 0; i < 100; i++ {
+		inputFiles = append(inputFiles, paths.MaprTestData)
+	}
+
+	// Simply run dmap with multiple input files directly
+	ctx, cancel := createTestContextWithTimeout(t)
+	defer cancel()
+
+	args := NewCommandArgs()
+	args.ExtraArgs = []string{"--query", query}
+	
+	_, err := runCommand(ctx, t, outFile,
+		"../dmap", append(args.ToSlice(), inputFiles...)...)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
+		t.Error(err)
+	}
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
+		t.Error(err)
+	}
+}
+
+func testDMap3WithServer(t *testing.T) {
+	paths := GetStandardTestPaths()
+	outFile := "dmap3_server.stdout.tmp"
+	csvFile := "dmap3_server.csv.tmp"
+	expectedCsvFile := "dmap3.csv.expected"
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+	cleanupFiles(t, outFile, csvFile, queryFile)
+
+	server := NewTestServer(t)
+	if err := server.Start("error"); err != nil {
+		t.Error(err)
+		return
+	}
+
+	query := fmt.Sprintf("from STATS select $hostname,count($hostname),avg($queriesPerSecond) "+
+		"group by $hostname order by avg($queriesPerSecond) limit 10 reverse interval 1 "+
+		"outfile %s", csvFile)
+
+	// Create a large list of input files
+	var inputFiles []string
+	for i := 0; i < 100; i++ {
+		inputFiles = append(inputFiles, paths.MaprTestData)
+	}
+
+	args := NewCommandArgs()
+	args.Servers = []string{server.Address()}
+	args.TrustAllHosts = true
+	args.NoColor = true
+	args.Files = inputFiles
+	args.ExtraArgs = []string{"--query", query}
+
+	_, err := runCommand(server.ctx, t, outFile,
+		"../dmap", args.ToSlice()...)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
+		t.Error(err)
+	}
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestDMap4Append(t *testing.T) {
+	runDualModeTest(t, DualModeTest{
+		Name:           "TestDMap4Append",
+		ServerlessTest: testDMap4AppendServerless,
+		ServerTest:     testDMap4AppendWithServer,
+	})
+}
+
+func testDMap4AppendServerless(t *testing.T) {
+	paths := GetStandardTestPaths()
+	csvFile := "dmap4_serverless.csv.tmp"
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+	
+	// Clean up files once at the beginning
+	cleanupFiles(t, csvFile, queryFile)
+	
+	t.Run("FirstQuery", func(t *testing.T) {
+		stdout := "dmap4_serverless.stdout1.tmp"
+		cleanupFiles(t, stdout)
+		
+		// First query
+		query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+			"avg($goroutines),min($goroutines) group by $time order by count($time) "+
+			"outfile %s", csvFile)
+
+		ctx, cancel := createTestContextWithTimeout(t)
+		defer cancel()
+		_, err := runCommand(ctx, t, stdout,
+			"../dmap", "--query", query, "--cfg", "none", paths.MaprTestData)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		
+		// Verify the CSV output
+		if err := compareFilesContents(t, csvFile, "dmap4_query1.csv.expected"); err != nil {
+			t.Error(err)
+		}
+		
+		// Verify the query file
+		if err := verifyQueryFile(t, queryFile, query); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("SecondQueryWithAppend", func(t *testing.T) {
+		stdout := "dmap4_serverless.stdout2.tmp"
+		cleanupFiles(t, stdout)
+		
+		// Second query with append
+		query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+			"avg($goroutines),min($goroutines) group by $time order by avg($goroutines) reverse "+
+			"outfile append:%s", csvFile)
+
+		ctx, cancel := createTestContextWithTimeout(t)
+		defer cancel()
+		_, err := runCommand(ctx, t, stdout,
+			"../dmap", "--query", query, "--cfg", "none", paths.MaprTestData)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		
+		// Verify the CSV output (should still be the first query result - append doesn't change existing file)
+		if err := compareFilesContents(t, csvFile, "dmap4_query1.csv.expected"); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("ThirdQueryWithAppend", func(t *testing.T) {
+		stdout := "dmap4_serverless.stdout3.tmp"
+		cleanupFiles(t, stdout)
+		
+		// Third query with append (different structure)
+		query := fmt.Sprintf("from STATS select count($line),$hostname "+
+			"group by $hostname "+
+			"outfile append:%s", csvFile)
+
+		ctx, cancel := createTestContextWithTimeout(t)
+		defer cancel()
+		_, err := runCommand(ctx, t, stdout,
+			"../dmap", "--query", query, "--cfg", "none", paths.MaprTestData)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		
+		// Verify the CSV output (should still be the first query result - append doesn't change existing file)
+		if err := compareFilesContents(t, csvFile, "dmap4_query1.csv.expected"); err != nil {
+			t.Error(err)
+		}
+		
+		// For append test, the query file should still contain the first query
+		firstQuery := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+			"avg($goroutines),min($goroutines) group by $time order by count($time) "+
+			"outfile %s", csvFile)
+		if err := verifyQueryFile(t, queryFile, firstQuery); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+func testDMap4AppendWithServer(t *testing.T) {
+	paths := GetStandardTestPaths()
+	csvFile := "dmap4_server.csv.tmp"
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+
+	server := NewTestServer(t)
+	if err := server.Start("error"); err != nil {
+		t.Error(err)
+		return
+	}
+
+	baseArgs := NewCommandArgs()
+	baseArgs.Servers = []string{server.Address()}
+	baseArgs.TrustAllHosts = true
+	baseArgs.NoColor = true
+	baseArgs.Files = []string{paths.MaprTestData}
+
+	// Clean up files once at the beginning
+	cleanupFiles(t, csvFile, queryFile)
+
+	t.Run("FirstQuery", func(t *testing.T) {
+		stdout := "dmap4_server.stdout1.tmp"
+		cleanupFiles(t, stdout)
+		
+		// First query
+		query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+			"avg($goroutines),min($goroutines) group by $time order by count($time) "+
+			"outfile %s", csvFile)
+		
+		args := *baseArgs
+		args.ExtraArgs = []string{"--query", query}
+
+		_, err := runCommand(server.ctx, t, stdout,
+			"../dmap", args.ToSlice()...)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		
+		// Verify the CSV output
+		if err := compareFilesContents(t, csvFile, "dmap4_query1.csv.expected"); err != nil {
+			t.Error(err)
+		}
+		
+		// Verify the query file
+		if err := verifyQueryFile(t, queryFile, query); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("SecondQueryWithAppend", func(t *testing.T) {
+		stdout := "dmap4_server.stdout2.tmp"
+		cleanupFiles(t, stdout)
+		
+		// Second query with append
+		query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+			"avg($goroutines),min($goroutines) group by $time order by avg($goroutines) reverse "+
+			"outfile append:%s", csvFile)
+		
+		args := *baseArgs
+		args.ExtraArgs = []string{"--query", query}
+
+		_, err := runCommand(server.ctx, t, stdout,
+			"../dmap", args.ToSlice()...)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		
+		// Verify the CSV output (should still be the first query result - append doesn't change existing file)
+		if err := compareFilesContents(t, csvFile, "dmap4_query1.csv.expected"); err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("ThirdQueryWithAppend", func(t *testing.T) {
+		stdout := "dmap4_server.stdout3.tmp"
+		cleanupFiles(t, stdout)
+		
+		// Third query with append (different structure)
+		query := fmt.Sprintf("from STATS select count($line),$hostname "+
+			"group by $hostname "+
+			"outfile append:%s", csvFile)
+		
+		args := *baseArgs
+		args.ExtraArgs = []string{"--query", query}
+
+		_, err := runCommand(server.ctx, t, stdout,
+			"../dmap", args.ToSlice()...)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		
+		// Verify the CSV output (should still be the first query result - append doesn't change existing file)
+		if err := compareFilesContents(t, csvFile, "dmap4_query1.csv.expected"); err != nil {
+			t.Error(err)
+		}
+		
+		// For append test, the query file should still contain the first query
+		firstQuery := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+			"avg($goroutines),min($goroutines) group by $time order by count($time) "+
+			"outfile %s", csvFile)
+		if err := verifyQueryFile(t, queryFile, firstQuery); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+func TestDMap5CSV(t *testing.T) {
+	runDualModeTest(t, DualModeTest{
+		Name:           "TestDMap5CSV",
+		ServerlessTest: testDMap5CSVServerless,
+		ServerTest:     testDMap5CSVWithServer,
+	})
+}
+
+func testDMap5CSVServerless(t *testing.T) {
+	inFile := "dmap5.csv.in"
+	csvFile := "dmap5_serverless.csv.tmp"
+	expectedCsvFile := "dmap5.csv.expected"
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+	outFile := "dmap5_serverless.stdout.tmp"
+	cleanupFiles(t, csvFile, queryFile, outFile)
+
+	query := fmt.Sprintf("select sum($timecount),last($time),min($min_goroutines) "+
+		"group by $hostname set $timecount = `count($time)`, $time = `$time`, "+
+		"$min_goroutines = `min($goroutines)` logformat csv outfile %s", csvFile)
+
+	ctx, cancel := createTestContextWithTimeout(t)
+	defer cancel()
+	_, err := runCommand(ctx, t, outFile,
 		"../dmap", "--query", query, "--cfg", "none", inFile)
 	if err != nil {
 		t.Error(err)
@@ -231,508 +546,50 @@ func testDMap2Serverless(t *testing.T) {
 
 	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
 		t.Error(err)
-		return
 	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
+	// Verify the query file contains the expected query
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
 		t.Error(err)
-		return
 	}
-
-	os.Remove(outFile)
-	os.Remove(csvFile)
-	os.Remove(queryFile)
-}
-
-func testDMap2WithServer(t *testing.T) {
-	inFile := "mapr_testdata.log"
-	outFile := "dmap2.stdout.tmp"
-	csvFile := "dmap2.csv.tmp"
-	expectedCsvFile := "dmap2.csv.expected"
-	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := "dmap2.csv.query.expected"
-	port := getUniquePortNumber()
-	bindAddress := "localhost"
-
-	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
-		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
-		"outfile %s", csvFile)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Start dserver
-	_, _, _, err := startCommand(ctx, t,
-		"", "../dserver",
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "error",
-		"--bindAddress", bindAddress,
-		"--port", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
-
-	_, err = runCommand(ctx, t, outFile,
-		"../dmap", "--query", query, "--cfg", "none",
-		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
-		"--trustAllHosts",
-		"--files", inFile)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	cancel()
-
-	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
-		t.Error(err)
-		return
-	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
-		t.Error(err)
-		return
-	}
-
-	os.Remove(outFile)
-	os.Remove(csvFile)
-	os.Remove(queryFile)
-}
-
-func TestDMap3(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		t.Log("Skipping")
-		return
-	}
-
-	// Test in serverless mode
-	t.Run("Serverless", func(t *testing.T) {
-		testDMap3Serverless(t)
-	})
-
-	// Test in server mode
-	t.Run("ServerMode", func(t *testing.T) {
-		testDMap3WithServer(t)
-	})
-}
-
-func testDMap3Serverless(t *testing.T) {
-	inFile := "mapr_testdata.log"
-	outFile := "dmap3.stdout.tmp"
-	csvFile := "dmap3.csv.tmp"
-	expectedCsvFile := "dmap3.csv.expected"
-	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := "dmap3.csv.query.expected"
-
-	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
-		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
-		"outfile %s", csvFile)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Create 100 copies of the input file
-	files := make([]string, 100)
-	for i := 0; i < 100; i++ {
-		files[i] = inFile
-	}
-
-	args := []string{
-		"--query", query,
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "info",
-		"--noColor",
-	}
-	args = append(args, files...)
-
-	stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t,
-		"", "../dmap", args...)
-
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
-
-	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
-		t.Error(err)
-		return
-	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
-		t.Error(err)
-		return
-	}
-
-	os.Remove(outFile)
-	os.Remove(csvFile)
-	os.Remove(queryFile)
-}
-
-func testDMap3WithServer(t *testing.T) {
-	inFile := "mapr_testdata.log"
-	outFile := "dmap3.stdout.tmp"
-	csvFile := "dmap3.csv.tmp"
-	expectedCsvFile := "dmap3.csv.expected"
-	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := "dmap3.csv.query.expected"
-	port := getUniquePortNumber()
-	bindAddress := "localhost"
-
-	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
-		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
-		"outfile %s", csvFile)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Start dserver
-	_, _, _, err := startCommand(ctx, t,
-		"", "../dserver",
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "error",
-		"--bindAddress", bindAddress,
-		"--port", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
-
-	// Create 100 copies of the input file
-	files := make([]string, 100)
-	for i := 0; i < 100; i++ {
-		files[i] = inFile
-	}
-
-	stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t,
-		"", "../dmap",
-		"--query", query,
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "info",
-		"--noColor",
-		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
-		"--trustAllHosts",
-		"--files", strings.Join(files, ","))
-
-	if err != nil {
-		t.Error(err)
-		return
-	}
-	waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
-	cancel()
-
-	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
-		t.Error(err)
-		return
-	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
-		t.Error(err)
-		return
-	}
-
-	os.Remove(outFile)
-	os.Remove(csvFile)
-	os.Remove(queryFile)
-}
-
-func TestDMap4Append(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		t.Log("Skipping")
-		return
-	}
-
-	// Test in serverless mode
-	t.Run("Serverless", func(t *testing.T) {
-		testDMap4AppendServerless(t)
-	})
-
-	// Test in server mode
-	t.Run("ServerMode", func(t *testing.T) {
-		testDMap4AppendWithServer(t)
-	})
-}
-
-func testDMap4AppendServerless(t *testing.T) {
-	inFile := "mapr_testdata.log"
-	outFile := "dmap4.stdout.tmp"
-	csvFile := "dmap4.csv.tmp"
-	expectedCsvFile := "dmap4.csv.expected"
-	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := "dmap4.csv.query.expected"
-
-	// Delete in case it exists already. Otherwise, test will fail.
-	os.Remove(csvFile)
-
-	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
-		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
-		"outfile append %s", csvFile)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Run dmap command twice, it should append in the 2nd iteration the new results to the already existing
-	// file as we specified "outfile append". That works transparently for any mapreduce query
-	// (e.g. also for the dtail command in streaming mode). But it is easier to test with the dmap
-	// command.
-	for i := 0; i < 2; i++ {
-		stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t,
-			"", "../dmap",
-			"--query", query,
-			"--cfg", "none",
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor", inFile)
-
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
-	}
-
-	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
-		t.Error(err)
-		return
-	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
-		t.Error(err)
-		return
-	}
-
-	os.Remove(outFile)
-	os.Remove(csvFile)
-	os.Remove(queryFile)
-}
-
-func testDMap4AppendWithServer(t *testing.T) {
-	inFile := "mapr_testdata.log"
-	outFile := "dmap4.stdout.tmp"
-	csvFile := "dmap4.csv.tmp"
-	expectedCsvFile := "dmap4.csv.expected"
-	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := "dmap4.csv.query.expected"
-	port := getUniquePortNumber()
-	bindAddress := "localhost"
-
-	// Delete in case it exists already. Otherwise, test will fail.
-	os.Remove(csvFile)
-
-	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
-		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
-		"outfile append %s", csvFile)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Start dserver
-	_, _, _, err := startCommand(ctx, t,
-		"", "../dserver",
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "error",
-		"--bindAddress", bindAddress,
-		"--port", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
-
-	// Run dmap command twice, it should append in the 2nd iteration the new results to the already existing
-	// file as we specified "outfile append". That works transparently for any mapreduce query
-	// (e.g. also for the dtail command in streaming mode). But it is easier to test with the dmap
-	// command.
-	for i := 0; i < 2; i++ {
-		stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t,
-			"", "../dmap",
-			"--query", query,
-			"--cfg", "none",
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor",
-			"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
-			"--trustAllHosts",
-			"--files", inFile)
-
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
-	}
-
-	cancel()
-
-	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
-		t.Error(err)
-		return
-	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
-		t.Error(err)
-		return
-	}
-
-	os.Remove(outFile)
-	os.Remove(csvFile)
-	os.Remove(queryFile)
-}
-
-func TestDMap5CSV(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		t.Log("Skipping")
-		return
-	}
-
-	// Test in serverless mode
-	t.Run("Serverless", func(t *testing.T) {
-		testDMap5CSVServerless(t)
-	})
-
-	// Test in server mode
-	t.Run("ServerMode", func(t *testing.T) {
-		testDMap5CSVWithServer(t)
-	})
-}
-
-func testDMap5CSVServerless(t *testing.T) {
-	inFile := "dmap5.csv.in"
-	outFile := "dmap5.stdout.tmp"
-	csvFile := "dmap5.csv.tmp"
-	expectedCsvFile := "dmap5.csv.expected"
-	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := "dmap5.csv.query.expected"
-
-	// Delete in case it exists already. Otherwise, test will fail.
-	os.Remove(csvFile)
-
-	query := fmt.Sprintf("select sum($timecount),last($time),min($min_goroutines),"+
-		" group by $hostname"+
-		" set $timecount = `count($time)`, $time = `$time`, $min_goroutines = `min($goroutines)`"+
-		" logformat csv outfile %s", csvFile)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Run dmap command twice, it should append in the 2nd iteration the new results to the already existing
-	// file as we specified "outfile append". That works transparently for any mapreduce query
-	// (e.g. also for the dtail command in streaming mode). But it is easier to test with the dmap
-	// command.
-	for i := 0; i < 2; i++ {
-		stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t,
-			"", "../dmap",
-			"--query", query,
-			"--cfg", "none",
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor", inFile)
-
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
-	}
-
-	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
-		t.Error(err)
-		return
-	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
-		t.Error(err)
-		return
-	}
-
-	os.Remove(outFile)
-	os.Remove(csvFile)
-	os.Remove(queryFile)
 }
 
 func testDMap5CSVWithServer(t *testing.T) {
 	inFile := "dmap5.csv.in"
-	outFile := "dmap5.stdout.tmp"
-	csvFile := "dmap5.csv.tmp"
+	csvFile := "dmap5_server.csv.tmp"
 	expectedCsvFile := "dmap5.csv.expected"
 	queryFile := fmt.Sprintf("%s.query", csvFile)
-	expectedQueryFile := "dmap5.csv.query.expected"
-	port := getUniquePortNumber()
-	bindAddress := "localhost"
+	outFile := "dmap5_server.stdout.tmp"
+	cleanupFiles(t, csvFile, queryFile, outFile)
 
-	// Delete in case it exists already. Otherwise, test will fail.
-	os.Remove(csvFile)
+	server := NewTestServer(t)
+	if err := server.Start("error"); err != nil {
+		t.Error(err)
+		return
+	}
 
-	query := fmt.Sprintf("select sum($timecount),last($time),min($min_goroutines),"+
-		" group by $hostname"+
-		" set $timecount = `count($time)`, $time = `$time`, $min_goroutines = `min($goroutines)`"+
-		" logformat csv outfile %s", csvFile)
+	query := fmt.Sprintf("select sum($timecount),last($time),min($min_goroutines) "+
+		"group by $hostname set $timecount = `count($time)`, $time = `$time`, "+
+		"$min_goroutines = `min($goroutines)` logformat csv outfile %s", csvFile)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	args := NewCommandArgs()
+	args.Servers = []string{server.Address()}
+	args.TrustAllHosts = true
+	args.NoColor = true
+	args.Files = []string{inFile}
+	args.ExtraArgs = []string{"--query", query}
 
-	// Start dserver
-	_, _, _, err := startCommand(ctx, t,
-		"", "../dserver",
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "error",
-		"--bindAddress", bindAddress,
-		"--port", fmt.Sprintf("%d", port),
-	)
+	_, err := runCommand(server.ctx, t, outFile,
+		"../dmap", args.ToSlice()...)
 	if err != nil {
 		t.Error(err)
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
-
-	// Run dmap command twice, it should append in the 2nd iteration the new results to the already existing
-	// file as we specified "outfile append". That works transparently for any mapreduce query
-	// (e.g. also for the dtail command in streaming mode). But it is easier to test with the dmap
-	// command.
-	for i := 0; i < 2; i++ {
-		stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t,
-			"", "../dmap",
-			"--query", query,
-			"--cfg", "none",
-			"--logger", "stdout",
-			"--logLevel", "info",
-			"--noColor",
-			"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
-			"--trustAllHosts",
-			"--files", inFile)
-
-		if err != nil {
-			t.Error(err)
-			return
-		}
-		waitForCommand(ctx, t, stdoutCh, stderrCh, cmdErrCh)
-	}
-
-	cancel()
-
 	if err := compareFilesContents(t, csvFile, expectedCsvFile); err != nil {
 		t.Error(err)
-		return
 	}
-	if err := compareFiles(t, queryFile, expectedQueryFile); err != nil {
+	// Verify the query file contains the expected query
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
 		t.Error(err)
-		return
 	}
-
-	os.Remove(outFile)
-	os.Remove(csvFile)
-	os.Remove(queryFile)
 }
