@@ -198,7 +198,7 @@ func runFullProfile(cfg *Config) error {
 			"-query", "from STATS select sum($goroutines),avg($cgocalls),max(lifetimeConnections)", 
 			"-files", filepath.Join(cfg.TestDataDir, "dtail_format.log")}},
 		{"dmap", "csv_query", []string{"-profile", "-profiledir", cfg.ProfileDir, "-plain", "-cfg", "none",
-			"-query", `select user,action,count(*) where status="success" group by user,action logformat csv`,
+			"-query", `select count($line),count($user),count($action) group by $user,$action where $status eq "success" logformat csv`,
 			"-files", filepath.Join(cfg.TestDataDir, "test.csv")}},
 	}
 	
