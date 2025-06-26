@@ -17,6 +17,8 @@ benchmarks/testdata/
 /log/
 /profiles/
 /profiling/*.prof
+/profiling/profiles/
+/profiling/testdata/
 /testdata/
 test_*.log
 /dtail

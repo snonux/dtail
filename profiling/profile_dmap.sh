@@ -99,7 +99,7 @@ echo -e "${GREEN}Profiling dmap queries...${NC}"
 
 # Query 1: Simple count
 echo -e "\n${YELLOW}Query: Count by hostname${NC}"
-QUERY="from STATS select count(\$line) group by hostname outfile $TEST_DATA_DIR/count_output.csv"
+QUERY="from STATS select count(\$line) group by hostname"
 echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log (will interrupt after 3s)"
 # Run dmap in background and interrupt after 3 seconds
 ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10 &
@@ -110,7 +110,7 @@ wait $DMAP_PID 2>/dev/null || true
 
 # Query 2: Aggregations
 echo -e "\n${YELLOW}Query: Sum and average${NC}"
-QUERY="from STATS select sum(\$goroutines),avg(\$goroutines) group by hostname outfile $TEST_DATA_DIR/sum_avg_output.csv"
+QUERY="from STATS select sum(\$goroutines),avg(\$goroutines) group by hostname"
 echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log (will interrupt after 3s)"
 ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10 &
 DMAP_PID=$!
@@ -120,7 +120,7 @@ wait $DMAP_PID 2>/dev/null || true
 
 # Query 3: Min/Max
 echo -e "\n${YELLOW}Query: Min and max${NC}"
-QUERY="from STATS select min(currentConnections),max(lifetimeConnections) group by hostname outfile $TEST_DATA_DIR/min_max_output.csv"
+QUERY="from STATS select min(currentConnections),max(lifetimeConnections) group by hostname"
 echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log (will interrupt after 3s)"
 ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10 &
 DMAP_PID=$!
@@ -151,5 +151,4 @@ echo "To analyze profiles in detail:"
 echo "  go tool pprof $PROFILE_DIR/dmap_cpu_*.prof"
 echo "  go tool pprof -alloc_space $PROFILE_DIR/dmap_mem_*.prof"
 
-# Cleanup temporary output files
-rm -f "$TEST_DATA_DIR"/*_output.csv
+# No cleanup needed - no output files are created during profiling

@@ -153,7 +153,7 @@ profile-dgrep: dgrep profile-testdata
 # Profile dmap (with MapReduce format data)
 profile-dmap: dmap
 	@echo "Profiling dmap with MapReduce format..."
-	@cd benchmarks && ./profile_dmap.sh
+	@cd profiling && ./profile_dmap.sh
 
 # Profile all commands
 profile-all: profile-dcat profile-dgrep profile-dmap
@@ -199,12 +199,12 @@ profile-benchmark: dcat dgrep dmap
 # Run automated profiling script
 profile-auto: dcat dgrep dmap
 	@echo "Running automated profiling script..."
-	cd benchmarks && ./profile_benchmarks.sh
+	cd profiling && ./profile_benchmarks.sh
 
 # Run quick profiling (smaller datasets)
 profile-quick: dcat dgrep dmap
 	@echo "Running quick profiling..."
-	cd benchmarks && ./profile_quick.sh
+	cd profiling && ./profile_quick.sh
 
 # Show profiling help
 profile-help:
