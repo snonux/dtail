@@ -28,10 +28,10 @@ echo
 # Generate test data if needed
 if [ ! -f "$TEST_DATA_DIR/quick_test.log" ]; then
     echo -e "${YELLOW}Generating test data...${NC}"
-    echo "  Command: go run generate_profile_data.go -size \"10MB\" -output \"$TEST_DATA_DIR/quick_test.log\" -format log"
-    go run generate_profile_data.go -size "10MB" -output "$TEST_DATA_DIR/quick_test.log" -format log
-    echo "  Command: go run generate_profile_data.go -size \"10MB\" -output \"$TEST_DATA_DIR/quick_test.csv\" -format csv"
-    go run generate_profile_data.go -size "10MB" -output "$TEST_DATA_DIR/quick_test.csv" -format csv
+    echo "  Command: go run ../benchmarks/cmd/generate_profile_data.go -size \"10MB\" -output \"$TEST_DATA_DIR/quick_test.log\" -format log"
+    go run ../benchmarks/cmd/generate_profile_data.go -size "10MB" -output "$TEST_DATA_DIR/quick_test.log" -format log
+    echo "  Command: go run ../benchmarks/cmd/generate_profile_data.go -size \"10MB\" -output \"$TEST_DATA_DIR/quick_test.csv\" -format csv"
+    go run ../benchmarks/cmd/generate_profile_data.go -size "10MB" -output "$TEST_DATA_DIR/quick_test.csv" -format csv
 fi
 
 # Build commands
@@ -66,10 +66,17 @@ if [ -n "$DGREP_CPU" ]; then
     ../profiling/profile.sh -top 3 "$DGREP_CPU" | grep -A 5 "Top 3 functions"
 fi
 
-# Profile dmap
+# Profile dmap (use proper MapReduce query on CSV file)
 echo -e "\n${YELLOW}Profiling dmap...${NC}"
-echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"select count(*) from $TEST_DATA_DIR/quick_test.csv\""
-../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "select count(*) from $TEST_DATA_DIR/quick_test.csv" > /dev/null 2>&1
+QUERY="select count($line),avg($duration) group by $user logformat csv"
+echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/quick_test.csv (will interrupt after 3s)"
+# Run dmap in background and interrupt after 3 seconds
+../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/quick_test.csv" > /dev/null 2>&1 &
+DMAP_PID=$!
+sleep 3
+kill -INT $DMAP_PID 2>/dev/null || true
+wait $DMAP_PID 2>/dev/null || true
+
 DMAP_CPU=$(ls -t "$PROFILE_DIR"/dmap_cpu_*.prof 2>/dev/null | head -1)
 if [ -n "$DMAP_CPU" ]; then
     echo "  Generated: $(basename "$DMAP_CPU")"

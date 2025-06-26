@@ -35,8 +35,8 @@ generate_test_data() {
     if [ ! -f "$filename" ]; then
         echo -e "${YELLOW}Generating test data: $filename (${size})${NC}"
         # Use the standalone generator
-        echo "  Command: go run cmd/generate_profile_data.go -size \"${size}\" -output \"$filename\" -format log"
-        go run cmd/generate_profile_data.go -size "${size}" -output "$filename" -format log
+        echo "  Command: go run ../benchmarks/cmd/generate_profile_data.go -size \"${size}\" -output \"$filename\" -format log"
+        go run ../benchmarks/cmd/generate_profile_data.go -size "${size}" -output "$filename" -format log
     fi
 }
 
@@ -112,8 +112,8 @@ generate_test_data "10MB" "$TEST_DATA_DIR/medium.log"
 # Generate CSV data for dmap (smaller size for faster processing)
 if [ ! -f "$TEST_DATA_DIR/test.csv" ]; then
     echo -e "${YELLOW}Generating CSV test data${NC}"
-    echo "  Command: go run cmd/generate_profile_data.go -size \"10MB\" -output \"$TEST_DATA_DIR/test.csv\" -format csv"
-    go run cmd/generate_profile_data.go -size "10MB" -output "$TEST_DATA_DIR/test.csv" -format csv
+    echo "  Command: go run ../benchmarks/cmd/generate_profile_data.go -size \"10MB\" -output \"$TEST_DATA_DIR/test.csv\" -format csv"
+    go run ../benchmarks/cmd/generate_profile_data.go -size "10MB" -output "$TEST_DATA_DIR/test.csv" -format csv
 fi
 
 echo
