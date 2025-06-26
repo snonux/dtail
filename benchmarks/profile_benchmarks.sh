@@ -89,8 +89,9 @@ run_profile_dmap() {
         sleep 3
         
         # Send interrupt signal to make it exit cleanly
-        kill -INT $pid 2>/dev/null
-        wait $pid 2>/dev/null
+        # We expect this to return non-zero, so we ignore the exit code
+        kill -INT $pid 2>/dev/null || true
+        wait $pid 2>/dev/null || true
         
         echo "  Completed"
         
