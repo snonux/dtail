@@ -142,11 +142,18 @@ func profileDGrep(testFile string) {
 }
 
 func profileDMap(csvFile string) {
+	// Get absolute path for the CSV file
+	absPath, err := filepath.Abs(csvFile)
+	if err != nil {
+		fmt.Printf("Error getting absolute path: %v\n", err)
+		return
+	}
+	
 	// Run dmap with profiling
 	queries := []string{
-		fmt.Sprintf("select count(*) from %s", csvFile),
-		fmt.Sprintf("select user, count(*) from %s group by user", csvFile),
-		fmt.Sprintf("select action, avg(duration), max(duration) from %s group by action", csvFile),
+		fmt.Sprintf("select count(*) from %s", absPath),
+		fmt.Sprintf("select user, count(*) from %s group by user", absPath),
+		fmt.Sprintf("select action, avg(duration), max(duration) from %s group by action", absPath),
 	}
 
 	for i, query := range queries {

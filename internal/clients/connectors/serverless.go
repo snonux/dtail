@@ -3,6 +3,7 @@ package connectors
 import (
 	"context"
 	"io"
+	"sync"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
@@ -82,20 +83,90 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		cancel()
 	}
 
+	// Create a sync.WaitGroup to track goroutines
+	var wg sync.WaitGroup
+	wg.Add(2)
+	
+	// Use channels to prevent deadlock
+	const bufferSize = 32 * 1024  // Smaller chunks for better flow
+	fromClient := make(chan []byte, 100)  // Larger channel buffer
+	fromServer := make(chan []byte, 100)  // Larger channel buffer
+	
+	// Goroutine 1: Read from client handler, send to channel
 	go func() {
-		defer terminate()
-		if _, err := io.Copy(serverHandler, s.handler); err != nil {
-			dlog.Client.Trace(err)
+		defer wg.Done()
+		defer close(fromClient)
+		
+		buf := make([]byte, bufferSize)
+		for {
+			n, err := s.handler.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case fromClient <- data:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				if err != io.EOF {
+					dlog.Client.Trace("Read from handler error:", err)
+				}
+				return
+			}
 		}
-		dlog.Client.Trace("io.Copy(serverHandler, s.handler) => done")
 	}()
+	
+	// Goroutine 2: Read from server handler, send to channel
 	go func() {
-		defer terminate()
-		if _, err := io.Copy(s.handler, serverHandler); err != nil {
-			dlog.Client.Trace(err)
+		defer wg.Done()
+		defer close(fromServer)
+		
+		buf := make([]byte, bufferSize)
+		for {
+			n, err := serverHandler.Read(buf)
+			if n > 0 {
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case fromServer <- data:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				if err != io.EOF {
+					dlog.Client.Trace("Read from serverHandler error:", err)
+				}
+				return
+			}
 		}
-		dlog.Client.Trace("io.Copy(s.handler, serverHandler) => done")
 	}()
+	
+	// Goroutine 3: Write from client to server
+	go func() {
+		for data := range fromClient {
+			if _, err := serverHandler.Write(data); err != nil {
+				dlog.Client.Trace("Write to serverHandler error:", err)
+				terminate()
+				return
+			}
+		}
+	}()
+	
+	// Goroutine 4: Write from server to client
+	go func() {
+		for data := range fromServer {
+			if _, err := s.handler.Write(data); err != nil {
+				dlog.Client.Trace("Write to handler error:", err)
+				terminate()
+				return
+			}
+		}
+	}()
+	
+	// Goroutine 5: Monitor for completion
 	go func() {
 		defer terminate()
 		select {
@@ -106,7 +177,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		}
 	}()
 
-	// Send all commands to client.
+	// Send all commands to server
 	for _, command := range s.commands {
 		dlog.Client.Debug("Sending command to serverless server", command)
 		if err := s.handler.SendMessage(command); err != nil {
@@ -114,8 +185,15 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		}
 	}
 
+	// Wait for context to be done
 	<-ctx.Done()
+	
+	// Shutdown handlers
 	dlog.Client.Trace("s.handler.Shutdown()")
 	s.handler.Shutdown()
+	
+	// Wait for goroutines to finish
+	wg.Wait()
+	
 	return nil
 }
