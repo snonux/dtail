@@ -72,16 +72,16 @@ run_profile() {
 
 # Generate test data
 echo -e "${GREEN}Preparing test data...${NC}"
-generate_test_data "1MB" "$TEST_DATA_DIR/small.log"
-generate_test_data "10MB" "$TEST_DATA_DIR/medium.log"
+generate_test_data "10MB" "$TEST_DATA_DIR/small.log"
+generate_test_data "100MB" "$TEST_DATA_DIR/medium.log"
 # Skip large file for faster testing
 # generate_test_data "1GB" "$TEST_DATA_DIR/large.log"
 
 # Generate CSV data for dmap (smaller size for faster processing)
 if [ ! -f "$TEST_DATA_DIR/test.csv" ]; then
     echo -e "${YELLOW}Generating CSV test data${NC}"
-    echo "  Command: go run ../benchmarks/cmd/generate_profile_data.go -size \"10MB\" -output \"$TEST_DATA_DIR/test.csv\" -format csv"
-    go run ../benchmarks/cmd/generate_profile_data.go -size "10MB" -output "$TEST_DATA_DIR/test.csv" -format csv
+    echo "  Command: go run ../benchmarks/cmd/generate_profile_data.go -size \"50MB\" -output \"$TEST_DATA_DIR/test.csv\" -format csv"
+    go run ../benchmarks/cmd/generate_profile_data.go -size "50MB" -output "$TEST_DATA_DIR/test.csv" -format csv
 fi
 
 echo
@@ -117,8 +117,8 @@ echo -e "${GREEN}=== Profiling dmap ===${NC}"
 if [ ! -f "$TEST_DATA_DIR/dtail_format.log" ]; then
     echo -e "${YELLOW}Generating DTail format test data for dmap${NC}"
     echo "  Command: Creating DTail format log file"
-    # Generate DTail default format log lines
-    for i in $(seq 1 1000); do
+    # Generate DTail default format log lines (100K lines for meaningful profiling)
+    for i in $(seq 1 100000); do
         hostname="host$((i % 10))"
         goroutines=$((40 + i % 40))
         cgocalls=$((i % 100))

@@ -82,8 +82,8 @@ generate_dtail_format_data() {
     fi
 }
 
-generate_dtail_format_data "$TEST_DATA_DIR/stats_small.log" 100
-generate_dtail_format_data "$TEST_DATA_DIR/stats_medium.log" 1000
+generate_dtail_format_data "$TEST_DATA_DIR/stats_small.log" 1000
+generate_dtail_format_data "$TEST_DATA_DIR/stats_medium.log" 1000000
 
 # Build dmap
 echo -e "${GREEN}Building commands...${NC}"
