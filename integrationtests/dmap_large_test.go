@@ -12,10 +12,16 @@ func TestDMapLargeFile(t *testing.T) {
 	cleanupTmpFiles(t)
 	testLogger := NewTestLogger("TestDMapLargeFile")
 	defer testLogger.WriteLogFile()
+	
+	// Generate the large test file once for both test modes
+	largeFile := "dmap_large_100mb.log.tmp"
+	t.Log("Generating 100MB test file...")
+	generateLargeMapReduceFile(t, largeFile)
+	
 	runDualModeTest(t, DualModeTest{
 		Name:           "TestDMapLargeFile",
-		ServerlessTest: func(t *testing.T) { testDMapLargeFileServerless(t, testLogger) },
-		ServerTest:     func(t *testing.T) { testDMapLargeFileWithServer(t, testLogger) },
+		ServerlessTest: func(t *testing.T) { testDMapLargeFileServerless(t, testLogger, largeFile) },
+		ServerTest:     func(t *testing.T) { testDMapLargeFileWithServer(t, testLogger, largeFile) },
 	})
 }
 
@@ -77,18 +83,13 @@ func generateLargeMapReduceFile(t *testing.T, filename string) {
 	t.Logf("Generated %d lines (%d MB) in %v", lineNum, currentSize/(1024*1024), elapsed)
 }
 
-func testDMapLargeFileServerless(t *testing.T, logger *TestLogger) {
-	largeFile := "dmap_large_100mb.log.tmp"
+func testDMapLargeFileServerless(t *testing.T, logger *TestLogger, largeFile string) {
 	csvFile := "dmap_large_serverless.csv.tmp"
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 	outFile := "dmap_large_serverless.stdout.tmp"
 	
 	// Clean up output files before test (but not the large input file)
 	cleanupFiles(t, csvFile, queryFile, outFile)
-	
-	// Generate the large test file
-	t.Log("Generating 100MB test file...")
-	generateLargeMapReduceFile(t, largeFile)
 	
 	// Run several queries on the large file
 	queries := []struct {
@@ -151,18 +152,13 @@ func testDMapLargeFileServerless(t *testing.T, logger *TestLogger) {
 	}
 }
 
-func testDMapLargeFileWithServer(t *testing.T, logger *TestLogger) {
-	largeFile := "dmap_large_100mb.log.tmp"
+func testDMapLargeFileWithServer(t *testing.T, logger *TestLogger, largeFile string) {
 	csvFile := "dmap_large_server.csv.tmp"
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 	outFile := "dmap_large_server.stdout.tmp"
 	
 	// Clean up output files before test (but not the large input file)
 	cleanupFiles(t, csvFile, queryFile, outFile)
-	
-	// Generate the large test file
-	t.Log("Generating 100MB test file...")
-	generateLargeMapReduceFile(t, largeFile)
 	
 	server := NewTestServer(t)
 	if err := server.Start("error"); err != nil {
