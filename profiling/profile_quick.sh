@@ -69,13 +69,9 @@ fi
 # Profile dmap (use proper MapReduce query on CSV file)
 echo -e "\n${YELLOW}Profiling dmap...${NC}"
 QUERY="select count($line),avg($duration) group by $user logformat csv"
-echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/quick_test.csv (will interrupt after 3s)"
-# Run dmap in background and interrupt after 3 seconds
-../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/quick_test.csv" > /dev/null 2>&1 &
-DMAP_PID=$!
-sleep 3
-kill -INT $DMAP_PID 2>/dev/null || true
-wait $DMAP_PID 2>/dev/null || true
+echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/quick_test.csv"
+# Run dmap and let it complete naturally
+../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/quick_test.csv" > /dev/null 2>&1
 
 DMAP_CPU=$(ls -t "$PROFILE_DIR"/dmap_cpu_*.prof 2>/dev/null | head -1)
 if [ -n "$DMAP_CPU" ]; then

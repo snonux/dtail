@@ -30,6 +30,10 @@ clean:
 	ls ./cmd/ | while read cmd; do \
 	  test -f $$cmd && rm $$cmd; \
 	done
+	@echo "Removing .tmp files..."
+	find . -name "*.tmp" -type f -delete
+	@echo "Removing .prof files..."
+	find . -name "*.prof" -type f -delete
 vet:
 	find . -type d | egrep -v '(./examples|./log|./doc)' | while read dir; do \
 	  echo ${GO} vet $$dir; \

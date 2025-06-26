@@ -20,9 +20,6 @@ make dgrep      # Client for searching files
 make dmap       # Client for MapReduce queries
 make dtailhealth # Health check client
 
-# Install binaries
-make install
-
 # Clean build artifacts
 make clean
 
