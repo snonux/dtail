@@ -149,29 +149,31 @@ func profileDMap(csvFile string) {
 		return
 	}
 	
-	// Run dmap with profiling
+	// Run dmap with profiling - correct syntax with -files flag
 	queries := []string{
-		fmt.Sprintf("select count(*) from %s", absPath),
-		fmt.Sprintf("select user, count(*) from %s group by user", absPath),
-		fmt.Sprintf("select action, avg(duration), max(duration) from %s group by action", absPath),
+		"select count(*)",
+		"select user, count(*) group by user",
+		"select action, avg(duration), max(duration) group by action",
 	}
 
 	for i, query := range queries {
-		fmt.Printf("  Query %d: %s\n", i+1, truncateQuery(query))
+		fmt.Printf("  Query %d: %s\n", i+1, query)
 		
 		cmd := exec.Command("../dmap",
 			"-profile",
 			"-profiledir", "profiles",
 			"-plain",
 			"-cfg", "none",
+			"-files", absPath,
 			"-query", query)
 
 		start := time.Now()
-		_, err := cmd.CombinedOutput()
+		output, err := cmd.CombinedOutput()
 		duration := time.Since(start)
 
 		if err != nil {
 			fmt.Printf("    Error: %v\n", err)
+			fmt.Printf("    Output: %s\n", output)
 			continue
 		}
 

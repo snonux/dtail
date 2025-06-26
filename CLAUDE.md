@@ -52,9 +52,88 @@ make vet
 cd integrationtests && go test
 ```
 
+## Benchmarking
+
+```bash
+# Run all benchmarks
+make benchmark
+
+# Quick benchmarks (subset of tests)
+make benchmark-quick
+
+# Full benchmarks with longer runs
+make benchmark-full
+
+# Create a baseline for comparison
+make benchmark-baseline
+
+# Compare current performance against a baseline
+make benchmark-compare BASELINE=benchmarks/baselines/baseline_TIMESTAMP.txt
+```
+
+## Profiling
+
+```bash
+# Profile all commands (dcat, dgrep, dmap)
+make profile-all
+
+# Profile individual commands
+make profile-dcat         # Profile dcat with test data
+make profile-dgrep        # Profile dgrep with test data
+make profile-dmap         # Profile dmap MapReduce queries
+
+# Quick profiling with smaller datasets
+make profile-quick
+
+# Full automated profiling (includes larger files)
+make profile-auto
+
+# Clean all profile data
+make profile-clean
+
+# Analyze a specific profile interactively
+make profile-analyze PROFILE=profiles/dcat_cpu_*.prof
+
+# Generate flame graph visualization
+make profile-flamegraph PROFILE=profiles/dcat_cpu_*.prof
+
+# Custom profiling options
+PROFILE_SIZE=10000000 make profile-all    # Profile with 10M lines
+PROFILE_DIR=myprofiles make profile-dcat  # Custom profile directory
+
+# Show all profiling options
+make profile-help
+```
+
+### Profiling Notes
+
+- Profiles are saved in the `profiles/` directory by default
+- Each command generates CPU, memory, and allocation profiles
+- The `profile-dmap` target uses a 3-second timeout to prevent hanging since dmap runs continuously
+- Use `go tool pprof` for detailed analysis of profile files
+- The `profiling/profile.sh` script provides quick summaries of profile data
+
 ## Test Execution Details
 
 - Integration tests are run by setting DTAIL_INTEGRATION_TEST_RUN_MODE to yes, and by running 'make test'.
+
+## Benchmarking & Profiling
+
+```bash
+# Run benchmarks
+make benchmark
+
+# Run performance profiling
+make profile
+
+# Generate profiling reports
+make profile-report
+
+# Run specific benchmark suites
+make benchmark-network
+make benchmark-mapreduce
+make benchmark-ssh
+```
 
 ## Architecture & Code Organization
 
