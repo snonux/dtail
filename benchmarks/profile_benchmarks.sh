@@ -17,7 +17,7 @@ NC='\033[0m' # No Color
 # Default values
 PROFILE_DIR="${PROFILE_DIR:-profiles}"
 TEST_DATA_DIR="${TEST_DATA_DIR:-testdata}"
-PROFILE_RUNS=3
+PROFILE_RUNS=1
 
 # Create directories
 mkdir -p "$PROFILE_DIR"
@@ -71,9 +71,10 @@ run_profile() {
 
 # Generate test data
 echo -e "${GREEN}Preparing test data...${NC}"
-generate_test_data "10MB" "$TEST_DATA_DIR/small.log"
-generate_test_data "100MB" "$TEST_DATA_DIR/medium.log"
-generate_test_data "1GB" "$TEST_DATA_DIR/large.log"
+generate_test_data "1MB" "$TEST_DATA_DIR/small.log"
+generate_test_data "10MB" "$TEST_DATA_DIR/medium.log"
+# Skip large file for faster testing
+# generate_test_data "1GB" "$TEST_DATA_DIR/large.log"
 
 # Generate CSV data for dmap (smaller size for faster processing)
 if [ ! -f "$TEST_DATA_DIR/test.csv" ]; then
@@ -96,23 +97,48 @@ echo
 # Profile dcat
 echo -e "${GREEN}=== Profiling dcat ===${NC}"
 run_profile "../dcat" "small_file" "-plain -cfg none $TEST_DATA_DIR/small.log"
-run_profile "../dcat" "medium_file" "-plain -cfg none $TEST_DATA_DIR/medium.log"
+# Skip medium file for faster profiling
+# run_profile "../dcat" "medium_file" "-plain -cfg none $TEST_DATA_DIR/medium.log"
 # Skip large file for faster profiling - uncomment if needed
 # run_profile "../dcat" "large_file" "-plain -cfg none $TEST_DATA_DIR/large.log"
 
 # Profile dgrep
 echo -e "${GREEN}=== Profiling dgrep ===${NC}"
-run_profile "../dgrep" "simple_regex" "-plain -cfg none -regex 'user[0-9]+' $TEST_DATA_DIR/medium.log"
-run_profile "../dgrep" "complex_regex" "-plain -cfg none -regex '\\d{4}-\\d{2}-\\d{2}.*login.*\\d{3}' $TEST_DATA_DIR/medium.log"
-run_profile "../dgrep" "with_context" "-plain -cfg none -regex 'login' -before 2 -after 2 $TEST_DATA_DIR/medium.log"
+run_profile "../dgrep" "simple_regex" "-plain -cfg none -regex 'user[0-9]+' $TEST_DATA_DIR/small.log"
+# Use small file for faster profiling
+# run_profile "../dgrep" "complex_regex" "-plain -cfg none -regex '\\d{4}-\\d{2}-\\d{2}.*login.*\\d{3}' $TEST_DATA_DIR/medium.log"
+# run_profile "../dgrep" "with_context" "-plain -cfg none -regex 'login' -before 2 -after 2 $TEST_DATA_DIR/medium.log"
 
 # Profile dmap
 echo -e "${GREEN}=== Profiling dmap ===${NC}"
-# Note: dmap uses a special query format for MapReduce operations
-# For CSV files, we need to specify the format and fields correctly
-echo -e "${YELLOW}Note: Skipping dmap profiling - requires specific log format${NC}"
-echo -e "${YELLOW}To profile dmap, use files in MapReduce format with queries like:${NC}"
-echo -e "${YELLOW}  from STATS select count(\$line) group by \$hostname${NC}"
+
+# Generate DTail default format test data for dmap
+if [ ! -f "$TEST_DATA_DIR/dtail_format.log" ]; then
+    echo -e "${YELLOW}Generating DTail format test data for dmap${NC}"
+    echo "  Command: Creating DTail format log file"
+    # Generate DTail default format log lines
+    for i in $(seq 1 1000); do
+        hostname="host$((i % 10))"
+        goroutines=$((40 + i % 40))
+        cgocalls=$((i % 100))
+        cpus=$((1 + i % 8))
+        loadavg=$(printf "%.2f" $(echo "scale=2; $i % 100 / 100" | bc))
+        uptime="${i}h0m0s"
+        connections=$((i % 10))
+        lifetime=$((1000 + i))
+        
+        echo "INFO|$(date +%m%d-%H%M%S)|1|stats.go:56|$cpus|$goroutines|$cgocalls|$loadavg|$uptime|MAPREDUCE:STATS|currentConnections=$connections|lifetimeConnections=$lifetime"
+    done > "$TEST_DATA_DIR/dtail_format.log"
+fi
+
+# Profile dmap with DTail format  
+run_profile "../dmap" "simple_count" "-plain -cfg none -query 'from STATS select count(*)' -files $TEST_DATA_DIR/dtail_format.log"
+run_profile "../dmap" "aggregations" "-plain -cfg none -query 'from STATS select sum(\$goroutines),avg(\$cgocalls),max(lifetimeConnections)' -files $TEST_DATA_DIR/dtail_format.log"
+run_profile "../dmap" "group_by_connections" "-plain -cfg none -query 'from STATS select currentConnections,count(*) group by currentConnections' -files $TEST_DATA_DIR/dtail_format.log"
+
+# Also test CSV format
+echo -e "\n${YELLOW}Testing CSV format with dmap${NC}"
+run_profile "../dmap" "csv_query" "-plain -cfg none -query 'select user,action,count(*) where status=\"success\" group by user,action logformat csv' -files $TEST_DATA_DIR/test.csv"
 
 echo
 echo -e "${GREEN}Profiling complete!${NC}"

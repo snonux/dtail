@@ -25,22 +25,16 @@ echo -e "${GREEN}DTail dmap Profiling${NC}"
 echo "===================="
 echo
 
-# Function to generate MapReduce format test data
+# Function to generate MapReduce format test data (generickv format)
 generate_mapreduce_data() {
     local filename=$1
     local lines=$2
     
     if [ ! -f "$filename" ]; then
         echo -e "${YELLOW}Generating MapReduce format test data: $filename${NC}"
-        echo "  Command: Creating $filename with $lines lines"
+        echo "  Command: Creating $filename with $lines lines (generickv format)"
         
-        cat > "$filename" << EOF
-STATS|earth|2024-01-01T10:00:00.000Z|goroutines:50;openFiles:120;connections:15;currentConnections:5;lifetimeConnections:1500
-STATS|mars|2024-01-01T10:00:01.000Z|goroutines:45;openFiles:110;connections:12;currentConnections:4;lifetimeConnections:1200
-STATS|venus|2024-01-01T10:00:02.000Z|goroutines:60;openFiles:130;connections:20;currentConnections:8;lifetimeConnections:2000
-EOF
-        
-        # Repeat the pattern to create larger file
+        # Generate data in generickv format: field1=value1|field2=value2|...
         for i in $(seq 1 $lines); do
             hostname="host$((i % 10))"
             # Simple timestamp generation without date command
@@ -54,15 +48,42 @@ EOF
             currentConnections=$((i % 10))
             lifetimeConnections=$((1000 + i))
             
-            echo "STATS|$hostname|$timestamp|goroutines:$goroutines;openFiles:$openFiles;connections:$connections;currentConnections:$currentConnections;lifetimeConnections:$lifetimeConnections" >> "$filename"
+            echo "table=STATS|hostname=$hostname|timestamp=$timestamp|goroutines=$goroutines|openFiles=$openFiles|connections=$connections|currentConnections=$currentConnections|lifetimeConnections=$lifetimeConnections" >> "$filename"
         done
     fi
 }
 
-# Generate test data
+# Generate test data in DTail default format instead
 echo -e "${GREEN}Preparing MapReduce test data...${NC}"
-generate_mapreduce_data "$TEST_DATA_DIR/stats_small.log" 1000
-generate_mapreduce_data "$TEST_DATA_DIR/stats_medium.log" 10000
+
+# Function to generate DTail default format test data
+generate_dtail_format_data() {
+    local filename=$1
+    local lines=$2
+    
+    if [ ! -f "$filename" ]; then
+        echo -e "${YELLOW}Generating DTail default format test data: $filename${NC}"
+        echo "  Command: Creating $filename with $lines lines (DTail default format)"
+        
+        # Generate DTail default format log lines
+        for i in $(seq 1 $lines); do
+            hostname="host$((i % 10))"
+            goroutines=$((40 + i % 40))
+            cgocalls=$((i % 100))
+            cpus=$((1 + i % 8))
+            loadavg=$(printf "%.2f" $(echo "scale=2; $i % 100 / 100" | bc))
+            uptime="${i}h0m0s"
+            connections=$((i % 10))
+            lifetime=$((1000 + i))
+            
+            # DTail default format: INFO|date-time|pid|caller|cpus|goroutines|cgocalls|loadavg|uptime|MAPREDUCE:STATS|key=value|...
+            echo "INFO|$(date +%m%d-%H%M%S)|1|stats.go:56|$cpus|$goroutines|$cgocalls|$loadavg|$uptime|MAPREDUCE:STATS|hostname=$hostname|currentConnections=$connections|lifetimeConnections=$lifetime" >> "$filename"
+        done
+    fi
+}
+
+generate_dtail_format_data "$TEST_DATA_DIR/stats_small.log" 100
+generate_dtail_format_data "$TEST_DATA_DIR/stats_medium.log" 1000
 
 # Build dmap
 echo -e "${GREEN}Building commands...${NC}"
@@ -78,21 +99,21 @@ echo -e "${GREEN}Profiling dmap queries...${NC}"
 
 # Query 1: Simple count
 echo -e "\n${YELLOW}Query: Count by hostname${NC}"
-QUERY="from STATS select count(\$line) group by \$hostname outfile $TEST_DATA_DIR/count_output.csv"
-echo "Command: timeout 30s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
-timeout 30s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -5
+QUERY="from STATS select count(\$line) group by hostname outfile $TEST_DATA_DIR/count_output.csv"
+echo "Command: timeout 10s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
+timeout 10s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10
 
 # Query 2: Aggregations
 echo -e "\n${YELLOW}Query: Sum and average${NC}"
-QUERY="from STATS select sum(\$goroutines),avg(\$goroutines) group by \$hostname outfile $TEST_DATA_DIR/sum_avg_output.csv"
-echo "Command: timeout 30s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
-timeout 30s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -5
+QUERY="from STATS select sum(\$goroutines),avg(\$goroutines) group by hostname outfile $TEST_DATA_DIR/sum_avg_output.csv"
+echo "Command: timeout 10s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
+timeout 10s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10
 
 # Query 3: Min/Max
 echo -e "\n${YELLOW}Query: Min and max${NC}"
-QUERY="from STATS select min(currentConnections),max(lifetimeConnections) group by \$hostname outfile $TEST_DATA_DIR/min_max_output.csv"
-echo "Command: timeout 30s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
-timeout 30s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -5
+QUERY="from STATS select min(currentConnections),max(lifetimeConnections) group by hostname outfile $TEST_DATA_DIR/min_max_output.csv"
+echo "Command: timeout 10s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
+timeout 10s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10
 
 echo
 echo -e "${GREEN}Analyzing dmap profiles...${NC}"

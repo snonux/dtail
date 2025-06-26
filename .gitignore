@@ -11,9 +11,14 @@ tags
 benchmark_results/
 benchmarks/baselines/current*.txt
 benchmarks/baselines/comparison*.txt
+benchmarks/profiles/
+benchmarks/testdata/
 /cache/
 /log/
+/profiles/
 /profiling/*.prof
+/testdata/
+test_*.log
 /dtail
 /dgrep
 /dcat

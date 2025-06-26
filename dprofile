@@ -1,0 +1,3 @@
+#!/bin/bash
+# Wrapper for profile.sh
+exec "$(dirname "$0")/profiling/profile.sh" "$@"
