@@ -157,34 +157,35 @@ func ProfileBenchmark(b *testing.B, name string, tool string, args ...string) {
 			b.Logf("Allocation profile: %s", result.AllocProfile)
 		}
 		
-		// Analyze profiles if profile.sh is available
-		dprofilePath := filepath.Join("..", "profiling", "profile.sh")
-		if _, err := os.Stat(dprofilePath); err == nil {
+		// Analyze profiles using dtail-tools
+		dtailToolsPath := filepath.Join("..", "dtail-tools")
+		if _, err := os.Stat(dtailToolsPath); err == nil {
 			if result.CPUProfile != "" {
-				analyzeProfile(b, dprofilePath, result.CPUProfile, "CPU")
+				analyzeProfileWithTools(b, dtailToolsPath, result.CPUProfile, "CPU")
 			}
 			if result.MemProfile != "" {
-				analyzeProfile(b, dprofilePath, result.MemProfile, "Memory")
+				analyzeProfileWithTools(b, dtailToolsPath, result.MemProfile, "Memory")
 			}
 		}
 	})
 }
 
-// analyzeProfile runs profile.sh on a profile file
-func analyzeProfile(b *testing.B, dprofilePath, profilePath, profileType string) {
+// analyzeProfileWithTools runs dtail-tools profile analyze on a profile file
+func analyzeProfileWithTools(b *testing.B, dtailToolsPath, profilePath, profileType string) {
 	b.Logf("\n%s Profile Analysis:", profileType)
 	
-	cmd := exec.Command(dprofilePath, "-top", "5", profilePath)
+	cmd := exec.Command(dtailToolsPath, "profile", "-mode", "analyze", profilePath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		b.Logf("Failed to analyze profile: %v", err)
 		return
 	}
 	
-	// Print top functions
+	// Print analysis output
 	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.Contains(line, "%") || strings.Contains(line, "Top") {
+	// Print first 10 lines of analysis
+	for i, line := range lines {
+		if i < 10 && line != "" {
 			b.Log(line)
 		}
 	}

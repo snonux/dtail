@@ -40,13 +40,13 @@ make benchmark-baseline
 make benchmark-baseline-quick
 
 # Create a baseline with a descriptive tag (no prompt)
-./benchmarks/benchmark.sh baseline --tag "before-optimization"
+./dtail-tools benchmark -mode baseline -tag "before-optimization"
 
 # Create a baseline interactively (will prompt if no tag provided)
-./benchmarks/benchmark.sh baseline
+make benchmark-baseline
 
 # Create a comprehensive baseline (3x iterations)
-./benchmarks/benchmark.sh full-baseline --tag "v1.0-release"
+./dtail-tools benchmark -mode baseline -iterations 3x -tag "v1.0-release"
 ```
 
 ### Comparing Performance
@@ -55,10 +55,10 @@ make benchmark-baseline-quick
 make benchmark-compare BASELINE=benchmarks/baselines/baseline_20240125_143022.txt
 
 # Use the benchmark script for more options
-./benchmarks/benchmark.sh compare benchmarks/baselines/baseline_20240125_143022.txt
+./dtail-tools benchmark -mode compare -baseline benchmarks/baselines/baseline_20240125_143022.txt
 
 # List available baselines
-./benchmarks/benchmark.sh list
+./dtail-tools benchmark -mode list
 ```
 
 ### Specific Tool Benchmarks
@@ -183,10 +183,10 @@ make benchmark-baseline-quick
 > Enter a descriptive name for this baseline: initial-performance-check
 
 # Tagged baseline with description (no prompt)
-./benchmarks/benchmark.sh baseline --tag "before-refactoring"
+./dtail-tools benchmark -mode baseline -tag "before-refactoring"
 
 # Full baseline with multiple iterations
-./benchmarks/benchmark.sh full-baseline --memory --tag "release-v2.0"
+./dtail-tools benchmark -mode baseline -iterations 3x -memory -tag "release-v2.0"
 ```
 
 Baseline files are named with the pattern:
@@ -200,19 +200,19 @@ Compare current performance against a baseline to detect regressions or improvem
 make benchmark-compare BASELINE=benchmarks/baselines/baseline_20240125_143022.txt
 
 # Using benchmark script (provides benchstat analysis if available)
-./benchmarks/benchmark.sh compare benchmarks/baselines/baseline_20240125_143022.txt
+./dtail-tools benchmark -mode compare -baseline benchmarks/baselines/baseline_20240125_143022.txt
 ```
 
 ### Managing Baselines
 ```bash
 # List all baselines
-./benchmarks/benchmark.sh list
+./dtail-tools benchmark -mode list
 
 # View a specific baseline
-./benchmarks/benchmark.sh show benchmarks/baselines/baseline_20240125_143022.txt
+cat benchmarks/baselines/baseline_20240125_143022.txt
 
 # Clean old baselines (keeps last 10)
-./benchmarks/benchmark.sh clean
+./dtail-tools benchmark -mode clean
 ```
 
 ### Best Practices for Baselines

@@ -219,9 +219,9 @@ func analyzeProfiles() {
 
 		fmt.Printf("\nAnalyzing %s CPU profile:\n", tool)
 		
-		// Run profile.sh
-		cmd := exec.Command("../profiling/profile.sh",
-			"-top", "5",
+		// Run dtail-tools profile analyze
+		cmd := exec.Command("../dtail-tools",
+			"profile", "-mode", "analyze",
 			latestProfile)
 		
 		output, err := cmd.CombinedOutput()

@@ -35,23 +35,20 @@ Each command now supports profiling flags:
 
 ### 3. Analyze Profiles
 
-Use the included `profile.sh` script for quick analysis:
+Use dtail-tools for quick analysis:
 
 ```bash
-# Analyze CPU profile
-./profiling/profile.sh profiles/dcat_cpu_20240101_120000.prof
-
-# Show top 20 functions
-./profiling/profile.sh -top 20 profiles/dgrep_mem_20240101_120000.prof
-
-# Sort by cumulative time/allocations
-./profiling/profile.sh -cum profiles/dmap_cpu_20240101_120000.prof
-
 # List all profiles
-./profiling/profile.sh -list profiles/
+./dtail-tools profile -mode list
+
+# Analyze a specific profile
+./dtail-tools profile -mode analyze profiles/dcat_cpu_20240101_120000.prof
 
 # Open web browser with flame graph
-./profiling/profile.sh -web profiles/dcat_cpu_*.prof
+./dtail-tools profile -mode analyze profiles/dcat_cpu_*.prof -web
+
+# You can also use go tool pprof directly:
+go tool pprof profiles/dcat_cpu_20240101_120000.prof
 ```
 
 ## Profiling Options
@@ -84,26 +81,26 @@ All dtail commands support these profiling flags:
 
 ## Using with Benchmarks
 
-### Automated Profiling Script
+### Automated Profiling
 
-Run the included profiling script:
+Run profiling using dtail-tools:
 
 ```bash
-cd benchmarks
-./profile_benchmarks.sh
+# Quick profiling with small datasets
+./dtail-tools profile -mode quick
+
+# Full profiling suite
+./dtail-tools profile -mode full
+
+# Profile dmap specifically (with MapReduce format)
+./dtail-tools profile -mode dmap
 ```
 
-This script:
+This tool:
 - Generates test data of various sizes
-- Profiles dcat and dgrep with different workloads
+- Profiles dcat, dgrep, and dmap with different workloads  
 - Stores profiles in the `profiles` directory
-- Provides analysis commands
-
-For dmap profiling (requires MapReduce format):
-```bash
-cd benchmarks
-./profile_dmap.sh
-```
+- Provides immediate analysis of results
 
 ### Using Make Targets
 
@@ -111,13 +108,20 @@ cd benchmarks
 # Quick profiling with immediate results
 make profile-quick
 
-# Profile individual commands
-make profile-dcat
-make profile-dgrep
-make profile-dmap  # Uses MapReduce format
+# Full profiling suite
+make profile-all
 
-# Full automated profiling
-make profile-auto
+# Profile dmap specifically
+make profile-dmap
+
+# List available profiles
+make profile-list
+
+# Analyze a specific profile
+make profile-analyze PROFILE=profiles/dcat_cpu_*.prof
+
+# Open web interface for profile
+make profile-web PROFILE=profiles/dcat_cpu_*.prof
 ```
 
 ### Benchmark Integration
@@ -172,19 +176,19 @@ go tool pprof -svg profiles/dgrep_mem_*.prof > profile.svg
 go tool pprof -text profiles/dmap_alloc_*.prof > report.txt
 ```
 
-### Using profile.sh
+### Using dtail-tools profile
 
-The `profile.sh` script provides quick summaries:
+The dtail-tools profile command provides quick summaries:
 
 ```bash
 # List all profiles
-./profiling/profile.sh -list profiles/
+./dtail-tools profile -mode list
 
 # Analyze specific profile
-./profiling/profile.sh profiles/dcat_cpu_20240101_120000.prof
+./dtail-tools profile -mode analyze profiles/dcat_cpu_20240101_120000.prof
 
 # Get help
-./profiling/profile.sh -help
+./dtail-tools profile -h
 ```
 
 ## Optimization Workflow
