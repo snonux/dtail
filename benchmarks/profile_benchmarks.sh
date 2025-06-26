@@ -69,6 +69,38 @@ run_profile() {
     echo
 }
 
+# Special function for profiling dmap which runs continuously
+run_profile_dmap() {
+    local cmd=$1
+    local name=$2
+    local args=$3
+    
+    echo -e "${GREEN}Profiling $cmd - $name${NC}"
+    
+    for i in $(seq 1 $PROFILE_RUNS); do
+        echo "  Run $i/$PROFILE_RUNS..."
+        echo "  Command: $cmd -profile -profiledir $PROFILE_DIR $args (will interrupt after 3s)"
+        
+        # Run dmap in background, wait a bit for it to process, then interrupt it
+        $cmd -profile -profiledir "$PROFILE_DIR" $args > /dev/null 2>&1 &
+        local pid=$!
+        
+        # Wait for dmap to process the file and generate initial results
+        sleep 3
+        
+        # Send interrupt signal to make it exit cleanly
+        kill -INT $pid 2>/dev/null
+        wait $pid 2>/dev/null
+        
+        echo "  Completed"
+        
+        # Small delay between runs
+        sleep 1
+    done
+    
+    echo
+}
+
 # Generate test data
 echo -e "${GREEN}Preparing test data...${NC}"
 generate_test_data "1MB" "$TEST_DATA_DIR/small.log"
@@ -132,13 +164,13 @@ if [ ! -f "$TEST_DATA_DIR/dtail_format.log" ]; then
 fi
 
 # Profile dmap with DTail format  
-run_profile "../dmap" "simple_count" "-plain -cfg none -query 'from STATS select count(*)' -files $TEST_DATA_DIR/dtail_format.log"
-run_profile "../dmap" "aggregations" "-plain -cfg none -query 'from STATS select sum(\$goroutines),avg(\$cgocalls),max(lifetimeConnections)' -files $TEST_DATA_DIR/dtail_format.log"
-run_profile "../dmap" "group_by_connections" "-plain -cfg none -query 'from STATS select currentConnections,count(*) group by currentConnections' -files $TEST_DATA_DIR/dtail_format.log"
+run_profile_dmap "../dmap" "simple_count" "-plain -cfg none -query 'from STATS select count(*)' -files $TEST_DATA_DIR/dtail_format.log"
+run_profile_dmap "../dmap" "aggregations" "-plain -cfg none -query 'from STATS select sum(\$goroutines),avg(\$cgocalls),max(lifetimeConnections)' -files $TEST_DATA_DIR/dtail_format.log"
+run_profile_dmap "../dmap" "group_by_connections" "-plain -cfg none -query 'from STATS select currentConnections,count(*) group by currentConnections' -files $TEST_DATA_DIR/dtail_format.log"
 
 # Also test CSV format
 echo -e "\n${YELLOW}Testing CSV format with dmap${NC}"
-run_profile "../dmap" "csv_query" "-plain -cfg none -query 'select user,action,count(*) where status=\"success\" group by user,action logformat csv' -files $TEST_DATA_DIR/test.csv"
+run_profile_dmap "../dmap" "csv_query" "-plain -cfg none -query 'select user,action,count(*) where status=\"success\" group by user,action logformat csv' -files $TEST_DATA_DIR/test.csv"
 
 echo
 echo -e "${GREEN}Profiling complete!${NC}"

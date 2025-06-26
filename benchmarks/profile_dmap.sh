@@ -100,20 +100,33 @@ echo -e "${GREEN}Profiling dmap queries...${NC}"
 # Query 1: Simple count
 echo -e "\n${YELLOW}Query: Count by hostname${NC}"
 QUERY="from STATS select count(\$line) group by hostname outfile $TEST_DATA_DIR/count_output.csv"
-echo "Command: timeout 10s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
-timeout 10s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10
+echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log (will interrupt after 3s)"
+# Run dmap in background and interrupt after 3 seconds
+../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10 &
+DMAP_PID=$!
+sleep 3
+kill -INT $DMAP_PID 2>/dev/null
+wait $DMAP_PID 2>/dev/null
 
 # Query 2: Aggregations
 echo -e "\n${YELLOW}Query: Sum and average${NC}"
 QUERY="from STATS select sum(\$goroutines),avg(\$goroutines) group by hostname outfile $TEST_DATA_DIR/sum_avg_output.csv"
-echo "Command: timeout 10s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
-timeout 10s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10
+echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log (will interrupt after 3s)"
+../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10 &
+DMAP_PID=$!
+sleep 3
+kill -INT $DMAP_PID 2>/dev/null
+wait $DMAP_PID 2>/dev/null
 
 # Query 3: Min/Max
 echo -e "\n${YELLOW}Query: Min and max${NC}"
 QUERY="from STATS select min(currentConnections),max(lifetimeConnections) group by hostname outfile $TEST_DATA_DIR/min_max_output.csv"
-echo "Command: timeout 10s ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log"
-timeout 10s ../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10
+echo "Command: ../dmap -profile -profiledir $PROFILE_DIR -plain -cfg none -query \"$QUERY\" -files $TEST_DATA_DIR/stats_small.log (will interrupt after 3s)"
+../dmap -profile -profiledir "$PROFILE_DIR" -plain -cfg none -query "$QUERY" -files "$TEST_DATA_DIR/stats_small.log" 2>&1 | head -10 &
+DMAP_PID=$!
+sleep 3
+kill -INT $DMAP_PID 2>/dev/null
+wait $DMAP_PID 2>/dev/null
 
 echo
 echo -e "${GREEN}Analyzing dmap profiles...${NC}"
