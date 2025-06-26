@@ -9,8 +9,11 @@ cache/
 log/
 tags
 benchmark_results/
+benchmarks/baselines/current*.txt
+benchmarks/baselines/comparison*.txt
 /cache/
 /log/
+/profiling/*.prof
 /dtail
 /dgrep
 /dcat

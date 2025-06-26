@@ -14,6 +14,7 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
+	"github.com/mimecast/dtail/internal/profiling"
 	"github.com/mimecast/dtail/internal/source"
 	"github.com/mimecast/dtail/internal/user"
 	"github.com/mimecast/dtail/internal/version"
@@ -25,6 +26,7 @@ func main() {
 	var displayVersion bool
 	var grep string
 	var pprof string
+	var profileFlags profiling.Flags
 	userName := user.Name()
 
 	flag.BoolVar(&args.NoColor, "noColor", false, "Disable ANSII terminal colors")
@@ -51,6 +53,9 @@ func main() {
 	flag.StringVar(&args.What, "files", "", "File(s) to read")
 	flag.StringVar(&grep, "grep", "", "Alias for -regex")
 	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
+	
+	// Add profiling flags
+	profiling.AddFlags(&profileFlags)
 
 	flag.Parse()
 	config.Setup(source.Client, &args, flag.Args())
@@ -64,6 +69,10 @@ func main() {
 	wg.Add(1)
 	dlog.Start(ctx, &wg, source.Client)
 
+	// Set up profiling
+	profiler := profiling.NewProfiler(profileFlags.ToConfig("dgrep"))
+	defer profiler.Stop()
+
 	if grep != "" {
 		args.RegexStr = grep
 	}
@@ -75,12 +84,26 @@ func main() {
 		}()
 	}
 
+	// Log initial metrics if profiling is enabled
+	if profileFlags.Enabled() {
+		profiler.LogMetrics("startup")
+	}
+
 	client, err := clients.NewGrepClient(args)
 	if err != nil {
 		panic(err)
 	}
 
 	status := client.Start(ctx, signal.InterruptCh(ctx))
+	
+	// Log final metrics if profiling is enabled
+	if profileFlags.Enabled() {
+		profiler.LogMetrics("shutdown")
+	}
+	
+	// Stop profiler before exit
+	profiler.Stop()
+	
 	cancel()
 
 	wg.Wait()

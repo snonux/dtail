@@ -31,6 +31,36 @@ go test -bench=BenchmarkQuick ./benchmarks
 go test -bench=. ./benchmarks
 ```
 
+### Creating Baseline Snapshots
+```bash
+# Create a baseline before making changes (will prompt for name)
+make benchmark-baseline
+
+# Create a quick baseline (small files only, will prompt for name)
+make benchmark-baseline-quick
+
+# Create a baseline with a descriptive tag (no prompt)
+./benchmarks/benchmark.sh baseline --tag "before-optimization"
+
+# Create a baseline interactively (will prompt if no tag provided)
+./benchmarks/benchmark.sh baseline
+
+# Create a comprehensive baseline (3x iterations)
+./benchmarks/benchmark.sh full-baseline --tag "v1.0-release"
+```
+
+### Comparing Performance
+```bash
+# Compare with a specific baseline using make
+make benchmark-compare BASELINE=benchmarks/baselines/baseline_20240125_143022.txt
+
+# Use the benchmark script for more options
+./benchmarks/benchmark.sh compare benchmarks/baselines/baseline_20240125_143022.txt
+
+# List available baselines
+./benchmarks/benchmark.sh list
+```
+
 ### Specific Tool Benchmarks
 ```bash
 # DCat benchmarks only
@@ -129,6 +159,68 @@ Benchmarks create large temporary files. Ensure sufficient disk space (>2GB).
 
 ### Timeout errors
 Increase timeout: `DTAIL_BENCH_TIMEOUT=60m go test -bench=. ./benchmarks`
+
+## Baseline Management
+
+The benchmarking framework includes tools for creating and comparing performance baselines:
+
+### Creating Baselines
+Baselines capture the complete benchmark output including:
+- Git commit hash
+- Timestamp
+- All benchmark results with timing and memory allocation data
+- Descriptive names for easy identification
+
+The system will prompt for a meaningful baseline name to ensure proper documentation:
+
+```bash
+# Simple baseline (prompts for name)
+make benchmark-baseline
+> Enter a descriptive name for this baseline: before-cache-optimization
+
+# Quick baseline for rapid testing (prompts for name)
+make benchmark-baseline-quick
+> Enter a descriptive name for this baseline: initial-performance-check
+
+# Tagged baseline with description (no prompt)
+./benchmarks/benchmark.sh baseline --tag "before-refactoring"
+
+# Full baseline with multiple iterations
+./benchmarks/benchmark.sh full-baseline --memory --tag "release-v2.0"
+```
+
+Baseline files are named with the pattern:
+`baseline_YYYYMMDD_HHMMSS_descriptive-name.txt`
+
+### Comparing Performance
+Compare current performance against a baseline to detect regressions or improvements:
+
+```bash
+# Using make
+make benchmark-compare BASELINE=benchmarks/baselines/baseline_20240125_143022.txt
+
+# Using benchmark script (provides benchstat analysis if available)
+./benchmarks/benchmark.sh compare benchmarks/baselines/baseline_20240125_143022.txt
+```
+
+### Managing Baselines
+```bash
+# List all baselines
+./benchmarks/benchmark.sh list
+
+# View a specific baseline
+./benchmarks/benchmark.sh show benchmarks/baselines/baseline_20240125_143022.txt
+
+# Clean old baselines (keeps last 10)
+./benchmarks/benchmark.sh clean
+```
+
+### Best Practices for Baselines
+1. Create a baseline before starting optimization work
+2. Tag baselines with descriptive names (e.g., "before-cache-impl", "v1.0-release")
+3. Use full baselines for release comparisons
+4. Commit important baseline files to version control for team reference
+5. Run benchmarks on consistent hardware for accurate comparisons
 
 ## Contributing
 

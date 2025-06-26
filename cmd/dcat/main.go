@@ -14,6 +14,7 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
+	"github.com/mimecast/dtail/internal/profiling"
 	"github.com/mimecast/dtail/internal/source"
 	"github.com/mimecast/dtail/internal/user"
 	"github.com/mimecast/dtail/internal/version"
@@ -24,6 +25,7 @@ func main() {
 	var args config.Args
 	var displayVersion bool
 	var pprof string
+	var profileFlags profiling.Flags
 
 	userName := user.Name()
 
@@ -45,6 +47,9 @@ func main() {
 	flag.StringVar(&args.UserName, "user", userName, "Your system user name")
 	flag.StringVar(&args.What, "files", "", "File(s) to read")
 	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
+	
+	// Add profiling flags
+	profiling.AddFlags(&profileFlags)
 
 	flag.Parse()
 	config.Setup(source.Client, &args, flag.Args())
@@ -58,11 +63,20 @@ func main() {
 	wg.Add(1)
 	dlog.Start(ctx, &wg, source.Client)
 
+	// Set up profiling
+	profiler := profiling.NewProfiler(profileFlags.ToConfig("dcat"))
+	defer profiler.Stop()
+
 	if pprof != "" {
 		dlog.Client.Info("Starting PProf", pprof)
 		go func() {
 			panic(http.ListenAndServe(pprof, nil))
 		}()
+	}
+
+	// Log initial metrics if profiling is enabled
+	if profileFlags.Enabled() {
+		profiler.LogMetrics("startup")
 	}
 
 	client, err := clients.NewCatClient(args)
@@ -71,6 +85,15 @@ func main() {
 	}
 
 	status := client.Start(ctx, signal.InterruptCh(ctx))
+	
+	// Log final metrics if profiling is enabled
+	if profileFlags.Enabled() {
+		profiler.LogMetrics("shutdown")
+	}
+	
+	// Stop profiler before exit
+	profiler.Stop()
+	
 	cancel()
 
 	wg.Wait()

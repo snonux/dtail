@@ -8,4 +8,7 @@ require (
 	golang.org/x/term v0.32.0
 )
 
-require golang.org/x/sys v0.33.0 // indirect
+require (
+	github.com/google/pprof v0.0.0-20250607225305-033d6d78b36a // indirect
+	golang.org/x/sys v0.33.0 // indirect
+)
