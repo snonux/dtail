@@ -93,7 +93,12 @@ func (h *baseHandler) handleMessage(message string) {
 		return
 	}
 
-	dlog.Client.Raw(message)
+	// Only add newline if message doesn't already end with one
+	if len(message) > 0 && message[len(message)-1] != '\n' {
+		dlog.Client.Raw(message + "\n")
+	} else {
+		dlog.Client.Raw(message)
+	}
 }
 
 // Handle messages received from server which are not meant to be displayed

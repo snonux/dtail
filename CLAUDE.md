@@ -106,9 +106,7 @@ make profile-help
 
 - Profiles are saved in the `profiles/` directory by default
 - Each command generates CPU, memory, and allocation profiles
-- The `profile-dmap` target uses a 3-second timeout to prevent hanging since dmap runs continuously
 - Use `go tool pprof` for detailed analysis of profile files
-- The `profiling/profile.sh` script provides quick summaries of profile data
 
 ## Test Execution Details
 

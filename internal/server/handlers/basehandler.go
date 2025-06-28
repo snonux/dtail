@@ -228,7 +228,7 @@ func (h *baseHandler) handleBase64(args []string, argc int) ([]string, int, erro
 	decodedStr := string(decoded)
 
 	args = strings.Split(decodedStr, " ")
-	argc = len(decodedStr)
+	argc = len(args)
 	dlog.Server.Trace(h.user, "Base64 decoded received command",
 		decodedStr, argc, args)
 

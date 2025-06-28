@@ -13,6 +13,10 @@ import (
 type FileReader interface {
 	Start(ctx context.Context, ltx lcontext.LContext, lines chan<- *line.Line,
 		re regex.Regex) error
+	StartWithProcessor(ctx context.Context, ltx lcontext.LContext, processor line.Processor,
+		re regex.Regex) error
+	StartWithProcessorOptimized(ctx context.Context, ltx lcontext.LContext, processor line.Processor,
+		re regex.Regex) error
 	FilePath() string
 	Retry() bool
 }
