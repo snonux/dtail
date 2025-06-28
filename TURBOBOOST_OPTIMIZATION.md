@@ -1,8 +1,8 @@
-# Channel-less dgrep Implementation
+# DTail Turbo Boost Optimization
 
 ## Overview
 
-This document describes the channel-less implementation of dgrep that was created to address performance bottlenecks caused by channel overhead in the original implementation.
+This document describes the turbo boost optimization feature that provides significant performance improvements for DTail operations by using channel-less processing and optimized I/O.
 
 ## Problem Statement
 
@@ -101,3 +101,18 @@ dgrep -regex "pattern" file.log
 3. Implement zero-copy optimizations
 4. Add performance metrics collection
 5. Consider using io_uring on Linux for async I/O
+
+## Usage
+
+To enable turbo boost optimizations:
+
+```bash
+export DTAIL_TURBOBOOST_ENABLE=yes
+```
+
+This enables:
+- Channel-less implementation for grep and cat operations
+- Optimized buffered I/O reader (256KB buffer)
+- Buffer pooling to reduce memory allocations
+
+The turbo boost mode is designed to be extended to other DTail commands in the future.

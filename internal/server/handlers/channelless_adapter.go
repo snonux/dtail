@@ -2,10 +2,8 @@ package handlers
 
 import (
 	"bytes"
-	"fmt"
 
 	"github.com/mimecast/dtail/internal/io/line"
-	"github.com/mimecast/dtail/internal/io/pool"
 )
 
 // ChannellessLineProcessor adapts the channel-less processor to work with the existing handler infrastructure
@@ -30,15 +28,9 @@ func (p *ChannellessLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNu
 	// Create a line object that matches what the original implementation expects
 	l := line.New(lineContent, lineNum, 100, sourceID)
 	
-	// Send through the channel
-	select {
-	case p.lines <- l:
-		return nil
-	default:
-		// Channel full, recycle the buffer
-		pool.RecycleBytesBuffer(lineContent)
-		return fmt.Errorf("lines channel full")
-	}
+	// Send through the channel (blocking to ensure no lines are lost)
+	p.lines <- l
+	return nil
 }
 
 // Flush does nothing for this implementation

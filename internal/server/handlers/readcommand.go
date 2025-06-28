@@ -166,14 +166,14 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		}
 	}
 
-	// Check if we should use the channel-less implementation
-	channellessEnabled := config.Env("DTAIL_CHANNELLESS_GREP")
-	dlog.Server.Info(r.server.user, "Channel-less check: enabled=", channellessEnabled, "mode=", r.mode)
+	// Check if we should use the turbo boost optimizations
+	turboBoostEnabled := config.Env("DTAIL_TURBOBOOST_ENABLE")
+	dlog.Server.Info(r.server.user, "Turbo boost check: enabled=", turboBoostEnabled, "mode=", r.mode)
 	// Only enable channel-less for server mode, not serverless mode
 	// Use the serverless field directly as it's more reliable
-	if channellessEnabled && (r.mode == omode.CatClient || r.mode == omode.GrepClient) && !r.server.serverless {
+	if turboBoostEnabled && (r.mode == omode.CatClient || r.mode == omode.GrepClient) && !r.server.serverless {
 		// Log to stderr for testing verification - only in server mode
-		fmt.Fprintf(os.Stderr, "[DTAIL] Using channel-less implementation for %s\n", path)
+		fmt.Fprintf(os.Stderr, "[DTAIL] Turbo boost enabled: using channel-less implementation for %s\n", path)
 		r.readWithProcessor(ctx, ltx, path, globID, re, reader)
 		return
 	}
@@ -217,13 +217,13 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 	lines := r.server.lines
 	aggregate := r.server.aggregate
 
-	// Use the optimized version if available
-	useOptimized := config.Env("DTAIL_OPTIMIZED_READER")
+	// Use the optimized version if turbo boost is enabled
+	turboBoostEnabled := config.Env("DTAIL_TURBOBOOST_ENABLE")
 	
 	// Log to stderr for testing verification - only in server mode
 	if !r.server.serverless {
-		if useOptimized {
-			fmt.Fprintf(os.Stderr, "[DTAIL] Using optimized reader for %s\n", path)
+		if turboBoostEnabled {
+			fmt.Fprintf(os.Stderr, "[DTAIL] Turbo boost enabled: using optimized reader for %s\n", path)
 		} else {
 			fmt.Fprintf(os.Stderr, "[DTAIL] Using standard processor reader for %s\n", path)
 		}
@@ -240,7 +240,7 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 		defer processor.Close()
 
 		var err error
-		if useOptimized {
+		if turboBoostEnabled {
 			err = reader.StartWithProcessorOptimized(ctx, ltx, processor, re)
 		} else {
 			err = reader.StartWithProcessor(ctx, ltx, processor, re)
