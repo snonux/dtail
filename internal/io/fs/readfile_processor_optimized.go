@@ -97,19 +97,41 @@ func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int,
 		return 0, nil, nil
 	}
 	
+	maxLineLen := config.Server.MaxLineLength
+	
 	// Look for a newline
 	if i := bytes.IndexByte(data, '\n'); i >= 0 {
-		// We have a full line
+		// Check if the line before the newline exceeds max length
+		if i > maxLineLen {
+			// Line is too long, split it at maxLineLen
+			if !f.warnedAboutLongLine {
+				f.serverMessages <- dlog.Common.Warn(f.filePath,
+					"Long log line, splitting into multiple lines") + "\n"
+				f.warnedAboutLongLine = true
+			}
+			return maxLineLen, data[0:maxLineLen], nil
+		}
+		// We have a full line within the limit
+		f.warnedAboutLongLine = false // Reset warning for next long line sequence
 		return i + 1, data[0:i], nil
 	}
 	
 	// If we're at EOF, we have a final, non-terminated line
 	if atEOF {
+		if len(data) > maxLineLen {
+			// Even at EOF, respect max line length
+			if !f.warnedAboutLongLine {
+				f.serverMessages <- dlog.Common.Warn(f.filePath,
+					"Long log line, splitting into multiple lines") + "\n"
+				f.warnedAboutLongLine = true
+			}
+			return maxLineLen, data[0:maxLineLen], nil
+		}
 		return len(data), data, nil
 	}
 	
 	// If the line is too long, split it
-	if len(data) >= config.Server.MaxLineLength {
+	if len(data) >= maxLineLen {
 		// Warn about long line (only once)
 		if !f.warnedAboutLongLine {
 			f.serverMessages <- dlog.Common.Warn(f.filePath,
@@ -118,7 +140,7 @@ func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int,
 		}
 		
 		// Return a chunk up to MaxLineLength
-		return config.Server.MaxLineLength, data[0:config.Server.MaxLineLength], nil
+		return maxLineLen, data[0:maxLineLen], nil
 	}
 	
 	// Request more data
