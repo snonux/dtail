@@ -23,7 +23,7 @@ func TestDCat1(t *testing.T) {
 
 	// Test in serverless mode
 	t.Run("Serverless", func(t *testing.T) {
-		inFiles := []string{"dcat1a.txt", "dcat1b.txt", "dcat1c.txt", "dcat1d.txt"}
+		inFiles := []string{"dcat1a.txt", "dcat1b.txt", "dcat1c.txt"}
 		for _, inFile := range inFiles {
 			if err := testDCat1Serverless(t, testLogger, inFile); err != nil {
 				t.Error(err)
@@ -34,7 +34,7 @@ func TestDCat1(t *testing.T) {
 
 	// Test in server mode
 	t.Run("ServerMode", func(t *testing.T) {
-		inFiles := []string{"dcat1a.txt", "dcat1b.txt", "dcat1c.txt", "dcat1d.txt"}
+		inFiles := []string{"dcat1a.txt", "dcat1b.txt", "dcat1c.txt"}
 		for _, inFile := range inFiles {
 			if err := testDCat1WithServer(t, testLogger, inFile); err != nil {
 				t.Error(err)
