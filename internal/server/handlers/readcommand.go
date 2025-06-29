@@ -110,6 +110,10 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 		go r.readFileIfPermissions(ctx, ltx, &wg, path, glob, re)
 	}
 	wg.Wait()
+	
+	// In turbo mode with aggregate, we don't close the shared channel here
+	// because it will be used across multiple invocations
+	// The aggregate will handle channel closure when it's done
 }
 
 func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LContext,
@@ -187,7 +191,9 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 
 	for {
 		if aggregate != nil {
-			lines = make(chan *line.Line, 100)
+			// Use a larger buffer for aggregate operations to handle high concurrency
+			// This prevents deadlock when processing many files simultaneously
+			lines = make(chan *line.Line, 10000)
 			aggregate.NextLinesCh <- lines
 		}
 		if err := reader.Start(ctx, ltx, lines, re); err != nil {
@@ -235,7 +241,9 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 
 	for {
 		if aggregate != nil {
-			lines = make(chan *line.Line, 100)
+			// Use a larger buffer for aggregate operations to handle high concurrency
+			// This prevents deadlock when processing many files simultaneously
+			lines = make(chan *line.Line, 10000)
 			aggregate.NextLinesCh <- lines
 		}
 

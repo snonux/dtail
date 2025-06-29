@@ -1,0 +1,5 @@
+{
+  "MaxConcurrentCats": 100,
+  "SSHBindAddress": "localhost"
+}
+EOF < /dev/null

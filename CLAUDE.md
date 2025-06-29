@@ -112,6 +112,17 @@ make profile-help
 
 - Integration tests are run by setting DTAIL_INTEGRATION_TEST_RUN_MODE to yes, and by running 'make test'.
 
+## Known Limitations
+
+### Turbo Mode with High-Concurrency MapReduce Operations
+When DTAIL_TURBOBOOST_ENABLE is set and processing many files concurrently (e.g., 100+ files) with MapReduce operations in server mode, data accuracy issues may occur due to the interaction between turbo mode's optimized processing and the aggregate's channel management system. This issue does not affect serverless mode.
+
+**Workarounds:**
+1. Disable turbo mode for high-concurrency MapReduce operations: `unset DTAIL_TURBOBOOST_ENABLE`
+2. Increase MaxConcurrentCats in the server configuration to match the number of files
+3. Process files in smaller batches
+4. Use serverless mode for MapReduce operations when possible
+
 ## Benchmarking & Profiling
 
 ```bash
