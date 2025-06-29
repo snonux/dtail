@@ -61,10 +61,8 @@ func (h *baseHandler) Write(p []byte) (n int, err error) {
 	for _, b := range p {
 		switch b {
 		case '\n':
-			// Backwards compatible with DTail 3 (e.g. get error message from server
-			// about protocol missmatch.
+			// Just add the newline to the buffer, don't treat as message delimiter
 			h.receiveBuf.WriteByte(b)
-			fallthrough
 		case protocol.MessageDelimiter:
 			message := h.receiveBuf.String()
 			h.handleMessage(message)
@@ -93,11 +91,11 @@ func (h *baseHandler) handleMessage(message string) {
 		return
 	}
 
-	// Only add newline if message doesn't already end with one
-	if len(message) > 0 && message[len(message)-1] != '\n' {
-		dlog.Client.Raw(message + "\n")
-	} else {
+	// Add newline only if the message doesn't already end with one
+	if len(message) > 0 && message[len(message)-1] == '\n' {
 		dlog.Client.Raw(message)
+	} else {
+		dlog.Client.Raw(message + "\n")
 	}
 }
 

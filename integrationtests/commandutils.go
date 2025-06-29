@@ -77,9 +77,10 @@ func startCommandWithEnv(ctx context.Context, t *testing.T, inPipeFile,
 	t.Log(cmdStr, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, cmdStr, args...)
 	
-	// Set environment variables if provided
+	// Always inherit environment variables
+	cmd.Env = os.Environ()
+	// Add any additional environment variables if provided
 	if env != nil {
-		cmd.Env = os.Environ()
 		for k, v := range env {
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 		}

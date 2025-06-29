@@ -53,6 +53,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	// e.g.: grep foo bar.log | dmap 'from STATS select ...'
 	// Only read from pipe if no file argument is provided
 	isPipe := r.isInputFromPipe() && (argc < 2 || args[1] == "" || args[1] == "-")
+	
 	if isPipe {
 		dlog.Server.Debug("Reading data from stdin pipe")
 		// Empty file path and globID "-" represents reading from the stdin pipe.
@@ -212,6 +213,7 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 	path, globID string, re regex.Regex, reader fs.FileReader) {
 
 	dlog.Server.Info(r.server.user, "Using channel-less grep implementation", path, globID)
+	
 
 	// Use the existing lines channel but with the processor-based reader
 	lines := r.server.lines
