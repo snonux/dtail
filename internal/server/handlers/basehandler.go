@@ -385,7 +385,15 @@ func (h *baseHandler) flush() {
 }
 
 func (h *baseHandler) shutdown() {
-	dlog.Server.Debug(h.user, "shutdown()")
+	// Log current state at shutdown
+	activeCommands := atomic.LoadInt32(&h.activeCommands)
+	dlog.Server.Info(h.user, "shutdown() called", "activeCommands", activeCommands, "turboMode", h.turboMode)
+	
+	// In turbo mode, ensure all data is flushed before shutdown
+	if h.turboMode {
+		h.flushTurboData()
+	}
+	
 	h.flush()
 
 	go func() {

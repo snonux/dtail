@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
@@ -21,6 +22,8 @@ type ServerHandler struct {
 	catLimiter  chan struct{}
 	tailLimiter chan struct{}
 	regex       string
+	// Track pending files waiting for limiter slots
+	pendingFiles int32
 }
 
 // NewServerHandler returns the server handler.
@@ -60,7 +63,12 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	dlog.Server.Debug(h.user, "Handling user command", argc, args)
 	h.incrementActiveCommands()
 	commandFinished := func() {
-		if h.decrementActiveCommands() == 0 {
+		activeCommands := h.decrementActiveCommands()
+		pendingFiles := atomic.LoadInt32(&h.pendingFiles)
+		dlog.Server.Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
+		
+		// Only shutdown if no active commands AND no pending files
+		if activeCommands == 0 && pendingFiles == 0 {
 			h.shutdown()
 		}
 	}
