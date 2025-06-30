@@ -176,9 +176,10 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	dlog.Server.Info(r.server.user, "Turbo boost check: enabled=", turboBoostEnabled, "mode=", r.mode)
 	// Only enable channel-less for server mode, not serverless mode
 	// Use the serverless field directly as it's more reliable
-	// Enable turbo boost for cat/grep/tail modes, and also when aggregate (MapReduce) is present
-	if turboBoostEnabled && !r.server.serverless && 
-		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient || r.server.aggregate != nil) {
+	// Enable turbo boost for cat/grep/tail modes, but NOT for aggregate (MapReduce) operations
+	// MapReduce requires the traditional channel-based approach to work correctly
+	if turboBoostEnabled && !r.server.serverless && r.server.aggregate == nil &&
+		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) {
 		// Log to stderr for testing verification - only in server mode
 		fmt.Fprintf(os.Stderr, "[DTAIL] Turbo boost enabled: using channel-less implementation for %s\n", path)
 		r.readWithProcessor(ctx, ltx, path, globID, re, reader)
