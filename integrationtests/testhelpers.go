@@ -216,6 +216,12 @@ func NewTestServer(t *testing.T) *TestServer {
 
 // Start starts the test server with the given log level
 func (ts *TestServer) Start(logLevel string) error {
+	// Add cleanup to ensure server is stopped when test ends
+	ts.t.Cleanup(func() {
+		ts.Stop()
+		// Give the server a moment to release the port
+		time.Sleep(100 * time.Millisecond)
+	})
 	return startTestServer(ts.t, ts.ctx, &ServerConfig{
 		Port:        ts.port,
 		BindAddress: ts.bindAddress,
@@ -225,6 +231,12 @@ func (ts *TestServer) Start(logLevel string) error {
 
 // StartWithConfig starts the test server with custom configuration
 func (ts *TestServer) StartWithConfig(cfg *ServerConfig) error {
+	// Add cleanup to ensure server is stopped when test ends
+	ts.t.Cleanup(func() {
+		ts.Stop()
+		// Give the server a moment to release the port
+		time.Sleep(100 * time.Millisecond)
+	})
 	if cfg == nil {
 		cfg = &ServerConfig{}
 	}
