@@ -366,12 +366,19 @@ func (h *baseHandler) flush() {
 		dlog.Server.Trace(h.user, "flush", "lines", lineCount, "server", serverCount, "mapr", maprCount, "turbo", turboCount)
 		return lineCount + serverCount + maprCount + turboCount
 	}
-	for i := 0; i < 100; i++ { // Increase iterations for turbo mode
+	
+	// Increase iterations for turbo mode to handle large file batches
+	maxIterations := 100
+	if h.turboMode {
+		maxIterations = 300 // Give more time for turbo mode to drain
+	}
+	
+	for i := 0; i < maxIterations; i++ {
 		if numUnsentMessages() == 0 {
 			dlog.Server.Debug(h.user, "ALL lines sent", fmt.Sprintf("%p", h))
 			return
 		}
-		dlog.Server.Debug(h.user, "Still lines to be sent")
+		dlog.Server.Debug(h.user, "Still lines to be sent", "iteration", i, "unsent", numUnsentMessages())
 		time.Sleep(time.Millisecond * 10)
 	}
 	dlog.Server.Warn(h.user, "Some lines remain unsent", numUnsentMessages())
@@ -412,9 +419,9 @@ func (h *baseHandler) EnableTurboMode() {
 	if h.turboLines == nil {
 		h.turboLines = make(chan []byte, 1000) // Large buffer for performance
 	}
-	if h.turboEOF == nil {
-		h.turboEOF = make(chan struct{})
-	}
+	// Always create a new turboEOF channel for each batch of files
+	// This ensures proper synchronization when processing multiple file batches
+	h.turboEOF = make(chan struct{})
 }
 
 // IsTurboMode returns true if turbo mode is enabled

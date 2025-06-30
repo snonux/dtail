@@ -348,9 +348,6 @@ type TurboNetworkWriter struct {
 	// Stats
 	linesWritten uint64
 	bytesWritten uint64
-	
-	// Track if we've signaled EOF
-	eofSignaled bool
 }
 
 // WriteLineData formats and writes line data directly
@@ -431,7 +428,7 @@ func (w *TurboNetworkWriter) WriteServerMessage(message string) error {
 
 // Flush ensures all data is written
 func (w *TurboNetworkWriter) Flush() error {
-	dlog.Server.Trace("TurboNetworkWriter.Flush", "called", "eofSignaled", w.eofSignaled)
+	dlog.Server.Trace("TurboNetworkWriter.Flush", "called")
 	
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
@@ -451,18 +448,15 @@ func (w *TurboNetworkWriter) Flush() error {
 		}
 	}
 	
-	// Wait for the channel to have space before signaling EOF
-	// This ensures data has been sent
-	if !w.eofSignaled && w.handler.turboEOF != nil {
+	// Wait for the channel to have some space to ensure data is being processed
+	// Don't close the EOF channel here as it may be used for multiple files
+	if w.handler.turboLines != nil {
 		// Wait until channel has been drained somewhat
 		for i := 0; i < 100 && len(w.handler.turboLines) > 900; i++ {
 			dlog.Server.Trace("TurboNetworkWriter.Flush", "waiting for channel to drain", "channelLen", len(w.handler.turboLines))
 			time.Sleep(10 * time.Millisecond)
 		}
-		
-		dlog.Server.Trace("TurboNetworkWriter.Flush", "signaling EOF", "channelLen", len(w.handler.turboLines))
-		close(w.handler.turboEOF)
-		w.eofSignaled = true
+		dlog.Server.Trace("TurboNetworkWriter.Flush", "channel status", "channelLen", len(w.handler.turboLines))
 	}
 	
 	// Wait a bit to ensure data is processed

@@ -110,6 +110,24 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	}
 	wg.Wait()
 
+	// In turbo mode, signal EOF after all files are processed
+	// This is crucial for proper shutdown in server mode
+	turboBoostEnabled := config.Env("DTAIL_TURBOBOOST_ENABLE")
+	if turboBoostEnabled && r.server.aggregate == nil && 
+		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) {
+		if r.server.IsTurboMode() && r.server.turboEOF != nil {
+			// Signal EOF by closing the channel, but only if it hasn't been closed yet
+			select {
+			case <-r.server.turboEOF:
+				// Already closed
+			default:
+				close(r.server.turboEOF)
+			}
+			// Wait longer to ensure all data is transmitted for large batches
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
 	// In turbo mode with aggregate, we don't close the shared channel here
 	// because it will be used across multiple invocations
 	// The aggregate will handle channel closure when it's done
