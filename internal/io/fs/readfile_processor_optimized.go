@@ -33,17 +33,20 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	// Use a scanner for efficient line reading
 	scanner := bufio.NewScanner(reader)
 	
-	// Set a custom buffer size for the scanner (default is 64KB, we'll use 256KB)
-	buf := make([]byte, 256*1024)
-	scanner.Buffer(buf, config.Server.MaxLineLength)
+	// Set a custom buffer size for the scanner (default is 64KB, we'll use 1MB)
+	// The second parameter is the maximum token size, not the buffer size
+	buf := make([]byte, 1024*1024) // 1MB buffer
+	maxTokenSize := 1024 * 1024   // 1MB max token size
+	scanner.Buffer(buf, maxTokenSize)
 	
-	// Custom split function to handle lines up to MaxLineLength
-	scanner.Split(f.scanLinesWithMaxLength)
+	// Use custom split function that preserves line endings
+	scanner.Split(f.scanLinesPreserveEndings)
 	
 	// Track truncation checks
 	lastTruncateCheck := time.Now()
 	truncateCheckInterval := 3 * time.Second
 	
+	lineCount := 0
 	for scanner.Scan() {
 		// Check context cancellation
 		select {
@@ -76,6 +79,8 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		if err := filterProcessor.ProcessFilteredLine(lineBuf); err != nil {
 			return err
 		}
+		
+		lineCount++
 	}
 	
 	// Check for scanner errors
@@ -89,6 +94,55 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	}
 	
 	return nil
+}
+
+// scanLinesPreserveEndings is a custom split function that preserves original line endings
+// and respects MaxLineLength
+func (f *readFile) scanLinesPreserveEndings(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	
+	maxLineLen := config.Server.MaxLineLength
+	
+	// Look for a newline
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		// Check if the line before the newline exceeds max length
+		if i > maxLineLen {
+			// Line is too long, split it at maxLineLen
+			// In turbo mode, we handle long lines silently
+			return maxLineLen, data[0:maxLineLen], nil
+		}
+		
+		// Line is within limit, include the line ending in the token
+		// Check if there's a \r before the \n
+		if i > 0 && data[i-1] == '\r' {
+			// Windows line ending (\r\n) - include both in token
+			return i + 1, data[0 : i+1], nil
+		}
+		// Unix line ending (\n) - include it in token
+		return i + 1, data[0 : i+1], nil
+	}
+	
+	// If we're at EOF, we have a final, non-terminated line
+	if atEOF {
+		if len(data) > maxLineLen {
+			// Even at EOF, respect max line length
+			// In turbo mode, we handle long lines silently
+			return maxLineLen, data[0:maxLineLen], nil
+		}
+		return len(data), data, nil
+	}
+	
+	// If the line is too long, split it
+	if len(data) >= maxLineLen {
+		// Return a chunk up to MaxLineLength
+		// In turbo mode, we handle long lines silently
+		return maxLineLen, data[0:maxLineLen], nil
+	}
+	
+	// Request more data
+	return 0, nil, nil
 }
 
 // scanLinesWithMaxLength is a custom split function for bufio.Scanner that respects MaxLineLength
@@ -105,8 +159,10 @@ func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int,
 		if i > maxLineLen {
 			// Line is too long, split it at maxLineLen
 			if !f.warnedAboutLongLine {
-				f.serverMessages <- dlog.Common.Warn(f.filePath,
-					"Long log line, splitting into multiple lines") + "\n"
+				if f.serverMessages != nil {
+					f.serverMessages <- dlog.Common.Warn(f.filePath,
+						"Long log line, splitting into multiple lines") + "\n"
+				}
 				f.warnedAboutLongLine = true
 			}
 			return maxLineLen, data[0:maxLineLen], nil
@@ -121,8 +177,10 @@ func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int,
 		if len(data) > maxLineLen {
 			// Even at EOF, respect max line length
 			if !f.warnedAboutLongLine {
-				f.serverMessages <- dlog.Common.Warn(f.filePath,
-					"Long log line, splitting into multiple lines") + "\n"
+				if f.serverMessages != nil {
+					f.serverMessages <- dlog.Common.Warn(f.filePath,
+						"Long log line, splitting into multiple lines") + "\n"
+				}
 				f.warnedAboutLongLine = true
 			}
 			return maxLineLen, data[0:maxLineLen], nil

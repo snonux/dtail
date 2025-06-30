@@ -46,6 +46,12 @@ type baseHandler struct {
 	quiet      bool
 	plain      bool
 	serverless bool
+	
+	// Turbo mode support
+	turboMode    bool
+	turboLines   chan []byte  // Pre-formatted lines for turbo mode
+	turboBuffer  []byte       // Buffer for partially sent turbo data
+	turboEOF     chan struct{} // Signal when turbo data is complete
 }
 
 // Shutdown the handler.
@@ -61,6 +67,68 @@ func (h *baseHandler) Done() <-chan struct{} {
 // Read is to send data to the dtail client via Reader interface.
 func (h *baseHandler) Read(p []byte) (n int, err error) {
 	defer h.readBuf.Reset()
+
+	// In turbo mode, check if we have buffered data first
+	if h.turboMode && len(h.turboBuffer) > 0 {
+		dlog.Server.Trace(h.user, "baseHandler.Read", "using buffered turbo data", "bufferedLen", len(h.turboBuffer))
+		n = copy(p, h.turboBuffer)
+		h.turboBuffer = h.turboBuffer[n:]
+		dlog.Server.Trace(h.user, "baseHandler.Read", "after buffer read", "copied", n, "remaining", len(h.turboBuffer))
+		return
+	}
+
+	// In turbo mode, prioritize pre-formatted turbo lines
+	if h.turboMode && h.turboLines != nil {
+		channelLen := len(h.turboLines)
+		dlog.Server.Trace(h.user, "baseHandler.Read", "checking turboLines channel", "channelLen", channelLen)
+		
+		// Try to read from the channel
+		select {
+		case turboData := <-h.turboLines:
+			dlog.Server.Trace(h.user, "baseHandler.Read", "got data from turboLines", "dataLen", len(turboData))
+			n = copy(p, turboData)
+			// If we couldn't send all data, buffer the rest
+			if n < len(turboData) {
+				h.turboBuffer = turboData[n:]
+				dlog.Server.Trace(h.user, "baseHandler.Read", "buffering remaining data", "bufferedLen", len(h.turboBuffer))
+			}
+			return
+		default:
+			// No data immediately available
+			if channelLen > 0 {
+				// There's data in the channel but we couldn't get it immediately
+				// Wait a bit and try again
+				dlog.Server.Trace(h.user, "baseHandler.Read", "channel has data but not available, waiting")
+				time.Sleep(time.Millisecond)
+				select {
+				case turboData := <-h.turboLines:
+					dlog.Server.Trace(h.user, "baseHandler.Read", "got data after wait", "dataLen", len(turboData))
+					n = copy(p, turboData)
+					if n < len(turboData) {
+						h.turboBuffer = turboData[n:]
+					}
+					return
+				default:
+					// Still no data
+				}
+			}
+			
+			// Channel is truly empty, check if we should continue in turbo mode
+			// Only disable turbo mode if we've been signaled to do so
+			if h.turboEOF != nil {
+				select {
+				case <-h.turboEOF:
+					dlog.Server.Trace(h.user, "baseHandler.Read", "EOF received and channel empty, disabling turbo mode")
+					h.turboMode = false
+				default:
+					// EOF not signaled yet, continue in turbo mode
+				}
+			}
+			
+			dlog.Server.Trace(h.user, "baseHandler.Read", "no data in turboLines, falling through")
+			// Fall through to normal processing
+		}
+	}
 
 	select {
 	case message := <-h.serverMessages:
@@ -288,9 +356,17 @@ func (h *baseHandler) sendln(ch chan<- string, message string) {
 func (h *baseHandler) flush() {
 	dlog.Server.Trace(h.user, "flush()")
 	numUnsentMessages := func() int {
-		return len(h.lines) + len(h.serverMessages) + len(h.maprMessages)
+		lineCount := len(h.lines)
+		serverCount := len(h.serverMessages)
+		maprCount := len(h.maprMessages)
+		turboCount := 0
+		if h.turboLines != nil {
+			turboCount = len(h.turboLines)
+		}
+		dlog.Server.Trace(h.user, "flush", "lines", lineCount, "server", serverCount, "mapr", maprCount, "turbo", turboCount)
+		return lineCount + serverCount + maprCount + turboCount
 	}
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 100; i++ { // Increase iterations for turbo mode
 		if numUnsentMessages() == 0 {
 			dlog.Server.Debug(h.user, "ALL lines sent", fmt.Sprintf("%p", h))
 			return
@@ -328,4 +404,51 @@ func (h *baseHandler) incrementActiveCommands() {
 func (h *baseHandler) decrementActiveCommands() int32 {
 	atomic.AddInt32(&h.activeCommands, -1)
 	return atomic.LoadInt32(&h.activeCommands)
+}
+
+// EnableTurboMode enables turbo mode for direct line processing
+func (h *baseHandler) EnableTurboMode() {
+	h.turboMode = true
+	if h.turboLines == nil {
+		h.turboLines = make(chan []byte, 1000) // Large buffer for performance
+	}
+	if h.turboEOF == nil {
+		h.turboEOF = make(chan struct{})
+	}
+}
+
+// IsTurboMode returns true if turbo mode is enabled
+func (h *baseHandler) IsTurboMode() bool {
+	return h.turboMode
+}
+
+// flushTurboData ensures all turbo channel data is processed
+func (h *baseHandler) flushTurboData() {
+	if h.turboLines == nil {
+		return
+	}
+	
+	dlog.Server.Debug(h.user, "Flushing turbo data", "channelLen", len(h.turboLines))
+	
+	// Wait for turbo channel to drain with a timeout
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case <-timeout:
+			dlog.Server.Warn(h.user, "Timeout while flushing turbo data", "remaining", len(h.turboLines))
+			return
+		default:
+			if len(h.turboLines) == 0 {
+				dlog.Server.Debug(h.user, "Turbo channel drained successfully")
+				return
+			}
+			// Give the reader time to process
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// GetTurboChannel returns the turbo lines channel for direct writing
+func (h *baseHandler) GetTurboChannel() chan<- []byte {
+	return h.turboLines
 }
