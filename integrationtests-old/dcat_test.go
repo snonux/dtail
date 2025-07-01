@@ -9,7 +9,7 @@ import (
 )
 
 func TestDCat1(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
@@ -40,7 +40,7 @@ func testDCat1(t *testing.T, inFile string) error {
 }
 
 func TestDCat2(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		return
 	}
 	inFile := "dcat2.txt"
@@ -69,7 +69,7 @@ func TestDCat2(t *testing.T) {
 }
 
 func TestDCat3(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		return
 	}
 	inFile := "dcat3.txt"
@@ -78,7 +78,7 @@ func TestDCat3(t *testing.T) {
 
 	args := []string{"--plain", "--logLevel", "error", "--cfg", "none", inFile}
 
-	// Notice, with DTAIL_INTEGRATION_TEST_RUN_MODE the DTail max line length is set
+	// Notice, with DTAIL_OLD_INTEGRATION_TEST_RUN_MODE the DTail max line length is set
 	// to 1024!
 	_, err := runCommand(context.TODO(), t, outFile, "../dcat", args...)
 	if err != nil {
@@ -95,7 +95,7 @@ func TestDCat3(t *testing.T) {
 }
 
 func TestDCatColors(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		return
 	}
 

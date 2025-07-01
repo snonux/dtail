@@ -10,7 +10,7 @@ import (
 )
 
 func TestDMap1(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
@@ -97,7 +97,7 @@ func testDmap1(t *testing.T, query, subtestName string, usePipe bool) error {
 }
 
 func TestDMap2(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
@@ -134,7 +134,7 @@ func TestDMap2(t *testing.T) {
 }
 
 func TestDMap3(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
@@ -191,7 +191,7 @@ func TestDMap3(t *testing.T) {
 }
 
 func TestDMap4Append(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
@@ -247,7 +247,7 @@ func TestDMap4Append(t *testing.T) {
 }
 
 func TestDMap5CSV(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}

@@ -12,7 +12,7 @@ import (
 )
 
 func TestDServer1(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
@@ -60,7 +60,7 @@ func TestDServer1(t *testing.T) {
 }
 
 func TestDServer2(t *testing.T) {
-	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+	if !config.Env("DTAIL_OLD_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
 	}
