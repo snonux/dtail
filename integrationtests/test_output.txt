@@ -1,0 +1,59 @@
+=== RUN   TestDCat1
+    dcat_test.go:20: Cleaned up dcat1colors_serverless.tmp
+=== RUN   TestDCat1/Serverless
+    commandutils.go:28: Creating stdout file dcat1.tmp
+    commandutils.go:35: Running command ../dcat --plain --cfg none dcat1a.txt
+    commandutils.go:38: Done running command! <nil>
+    fileutils.go:75: Comparing files dcat1.tmp dcat1a.txt
+    fileutils.go:116: SHA dcat1.tmp cH9smTMt9KMpDp_jq6PpAM6i7UV4abAI0Ic5mtyi0Es=
+    fileutils.go:116: SHA dcat1a.txt cH9smTMt9KMpDp_jq6PpAM6i7UV4abAI0Ic5mtyi0Es=
+    commandutils.go:28: Creating stdout file dcat1.tmp
+    commandutils.go:35: Running command ../dcat --plain --cfg none dcat1b.txt
+    commandutils.go:38: Done running command! <nil>
+    fileutils.go:75: Comparing files dcat1.tmp dcat1b.txt
+    fileutils.go:116: SHA dcat1.tmp 0_4MC9xrPZoOIaEbpV_oN8DBdcYRQw2d4E0G5D_PR0c=
+    fileutils.go:116: SHA dcat1b.txt 0_4MC9xrPZoOIaEbpV_oN8DBdcYRQw2d4E0G5D_PR0c=
+    commandutils.go:28: Creating stdout file dcat1.tmp
+    commandutils.go:35: Running command ../dcat --plain --cfg none dcat1c.txt
+    commandutils.go:38: Done running command! <nil>
+    fileutils.go:75: Comparing files dcat1.tmp dcat1c.txt
+    fileutils.go:116: SHA dcat1.tmp 7mMvo5saOpEBBdOVKW21Vba5B8DLl12NypTIN2J-IFY=
+    fileutils.go:116: SHA dcat1c.txt 8muYdoE22xK0I2jB4RHhUaN2T32CSzl6o32ar6o693A=
+    dcat_test.go:29: Expected SHA 7mMvo5saOpEBBdOVKW21Vba5B8DLl12NypTIN2J-IFY= but got 8muYdoE22xK0I2jB4RHhUaN2T32CSzl6o32ar6o693A=:
+        --- dcat1.tmp	2025-06-30 19:47:31.571242328 +0300
+        +++ dcat1c.txt	2025-06-23 23:47:12.619538695 +0300
+        @@ -1,10 +1,10 @@
+        -1 Sat  2 Oct 13:46:45 EEST 2021
+        -2 Sat  2 Oct 13:46:45 EEST 2021
+        -3 Sat  2 Oct 13:46:45 EEST 2021
+        -4 Sat  2 Oct 13:46:45 EEST 2021
+        -5 Sat  2 Oct 13:46:45 EEST 2021
+        -6 Sat  2 Oct 13:46:45 EEST 2021
+        -7 Sat  2 Oct 13:46:45 EEST 2021
+        -8 Sat  2 Oct 13:46:45 EEST 2021
+        -9 Sat  2 Oct 13:46:45 EEST 2021
+        -10 Sat  2 Oct 13:46:45 EEST 2021
+        +1 Sat  2 Oct 13:46:45 EEST 2021
+        +2 Sat  2 Oct 13:46:45 EEST 2021
+        +3 Sat  2 Oct 13:46:45 EEST 2021
+        +4 Sat  2 Oct 13:46:45 EEST 2021
+        +5 Sat  2 Oct 13:46:45 EEST 2021
+        +6 Sat  2 Oct 13:46:45 EEST 2021
+        +7 Sat  2 Oct 13:46:45 EEST 2021
+        +8 Sat  2 Oct 13:46:45 EEST 2021
+        +9 Sat  2 Oct 13:46:45 EEST 2021
+        +10 Sat  2 Oct 13:46:45 EEST 2021
+        
+--- FAIL: TestDCat1 (0.01s)
+    --- FAIL: TestDCat1/Serverless (0.01s)
+=== RUN   TestDCat1Colors
+    dcat_test.go:114: Cleaned up dcat1.tmp
+=== RUN   TestDCat1Colors/Serverless
+    commandutils.go:28: Creating stdout file dcat1colors_serverless.tmp
+    commandutils.go:35: Running command ../dcat --cfg none dcat1a.txt
+    commandutils.go:38: Done running command! <nil>
+--- PASS: TestDCat1Colors (0.00s)
+    --- PASS: TestDCat1Colors/Serverless (0.00s)
+FAIL
+exit status 1
+FAIL	github.com/mimecast/dtail/integrationtests	0.012s

@@ -218,10 +218,14 @@ func (f *readFile) StartWithProcessorOptimized(ctx context.Context, ltx lcontext
 		return err
 	}
 
+	// Create a cancelable context for the truncate check goroutine
+	truncateCtx, cancelTruncate := context.WithCancel(ctx)
+	defer cancelTruncate()
+	
 	truncate := make(chan struct{})
 	defer close(truncate)
 
-	go f.periodicTruncateCheck(ctx, truncate)
+	go f.periodicTruncateCheck(truncateCtx, truncate)
 
 	// For tail mode, we need to handle continuous reading
 	if f.seekEOF {

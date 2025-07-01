@@ -1,0 +1,3 @@
+DTail 4.3.2 Protocol 4.1 Have a lot of fun!
+
+Client output: 3033 lines (expected 3000)

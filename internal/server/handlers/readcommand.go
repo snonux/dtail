@@ -63,20 +63,6 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 
 	dlog.Server.Debug("Reading data from file(s)")
 	r.readGlob(ctx, ltx, args[1], re, retries)
-	
-	// In turbo mode, ensure we don't return until all pending files are processed
-	// This prevents commandFinished() from being called too early
-	if config.Env("DTAIL_TURBOBOOST_ENABLE") && r.server.aggregate == nil {
-		for atomic.LoadInt32(&r.server.pendingFiles) > 0 {
-			dlog.Server.Debug(r.server.user, "Waiting for pending files to complete", "pending", atomic.LoadInt32(&r.server.pendingFiles))
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(100 * time.Millisecond):
-			}
-		}
-		dlog.Server.Debug(r.server.user, "All pending files completed")
-	}
 }
 
 func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
@@ -122,6 +108,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	
 	// Track pending files for this batch
 	atomic.AddInt32(&r.server.pendingFiles, int32(len(paths)))
+	dlog.Server.Info(r.server.user, "Added pending files", "count", len(paths), "totalPending", atomic.LoadInt32(&r.server.pendingFiles))
 	
 	var wg sync.WaitGroup
 	wg.Add(len(paths))

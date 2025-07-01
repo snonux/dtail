@@ -1,0 +1,1 @@
+./test_combined_simple.sh: line 12: ../dcat: No such file or directory

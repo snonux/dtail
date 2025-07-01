@@ -292,9 +292,11 @@ func testDCat2WithServer(t *testing.T, logger *TestLogger) {
 	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
-	// Start dserver
-	_, _, _, err := startCommand(ctx, t,
+	// Start dserver with turbo mode enabled to match client
+	env := map[string]string{"DTAIL_TURBOBOOST_ENABLE": "yes"}
+	_, _, _, err := startCommandWithEnv(ctx, t,
 		"", "../dserver",
+		env,
 		"--cfg", "none",
 		"--logger", "stdout",
 		"--logLevel", "error",

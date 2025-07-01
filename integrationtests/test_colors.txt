@@ -1,0 +1,5 @@
+FATAL|20211015-053919|SSH relaxed-auth mode enabled
+INFO|20211015-053919|Creating server|DTail 4.0.0-RC1 Protocol 4 Have a lot of fun!
+INFO|20211015-053919|Generating private server RSA host key
+ERROR|20211015-053919|Unable to write private server RSA host key to file|cache/ssh_host_key|open cache/ssh_host_key: no such file or directory
+INFO|20211015-053919|Starting server

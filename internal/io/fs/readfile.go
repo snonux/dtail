@@ -135,13 +135,17 @@ func (f *readFile) makePipeReader() (*bufio.Reader, *os.File, error) {
 	return bufio.NewReader(os.Stdin), nil, nil
 }
 
-func (f *readFile) periodicTruncateCheck(ctx context.Context, truncate chan struct{}) {
+func (f *readFile) periodicTruncateCheck(ctx context.Context, truncate chan<- struct{}) {
+	ticker := time.NewTicker(time.Second * 3)
+	defer ticker.Stop()
+	
 	for {
 		select {
-		case <-time.After(time.Second * 3):
+		case <-ticker.C:
 			select {
 			case truncate <- struct{}{}:
 			case <-ctx.Done():
+				return
 			}
 		case <-ctx.Done():
 			return

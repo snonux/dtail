@@ -1,0 +1,16 @@
+=== RUN   TestDCat2
+    dcat_test.go:244: Cleaned up dcat2_server.tmp
+=== RUN   TestDCat2/ServerMode
+    commandutils.go:77: ../dserver --cfg none --logger stdout --logLevel error --bindAddress localhost --port 4242
+    commandutils.go:28: Creating stdout file dcat2_server.tmp
+    commandutils.go:35: Running command ../dcat --plain --logLevel error --cfg none --servers localhost:4242 --trustAllHosts --noColor --files dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt,dcat2.txt
+    commandutils.go:38: Done running command! <nil>
+    fileutils.go:16: Mapping dcat2_server.tmp
+    fileutils.go:16: Mapping dcat2.txt.expected
+    fileutils.go:62: Checking whether dcat2_server.tmp has same lines as file dcat2.txt.expected (ignoring line order)
+    dcat_test.go:331: Files differ, count of line '498 Sat  2 Oct 13:46:46 EEST 2021' is 4 in one but 100 in another
+--- FAIL: TestDCat2 (3.55s)
+    --- FAIL: TestDCat2/ServerMode (3.55s)
+FAIL
+exit status 1
+FAIL	github.com/mimecast/dtail/integrationtests	3.560s
