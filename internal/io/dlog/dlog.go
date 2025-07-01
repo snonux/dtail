@@ -194,6 +194,11 @@ func (d *DLog) Debug(args ...interface{}) string {
 
 // Trace logging.
 func (d *DLog) Trace(args ...interface{}) string {
+	// Early check to avoid expensive runtime.Caller when trace is disabled
+	// This is a critical performance optimization for hot paths
+	if d.maxLevel < Trace {
+		return ""
+	}
 	_, file, line, _ := runtime.Caller(1)
 	args = append(args, fmt.Sprintf("at %s:%d", file, line))
 	return d.log(Trace, args)
@@ -201,6 +206,10 @@ func (d *DLog) Trace(args ...interface{}) string {
 
 // Devel used for development purpose only logging (e.g. "print" debugging).
 func (d *DLog) Devel(args ...interface{}) string {
+	// Early check to avoid expensive runtime.Caller when devel is disabled
+	if d.maxLevel < Devel {
+		return ""
+	}
 	_, file, line, _ := runtime.Caller(1)
 	args = append(args, fmt.Sprintf("at %s:%d", file, line))
 	return d.log(Devel, args)

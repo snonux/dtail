@@ -56,39 +56,62 @@ func (w *DirectTurboWriter) WriteLineData(lineContent []byte, lineNum uint64, so
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	// In serverless mode with colors, write each line immediately
-	if w.serverless && !w.plain {
-		// Build the complete line in a temporary buffer
-		var lineBuf bytes.Buffer
-		lineBuf.WriteString("REMOTE")
-		lineBuf.WriteString(protocol.FieldDelimiter)
-		lineBuf.WriteString(w.hostname)
-		lineBuf.WriteString(protocol.FieldDelimiter)
-		lineBuf.WriteString("100")
-		lineBuf.WriteString(protocol.FieldDelimiter)
-		lineBuf.WriteString(fmt.Sprintf("%v", lineNum))
-		lineBuf.WriteString(protocol.FieldDelimiter)
-		lineBuf.WriteString(sourceID)
-		lineBuf.WriteString(protocol.FieldDelimiter)
+	// Optimized serverless mode path
+	if w.serverless {
+		// In serverless mode, we still need protocol formatting for consistency
+		// but we can optimize by batching writes
 		
-		// Remove trailing newline if present (it will be added back after coloring)
-		content := lineContent
-		if len(content) > 0 && content[len(content)-1] == '\n' {
-			content = content[:len(content)-1]
+		if w.plain {
+			// For plain serverless mode, just write the line content
+			w.writeBuf.Write(lineContent)
+			
+			// Ensure line has a newline if it doesn't already
+			if len(lineContent) > 0 && lineContent[len(lineContent)-1] != '\n' {
+				w.writeBuf.WriteByte('\n')
+			}
+		} else {
+			// For colored serverless mode with test compatibility
+			// We need to maintain the protocol formatting for integration tests
+			// Build the complete line in a temporary buffer
+			var lineBuf bytes.Buffer
+			lineBuf.WriteString("REMOTE")
+			lineBuf.WriteString(protocol.FieldDelimiter)
+			lineBuf.WriteString(w.hostname)
+			lineBuf.WriteString(protocol.FieldDelimiter)
+			lineBuf.WriteString("100")
+			lineBuf.WriteString(protocol.FieldDelimiter)
+			lineBuf.WriteString(fmt.Sprintf("%v", lineNum))
+			lineBuf.WriteString(protocol.FieldDelimiter)
+			lineBuf.WriteString(sourceID)
+			lineBuf.WriteString(protocol.FieldDelimiter)
+			
+			// Remove trailing newline if present (it will be added back after coloring)
+			content := lineContent
+			if len(content) > 0 && content[len(content)-1] == '\n' {
+				content = content[:len(content)-1]
+			}
+			lineBuf.Write(content)
+			
+			// Apply color formatting
+			coloredLine := brush.Colorfy(lineBuf.String())
+			w.writeBuf.WriteString(coloredLine)
+			w.writeBuf.WriteByte('\n')
 		}
-		lineBuf.Write(content)
 		
-		// Apply color formatting
-		coloredLine := brush.Colorfy(lineBuf.String())
-		
-		// Write directly to output with newline
-		_, err := w.writer.Write([]byte(coloredLine + "\n"))
+		// Update stats
 		w.linesWritten++
-		w.bytesWritten += uint64(len(coloredLine) + 1)
-		return err
+		w.bytesWritten += uint64(w.writeBuf.Len())
+		
+		// Buffer writes for better performance - only flush when buffer is full
+		// This is a key optimization: we don't force immediate flush in serverless mode
+		if w.writeBuf.Len() >= w.bufSize {
+			return w.flushBuffer()
+		}
+		
+		return nil
 	}
 
-	// Build the output line
+	// Non-serverless mode: include protocol formatting for network transmission
 	if !w.plain {
 		w.writeBuf.WriteString("REMOTE")
 		w.writeBuf.WriteString(protocol.FieldDelimiter)
@@ -111,9 +134,8 @@ func (w *DirectTurboWriter) WriteLineData(lineContent []byte, lineNum uint64, so
 		w.writeBuf.WriteByte('\n')
 	}
 
-	// Only add message delimiter in non-plain, non-serverless mode
-	// In serverless mode, we output lines directly
-	if !w.plain && !w.serverless {
+	// Add message delimiter for network protocol
+	if !w.plain {
 		w.writeBuf.WriteByte(protocol.MessageDelimiter)
 	}
 
@@ -121,8 +143,8 @@ func (w *DirectTurboWriter) WriteLineData(lineContent []byte, lineNum uint64, so
 	w.linesWritten++
 	w.bytesWritten += uint64(w.writeBuf.Len())
 
-	// Flush if buffer is getting full or in serverless mode
-	if w.writeBuf.Len() >= w.bufSize || w.serverless {
+	// Flush if buffer is getting full
+	if w.writeBuf.Len() >= w.bufSize {
 		return w.flushBuffer()
 	}
 
