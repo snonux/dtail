@@ -283,7 +283,15 @@ func testDMap3WithServer(t *testing.T, logger *TestLogger) {
 	cleanupFiles(t, outFile, csvFile, queryFile)
 
 	server := NewTestServer(t)
-	if err := server.Start("error"); err != nil {
+	// Use optimized config for processing 100 files
+	cfg := &ServerConfig{
+		Port:        server.port,
+		BindAddress: server.bindAddress,
+		LogLevel:    "error",
+		ExtraArgs:   []string{"--cfg", "test_server_complete.json"},
+		Env:         map[string]string{"DTAIL_TURBOBOOST_ENABLE": "yes"},
+	}
+	if err := server.StartWithConfig(cfg); err != nil {
 		t.Error(err)
 		return
 	}
