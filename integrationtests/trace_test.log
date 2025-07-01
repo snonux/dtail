@@ -1,3 +1,0 @@
-# github.com/mimecast/dtail/integrationtests
-found packages integrationtests (commandutils.go) and main (test_combined_output.go) in /home/paul/git/dtail/integrationtests
-FAIL	github.com/mimecast/dtail/integrationtests [setup failed]

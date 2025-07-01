@@ -1,4 +1,4 @@
 {
-  "MaxConcurrentCats": 50,
-  "MaxConcurrentTails": 50
+  "MaxConcurrentCats": 10,
+  "MaxConcurrentTails": 10
 }
