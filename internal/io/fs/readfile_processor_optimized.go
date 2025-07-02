@@ -33,11 +33,14 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	// Use a scanner for efficient line reading
 	scanner := bufio.NewScanner(reader)
 	
-	// Set a custom buffer size for the scanner (default is 64KB, we'll use 1MB)
-	// The second parameter is the maximum token size, not the buffer size
-	buf := make([]byte, 1024*1024) // 1MB buffer
+	// Get a buffer from the pool instead of allocating a new one
+	bufPtr := pool.GetScannerBuffer()
+	buf := *bufPtr
 	maxTokenSize := 1024 * 1024   // 1MB max token size
 	scanner.Buffer(buf, maxTokenSize)
+	
+	// Ensure we return the buffer to the pool when done
+	defer pool.PutScannerBuffer(bufPtr)
 	
 	// Use custom split function that preserves line endings
 	scanner.Split(f.scanLinesPreserveEndings)
@@ -260,9 +263,13 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	partialLine := pool.BytesBuffer.Get().(*bytes.Buffer)
 	defer pool.RecycleBytesBuffer(partialLine)
 
+	// Get a buffer from the pool for reading
+	bufPtr := pool.GetMediumBuffer()
+	defer pool.PutMediumBuffer(bufPtr)
+	
 	for {
-		// Read available data
-		buf := make([]byte, 64*1024) // 64KB buffer
+		// Read available data using pooled buffer
+		buf := (*bufPtr)[:cap(*bufPtr)] // Reset to full capacity
 		n, err := reader.Read(buf)
 		
 		if n > 0 {
