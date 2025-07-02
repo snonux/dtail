@@ -1,6 +1,7 @@
 package regex
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"strings"
@@ -16,11 +17,29 @@ type Regex struct {
 	// set and use multiple flags.
 	flags       []Flag
 	initialized bool
+	// Fields for optimized literal string matching
+	isLiteral    bool   // true if pattern contains no regex metacharacters
+	literalStr   string // literal string for string matching
+	literalBytes []byte // literal bytes for byte matching
 }
 
 func (r Regex) String() string {
-	return fmt.Sprintf("Regex(regexStr:%s,flags:%s,initialized:%t,re==nil:%t)",
-		r.regexStr, r.flags, r.initialized, r.re == nil)
+	return fmt.Sprintf("Regex(regexStr:%s,flags:%s,initialized:%t,re==nil:%t,isLiteral:%t)",
+		r.regexStr, r.flags, r.initialized, r.re == nil, r.isLiteral)
+}
+
+// isLiteralPattern checks if the pattern contains no regex metacharacters.
+// It returns true only for patterns that can be matched using simple string contains.
+func isLiteralPattern(pattern string) bool {
+	// Check for common regex metacharacters
+	// Note: We're being conservative here - only treating truly literal strings as literals
+	metaChars := `.+*?^$[]{}()|\\`
+	for _, ch := range pattern {
+		if strings.ContainsRune(metaChars, ch) {
+			return false
+		}
+	}
+	return true
 }
 
 // NewNoop is a noop regex (doing nothing).
@@ -48,6 +67,24 @@ func new(regexStr string, flags []Flag) (Regex, error) {
 		regexStr: regexStr,
 		flags:    flags,
 	}
+
+	// Check if this is a literal pattern for optimization
+	if isLiteralPattern(regexStr) {
+		r.isLiteral = true
+		r.literalStr = regexStr
+		r.literalBytes = []byte(regexStr)
+		r.initialized = true
+		// We still compile the regex for backward compatibility and as a fallback
+		// This ensures serialization/deserialization works correctly
+		re, err := regexp.Compile(regexStr)
+		if err != nil {
+			return r, err
+		}
+		r.re = re
+		return r, nil
+	}
+
+	// For non-literal patterns, compile as regex
 	re, err := regexp.Compile(regexStr)
 	if err != nil {
 		return r, err
@@ -59,12 +96,27 @@ func new(regexStr string, flags []Flag) (Regex, error) {
 }
 
 // Match a byte string.
-func (r Regex) Match(bytes []byte) bool {
+func (r Regex) Match(b []byte) bool {
+	// Use optimized literal matching if possible
+	if r.isLiteral {
+		switch r.flags[0] {
+		case Default:
+			return bytes.Contains(b, r.literalBytes)
+		case Invert:
+			return !bytes.Contains(b, r.literalBytes)
+		case Noop:
+			return true
+		default:
+			return false
+		}
+	}
+
+	// Fall back to regex matching for non-literal patterns
 	switch r.flags[0] {
 	case Default:
-		return r.re.Match(bytes)
+		return r.re.Match(b)
 	case Invert:
-		return !r.re.Match(bytes)
+		return !r.re.Match(b)
 	case Noop:
 		return true
 	default:
@@ -74,6 +126,21 @@ func (r Regex) Match(bytes []byte) bool {
 
 // MatchString matches a string.
 func (r Regex) MatchString(str string) bool {
+	// Use optimized literal matching if possible
+	if r.isLiteral {
+		switch r.flags[0] {
+		case Default:
+			return strings.Contains(str, r.literalStr)
+		case Invert:
+			return !strings.Contains(str, r.literalStr)
+		case Noop:
+			return true
+		default:
+			return false
+		}
+	}
+
+	// Fall back to regex matching for non-literal patterns
 	switch r.flags[0] {
 	case Default:
 		return r.re.MatchString(str)
@@ -95,6 +162,10 @@ func (r Regex) Serialize() (string, error) {
 	if !r.initialized {
 		return "", fmt.Errorf("Unable to serialize regex as not initialized properly: %v", r)
 	}
+	// Include literal flag in serialization if applicable
+	if r.isLiteral {
+		flags = append(flags, "literal")
+	}
 	return fmt.Sprintf("regex:%s %s", strings.Join(flags, ","), r.regexStr), nil
 }
 
@@ -115,9 +186,15 @@ func Deserialize(str string) (Regex, error) {
 
 	// Parse regex flags, e.g. "regex:flag1,flag2,flag3..."
 	var flags []Flag
+	forceLiteral := false
 	if strings.Contains(flagsStr, ":") {
 		s := strings.SplitN(flagsStr, ":", 2)
 		for _, flagStr := range strings.Split(s[1], ",") {
+			if flagStr == "literal" {
+				// This is our optimization hint, not a regular flag
+				forceLiteral = true
+				continue
+			}
 			flag, err := NewFlag(flagStr)
 			if err != nil {
 				continue
@@ -125,5 +202,23 @@ func Deserialize(str string) (Regex, error) {
 			flags = append(flags, flag)
 		}
 	}
-	return new(regexStr, flags)
+	
+	// Create the regex with proper literal detection
+	r, err := new(regexStr, flags)
+	if err != nil {
+		return r, err
+	}
+	
+	// If the serialized form indicated it was literal, ensure we treat it as such
+	// This maintains consistency across client-server communication
+	if forceLiteral && !r.isLiteral {
+		// The pattern might have been literal on the client but not detected as such here
+		// This could happen if our isLiteralPattern logic changes
+		// For safety, we'll trust the serialized hint
+		r.isLiteral = true
+		r.literalStr = regexStr
+		r.literalBytes = []byte(regexStr)
+	}
+	
+	return r, nil
 }
