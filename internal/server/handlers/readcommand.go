@@ -121,8 +121,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 
 	// In turbo mode, signal EOF after all files are processed
 	// This is crucial for proper shutdown in server mode
-	turboBoostEnabled := config.Env("DTAIL_TURBOBOOST_ENABLE")
-	if turboBoostEnabled && r.server.aggregate == nil && 
+	if config.Server.TurboModeEnable && r.server.aggregate == nil && 
 		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) {
 		if r.server.IsTurboMode() && r.server.turboEOF != nil {
 			dlog.Server.Debug(r.server.user, "Turbo mode: flushing data before EOF signal")
@@ -249,10 +248,9 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	}
 
 	// Check if we should use the turbo boost optimizations
-	turboBoostEnabled := config.Env("DTAIL_TURBOBOOST_ENABLE")
 	// Enable turbo boost for cat/grep/tail modes, but NOT for aggregate (MapReduce) operations
 	// MapReduce requires the traditional channel-based approach to work correctly
-	if turboBoostEnabled && r.server.aggregate == nil &&
+	if config.Server.TurboModeEnable && r.server.aggregate == nil &&
 		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) {
 		r.readWithTurboProcessor(ctx, ltx, path, globID, re, reader)
 		return
@@ -309,7 +307,7 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 	aggregate := r.server.aggregate
 
 	// Use the optimized version if turbo boost is enabled
-	turboBoostEnabled := config.Env("DTAIL_TURBOBOOST_ENABLE")
+	turboBoostEnabled := config.Server.TurboModeEnable
 
 	for {
 		if aggregate != nil {

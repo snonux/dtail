@@ -67,6 +67,11 @@ type ServerConfig struct {
 	Ciphers []string `json:",omitempty"`
 	// The allowed MAC algorithms.
 	MACs []string `json:",omitempty"`
+	// Enable turbo mode for optimized file processing. When enabled, cat/grep/tail operations
+	// use a direct writing approach that bypasses internal channels for better performance.
+	// Note: This is disabled by default for MapReduce operations due to known issues with
+	// high-concurrency aggregate processing.
+	TurboModeEnable bool `json:",omitempty"`
 }
 
 // Create a new default server configuration.
@@ -85,6 +90,7 @@ func newDefaultServerConfig() *ServerConfig {
 		Permissions: Permissions{
 			Default: defaultPermissions,
 		},
+		TurboModeEnable:    false, // Default to false for safety, can be enabled via config
 	}
 }
 

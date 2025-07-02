@@ -141,7 +141,7 @@ func (a *Aggregate) nextLine() (line *line.Line, ok bool, noMoreChannels bool) {
 			a.linesCh = newLinesCh
 			
 			// In turbo mode, synchronously put the channel back to avoid race conditions
-			if config.Env("DTAIL_TURBOBOOST_ENABLE") {
+			if config.Server.TurboModeEnable {
 				select {
 				case a.NextLinesCh <- oldLinesCh:
 					// Successfully put back
