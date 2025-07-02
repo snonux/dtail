@@ -198,6 +198,16 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	path, globID string, re regex.Regex) {
 
 	dlog.Server.Info(r.server.user, "Start reading", path, globID)
+	
+	// Log if grep is using literal mode optimization
+	if r.mode == omode.GrepClient {
+		if re.IsLiteral() {
+			dlog.Server.Info(r.server.user, "Using optimized literal string matching for pattern:", re.Pattern())
+		} else {
+			dlog.Server.Info(r.server.user, "Using regex matching for pattern:", re.Pattern())
+		}
+	}
+	
 	var reader fs.FileReader
 	var limiter chan struct{}
 
@@ -284,6 +294,15 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 	path, globID string, re regex.Regex, reader fs.FileReader) {
 
 	dlog.Server.Info(r.server.user, "Using channel-less grep implementation", path, globID)
+	
+	// Log if grep is using literal mode optimization
+	if r.mode == omode.GrepClient {
+		if re.IsLiteral() {
+			dlog.Server.Info(r.server.user, "Using optimized literal string matching for pattern:", re.Pattern())
+		} else {
+			dlog.Server.Info(r.server.user, "Using regex matching for pattern:", re.Pattern())
+		}
+	}
 
 	// Use the existing lines channel but with the processor-based reader
 	lines := r.server.lines
@@ -337,6 +356,15 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 	path, globID string, re regex.Regex, reader fs.FileReader) {
 
 	dlog.Server.Info(r.server.user, "Using turbo channel-less implementation", path, globID)
+	
+	// Log if grep is using literal mode optimization
+	if r.mode == omode.GrepClient {
+		if re.IsLiteral() {
+			dlog.Server.Info(r.server.user, "Using optimized literal string matching for pattern:", re.Pattern())
+		} else {
+			dlog.Server.Info(r.server.user, "Using regex matching for pattern:", re.Pattern())
+		}
+	}
 
 	// Enable turbo mode if not already enabled
 	if !r.server.IsTurboMode() {

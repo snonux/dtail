@@ -169,6 +169,16 @@ func (r Regex) Serialize() (string, error) {
 	return fmt.Sprintf("regex:%s %s", strings.Join(flags, ","), r.regexStr), nil
 }
 
+// IsLiteral returns true if this regex is using literal string matching
+func (r Regex) IsLiteral() bool {
+	return r.isLiteral
+}
+
+// Pattern returns the original pattern string
+func (r Regex) Pattern() string {
+	return r.regexStr
+}
+
 // Deserialize the regex.
 func Deserialize(str string) (Regex, error) {
 	// Get regex string

@@ -74,7 +74,13 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	}
 
 	switch commandName {
-	case "grep", "cat":
+	case "grep":
+		command := newReadCommand(h, omode.GrepClient)
+		go func() {
+			command.Start(ctx, ltx, argc, args, 1)
+			commandFinished()
+		}()
+	case "cat":
 		command := newReadCommand(h, omode.CatClient)
 		go func() {
 			command.Start(ctx, ltx, argc, args, 1)
