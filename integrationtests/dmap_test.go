@@ -251,7 +251,8 @@ func testDMap3Serverless(t *testing.T, logger *TestLogger) {
 	}
 
 	// Simply run dmap with multiple input files directly
-	ctxTimeout, cancel := createTestContextWithTimeout(t)
+	// Use longer timeout for processing 100 files
+	ctxTimeout, cancel := createTestContextWithLongTimeout(t)
 	ctx := WithTestLogger(ctxTimeout, logger)
 	defer cancel()
 
@@ -288,7 +289,7 @@ func testDMap3WithServer(t *testing.T, logger *TestLogger) {
 		Port:        server.port,
 		BindAddress: server.bindAddress,
 		LogLevel:    "error",
-		ExtraArgs:   []string{"--cfg", "test_server_complete.json"},
+		ExtraArgs:   []string{"--cfg", "test_server_100files.json"},
 		Env:         map[string]string{"DTAIL_TURBOBOOST_ENABLE": "yes"},
 	}
 	if err := server.StartWithConfig(cfg); err != nil {

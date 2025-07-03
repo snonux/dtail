@@ -31,6 +31,7 @@ type baseHandler struct {
 	handleCommandCb  handleCommandCb
 	lines            chan *line.Line
 	aggregate        *server.Aggregate
+	turboAggregate   *server.TurboAggregate  // Turbo mode aggregate
 	maprMessages     chan string
 	serverMessages   chan string
 	hostname         string
@@ -56,6 +57,16 @@ type baseHandler struct {
 
 // Shutdown the handler.
 func (h *baseHandler) Shutdown() {
+	// Shutdown turbo aggregate if present
+	if h.turboAggregate != nil {
+		dlog.Server.Info(h.user, "Shutting down turbo aggregate")
+		h.turboAggregate.Shutdown()
+	}
+	// Shutdown regular aggregate if present
+	if h.aggregate != nil {
+		dlog.Server.Info(h.user, "Shutting down regular aggregate")
+		h.aggregate.Shutdown()
+	}
 	h.done.Shutdown()
 }
 
@@ -371,6 +382,10 @@ func (h *baseHandler) flush() {
 	maxIterations := 100
 	if h.turboMode {
 		maxIterations = 300 // Give more time for turbo mode to drain
+	}
+	// Also increase iterations if we have MapReduce messages
+	if h.turboAggregate != nil || h.aggregate != nil {
+		maxIterations = 300 // Give more time for MapReduce results
 	}
 	
 	for i := 0; i < maxIterations; i++ {

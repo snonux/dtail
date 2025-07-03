@@ -93,7 +93,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 			commandFinished()
 		}()
 	case "map":
-		command, aggregate, err := newMapCommand(h, argc, args)
+		command, aggregate, turboAggregate, err := newMapCommand(h, argc, args)
 		if err != nil {
 			h.sendln(h.serverMessages, err.Error())
 			dlog.Server.Error(h.user, err)
@@ -101,6 +101,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 			return
 		}
 		h.aggregate = aggregate
+		h.turboAggregate = turboAggregate
 		go func() {
 			command.Start(ctx, h.maprMessages)
 			commandFinished()

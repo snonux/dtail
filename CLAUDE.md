@@ -114,14 +114,32 @@ make profile-help
 
 ## Known Limitations
 
-### Turbo Mode with High-Concurrency MapReduce Operations
-When DTAIL_TURBOBOOST_ENABLE is set and processing many files concurrently (e.g., 100+ files) with MapReduce operations in server mode, data accuracy issues may occur due to the interaction between turbo mode's optimized processing and the aggregate's channel management system. This issue does not affect serverless mode.
+### Turbo Mode and MapReduce Operations
+Turbo mode (DTAIL_TURBOBOOST_ENABLE) provides performance optimizations for both direct output operations (cat, grep, tail) and MapReduce operations when running in server mode.
 
-**Workarounds:**
-1. Disable turbo mode for high-concurrency MapReduce operations: `unset DTAIL_TURBOBOOST_ENABLE`
-2. Increase MaxConcurrentCats in the server configuration to match the number of files
-3. Process files in smaller batches
-4. Use serverless mode for MapReduce operations when possible
+**Technical Details:**
+- For cat/grep/tail: Turbo mode bypasses channels for direct writing
+- For MapReduce in server mode: Turbo mode uses direct line processing without channels
+- For MapReduce in serverless/client mode: Turbo mode is not applicable (client-side aggregation doesn't use server optimizations)
+
+**Server-Side Turbo MapReduce:**
+When turbo mode is enabled and using dserver:
+- Lines are processed directly without channel overhead
+- Batch processing reduces lock contention
+- Memory pooling reduces garbage collection pressure
+- Same output format and accuracy as regular MapReduce
+
+**High-Concurrency MapReduce Improvements:**
+- Channel recycling ensures proper draining before reuse (regular mode)
+- Buffer sizes increased from 1,000 to 10,000 for better concurrency
+- Direct processing in turbo mode eliminates channel bottlenecks
+- Improved synchronization in both regular and turbo aggregate implementations
+
+**Best Practices for High-Concurrency MapReduce:**
+1. Enable turbo mode for server deployments: `export DTAIL_TURBOBOOST_ENABLE=yes`
+2. Increase MaxConcurrentCats in the server configuration to match workload
+3. Use server mode for large-scale MapReduce operations
+4. Monitor logs for performance metrics
 
 ## Benchmarking & Profiling
 

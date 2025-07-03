@@ -182,6 +182,16 @@ func createTestContextWithTimeout(t *testing.T) (context.Context, context.Cancel
 	return ctx, cancel
 }
 
+// createTestContextWithLongTimeout creates a context with a 5-minute timeout for long-running tests
+func createTestContextWithLongTimeout(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(func() {
+		cancel()
+	})
+	return ctx, cancel
+}
+
 // cleanupFiles registers files to be removed during test cleanup
 func cleanupFiles(t *testing.T, files ...string) {
 	t.Helper()

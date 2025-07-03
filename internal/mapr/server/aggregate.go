@@ -68,7 +68,7 @@ func NewAggregate(queryStr string) (*Aggregate, error) {
 
 	return &Aggregate{
 		done:        internal.NewDone(),
-		NextLinesCh: make(chan chan *line.Line, 1000),
+		NextLinesCh: make(chan chan *line.Line, 10000), // Increased buffer for high concurrency
 		serialize:   make(chan struct{}),
 		hostname:    s[0],
 		query:       query,
@@ -116,15 +116,15 @@ func (a *Aggregate) aggregateTimer(ctx context.Context) {
 	}
 }
 
-func (a *Aggregate) nextLine() (line *line.Line, ok bool, noMoreChannels bool) {
-	dlog.Server.Trace("nextLine.enter", line, ok, noMoreChannels)
+func (a *Aggregate) nextLine() (l *line.Line, ok bool, noMoreChannels bool) {
+	dlog.Server.Trace("nextLine.enter", l, ok, noMoreChannels)
 
 	// Protect channel operations with mutex to prevent race conditions
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	select {
-	case line, ok = <-a.linesCh:
+	case l, ok = <-a.linesCh:
 		if !ok {
 			// Channel is closed, go to next channel.
 			select {
@@ -140,40 +140,46 @@ func (a *Aggregate) nextLine() (line *line.Line, ok bool, noMoreChannels bool) {
 			oldLinesCh := a.linesCh
 			a.linesCh = newLinesCh
 			
-			// In turbo mode, synchronously put the channel back to avoid race conditions
-			if config.Server.TurboModeEnable {
-				select {
-				case a.NextLinesCh <- oldLinesCh:
-					// Successfully put back
-				default:
-					// Channel is full, start a goroutine with timeout
-					go func() { 
-						timer := time.NewTimer(5 * time.Second)
-						defer timer.Stop()
-						select {
-						case a.NextLinesCh <- oldLinesCh:
-						case <-timer.C:
-							dlog.Server.Warn("Timeout: failed to put channel back, NextLinesCh full")
-						}
-					}()
-				}
-			} else {
-				// Non-turbo mode: use goroutine as before
-				go func() { 
-					timer := time.NewTimer(5 * time.Second)
-					defer timer.Stop()
+			// Ensure the old channel is fully drained before recycling to prevent data mixing
+			go func(oldCh chan *line.Line) {
+				// First, drain any remaining lines from the old channel
+				drained := 0
+				drainLoop:
+				for {
 					select {
-					case a.NextLinesCh <- oldLinesCh:
-					case <-timer.C:
-						dlog.Server.Warn("Timeout: failed to put channel back, NextLinesCh might be full")
+					case l, ok := <-oldCh:
+						if !ok {
+							// Channel is closed, safe to recycle
+							break drainLoop
+						}
+						if l != nil {
+							l.Recycle()
+							drained++
+						}
+					default:
+						// No more lines to drain immediately
+						break drainLoop
 					}
-				}()
-			}
+				}
+				
+				if drained > 0 {
+					dlog.Server.Debug("Drained", drained, "lines from recycled channel")
+				}
+				
+				// Now safely recycle the drained channel
+				timer := time.NewTimer(5 * time.Second)
+				defer timer.Stop()
+				select {
+				case a.NextLinesCh <- oldCh:
+				case <-timer.C:
+					dlog.Server.Warn("Timeout: failed to put channel back, NextLinesCh might be full")
+				}
+			}(oldLinesCh)
 		default:
 			// No new lines channel found.
 		}
 	}
-	dlog.Server.Trace("nextLine.exit", line, ok, noMoreChannels)
+	dlog.Server.Trace("nextLine.exit", l, ok, noMoreChannels)
 	return
 }
 
