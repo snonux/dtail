@@ -175,8 +175,9 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 			if r.server.turboAggregate != nil {
 				dlog.Server.Info(r.server.user, "Triggering final turbo aggregate serialization")
 				r.server.turboAggregate.Serialize(context.Background())
-				// Give time for serialization to complete
-				time.Sleep(100 * time.Millisecond)
+				// Give more time for serialization to complete
+				// This is critical when processing many files concurrently
+				time.Sleep(500 * time.Millisecond)
 			}
 			
 			// Double-check that we really have no pending work

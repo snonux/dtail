@@ -409,6 +409,20 @@ func (h *baseHandler) shutdown() {
 		h.flushTurboData()
 	}
 	
+	// Shutdown aggregates BEFORE flush to ensure MapReduce data is available
+	if h.turboAggregate != nil {
+		dlog.Server.Info(h.user, "Shutting down turbo aggregate in shutdown()")
+		h.turboAggregate.Shutdown()
+		// Give time for serialization to complete
+		time.Sleep(100 * time.Millisecond)
+	}
+	if h.aggregate != nil {
+		dlog.Server.Info(h.user, "Shutting down regular aggregate in shutdown()")
+		h.aggregate.Shutdown()
+		// Give time for serialization to complete
+		time.Sleep(100 * time.Millisecond)
+	}
+	
 	h.flush()
 
 	go func() {
