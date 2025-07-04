@@ -1,0 +1,31 @@
+Git commit: 0645644
+Date: 2025-07-04T11:32:29+03:00
+Tag: turbo-mode-enabled
+----------------------------------------
+goos: linux
+goarch: amd64
+pkg: github.com/mimecast/dtail/benchmarks
+cpu: 11th Gen Intel(R) Core(TM) i7-1185G7 @ 3.00GHz
+BenchmarkAll/DCat/Size=10MB-8       	       2	 536659169 ns/op	         7.484 MB/sec	    132338 lines/sec	12614252 B/op	     256 allocs/op
+BenchmarkAll/DCat/Size=100MB-8      	       2	 651439332 ns/op	        62.30 MB/sec	   1099819 lines/sec	175814904 B/op	     253 allocs/op
+BenchmarkAll/DCat/Size=1GB-8        	       1	1840237610 ns/op	       228.5 MB/sec	   4043858 lines/sec	1498069128 B/op	     414 allocs/op
+BenchmarkAll/DGrep/Size=10MB/HitRate=1%-8         	       2	 532565906 ns/op	         7.550 MB/sec	         1.000 hit_rate_%	    133722 lines/sec	     15645 matched_lines	 3230432 B/op	     248 allocs/op
+BenchmarkAll/DGrep/Size=10MB/HitRate=10%-8        	       2	 530343878 ns/op	         7.593 MB/sec	        10.00 hit_rate_%	    133277 lines/sec	     28087 matched_lines	 6213984 B/op	     253 allocs/op
+BenchmarkAll/DGrep/Size=10MB/HitRate=50%-8        	       2	 533980826 ns/op	         7.852 MB/sec	        50.00 hit_rate_%	    132045 lines/sec	     46246 matched_lines	11799088 B/op	     250 allocs/op
+BenchmarkAll/DGrep/Size=10MB/HitRate=90%-8        	       2	 537646208 ns/op	         8.027 MB/sec	        90.00 hit_rate_%	    130922 lines/sec	     59955 matched_lines	12852384 B/op	     251 allocs/op
+BenchmarkAll/DGrep/Size=100MB/HitRate=1%-8        	       2	 598815338 ns/op	        67.02 MB/sec	         1.000 hit_rate_%	   1186247 lines/sec	    125943 matched_lines	25458536 B/op	     249 allocs/op
+BenchmarkAll/DGrep/Size=100MB/HitRate=10%-8       	       2	 602807614 ns/op	        66.34 MB/sec	        10.00 hit_rate_%	   1171951 lines/sec	    167812 matched_lines	45144824 B/op	     254 allocs/op
+BenchmarkAll/DGrep/Size=100MB/HitRate=50%-8       	       2	 644424441 ns/op	        65.85 MB/sec	        50.00 hit_rate_%	   1113050 lines/sec	    405455 matched_lines	96499720 B/op	     253 allocs/op
+BenchmarkAll/DGrep/Size=100MB/HitRate=90%-8       	       2	 667234947 ns/op	        66.48 MB/sec	        90.00 hit_rate_%	   1077621 lines/sec	    643507 matched_lines	181421916 B/op	     251 allocs/op
+BenchmarkAll/DGrep/Size=1GB/HitRate=1%-8          	       1	1521693394 ns/op	       282.4 MB/sec	         1.000 hit_rate_%	   4978395 lines/sec	   2432992 matched_lines	721057832 B/op	     413 allocs/op
+BenchmarkAll/DGrep/Size=1GB/HitRate=10%-8         	       1	1524571502 ns/op	       284.7 MB/sec	        10.00 hit_rate_%	   4973241 lines/sec	   2289850 matched_lines	716478488 B/op	     412 allocs/op
+BenchmarkAll/DGrep/Size=1GB/HitRate=50%-8         	       1	1692914684 ns/op	       265.2 MB/sec	        50.00 hit_rate_%	   4534246 lines/sec	   3580903 matched_lines	821041224 B/op	     413 allocs/op
+BenchmarkAll/DGrep/Size=1GB/HitRate=90%-8         	       1	2089761841 ns/op	       228.7 MB/sec	        90.00 hit_rate_%	   3722796 lines/sec	   6441361 matched_lines	1596053624 B/op	     414 allocs/op
+BenchmarkAll/DMap/Size=10MB/Query=count-8         	       3	 353431127 ns/op	        22.00 MB/sec	    199258 records/sec	   53101 B/op	     181 allocs/op
+BenchmarkAll/DMap/Size=10MB/Query=sum_avg-8       	       3	 355487946 ns/op	        21.78 MB/sec	    197464 records/sec	   53021 B/op	     180 allocs/op
+BenchmarkAll/DMap/Size=10MB/Query=min_max-8       	       3	 356909472 ns/op	        21.76 MB/sec	    197145 records/sec	   54045 B/op	     183 allocs/op
+BenchmarkAll/DMap/Size=10MB/Query=multi-8         	       3	 358687037 ns/op	        21.63 MB/sec	    195822 records/sec	   53064 B/op	     179 allocs/op
+BenchmarkAll/DMap/Size=100MB/Query=count-8        	       1	1877888370 ns/op	        41.38 MB/sec	    374800 records/sec	  131480 B/op	     394 allocs/op
+BenchmarkAll/DMap/Size=100MB/Query=sum_avg-8      	       1	2037178564 ns/op	        38.04 MB/sec	    344616 records/sec	  130256 B/op	     392 allocs/op
+BenchmarkAll/DMap/Size=100MB/Query=min_max-8      	       1	2177091489 ns/op	        35.54 MB/sec	    322577 records/sec	  129168 B/op	     392 allocs/op
+BenchmarkAll/DMap/Size=100MB/Query=multi-8        	       1	1949052172 ns/op	        39.85 MB/sec	    361489 records/sec	  129144 B/op	     391 allocs/op
