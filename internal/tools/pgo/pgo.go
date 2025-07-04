@@ -213,6 +213,9 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 	}
 	defer os.RemoveAll(iterProfileDir)
 	
+	// Always show what command is being executed
+	fmt.Printf("  Executing %s workload...\n", command)
+	
 	switch command {
 	case "dtail":
 		// For dtail, we need to simulate a growing log file
@@ -240,6 +243,7 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 			"-regex", "ERROR|WARN",  // Filter for errors and warnings
 			"-shutdownAfter", "3",  // Exit after 3 seconds
 			growingLog)
+		fmt.Printf("    Command: %s %s\n", binary, strings.Join(cmd.Args[1:], " "))
 		
 	case "dcat":
 		cmd = exec.Command(binary,
@@ -248,6 +252,7 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 			"-profile",
 			"-profiledir", iterProfileDir,
 			testFiles["log"])
+		fmt.Printf("    Command: %s %s\n", binary, strings.Join(cmd.Args[1:], " "))
 		
 	case "dgrep":
 		cmd = exec.Command(binary,
@@ -257,6 +262,7 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 			"-profiledir", iterProfileDir,
 			"-regex", "ERROR|WARN",
 			testFiles["log"])
+		fmt.Printf("    Command: %s %s\n", binary, strings.Join(cmd.Args[1:], " "))
 		
 	case "dmap":
 		cmd = exec.Command(binary,
@@ -266,6 +272,7 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 			"-profiledir", iterProfileDir,
 			"-files", testFiles["csv"],
 			"-query", "select status, count(*) group by status")
+		fmt.Printf("    Command: %s %s\n", binary, strings.Join(cmd.Args[1:], " "))
 		
 	case "dserver":
 		// For dserver, we'll simulate some client connections
@@ -319,11 +326,15 @@ func copyFile(src, dst string) error {
 }
 
 func runDServerWorkload(cfg *Config, binary string, testFiles map[string]string, profilePath string) error {
+	fmt.Printf("  Executing dserver workload...\n")
+	
 	// Start dserver with pprof endpoint
 	serverCmd := exec.Command(binary,
 		"-cfg", "none",
 		"-pprof", "localhost:16060", // pprof endpoint
 		"-port", "12222") // Use non-standard port
+	
+	fmt.Printf("    Starting dserver: %s %s\n", binary, strings.Join(serverCmd.Args[1:], " "))
 	
 	if cfg.Verbose {
 		serverCmd.Stdout = os.Stdout
@@ -354,6 +365,11 @@ func runDServerWorkload(cfg *Config, binary string, testFiles map[string]string,
 		{"dmap", []string{"-cfg", "none", "-server", "localhost:12222", "-files", testFiles["csv"], "-query", "select department, avg(salary) group by department"}},
 	}
 	
+	fmt.Println("    Client commands to generate server load:")
+	for _, client := range clients {
+		fmt.Printf("      %s %s\n", client.cmd, strings.Join(client.args, " "))
+	}
+	
 	// Run clients concurrently to generate more server load
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ { // Run each client twice
@@ -375,6 +391,7 @@ func runDServerWorkload(cfg *Config, binary string, testFiles map[string]string,
 		// Give a moment for workload to start
 		time.Sleep(500 * time.Millisecond)
 		
+		fmt.Println("    Capturing CPU profile via HTTP endpoint...")
 		// Capture CPU profile from pprof endpoint (this blocks for 5 seconds)
 		resp, err := http.Get("http://localhost:16060/debug/pprof/profile?seconds=5")
 		if err != nil {
@@ -396,6 +413,7 @@ func runDServerWorkload(cfg *Config, binary string, testFiles map[string]string,
 			return
 		}
 		
+		fmt.Printf("    Profile captured and saved to %s\n", profilePath)
 		profileDone <- nil
 	}()
 	
@@ -438,18 +456,21 @@ func mergeProfiles(profiles []string, output string) error {
 	if len(validProfiles) == 0 {
 		// All profiles are empty, create an empty output file
 		// This allows the workflow to continue
-		fmt.Printf("Warning: All profiles for this command are empty (I/O-bound operation?)\n")
+		fmt.Printf("    Warning: All profiles for this command are empty (I/O-bound operation?)\n")
 		return os.WriteFile(output, []byte{}, 0644)
 	}
 	
 	if len(validProfiles) == 1 {
+		fmt.Printf("    Using single profile (no merge needed)\n")
 		// Just rename
 		return os.Rename(validProfiles[0], output)
 	}
 	
+	fmt.Printf("    Merging %d profiles...\n", len(validProfiles))
 	// Use go tool pprof to merge
 	args := append([]string{"tool", "pprof", "-proto"}, validProfiles...)
 	cmd := exec.Command("go", args...)
+	fmt.Printf("    Command: go %s\n", strings.Join(args, " "))
 	
 	outFile, err := os.Create(output)
 	if err != nil {
@@ -526,7 +547,9 @@ func comparePerformance(cfg *Config) error {
 		fmt.Printf("\n%s:\n", cmd)
 		
 		// Run benchmark
+		fmt.Printf("  Running baseline benchmark...\n")
 		baselineTime := benchmarkCommand(baseline, cmd, testFiles)
+		fmt.Printf("  Running optimized benchmark...\n")
 		optimizedTime := benchmarkCommand(optimized, cmd, testFiles)
 		
 		if baselineTime > 0 && optimizedTime > 0 {
