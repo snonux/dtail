@@ -141,16 +141,19 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 			
 			// Wait to ensure all data is transmitted
 			// This is especially important when files are queued due to concurrency limits
-			waitTime := 500 * time.Millisecond
-			if len(paths) > 10 {
-				// For many files, wait proportionally longer
-				waitTime = time.Duration(len(paths)*10) * time.Millisecond
-				if waitTime > 2*time.Second {
-					waitTime = 2 * time.Second
+			// In serverless mode, data is written directly to stdout, so no wait is needed
+			if !r.server.serverless {
+				waitTime := 500 * time.Millisecond
+				if len(paths) > 10 {
+					// For many files, wait proportionally longer
+					waitTime = time.Duration(len(paths)*10) * time.Millisecond
+					if waitTime > 2*time.Second {
+						waitTime = 2 * time.Second
+					}
 				}
+				dlog.Server.Debug(r.server.user, "Waiting for data transmission", "duration", waitTime)
+				time.Sleep(waitTime)
 			}
-			dlog.Server.Debug(r.server.user, "Waiting for data transmission", "duration", waitTime)
-			time.Sleep(waitTime)
 		}
 	}
 
@@ -177,12 +180,18 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 				r.server.turboAggregate.Serialize(context.Background())
 				// Give more time for serialization to complete
 				// This is critical when processing many files concurrently
-				time.Sleep(500 * time.Millisecond)
+				// In serverless mode, serialization is synchronous, so no wait needed
+				if !r.server.serverless {
+					time.Sleep(500 * time.Millisecond)
+				}
 			}
 			
 			// Double-check that we really have no pending work
 			// In turbo mode, there might be a race condition
-			time.Sleep(10 * time.Millisecond)
+			// In serverless mode, no need for this delay
+			if !r.server.serverless {
+				time.Sleep(10 * time.Millisecond)
+			}
 			finalPending := atomic.LoadInt32(&r.server.pendingFiles)
 			finalActive := atomic.LoadInt32(&r.server.activeCommands)
 			if finalPending == 0 && finalActive == 0 {
@@ -451,6 +460,7 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 		
 		// Give time for data to be transmitted
 		// This is crucial for integration tests to ensure all data is sent
+		// Skip this delay in serverless mode since data is written directly to stdout
 		if !r.server.serverless {
 			dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> waiting for data transmission")
 			time.Sleep(50 * time.Millisecond)
