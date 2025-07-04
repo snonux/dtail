@@ -140,10 +140,19 @@ func TestTurboAggregateVsRegular(t *testing.T) {
 		
 		// Channel to collect messages
 		messages := make(chan string, 100)
-		ctx := context.Background()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		
-		// Start the regular aggregate
-		regularAgg.Start(ctx, messages)
+		// Start the regular aggregate in a goroutine
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			regularAgg.Start(ctx, messages)
+		}()
+		
+		// Give it time to start
+		time.Sleep(50 * time.Millisecond)
 		
 		// Create line channel
 		lines := make(chan *line.Line, 100)
@@ -162,11 +171,14 @@ func TestTurboAggregateVsRegular(t *testing.T) {
 		// Wait for processing
 		time.Sleep(100 * time.Millisecond)
 		
-		// Shutdown and get results
+		// Shutdown
 		regularAgg.Shutdown()
+		cancel()
+		
+		// Wait for the Start goroutine to finish
+		wg.Wait()
 		
 		// Collect results
-		time.Sleep(100 * time.Millisecond)
 		close(messages)
 		
 		var results []string
