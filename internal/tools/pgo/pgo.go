@@ -4,10 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal/tools/common"
@@ -317,54 +319,103 @@ func copyFile(src, dst string) error {
 }
 
 func runDServerWorkload(cfg *Config, binary string, testFiles map[string]string, profilePath string) error {
-	// Use a unique profile directory for this iteration
-	iterProfileDir := filepath.Join(cfg.ProfileDir, fmt.Sprintf("iter_dserver_%d", time.Now().UnixNano()))
-	if err := os.MkdirAll(iterProfileDir, 0755); err != nil {
-		return fmt.Errorf("creating iteration profile dir: %w", err)
-	}
-	defer os.RemoveAll(iterProfileDir)
-	
-	// Start dserver
+	// Start dserver with pprof endpoint
 	serverCmd := exec.Command(binary,
 		"-cfg", "none",
-		"-profile",
-		"-profiledir", iterProfileDir,
+		"-pprof", "localhost:16060", // pprof endpoint
 		"-port", "12222") // Use non-standard port
+	
+	if cfg.Verbose {
+		serverCmd.Stdout = os.Stdout
+		serverCmd.Stderr = os.Stderr
+	}
 	
 	if err := serverCmd.Start(); err != nil {
 		return fmt.Errorf("starting dserver: %w", err)
 	}
 	
 	// Give server time to start
-	time.Sleep(1 * time.Second)
+	time.Sleep(2 * time.Second)
 	
-	// Run some client commands against it
+	// Check if server is actually running
+	if serverCmd.Process == nil {
+		return fmt.Errorf("dserver process not started")
+	}
+	
+	// Run multiple client commands against it to generate load
 	clients := []struct {
 		cmd  string
 		args []string
 	}{
 		{"dcat", []string{"-cfg", "none", "-server", "localhost:12222", testFiles["log"]}},
-		{"dgrep", []string{"-cfg", "none", "-server", "localhost:12222", "-regex", "ERROR", testFiles["log"]}},
+		{"dgrep", []string{"-cfg", "none", "-server", "localhost:12222", "-regex", "ERROR|WARN", testFiles["log"]}},
+		{"dgrep", []string{"-cfg", "none", "-server", "localhost:12222", "-regex", "INFO.*action", testFiles["log"]}},
+		{"dmap", []string{"-cfg", "none", "-server", "localhost:12222", "-files", testFiles["csv"], "-query", "select status, count(*) group by status"}},
+		{"dmap", []string{"-cfg", "none", "-server", "localhost:12222", "-files", testFiles["csv"], "-query", "select department, avg(salary) group by department"}},
 	}
 	
-	for _, client := range clients {
-		cmd := exec.Command(filepath.Join(cfg.OutputDir, client.cmd+"-baseline"), client.args...)
-		cmd.Run() // Ignore errors
+	// Run clients concurrently to generate more server load
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ { // Run each client twice
+		for _, client := range clients {
+			wg.Add(1)
+			go func(c struct{ cmd string; args []string }) {
+				defer wg.Done()
+				cmd := exec.Command(filepath.Join(cfg.OutputDir, c.cmd+"-baseline"), c.args...)
+				cmd.Stdout = io.Discard
+				cmd.Stderr = io.Discard
+				cmd.Run() // Ignore errors
+			}(client)
+		}
 	}
 	
-	// Stop server
+	// Start CPU profiling in a goroutine
+	profileDone := make(chan error, 1)
+	go func() {
+		// Give a moment for workload to start
+		time.Sleep(500 * time.Millisecond)
+		
+		// Capture CPU profile from pprof endpoint (this blocks for 5 seconds)
+		resp, err := http.Get("http://localhost:16060/debug/pprof/profile?seconds=5")
+		if err != nil {
+			profileDone <- fmt.Errorf("capturing profile: %w", err)
+			return
+		}
+		defer resp.Body.Close()
+		
+		// Write profile to file
+		outFile, err := os.Create(profilePath)
+		if err != nil {
+			profileDone <- fmt.Errorf("creating profile file: %w", err)
+			return
+		}
+		defer outFile.Close()
+		
+		if _, err := io.Copy(outFile, resp.Body); err != nil {
+			profileDone <- fmt.Errorf("writing profile: %w", err)
+			return
+		}
+		
+		profileDone <- nil
+	}()
+	
+	// Run the workload while profiling
+	wg.Wait()
+	
+	// Wait for profiling to complete
+	if err := <-profileDone; err != nil {
+		serverCmd.Process.Kill()
+		serverCmd.Wait()
+		return err
+	}
+	
+	// Stop server gracefully
+	serverCmd.Process.Signal(os.Interrupt)
+	time.Sleep(500 * time.Millisecond)
 	serverCmd.Process.Kill()
 	serverCmd.Wait()
 	
-	// Find the generated CPU profile
-	generatedProfile := filepath.Join(iterProfileDir, "dserver_cpu_*.prof")
-	matches, err := filepath.Glob(generatedProfile)
-	if err != nil || len(matches) == 0 {
-		return fmt.Errorf("no CPU profile generated for dserver")
-	}
-	
-	// Use the first match
-	return copyFile(matches[0], profilePath)
+	return nil
 }
 
 func mergeProfiles(profiles []string, output string) error {
@@ -372,13 +423,32 @@ func mergeProfiles(profiles []string, output string) error {
 		return fmt.Errorf("no profiles to merge")
 	}
 	
-	if len(profiles) == 1 {
+	// Filter out empty profiles
+	var validProfiles []string
+	for _, profile := range profiles {
+		info, err := os.Stat(profile)
+		if err != nil {
+			continue
+		}
+		if info.Size() > 0 {
+			validProfiles = append(validProfiles, profile)
+		}
+	}
+	
+	if len(validProfiles) == 0 {
+		// All profiles are empty, create an empty output file
+		// This allows the workflow to continue
+		fmt.Printf("Warning: All profiles for this command are empty (I/O-bound operation?)\n")
+		return os.WriteFile(output, []byte{}, 0644)
+	}
+	
+	if len(validProfiles) == 1 {
 		// Just rename
-		return os.Rename(profiles[0], output)
+		return os.Rename(validProfiles[0], output)
 	}
 	
 	// Use go tool pprof to merge
-	args := append([]string{"tool", "pprof", "-proto"}, profiles...)
+	args := append([]string{"tool", "pprof", "-proto"}, validProfiles...)
 	cmd := exec.Command("go", args...)
 	
 	outFile, err := os.Create(output)
@@ -396,9 +466,14 @@ func buildWithPGO(cfg *Config) error {
 	for _, cmd := range cfg.Commands {
 		profilePath := filepath.Join(cfg.ProfileDir, fmt.Sprintf("%s.pprof", cmd))
 		
-		// Check if profile exists
-		if _, err := os.Stat(profilePath); err != nil {
+		// Check if profile exists and is not empty
+		info, err := os.Stat(profilePath)
+		if err != nil {
 			fmt.Printf("Warning: No profile found for %s, skipping PGO build\n", cmd)
+			continue
+		}
+		if info.Size() == 0 {
+			fmt.Printf("Warning: Profile for %s is empty, skipping PGO build\n", cmd)
 			continue
 		}
 		
