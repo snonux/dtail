@@ -17,6 +17,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/profiling"
 	"github.com/mimecast/dtail/internal/source"
 	"github.com/mimecast/dtail/internal/user"
 	"github.com/mimecast/dtail/internal/version"
@@ -32,6 +33,7 @@ func main() {
 	var grep string
 	var pprof string
 	var shutdownAfter int
+	var profileFlags profiling.Flags
 
 	userName := user.Name()
 
@@ -65,6 +67,9 @@ func main() {
 	flag.StringVar(&args.What, "files", "", "File(s) to read")
 	flag.StringVar(&grep, "grep", "", "Alias for -regex")
 	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
+	
+	// Add profiling flags
+	profiling.AddFlags(&profileFlags)
 
 	flag.Parse()
 	if grep != "" {
@@ -94,6 +99,10 @@ func main() {
 	wg.Add(1)
 	dlog.Start(ctx, &wg, source.Client)
 
+	// Set up profiling
+	profiler := profiling.NewProfiler(profileFlags.ToConfig("dtail"))
+	defer profiler.Stop()
+
 	if checkHealth {
 		fmt.Println("WARN: DTail health check has moved to separate binary dtailhealth" +
 			" - please adjust the monitoring scripts!")
@@ -106,6 +115,11 @@ func main() {
 		go func() {
 			panic(http.ListenAndServe(pprof, nil))
 		}()
+	}
+
+	// Log initial metrics if profiling is enabled
+	if profileFlags.Enabled() {
+		profiler.LogMetrics("startup")
 	}
 
 	var client clients.Client
@@ -124,6 +138,12 @@ func main() {
 	}
 
 	status := client.Start(ctx, signal.InterruptCh(ctx))
+	
+	// Log final metrics if profiling is enabled
+	if profileFlags.Enabled() {
+		profiler.LogMetrics("shutdown")
+	}
+	
 	cancel()
 
 	wg.Wait()

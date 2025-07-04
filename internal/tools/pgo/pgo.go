@@ -213,14 +213,31 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 	
 	switch command {
 	case "dtail":
-		// Run dtail without follow mode so it exits normally
+		// For dtail, we need to simulate a growing log file
+		// First, create an empty file
+		growingLog := testFiles["growing_log"]
+		if err := os.WriteFile(growingLog, []byte{}, 0644); err != nil {
+			return fmt.Errorf("creating growing log: %w", err)
+		}
+		
+		// Start a background process to write to the file with various log levels
+		writerCmd := exec.Command("bash", "-c", fmt.Sprintf(
+			"for i in {1..200}; do level=$((i %% 4)); case $level in 0) lvl=INFO;; 1) lvl=WARN;; 2) lvl=ERROR;; 3) lvl=DEBUG;; esac; echo \"[2025-07-04 15:00:00] $lvl - Test log line number $i with some additional text to process\" >> %s; sleep 0.015; done",
+			growingLog))
+		if err := writerCmd.Start(); err != nil {
+			return fmt.Errorf("starting log writer: %w", err)
+		}
+		defer writerCmd.Process.Kill()
+		
+		// Run dtail to follow the growing file with regex filtering
 		cmd = exec.Command(binary,
 			"-cfg", "none",
 			"-plain",
 			"-profile",
 			"-profiledir", iterProfileDir,
-			"-lines", "1000",
-			testFiles["log"])
+			"-regex", "ERROR|WARN",  // Filter for errors and warnings
+			"-shutdownAfter", "3",  // Exit after 3 seconds
+			growingLog)
 		
 	case "dcat":
 		cmd = exec.Command(binary,
@@ -487,6 +504,10 @@ func generateTestData(cfg *Config) (map[string]string, error) {
 		return nil, err
 	}
 	files["csv"] = csvFile
+	
+	// For dtail, also create a growing log file
+	growingLogFile := filepath.Join(cfg.ProfileDir, "growing.log")
+	files["growing_log"] = growingLogFile
 	
 	return files, nil
 }
