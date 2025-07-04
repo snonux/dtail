@@ -28,6 +28,12 @@ DTAIL_USE_ACL=yes make build
 
 # Enable proprietary features
 DTAIL_USE_PROPRIETARY=yes make build
+
+# Build PGO-optimized binaries (requires existing profiles)
+make build-pgo
+
+# Generate PGO profiles and build optimized binaries
+make pgo
 ```
 
 ## Testing & Development
@@ -67,6 +73,43 @@ make benchmark-baseline
 # Compare current performance against a baseline
 make benchmark-compare BASELINE=benchmarks/baselines/baseline_TIMESTAMP.txt
 ```
+
+## Profile-Guided Optimization (PGO)
+
+```bash
+# Full PGO workflow: generate profiles and build optimized binaries
+make pgo
+
+# Quick PGO with smaller datasets (faster)
+make pgo-quick
+
+# PGO for specific commands only
+make pgo-commands COMMANDS='dcat dgrep'
+
+# Generate PGO profiles only (without building)
+make pgo-generate
+
+# Build PGO-optimized binaries using existing profiles
+make build-pgo
+
+# Install PGO-optimized binaries to system
+make install-pgo
+
+# Clean PGO artifacts
+make pgo-clean
+
+# Show PGO help
+make pgo-help
+```
+
+### PGO Notes
+
+- PGO provides additional performance improvements on top of turbo mode
+- Typical improvements: 5-10% for DCat, up to 19% for DGrep with low hit rates
+- Profiles are saved in `pgo-profiles/` directory
+- Optimized binaries are built in `pgo-build/` directory
+- Use `make build-pgo` to rebuild optimized binaries without regenerating profiles
+- PGO profiles are workload-specific; consider custom profiles for your use case
 
 ## Profiling
 
@@ -158,6 +201,39 @@ make benchmark-network
 make benchmark-mapreduce
 make benchmark-ssh
 ```
+
+## Profile-Guided Optimization (PGO)
+
+```bash
+# Run PGO for all commands
+make pgo
+
+# Quick PGO with smaller datasets
+make pgo-quick
+
+# PGO for specific commands
+make pgo-commands COMMANDS='dcat dgrep'
+
+# Clean PGO artifacts
+make pgo-clean
+
+# Show PGO help
+make pgo-help
+
+# Direct usage with dtail-tools
+dtail-tools pgo                    # Optimize all commands
+dtail-tools pgo dcat dgrep         # Optimize specific commands
+dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
+
+# After PGO, optimized binaries are in pgo-build/
+```
+
+### PGO Notes
+
+- PGO uses profile data from real workloads to optimize binary performance
+- The process involves: building baseline → generating profiles → building with PGO
+- Typical improvements range from 5-20% depending on the workload
+- Optimized binaries are placed in the `pgo-build/` directory
 
 ## Architecture & Code Organization
 

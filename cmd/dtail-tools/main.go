@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/mimecast/dtail/internal/tools/benchmark"
+	"github.com/mimecast/dtail/internal/tools/pgo"
 	"github.com/mimecast/dtail/internal/tools/profile"
 )
 
@@ -30,6 +31,11 @@ func main() {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
+	case "pgo":
+		if err := pgo.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -47,6 +53,7 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  profile    Run profiling on dtail commands")
 	fmt.Println("  benchmark  Run benchmarks and manage baselines")
+	fmt.Println("  pgo        Profile-Guided Optimization for dtail commands")
 	fmt.Println("  help       Show this help message")
 	fmt.Println()
 	fmt.Println("Run 'dtail-tools <command> -h' for command-specific help")

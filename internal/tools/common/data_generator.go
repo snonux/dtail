@@ -246,3 +246,21 @@ func (g *DataGenerator) generateDTailFormatFileWithLines(filename string, lines 
 
 	return nil
 }
+
+// GenerateLogFile generates a log file with specified number of lines
+// This is a convenience function for PGO module
+func GenerateLogFile(filename string, lines int) error {
+	g := NewDataGenerator()
+	// Estimate size based on average line length (about 100 bytes per line)
+	estimatedSize := int64(lines * 100)
+	return g.generateLogFile(filename, estimatedSize)
+}
+
+// GenerateCSVFile generates a CSV file with specified number of lines
+// This is a convenience function for PGO module
+func GenerateCSVFile(filename string, lines int) error {
+	g := NewDataGenerator()
+	// Estimate size based on average line length (about 50 bytes per line)
+	estimatedSize := int64(lines * 50)
+	return g.generateCSVFile(filename, estimatedSize)
+}
