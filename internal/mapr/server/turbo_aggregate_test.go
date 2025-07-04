@@ -25,7 +25,7 @@ func TestTurboAggregateVsRegular(t *testing.T) {
 	if config.Server == nil {
 		config.Server = &config.ServerConfig{
 			MapreduceLogFormat: "default",
-			TurboModeEnable: false,
+			TurboBoostDisable: false,
 		}
 	}
 	if dlog.Server == nil {
@@ -210,7 +210,7 @@ func TestTurboAggregateConcurrency(t *testing.T) {
 	if config.Server == nil {
 		config.Server = &config.ServerConfig{
 			MapreduceLogFormat: "default",
-			TurboModeEnable: false,
+			TurboBoostDisable: false,
 		}
 	}
 	if dlog.Server == nil {

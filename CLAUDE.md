@@ -115,7 +115,7 @@ make profile-help
 ## Known Limitations
 
 ### Turbo Mode and MapReduce Operations
-Turbo mode (DTAIL_TURBOBOOST_ENABLE) provides performance optimizations for both direct output operations (cat, grep, tail) and MapReduce operations when running in server mode.
+Turbo boost mode is enabled by default and provides performance optimizations for both direct output operations (cat, grep, tail) and MapReduce operations when running in server mode. It can be explicitly disabled via DTAIL_TURBOBOOST_DISABLE=yes or TurboBoostDisable in the config file.
 
 **Technical Details:**
 - For cat/grep/tail: Turbo mode bypasses channels for direct writing
@@ -136,7 +136,7 @@ When turbo mode is enabled and using dserver:
 - Improved synchronization in both regular and turbo aggregate implementations
 
 **Best Practices for High-Concurrency MapReduce:**
-1. Enable turbo mode for server deployments: `export DTAIL_TURBOBOOST_ENABLE=yes`
+1. Turbo boost is enabled by default. To disable if needed: `export DTAIL_TURBOBOOST_DISABLE=yes`
 2. Increase MaxConcurrentCats in the server configuration to match workload
 3. Use server mode for large-scale MapReduce operations
 4. Monitor logs for performance metrics

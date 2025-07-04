@@ -97,7 +97,7 @@
     "MaxConcurrentTails": 50,
     "MaxConnections": 50,
     "MaxLineLength": 1048576,
-    "TurboModeEnable": true,
+    "TurboBoostDisable": false,
     "Permissions": {
       "Default": [
         "readfiles:^/.*$"

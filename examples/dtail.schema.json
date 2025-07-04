@@ -395,9 +395,9 @@
           "minimum": 1024,
           "maximum": 10240000
         },
-        "TurboModeEnable": {
+        "TurboBoostDisable": {
           "type": "boolean",
-          "description": "Enable turbo mode for optimized file processing (disabled by default for MapReduce)"
+          "description": "Disable turbo boost mode. By default, turbo boost is enabled for optimized file processing"
         },
         "Permissions": {
           "type": "object",

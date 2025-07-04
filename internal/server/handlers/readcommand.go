@@ -123,7 +123,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 
 	// In turbo mode, signal EOF after all files are processed
 	// This is crucial for proper shutdown in server mode
-	if config.Server.TurboModeEnable && r.server.aggregate == nil && 
+	if !config.Server.TurboBoostDisable && r.server.aggregate == nil && 
 		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) {
 		if r.server.IsTurboMode() && r.server.turboEOF != nil {
 			dlog.Server.Debug(r.server.user, "Turbo mode: flushing data before EOF signal")
@@ -261,12 +261,12 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	// Check if we should use the turbo boost optimizations
 	// Enable turbo boost for cat/grep/tail modes, and now also for MapReduce operations
 	// MapReduce now has a turbo mode implementation that bypasses channels
-	dlog.Server.Debug(r.server.user, "Checking turbo mode", "turboModeEnable", config.Server.TurboModeEnable, 
+	dlog.Server.Debug(r.server.user, "Checking turbo mode", "turboBoostDisable", config.Server.TurboBoostDisable, 
 		"mode", r.mode, "hasTurboAggregate", r.server.turboAggregate != nil, "hasAggregate", r.server.aggregate != nil)
 	// Only use turbo mode if:
-	// 1. Turbo mode is enabled AND
+	// 1. Turbo boost is NOT disabled (it's enabled by default) AND
 	// 2. We have a turbo aggregate OR (we're in cat/grep/tail mode AND we don't have a regular aggregate)
-	if config.Server.TurboModeEnable &&
+	if !config.Server.TurboBoostDisable &&
 		(r.server.turboAggregate != nil || ((r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) && r.server.aggregate == nil)) {
 		dlog.Server.Info(r.server.user, "Using turbo mode for reading", path, "mode", r.mode, "hasTurboAggregate", r.server.turboAggregate != nil)
 		r.readWithTurboProcessor(ctx, ltx, path, globID, re, reader)
@@ -327,8 +327,8 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 	aggregate := r.server.aggregate
 	var lines chan *line.Line
 
-	// Use the optimized version if turbo boost is enabled
-	turboBoostEnabled := config.Server.TurboModeEnable
+	// Use the optimized version if turbo boost is not disabled (enabled by default)
+	turboBoostEnabled := !config.Server.TurboBoostDisable
 
 	for {
 		if aggregate != nil {

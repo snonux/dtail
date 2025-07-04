@@ -92,10 +92,10 @@ func (in *initializer) processEnvVars(args *Args) {
 	if len(sshPrivateKeyPathFile) > 0 && args.SSHPrivateKeyFilePath == "" {
 		args.SSHPrivateKeyFilePath = sshPrivateKeyPathFile
 	}
-	// Check if turbo mode should be enabled from environment variable
-	// This allows backward compatibility with existing scripts
-	if Env("DTAIL_TURBOBOOST_ENABLE") {
-		in.Server.TurboModeEnable = true
+	// Check if turbo boost should be disabled from environment variable
+	// Turbo boost is enabled by default, can be explicitly disabled
+	if Env("DTAIL_TURBOBOOST_DISABLE") {
+		in.Server.TurboBoostDisable = true
 	}
 }
 
