@@ -23,8 +23,10 @@ func newMapCommand(serverHandler *ServerHandler, argc int,
 	m := mapCommand{server: serverHandler}
 	queryStr := strings.Join(args[1:], " ")
 	
-	// If turbo mode is enabled, create a TurboAggregate
-	if config.Server.TurboModeEnable {
+	// If turbo mode is enabled AND we're in server mode (not serverless), create a TurboAggregate
+	// Turbo mode is a server-side optimization and should not be used in serverless mode
+	dlog.Server.Debug("MapReduce mode check", "turboModeEnable", config.Server.TurboModeEnable, "serverless", serverHandler.serverless)
+	if config.Server.TurboModeEnable && !serverHandler.serverless {
 		dlog.Server.Info("Creating turbo aggregate for MapReduce", "query", queryStr)
 		turboAggregate, err := server.NewTurboAggregate(queryStr)
 		if err != nil {

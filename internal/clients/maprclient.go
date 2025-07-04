@@ -114,7 +114,8 @@ func (c MaprClient) makeHandler(server string) handlers.Handler {
 }
 
 func (c MaprClient) makeCommands() (commands []string) {
-	commands = append(commands, fmt.Sprintf("map %s", c.query.RawQuery))
+	// Include options with the map command so serverless mode is properly detected
+	commands = append(commands, fmt.Sprintf("map:%s %s", c.Args.SerializeOptions(), c.query.RawQuery))
 	modeStr := "cat"
 	if c.Mode == omode.TailClient {
 		modeStr = "tail"

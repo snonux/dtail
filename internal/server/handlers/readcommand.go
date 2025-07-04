@@ -261,24 +261,33 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	// Check if we should use the turbo boost optimizations
 	// Enable turbo boost for cat/grep/tail modes, and now also for MapReduce operations
 	// MapReduce now has a turbo mode implementation that bypasses channels
+	dlog.Server.Debug(r.server.user, "Checking turbo mode", "turboModeEnable", config.Server.TurboModeEnable, 
+		"mode", r.mode, "hasTurboAggregate", r.server.turboAggregate != nil, "hasAggregate", r.server.aggregate != nil)
+	// Only use turbo mode if:
+	// 1. Turbo mode is enabled AND
+	// 2. We have a turbo aggregate OR (we're in cat/grep/tail mode AND we don't have a regular aggregate)
 	if config.Server.TurboModeEnable &&
-		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient || r.server.turboAggregate != nil) {
+		(r.server.turboAggregate != nil || ((r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) && r.server.aggregate == nil)) {
 		dlog.Server.Info(r.server.user, "Using turbo mode for reading", path, "mode", r.mode, "hasTurboAggregate", r.server.turboAggregate != nil)
 		r.readWithTurboProcessor(ctx, ltx, path, globID, re, reader)
 		return
 	}
 
 	// Original channel-based implementation
-	lines := r.server.lines
 	aggregate := r.server.aggregate
+	var lines chan *line.Line
 
 	for {
 		if aggregate != nil {
-			// Use a larger buffer for aggregate operations to handle high concurrency
-			// This prevents deadlock when processing many files simultaneously
+			// For MapReduce operations, create a new channel that goes only to the aggregate
+			// This prevents lines from being sent to the client
 			lines = make(chan *line.Line, 10000)
 			aggregate.NextLinesCh <- lines
+		} else {
+			// For non-MapReduce operations, use the server's lines channel
+			lines = r.server.lines
 		}
+		
 		if err := reader.Start(ctx, ltx, lines, re); err != nil {
 			dlog.Server.Error(r.server.user, path, globID, err)
 		}
@@ -315,18 +324,21 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 	}
 
 	// Use the existing lines channel but with the processor-based reader
-	lines := r.server.lines
 	aggregate := r.server.aggregate
+	var lines chan *line.Line
 
 	// Use the optimized version if turbo boost is enabled
 	turboBoostEnabled := config.Server.TurboModeEnable
 
 	for {
 		if aggregate != nil {
-			// Use a larger buffer for aggregate operations to handle high concurrency
-			// This prevents deadlock when processing many files simultaneously
+			// For MapReduce operations, create a new channel that goes only to the aggregate
+			// This prevents lines from being sent to the client
 			lines = make(chan *line.Line, 10000)
 			aggregate.NextLinesCh <- lines
+		} else {
+			// For non-MapReduce operations, use the server's lines channel
+			lines = r.server.lines
 		}
 
 		// Create a processor that sends to the lines channel

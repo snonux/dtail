@@ -47,6 +47,8 @@ type TurboAggregate struct {
 	fieldPool sync.Pool
 	// Synchronization for clean shutdown
 	processingWg sync.WaitGroup
+	// Track active file processors
+	activeProcessors atomic.Int32
 }
 
 type rawLine struct {
@@ -70,12 +72,8 @@ func NewTurboAggregate(queryStr string) (*TurboAggregate, error) {
 	var parserName string
 	switch query.LogFormat {
 	case "":
-		if query.Table != "" {
-			// Use table name as parser name (e.g., STATS)
-			parserName = strings.ToLower(query.Table)
-		} else if config.Server.MapreduceLogFormat != "" {
-			parserName = config.Server.MapreduceLogFormat
-		} else {
+		parserName = config.Server.MapreduceLogFormat
+		if query.Table == "" {
 			parserName = "generic"
 		}
 	default:
@@ -133,6 +131,8 @@ func min(a, b int) int {
 func (a *TurboAggregate) Shutdown() {
 	dlog.Server.Info("TurboAggregate: Shutdown called", 
 		"linesProcessed", a.linesProcessed.Load(),
+		"filesProcessed", a.filesProcessed.Load(),
+		"activeProcessors", a.activeProcessors.Load(),
 		"currentGroups", a.countGroups())
 	
 	// Signal shutdown
@@ -141,6 +141,13 @@ func (a *TurboAggregate) Shutdown() {
 	// Stop the ticker
 	if a.serializeTicker != nil {
 		a.serializeTicker.Stop()
+	}
+	
+	// Wait for active processors to finish
+	for a.activeProcessors.Load() > 0 {
+		dlog.Server.Info("TurboAggregate: Waiting for active processors", 
+			"activeProcessors", a.activeProcessors.Load())
+		time.Sleep(10 * time.Millisecond)
 	}
 	
 	// Process any remaining batch synchronously
@@ -260,11 +267,6 @@ func (a *TurboAggregate) batchProcessorLoop(ctx context.Context) {
 
 	for {
 		select {
-		case <-ctx.Done():
-			dlog.Server.Info("TurboAggregate: Batch processor stopped by context")
-			// Process any remaining batch synchronously before exiting
-			a.processBatchAndWait()
-			return
 		case <-a.done.Done():
 			dlog.Server.Info("TurboAggregate: Batch processor stopped by shutdown")
 			// Process any remaining batch synchronously before exiting
@@ -273,6 +275,28 @@ func (a *TurboAggregate) batchProcessorLoop(ctx context.Context) {
 		case <-ticker.C:
 			// Periodically process any accumulated batch
 			a.processBatch()
+			
+			// Check if context is done but only exit if no pending work
+			select {
+			case <-ctx.Done():
+				a.batchMu.Lock()
+				batchLen := len(a.batch)
+				a.batchMu.Unlock()
+				
+				activeProcs := a.activeProcessors.Load()
+				
+				if batchLen > 0 || activeProcs > 0 {
+					dlog.Server.Info("TurboAggregate: Context cancelled but work pending", 
+						"batchLen", batchLen,
+						"activeProcessors", activeProcs)
+					// Continue processing
+				} else {
+					dlog.Server.Info("TurboAggregate: Context cancelled, no pending work")
+					return
+				}
+			default:
+				// Context not done, continue
+			}
 		}
 	}
 }
@@ -617,6 +641,10 @@ type TurboAggregateProcessor struct {
 
 // NewTurboAggregateProcessor creates a new turbo aggregate processor.
 func NewTurboAggregateProcessor(aggregate *TurboAggregate, globID string) *TurboAggregateProcessor {
+	aggregate.activeProcessors.Add(1)
+	dlog.Server.Debug("TurboAggregate: New processor created", 
+		"globID", globID,
+		"activeProcessors", aggregate.activeProcessors.Load())
 	return &TurboAggregateProcessor{
 		aggregate: aggregate,
 		globID:    globID,
@@ -664,5 +692,10 @@ func (p *TurboAggregateProcessor) Flush() error {
 
 // Close flushes any remaining data.
 func (p *TurboAggregateProcessor) Close() error {
-	return p.Flush()
+	err := p.Flush()
+	p.aggregate.activeProcessors.Add(-1)
+	dlog.Server.Debug("TurboAggregate: Processor closed", 
+		"globID", p.globID,
+		"activeProcessors", p.aggregate.activeProcessors.Load())
+	return err
 }
