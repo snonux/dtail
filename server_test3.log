@@ -1,4 +1,0 @@
-DTail 4.3.2 Protocol 4.1 Have a lot of fun!
-ERROR|0703-164510|paul@127.0.0.1:44774|ssh: parse error in message type 0
-ERROR|0703-164609|Something just happened|[ssh: no auth passed yet, paul@127.0.0.1:36508|public key of user not authorized]
-ERROR|0703-165154|Something just happened|[ssh: no auth passed yet, paul@127.0.0.1:53850|public key of user not authorized]
