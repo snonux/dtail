@@ -38,7 +38,7 @@ clean:
 	@echo "Removing .prof files..."
 	find . -name "*.prof" -type f -delete
 vet:
-	find . -type d | egrep -v '(./examples|./log|./doc)' | while read dir; do \
+	find . -type d | grep -E -v '(./examples|./log|./doc)' | while read dir; do \
 	  echo ${GO} vet $$dir; \
 	  ${GO} vet $$dir; \
 	done
