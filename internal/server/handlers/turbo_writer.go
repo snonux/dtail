@@ -51,67 +51,73 @@ func NewDirectTurboWriter(writer io.Writer, hostname string, plain, serverless b
 	}
 }
 
-// WriteLineData writes formatted line data directly to output
+// WriteLineData writes formatted line data directly to output.
+// Dispatches to serverless or network mode handlers based on configuration.
 func (w *DirectTurboWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	// Optimized serverless mode path
 	if w.serverless {
-		// In serverless mode, we still need protocol formatting for consistency
-		// but we can optimize by batching writes
-		
-		if w.plain {
-			// For plain serverless mode, just write the line content
-			w.writeBuf.Write(lineContent)
-			
-			// Ensure line has a newline if it doesn't already
-			if len(lineContent) > 0 && lineContent[len(lineContent)-1] != '\n' {
-				w.writeBuf.WriteByte('\n')
-			}
-		} else {
-			// For colored serverless mode with test compatibility
-			// We need to maintain the protocol formatting for integration tests
-			// Build the complete line in a temporary buffer
-			var lineBuf bytes.Buffer
-			lineBuf.WriteString("REMOTE")
-			lineBuf.WriteString(protocol.FieldDelimiter)
-			lineBuf.WriteString(w.hostname)
-			lineBuf.WriteString(protocol.FieldDelimiter)
-			lineBuf.WriteString("100")
-			lineBuf.WriteString(protocol.FieldDelimiter)
-			lineBuf.WriteString(fmt.Sprintf("%v", lineNum))
-			lineBuf.WriteString(protocol.FieldDelimiter)
-			lineBuf.WriteString(sourceID)
-			lineBuf.WriteString(protocol.FieldDelimiter)
-			
-			// Remove trailing newline if present (it will be added back after coloring)
-			content := lineContent
-			if len(content) > 0 && content[len(content)-1] == '\n' {
-				content = content[:len(content)-1]
-			}
-			lineBuf.Write(content)
-			
-			// Apply color formatting
-			coloredLine := brush.Colorfy(lineBuf.String())
-			w.writeBuf.WriteString(coloredLine)
+		return w.writeServerlessLine(lineContent, lineNum, sourceID)
+	}
+	return w.writeNetworkLine(lineContent, lineNum, sourceID)
+}
+
+// writeServerlessLine handles serverless mode output with buffered writes.
+// Supports both plain and colored output modes. Must be called with mutex held.
+func (w *DirectTurboWriter) writeServerlessLine(lineContent []byte, lineNum uint64, sourceID string) error {
+	if w.plain {
+		// For plain serverless mode, just write the line content
+		w.writeBuf.Write(lineContent)
+
+		// Ensure line has a newline if it doesn't already
+		if len(lineContent) > 0 && lineContent[len(lineContent)-1] != '\n' {
 			w.writeBuf.WriteByte('\n')
 		}
-		
-		// Update stats
-		w.linesWritten++
-		w.bytesWritten += uint64(w.writeBuf.Len())
-		
-		// Buffer writes for better performance - only flush when buffer is full
-		// This is a key optimization: we don't force immediate flush in serverless mode
-		if w.writeBuf.Len() >= w.bufSize {
-			return w.flushBuffer()
+	} else {
+		// For colored serverless mode with test compatibility
+		// Build the complete line with protocol formatting for integration tests
+		var lineBuf bytes.Buffer
+		lineBuf.WriteString("REMOTE")
+		lineBuf.WriteString(protocol.FieldDelimiter)
+		lineBuf.WriteString(w.hostname)
+		lineBuf.WriteString(protocol.FieldDelimiter)
+		lineBuf.WriteString("100")
+		lineBuf.WriteString(protocol.FieldDelimiter)
+		lineBuf.WriteString(fmt.Sprintf("%v", lineNum))
+		lineBuf.WriteString(protocol.FieldDelimiter)
+		lineBuf.WriteString(sourceID)
+		lineBuf.WriteString(protocol.FieldDelimiter)
+
+		// Remove trailing newline if present (it will be added back after coloring)
+		content := lineContent
+		if len(content) > 0 && content[len(content)-1] == '\n' {
+			content = content[:len(content)-1]
 		}
-		
-		return nil
+		lineBuf.Write(content)
+
+		// Apply color formatting
+		coloredLine := brush.Colorfy(lineBuf.String())
+		w.writeBuf.WriteString(coloredLine)
+		w.writeBuf.WriteByte('\n')
 	}
 
-	// Non-serverless mode: include protocol formatting for network transmission
+	// Update stats
+	w.linesWritten++
+	w.bytesWritten += uint64(w.writeBuf.Len())
+
+	// Buffer writes for better performance - only flush when buffer is full
+	if w.writeBuf.Len() >= w.bufSize {
+		return w.flushBuffer()
+	}
+
+	return nil
+}
+
+// writeNetworkLine handles network mode output with protocol formatting.
+// Adds protocol headers for non-plain mode. Must be called with mutex held.
+func (w *DirectTurboWriter) writeNetworkLine(lineContent []byte, lineNum uint64, sourceID string) error {
+	// Include protocol formatting for network transmission
 	if !w.plain {
 		w.writeBuf.WriteString("REMOTE")
 		w.writeBuf.WriteString(protocol.FieldDelimiter)
@@ -372,14 +378,15 @@ type TurboNetworkWriter struct {
 	bytesWritten uint64
 }
 
-// WriteLineData formats and writes line data directly
+// WriteLineData formats and writes line data directly to the turbo channel.
+// Builds the protocol-formatted line and sends it via sendToTurboChannel.
 func (w *TurboNetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
 	dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "lineNum", lineNum, "sourceID", sourceID, "contentLen", len(lineContent))
 
-	// Build the output line
+	// Build the output line with protocol formatting
 	if !w.plain && !w.serverless {
 		w.writeBuf.WriteString("REMOTE")
 		w.writeBuf.WriteString(protocol.FieldDelimiter)
@@ -404,33 +411,38 @@ func (w *TurboNetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, s
 
 	dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "linesWritten", w.linesWritten, "bytesWritten", w.bytesWritten, "bufSize", w.writeBuf.Len())
 
-	// Write directly to the turbo channel
-	if w.handler.turboLines != nil {
-		data := make([]byte, w.writeBuf.Len())
-		copy(data, w.writeBuf.Bytes())
+	return w.sendToTurboChannel()
+}
 
-		dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "sending to turboLines channel", "dataLen", len(data))
-
-		// Send data to turbo channel with a larger buffer
-		select {
-		case w.handler.turboLines <- data:
-			dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "sent to channel successfully")
-			w.writeBuf.Reset()
-			return nil
-		default:
-			// Channel full, wait a bit and retry
-			dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "channel full, waiting before retry")
-			time.Sleep(time.Millisecond)
-			w.handler.turboLines <- data
-			dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "sent to channel after retry")
-			w.writeBuf.Reset()
-			return nil
-		}
+// sendToTurboChannel sends buffered data to the turbo channel with retry logic.
+// Handles channel backpressure by waiting and retrying. Must be called with mutex held.
+func (w *TurboNetworkWriter) sendToTurboChannel() error {
+	if w.handler.turboLines == nil {
+		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "turboLines channel is nil")
+		w.writeBuf.Reset()
+		return nil
 	}
 
-	dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "turboLines channel is nil")
-	w.writeBuf.Reset()
-	return nil
+	data := make([]byte, w.writeBuf.Len())
+	copy(data, w.writeBuf.Bytes())
+
+	dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sending to turboLines channel", "dataLen", len(data))
+
+	// Send data to turbo channel, retry once if full
+	select {
+	case w.handler.turboLines <- data:
+		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel successfully")
+		w.writeBuf.Reset()
+		return nil
+	default:
+		// Channel full, wait a bit and retry
+		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "channel full, waiting before retry")
+		time.Sleep(time.Millisecond)
+		w.handler.turboLines <- data
+		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel after retry")
+		w.writeBuf.Reset()
+		return nil
+	}
 }
 
 // WriteServerMessage writes a server message
