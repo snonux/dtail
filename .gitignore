@@ -2,6 +2,7 @@
 *.csv
 *.tmp
 *.out
+.serena
 Test*.log
 *.query
 append:*
