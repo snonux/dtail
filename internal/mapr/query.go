@@ -19,7 +19,8 @@ type Outfile struct {
 	AppendMode bool
 }
 
-func (o Outfile) String() string {
+// String returns the string representation of Outfile.
+func (o *Outfile) String() string {
 	return fmt.Sprintf("Outfile(FilePath:%v,AppendMode:%v)", o.FilePath, o.AppendMode)
 }
 
@@ -41,7 +42,8 @@ type Query struct {
 	LogFormat    string
 }
 
-func (q Query) String() string {
+// String returns the string representation of Query.
+func (q *Query) String() string {
 	return fmt.Sprintf("Query(Select:%v,Table:%s,Where:%v,Set:%vGroupBy:%v,"+
 		"GroupKey:%s,OrderBy:%v,ReverseOrder:%v,Interval:%v,Limit:%d,Outfile:%s,"+
 		"RawQuery:%s,tokens:%v,LogFormat:%s)",
@@ -95,7 +97,7 @@ func (q *Query) Has(what string) bool {
 
 func (q *Query) parse(tokens []token) error {
 	if _, err := q.parseTokens(tokens); err != nil {
-		return err
+		return fmt.Errorf("failed to parse query tokens: %w", err)
 	}
 
 	if len(q.Select) < 1 {

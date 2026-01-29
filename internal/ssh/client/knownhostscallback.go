@@ -45,6 +45,8 @@ type KnownHostsCallback struct {
 	mutex           *sync.Mutex
 }
 
+var _ HostKeyCallback = (*KnownHostsCallback)(nil)
+
 // NewKnownHostsCallback returns a new wrapper.
 func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
 	throttleCh chan struct{}) (HostKeyCallback, error) {
@@ -63,11 +65,11 @@ func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
 	if trustAllHosts {
 		close(c.trustAllHostsCh)
 	}
-	return c, nil
+	return &c, nil
 }
 
 // Wrap the host key callback.
-func (c KnownHostsCallback) Wrap() ssh.HostKeyCallback {
+func (c *KnownHostsCallback) Wrap() ssh.HostKeyCallback {
 	return func(server string, remote net.Addr, key ssh.PublicKey) error {
 		// Parse known_hosts file
 		knownHostsCb, err := knownhosts.New(c.knownHostsPath)
@@ -113,7 +115,7 @@ func (c KnownHostsCallback) Wrap() ssh.HostKeyCallback {
 
 // PromptAddHosts prompts a question to the user whether unknown hosts should
 // be added to the known hosts or not.
-func (c KnownHostsCallback) PromptAddHosts(ctx context.Context) {
+func (c *KnownHostsCallback) PromptAddHosts(ctx context.Context) {
 	var hosts []unknownHost
 	for {
 		// Check whether there is a unknown host
@@ -138,7 +140,7 @@ func (c KnownHostsCallback) PromptAddHosts(ctx context.Context) {
 	}
 }
 
-func (c KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
+func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	var servers []string
 	for _, host := range hosts {
 		servers = append(servers, host.server)
@@ -212,7 +214,7 @@ func (c KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	p.Ask()
 }
 
-func (c KnownHostsCallback) trustHosts(hosts []unknownHost) {
+func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) {
 	tmpKnownHostsPath := fmt.Sprintf("%s.tmp", c.knownHostsPath)
 
 	newFd, err := os.OpenFile(tmpKnownHostsPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
@@ -265,14 +267,14 @@ func (c KnownHostsCallback) trustHosts(hosts []unknownHost) {
 	}
 }
 
-func (c KnownHostsCallback) dontTrustHosts(hosts []unknownHost) {
+func (c *KnownHostsCallback) dontTrustHosts(hosts []unknownHost) {
 	for _, unknown := range hosts {
 		unknown.responseCh <- dontTrustHost
 	}
 }
 
 // Untrusted returns true if the host is not trusted. False otherwise.
-func (c KnownHostsCallback) Untrusted(server string) bool {
+func (c *KnownHostsCallback) Untrusted(server string) bool {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	_, ok := c.untrustedHosts[server]

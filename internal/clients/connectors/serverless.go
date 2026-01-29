@@ -18,6 +18,8 @@ type Serverless struct {
 	userName string
 }
 
+var _ Connector = (*Serverless)(nil)
+
 // NewServerless starts a new serverless session.
 func NewServerless(userName string, handler handlers.Handler,
 	commands []string) *Serverless {

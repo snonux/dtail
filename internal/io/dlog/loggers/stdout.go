@@ -13,6 +13,8 @@ type stdout struct {
 	mutex    sync.Mutex
 }
 
+var _ Logger = (*stdout)(nil)
+
 func newStdout() *stdout {
 	return &stdout{
 		pauseCh:  make(chan struct{}),

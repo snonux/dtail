@@ -23,6 +23,7 @@ type Regex struct {
 	literalBytes []byte // literal bytes for byte matching
 }
 
+// String returns the string representation of Regex.
 func (r Regex) String() string {
 	return fmt.Sprintf("Regex(regexStr:%s,flags:%s,initialized:%t,re==nil:%t,isLiteral:%t)",
 		r.regexStr, r.flags, r.initialized, r.re == nil, r.isLiteral)

@@ -32,6 +32,8 @@ type ServerConnection struct {
 	throttlingDone  bool
 }
 
+var _ Connector = (*ServerConnection)(nil)
+
 // NewServerConnection returns a new DTail SSH server connection.
 func NewServerConnection(server string, userName string,
 	authMethods []ssh.AuthMethod, hostKeyCallback client.HostKeyCallback,
@@ -135,7 +137,7 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 
 	client, err := ssh.Dial("tcp", address, c.config)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to dial SSH connection to %s: %w", address, err)
 	}
 	defer client.Close()
 
@@ -149,7 +151,7 @@ func (c *ServerConnection) session(ctx context.Context, cancel context.CancelFun
 	dlog.Client.Debug(c.server, "Creating SSH session")
 	session, err := client.NewSession()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create SSH session for %s: %w", c.server, err)
 	}
 	defer session.Close()
 	return c.handle(ctx, cancel, session, throttleCh)
@@ -161,14 +163,14 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	dlog.Client.Debug(c.server, "Creating handler for SSH session")
 	stdinPipe, err := session.StdinPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get SSH session stdin pipe for %s: %w", c.server, err)
 	}
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get SSH session stdout pipe for %s: %w", c.server, err)
 	}
 	if err := session.Shell(); err != nil {
-		return err
+		return fmt.Errorf("failed to start SSH shell for %s: %w", c.server, err)
 	}
 
 	go func() {

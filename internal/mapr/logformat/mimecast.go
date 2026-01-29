@@ -10,6 +10,8 @@ var ErrMimecastNotAvailable error = errors.New("The mimecast logformat is not av
 
 type mimecastParser struct{}
 
+var _ Parser = (*mimecastParser)(nil)
+
 func newMimecastParser(hostname, timeZoneName string, timeZoneOffset int) (*mimecastParser, error) {
 	return &mimecastParser{}, ErrMimecastNotAvailable
 }

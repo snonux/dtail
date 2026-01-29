@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -27,6 +28,8 @@ type GrepLineProcessor struct {
 	linesProcessed uint64
 	bytesWritten   uint64
 }
+
+var _ line.Processor = (*GrepLineProcessor)(nil)
 
 // HandlerWriter adapts a ServerHandler to implement io.Writer
 type HandlerWriter struct {

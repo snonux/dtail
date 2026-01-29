@@ -10,6 +10,8 @@ type ClientHandler struct {
 	baseHandler
 }
 
+var _ Handler = (*ClientHandler)(nil)
+
 // NewClientHandler creates a new client handler.
 func NewClientHandler(server string) *ClientHandler {
 	dlog.Client.Debug(server, "Creating new client handler")

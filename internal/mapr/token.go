@@ -14,22 +14,7 @@ type token struct {
 	quotesStripped bool
 }
 
-func (t token) isKeyword() bool {
-	if !t.isBareword {
-		return false
-	}
-	for _, keyword := range keywords {
-		if strings.ToLower(t.str) == keyword {
-			return true
-		}
-	}
-	return false
-}
-
-func (t token) String() string {
-	return t.str
-}
-
+// tokenize parses a query string into tokens.
 func tokenize(queryStr string) []token {
 	var tokens []token
 	for i, part := range strings.Split(queryStr, "\"") {
@@ -104,4 +89,20 @@ func tokensConsumeOptional(tokens []token, optional string) []token {
 		return tokens[1:]
 	}
 	return tokens
+}
+
+func (t token) isKeyword() bool {
+	if !t.isBareword {
+		return false
+	}
+	for _, keyword := range keywords {
+		if strings.ToLower(t.str) == keyword {
+			return true
+		}
+	}
+	return false
+}
+
+func (t token) String() string {
+	return t.str
 }

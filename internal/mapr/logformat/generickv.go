@@ -10,6 +10,8 @@ type genericKVParser struct {
 	defaultParser
 }
 
+var _ Parser = (*genericKVParser)(nil)
+
 func newGenericKVParser(hostname, timeZoneName string, timeZoneOffset int) (*genericKVParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
 	if err != nil {

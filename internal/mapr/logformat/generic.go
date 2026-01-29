@@ -4,6 +4,8 @@ type genericParser struct {
 	defaultParser
 }
 
+var _ Parser = (*genericParser)(nil)
+
 func newGenericParser(hostname, timeZoneName string, timeZoneOffset int) (*genericParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
 	if err != nil {

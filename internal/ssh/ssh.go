@@ -21,11 +21,10 @@ import (
 func GeneratePrivateRSAKey(size int) (*rsa.PrivateKey, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, size)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to generate RSA key: %w", err)
 	}
-	err = privateKey.Validate()
-	if err != nil {
-		return nil, err
+	if err = privateKey.Validate(); err != nil {
+		return nil, fmt.Errorf("failed to validate generated RSA key: %w", err)
 	}
 	return privateKey, nil
 }
@@ -46,12 +45,12 @@ func EncodePrivateKeyToPEM(privateKey *rsa.PrivateKey) []byte {
 func Agent() (gossh.AuthMethod, error) {
 	sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to connect to SSH agent: %w", err)
 	}
 	agentClient := agent.NewClient(sshAgent)
 	keys, err := agentClient.List()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to list SSH agent keys: %w", err)
 	}
 	for i, key := range keys {
 		dlog.Common.Debug("Public key", i, key)

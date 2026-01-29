@@ -40,6 +40,8 @@ type DirectTurboWriter struct {
 	bytesWritten uint64
 }
 
+var _ TurboWriter = (*DirectTurboWriter)(nil)
+
 // NewDirectTurboWriter creates a new turbo writer
 func NewDirectTurboWriter(writer io.Writer, hostname string, plain, serverless bool) *DirectTurboWriter {
 	return &DirectTurboWriter{
@@ -251,6 +253,8 @@ type TurboChannelWriter struct {
 	linesWritten uint64
 	bytesWritten uint64
 }
+
+var _ TurboWriter = (*TurboChannelWriter)(nil)
 
 // NewTurboChannelWriter creates a writer that sends to a turbo channel
 func NewTurboChannelWriter(channel chan<- []byte, hostname string, plain, serverless bool) *TurboChannelWriter {

@@ -31,36 +31,6 @@ var Common *DLog
 var mutex sync.Mutex
 var started bool
 
-// Start logger(s).
-func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source) {
-	mutex.Lock()
-	defer mutex.Unlock()
-
-	if started {
-		Common.FatalPanic("Logger already started")
-	}
-
-	Client = new(sourceProcess, source.Client)
-	Server = new(sourceProcess, source.Server)
-	Common = Client
-	if sourceProcess == source.Server {
-		Common = Server
-	}
-
-	var wg2 sync.WaitGroup
-	wg2.Add(2)
-	go Client.start(ctx, &wg2)
-	go Server.start(ctx, &wg2)
-
-	go rotation(ctx)
-	go func() {
-		wg2.Wait()
-		wg.Done()
-	}()
-
-	started = true
-}
-
 // DLog is the DTail logger.
 type DLog struct {
 	logger loggers.Logger
@@ -94,6 +64,36 @@ func new(sourceProcess, sourcePackage source.Source) *DLog {
 	}
 }
 
+// Start logger(s).
+func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if started {
+		Common.FatalPanic("Logger already started")
+	}
+
+	Client = new(sourceProcess, source.Client)
+	Server = new(sourceProcess, source.Server)
+	Common = Client
+	if sourceProcess == source.Server {
+		Common = Server
+	}
+
+	var wg2 sync.WaitGroup
+	wg2.Add(2)
+	go Client.start(ctx, &wg2)
+	go Server.start(ctx, &wg2)
+
+	go rotation(ctx)
+	go func() {
+		wg2.Wait()
+		wg.Done()
+	}()
+
+	started = true
+}
+
 func (d *DLog) start(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 	var wg2 sync.WaitGroup
@@ -101,55 +101,6 @@ func (d *DLog) start(ctx context.Context, wg *sync.WaitGroup) {
 	d.logger.Start(ctx, &wg2)
 	<-ctx.Done()
 	wg2.Wait()
-}
-
-func (d *DLog) log(level level, args []interface{}) string {
-	if d.maxLevel < level {
-		return ""
-	}
-	sb := pool.BuilderBuffer.Get().(*strings.Builder)
-	defer pool.RecycleBuilderBuffer(sb)
-	now := time.Now()
-
-	switch d.sourceProcess {
-	case source.Client:
-		sb.WriteString(d.sourcePackage.String())
-		sb.WriteString(protocol.FieldDelimiter)
-		sb.WriteString(d.hostname)
-		sb.WriteString(protocol.FieldDelimiter)
-		sb.WriteString(level.String())
-	default:
-		sb.WriteString(level.String())
-		sb.WriteString(protocol.FieldDelimiter)
-		sb.WriteString(now.Format("0102-150405"))
-	}
-	sb.WriteString(protocol.FieldDelimiter)
-	d.writeArgStrings(sb, args)
-
-	message := sb.String()
-	if !config.Client.TermColorsEnable || !d.logger.SupportsColors() {
-		d.logger.Log(now, message)
-		return message
-	}
-
-	d.logger.LogWithColors(now, message, brush.Colorfy(message))
-	return message
-}
-
-func (d *DLog) writeArgStrings(sb *strings.Builder, args []interface{}) {
-	for i, arg := range args {
-		if i > 0 {
-			sb.WriteString(protocol.FieldDelimiter)
-		}
-		switch v := arg.(type) {
-		case string:
-			sb.WriteString(v)
-		case error:
-			sb.WriteString(v.Error())
-		default:
-			sb.WriteString(fmt.Sprintf("%v", v))
-		}
-	}
 }
 
 // FatalPanic terminates the process with a fatal error.
@@ -278,3 +229,52 @@ func (d *DLog) Pause() { d.logger.Pause() }
 
 // Resume the logging.
 func (d *DLog) Resume() { d.logger.Resume() }
+
+func (d *DLog) log(level level, args []interface{}) string {
+	if d.maxLevel < level {
+		return ""
+	}
+	sb := pool.BuilderBuffer.Get().(*strings.Builder)
+	defer pool.RecycleBuilderBuffer(sb)
+	now := time.Now()
+
+	switch d.sourceProcess {
+	case source.Client:
+		sb.WriteString(d.sourcePackage.String())
+		sb.WriteString(protocol.FieldDelimiter)
+		sb.WriteString(d.hostname)
+		sb.WriteString(protocol.FieldDelimiter)
+		sb.WriteString(level.String())
+	default:
+		sb.WriteString(level.String())
+		sb.WriteString(protocol.FieldDelimiter)
+		sb.WriteString(now.Format("0102-150405"))
+	}
+	sb.WriteString(protocol.FieldDelimiter)
+	d.writeArgStrings(sb, args)
+
+	message := sb.String()
+	if !config.Client.TermColorsEnable || !d.logger.SupportsColors() {
+		d.logger.Log(now, message)
+		return message
+	}
+
+	d.logger.LogWithColors(now, message, brush.Colorfy(message))
+	return message
+}
+
+func (d *DLog) writeArgStrings(sb *strings.Builder, args []interface{}) {
+	for i, arg := range args {
+		if i > 0 {
+			sb.WriteString(protocol.FieldDelimiter)
+		}
+		switch v := arg.(type) {
+		case string:
+			sb.WriteString(v)
+		case error:
+			sb.WriteString(v.Error())
+		default:
+			sb.WriteString(fmt.Sprintf("%v", v))
+		}
+	}
+}

@@ -45,7 +45,7 @@ func newMapCommand(serverHandler *ServerHandler, argc int,
 	return m, aggregate, nil, nil
 }
 
-func (m mapCommand) Start(ctx context.Context, aggregatedMessages chan<- string) {
+func (m *mapCommand) Start(ctx context.Context, aggregatedMessages chan<- string) {
 	if m.turboAggregate != nil {
 		m.turboAggregate.Start(ctx, aggregatedMessages)
 	} else {

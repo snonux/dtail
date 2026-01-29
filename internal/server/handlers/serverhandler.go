@@ -26,6 +26,8 @@ type ServerHandler struct {
 	pendingFiles int32
 }
 
+var _ Handler = (*ServerHandler)(nil)
+
 // NewServerHandler returns the server handler.
 func NewServerHandler(user *user.User, catLimiter,
 	tailLimiter chan struct{}) *ServerHandler {

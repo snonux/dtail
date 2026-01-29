@@ -13,6 +13,8 @@ type ChannellessLineProcessor struct {
 	lineCount  uint64
 }
 
+var _ line.Processor = (*ChannellessLineProcessor)(nil)
+
 // NewChannellessLineProcessor creates a processor that sends lines to the existing channel
 func NewChannellessLineProcessor(lines chan<- *line.Line, globID string) *ChannellessLineProcessor {
 	return &ChannellessLineProcessor{

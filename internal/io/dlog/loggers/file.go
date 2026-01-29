@@ -32,6 +32,8 @@ type file struct {
 	strategy     Strategy
 }
 
+var _ Logger = (*file)(nil)
+
 func newFile(strategy Strategy) *file {
 	return &file{
 		bufferCh: make(chan *fileMessageBuf, runtime.NumCPU()*100),

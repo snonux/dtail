@@ -13,6 +13,8 @@ type csvParser struct {
 	hasHeader bool
 }
 
+var _ Parser = (*csvParser)(nil)
+
 func newCSVParser(hostname, timeZoneName string, timeZoneOffset int) (*csvParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
 	if err != nil {

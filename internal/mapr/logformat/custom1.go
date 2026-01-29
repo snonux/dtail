@@ -7,6 +7,8 @@ var ErrCustom1NotImplemented error = errors.New("custom1 log format is not imple
 // Template for creating a custom log format.
 type custom1Parser struct{}
 
+var _ Parser = (*custom1Parser)(nil)
+
 func newCustom1Parser(hostname, timeZoneName string, timeZoneOffset int) (*custom1Parser, error) {
 	return &custom1Parser{}, ErrCustom1NotImplemented
 }

@@ -25,13 +25,13 @@ const (
 	DefaultHealthCheckLogger string = "none"
 )
 
-// Client holds a DTail client configuration.
+// Client holds DTail client configuration.
 var Client *ClientConfig
 
-// Server holds a DTail server configuration.
+// Server holds DTail server configuration.
 var Server *ServerConfig
 
-// Common holds common configs of both both, client and server.
+// Common holds configuration common to both client and server.
 var Common *CommonConfig
 
 // Setup the DTail configuration.
