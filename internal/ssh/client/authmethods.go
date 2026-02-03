@@ -16,7 +16,7 @@ const addedPathStr string = "Added path to list of auth methods, not adding furt
 // InitSSHAuthMethods initialises all known SSH auth methods on the client side.
 func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool, throttleCh chan struct{},
-	privateKeyPath string) ([]gossh.AuthMethod, HostKeyCallback) {
+	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback) {
 
 	if len(sshAuthMethods) > 0 {
 		simpleCallback, err := NewSimpleCallback()
@@ -25,7 +25,7 @@ func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 		}
 		return sshAuthMethods, simpleCallback
 	}
-	return initKnownHostsAuthMethods(trustAllHosts, throttleCh, privateKeyPath)
+	return initKnownHostsAuthMethods(trustAllHosts, throttleCh, privateKeyPath, agentKeyIndex)
 }
 
 func initIntegrationTestKnownHostsAuthMethods() []gossh.AuthMethod {
@@ -44,7 +44,7 @@ func initIntegrationTestKnownHostsAuthMethods() []gossh.AuthMethod {
 }
 
 func initKnownHostsAuthMethods(trustAllHosts bool, throttleCh chan struct{},
-	privateKeyPath string) ([]gossh.AuthMethod, HostKeyCallback) {
+	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback) {
 
 	var sshAuthMethods []gossh.AuthMethod
 	knownHostsFile := fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME"))
@@ -75,7 +75,7 @@ func initKnownHostsAuthMethods(trustAllHosts bool, throttleCh chan struct{},
 	}
 
 	// Second, try SSH Agent
-	authMethod, err := ssh.Agent()
+	authMethod, err := ssh.AgentWithKeyIndex(agentKeyIndex)
 	if err == nil {
 		sshAuthMethods = append(sshAuthMethods, authMethod)
 		dlog.Client.Debug("initKnownHostsAuthMethods", "Added SSH Agent (SSH_AUTH_SOCK)"+

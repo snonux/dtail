@@ -28,7 +28,8 @@ func main() {
 	var profileFlags profiling.Flags
 
 	args := config.Args{
-		Mode: omode.MapClient,
+		Mode:              omode.MapClient,
+		SSHAgentKeyIndex:  -1,
 	}
 	userName := user.Name()
 
@@ -39,6 +40,7 @@ func main() {
 	flag.BoolVar(&displayVersion, "version", false, "Display version")
 	flag.IntVar(&args.ConnectionsPerCPU, "cpc", config.DefaultConnectionsPerCPU,
 		"How many connections established per CPU core concurrently")
+	flag.IntVar(&args.SSHAgentKeyIndex, "agentKeyIndex", -1, "SSH agent key index to use (-1 for all keys)")
 	flag.IntVar(&args.SSHPort, "port", config.DefaultSSHPort, "SSH server port")
 	flag.IntVar(&args.Timeout, "timeout", 0, "Max time dtail server will collect data until disconnection")
 	flag.StringVar(&args.ConfigFile, "cfg", "", "Config file path")
@@ -89,7 +91,7 @@ func main() {
 		dlog.Client.FatalPanic(err)
 	}
 
-	status := client.Start(ctx, signal.InterruptCh(ctx))
+	status := client.Start(ctx, signal.InterruptChWithCancel(ctx, cancel))
 	
 	// Log final metrics if profiling is enabled
 	if profileFlags.Enabled() {

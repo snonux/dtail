@@ -99,9 +99,12 @@ func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status i
 	go c.periodicReportResults(ctx)
 
 	status = c.baseClient.Start(ctx, statsCh)
+	
+	// Always write final result for cumulative mode (includes outfile case)
 	if c.cumulative {
-		dlog.Client.Debug("Received final mapreduce result")
+		dlog.Client.Debug("Writing final mapreduce result")
 		c.reportResults(true)
+		dlog.Client.Debug("Final result written")
 	}
 
 	return
@@ -210,13 +213,16 @@ func (c *MaprClient) printResults() {
 }
 
 func (c *MaprClient) writeResultsToOutfile(finalResult bool) {
+	dlog.Client.Debug("writeResultsToOutfile called", "finalResult", finalResult, "cumulative", c.cumulative)
 	if c.cumulative {
 		if err := c.globalGroup.WriteResult(c.query, finalResult); err != nil {
 			dlog.Client.FatalPanic(err)
 		}
+		dlog.Client.Debug("WriteResult completed for cumulative mode")
 		return
 	}
 	if err := c.globalGroup.SwapOut().WriteResult(c.query, true); err != nil {
 		dlog.Client.FatalPanic(err)
 	}
+	dlog.Client.Debug("WriteResult completed for non-cumulative mode")
 }

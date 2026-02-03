@@ -43,6 +43,12 @@ func EncodePrivateKeyToPEM(privateKey *rsa.PrivateKey) []byte {
 
 // Agent used for SSH auth.
 func Agent() (gossh.AuthMethod, error) {
+	return AgentWithKeyIndex(-1)
+}
+
+// AgentWithKeyIndex used for SSH auth with a specific key index from the agent.
+// If keyIndex is -1, all keys are used. Otherwise, only the specified key is used.
+func AgentWithKeyIndex(keyIndex int) (gossh.AuthMethod, error) {
 	sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to SSH agent: %w", err)
@@ -55,7 +61,29 @@ func Agent() (gossh.AuthMethod, error) {
 	for i, key := range keys {
 		dlog.Common.Debug("Public key", i, key)
 	}
-	return gossh.PublicKeysCallback(agentClient.Signers), nil
+	
+	// If no specific key index requested, use all keys (backwards compatible default)
+	if keyIndex < 0 {
+		return gossh.PublicKeysCallback(agentClient.Signers), nil
+	}
+	
+	// Use only the specified key index (0-based)
+	if keyIndex >= len(keys) {
+		return nil, fmt.Errorf("key index %d out of range (agent has %d keys)", keyIndex, len(keys))
+	}
+	
+	dlog.Common.Debug("Using SSH agent key at index", keyIndex)
+	return gossh.PublicKeysCallback(func() ([]gossh.Signer, error) {
+		signers, err := agentClient.Signers()
+		if err != nil {
+			return nil, err
+		}
+		if keyIndex >= len(signers) {
+			return nil, fmt.Errorf("key index %d out of range (agent has %d signers)", keyIndex, len(signers))
+		}
+		// Return only the specified signer
+		return []gossh.Signer{signers[keyIndex]}, nil
+	}), nil
 }
 
 // EnterKeyPhrase is required to read phrase protected private keys.

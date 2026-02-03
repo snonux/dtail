@@ -248,12 +248,17 @@ func (g *GroupSet) resultWriteUnformatted(query *Query, rows []result, fd *os.Fi
 		}
 	}
 
-	if !query.Outfile.AppendMode && finalResult {
+	// Always rename .tmp to .csv after writing (not just on final result)
+	// This ensures the .csv file is updated at every interval
+	if !query.Outfile.AppendMode {
 		tmpOutfile := fmt.Sprintf("%s.tmp", query.Outfile.FilePath)
+		dlog.Common.Debug("Renaming outfile", tmpOutfile, "to", query.Outfile.FilePath)
 		if err := os.Rename(tmpOutfile, query.Outfile.FilePath); err != nil {
+			dlog.Common.Error("Failed to rename outfile", tmpOutfile, "error", err)
 			os.Remove(tmpOutfile)
 			return err
 		}
+		dlog.Common.Info("Successfully renamed outfile to", query.Outfile.FilePath)
 	}
 
 	return nil

@@ -54,7 +54,7 @@ func (c *baseClient) init() {
 	}
 	c.sshAuthMethods, c.hostKeyCallback = client.InitSSHAuthMethods(
 		c.Args.SSHAuthMethods, c.Args.SSHHostKeyCallback, c.Args.TrustAllHosts,
-		c.throttleCh, c.Args.SSHPrivateKeyFilePath)
+		c.throttleCh, c.Args.SSHPrivateKeyFilePath, c.Args.SSHAgentKeyIndex)
 }
 
 func (c *baseClient) makeConnections(maker maker) {

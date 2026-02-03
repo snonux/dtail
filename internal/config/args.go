@@ -28,6 +28,7 @@ type Args struct {
 	Quiet                 bool
 	RegexInvert           bool
 	RegexStr              string
+	SSHAgentKeyIndex      int
 	SSHAuthMethods        []gossh.AuthMethod
 	SSHBindAddress        string
 	SSHHostKeyCallback    gossh.HostKeyCallback
@@ -60,6 +61,7 @@ func (a *Args) String() string {
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Quiet", a.Quiet))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "RegexInvert", a.RegexInvert))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "RegexStr", a.RegexStr))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHAgentKeyIndex", a.SSHAgentKeyIndex))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHAuthMethods", a.SSHAuthMethods))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHBindAddress", a.SSHBindAddress))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHHostKeyCallback", a.SSHHostKeyCallback))
