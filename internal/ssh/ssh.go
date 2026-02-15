@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"os"
 	"syscall"
+	"time"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
 
@@ -49,7 +51,16 @@ func Agent() (gossh.AuthMethod, error) {
 // AgentWithKeyIndex used for SSH auth with a specific key index from the agent.
 // If keyIndex is -1, all keys are used. Otherwise, only the specified key is used.
 func AgentWithKeyIndex(keyIndex int) (gossh.AuthMethod, error) {
-	sshAgent, err := net.Dial("unix", os.Getenv("SSH_AUTH_SOCK"))
+	// Use context-aware dialing for SSH agent connection (local Unix socket).
+	// 2-second timeout is reasonable for local socket connections.
+	dialer := &net.Dialer{
+		Timeout: 2 * time.Second,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	sshAgent, err := dialer.DialContext(ctx, "unix", os.Getenv("SSH_AUTH_SOCK"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to SSH agent: %w", err)
 	}
@@ -61,17 +72,17 @@ func AgentWithKeyIndex(keyIndex int) (gossh.AuthMethod, error) {
 	for i, key := range keys {
 		dlog.Common.Debug("Public key", i, key)
 	}
-	
+
 	// If no specific key index requested, use all keys (backwards compatible default)
 	if keyIndex < 0 {
 		return gossh.PublicKeysCallback(agentClient.Signers), nil
 	}
-	
+
 	// Use only the specified key index (0-based)
 	if keyIndex >= len(keys) {
 		return nil, fmt.Errorf("key index %d out of range (agent has %d keys)", keyIndex, len(keys))
 	}
-	
+
 	dlog.Common.Debug("Using SSH agent key at index", keyIndex)
 	return gossh.PublicKeysCallback(func() ([]gossh.Signer, error) {
 		signers, err := agentClient.Signers()

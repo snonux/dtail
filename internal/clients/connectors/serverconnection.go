@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -135,10 +136,28 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	address := fmt.Sprintf("%s:%d", c.hostname, c.port)
 	dlog.Client.Debug(c.server, "Dialing into the connection", address)
 
-	client, err := ssh.Dial("tcp", address, c.config)
-	if err != nil {
-		return fmt.Errorf("failed to dial SSH connection to %s: %w", address, err)
+	// Use context-aware dialing to enable proper cancellation during connection establishment.
+	// TCP KeepAlive (30s) prevents silent connection failures on long-lived connections.
+	dialer := &net.Dialer{
+		Timeout:   c.config.Timeout, // Use the SSH config timeout (2 seconds)
+		KeepAlive: 30 * time.Second, // Standard Go default for connection health monitoring
 	}
+
+	// Establish TCP connection with context support for cancellation
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return fmt.Errorf("failed to dial TCP connection to %s: %w", address, err)
+	}
+
+	// Perform SSH handshake over the established TCP connection
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, address, c.config)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("SSH handshake failed for %s: %w", address, err)
+	}
+
+	// Create SSH client from the connection components
+	client := ssh.NewClient(sshConn, chans, reqs)
 	defer client.Close()
 
 	return c.session(ctx, cancel, client, throttleCh)

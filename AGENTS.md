@@ -43,7 +43,12 @@ make pgo
 make test
 
 # Run all tests including integration tests
+# IMPORTANT: Always rebuild binaries before running integration tests
+make clean && make build
 DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
+
+# Quick integration test workflow (recommended)
+make build && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
 
 # Run linting
 make lint
@@ -51,7 +56,7 @@ make lint
 # Run go vet
 make vet
 
-# Run integration tests individually (requires binaries built)
+# Run integration tests individually (requires binaries built first)
 cd integrationtests && go test
 ```
 
@@ -153,7 +158,15 @@ make profile-help
 
 ## Test Execution Details
 
-- Integration tests are run by setting DTAIL_INTEGRATION_TEST_RUN_MODE to yes, and by running 'make test'.
+- Integration tests require binaries to be built before execution
+- **IMPORTANT:** Always recompile binaries after code changes before running integration tests:
+  ```bash
+  make clean && make build
+  DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
+  ```
+- Integration tests are run by setting DTAIL_INTEGRATION_TEST_RUN_MODE to yes, and by running 'make test'
+- Integration tests verify: DCat, DGrep, DMap (MapReduce), DServer, DTail, DTailHealth functionality
+- All tests run with race detection enabled (`--race` flag)
 
 ## Known Limitations
 
