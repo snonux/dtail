@@ -26,6 +26,7 @@ type turboManager struct {
 	lines  chan []byte
 	buffer []byte
 	eof    chan struct{}
+	eofAck chan struct{}
 
 	channelBufferSize int
 	flushTimeout      time.Duration
@@ -83,6 +84,7 @@ func (t *turboManager) enable() {
 	}
 	// Always create a new EOF channel for each batch of files.
 	t.eof = make(chan struct{})
+	t.eofAck = make(chan struct{})
 }
 
 func (t *turboManager) enabled() bool {
@@ -103,6 +105,40 @@ func (t *turboManager) signalEOF() {
 		// Already closed
 	default:
 		close(t.eof)
+	}
+}
+
+func (t *turboManager) signalEOFAck() {
+	if t.eofAck == nil {
+		return
+	}
+
+	select {
+	case <-t.eofAck:
+		// Already closed.
+	default:
+		close(t.eofAck)
+	}
+}
+
+func (t *turboManager) waitForEOFAck(timeout time.Duration) bool {
+	if t.eofAck == nil {
+		return true
+	}
+
+	if timeout <= 0 {
+		<-t.eofAck
+		return true
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-t.eofAck:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -194,6 +230,7 @@ func (t *turboManager) tryRead(p []byte, user *user.User) (n int, handled bool) 
 			case <-t.eof:
 				dlog.Server.Trace(user, "baseHandler.Read", "EOF received and channel empty, disabling turbo mode")
 				t.mode = false
+				t.signalEOFAck()
 			default:
 			}
 		}

@@ -33,6 +33,8 @@ type readCommandServer interface {
 	FlushTurboData()
 	SignalTurboEOF()
 	GetTurboChannel() chan []byte
+	TurboChannelLen() int
+	WaitForTurboEOFAck(timeout time.Duration) bool
 	ReadGlobRetryInterval() time.Duration
 	ReadRetryInterval() time.Duration
 	AggregateLinesChannelBufferSize() int
@@ -40,6 +42,7 @@ type readCommandServer interface {
 	TurboEOFWaitDuration(fileCount int) time.Duration
 	ShutdownTurboSerializeWait() time.Duration
 	ShutdownIdleRecheckWait() time.Duration
+	TurboEOFAckTimeout() time.Duration
 }
 
 var _ readCommandServer = (*ServerHandler)(nil)
@@ -124,6 +127,10 @@ func (h *ServerHandler) TriggerShutdown() {
 
 func (h *ServerHandler) FlushTurboData() {
 	h.flushTurboData()
+}
+
+func (h *ServerHandler) TurboEOFAckTimeout() time.Duration {
+	return durationFromMilliseconds(h.serverCfg.TurboEOFAckTimeoutMs, 2*time.Second)
 }
 
 func durationFromMilliseconds(value int, fallback time.Duration) time.Duration {

@@ -94,6 +94,8 @@ type ServerConfig struct {
 	TurboFlushPollIntervalMs int `json:",omitempty"`
 	// Turbo read retry interval in milliseconds when data is expected but not yet available.
 	TurboReadRetryIntervalMs int `json:",omitempty"`
+	// Maximum time to wait for turbo EOF acknowledgement after signaling EOF, in milliseconds.
+	TurboEOFAckTimeoutMs int `json:",omitempty"`
 	// Wait for turbo aggregate serialization during shutdown in milliseconds.
 	ShutdownTurboSerializeWaitMs int `json:",omitempty"`
 	// Final idle recheck wait before shutdown in milliseconds.
@@ -128,6 +130,7 @@ func newDefaultServerConfig() *ServerConfig {
 		TurboFlushTimeoutMs:          2000,
 		TurboFlushPollIntervalMs:     10,
 		TurboReadRetryIntervalMs:     1,
+		TurboEOFAckTimeoutMs:         2000,
 		ShutdownTurboSerializeWaitMs: 500,
 		ShutdownIdleRecheckWaitMs:    10,
 	}

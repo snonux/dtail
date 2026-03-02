@@ -366,3 +366,8 @@ func (h *baseHandler) GetTurboChannel() chan []byte {
 func (h *baseHandler) TurboChannelLen() int {
 	return h.turbo.channelLen()
 }
+
+// WaitForTurboEOFAck waits until turbo reader acknowledges EOF or timeout.
+func (h *baseHandler) WaitForTurboEOFAck(timeout time.Duration) bool {
+	return h.turbo.waitForEOFAck(timeout)
+}

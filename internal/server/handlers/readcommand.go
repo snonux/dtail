@@ -142,13 +142,19 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 			// Signal EOF by closing the channel, but only once.
 			r.server.SignalTurboEOF()
 
-			// Wait to ensure all data is transmitted
-			// This is especially important when files are queued due to concurrency limits
-			// In serverless mode, data is written directly to stdout, so no wait is needed
+			// Wait for an explicit reader acknowledgement instead of timing guesses.
 			if !r.server.Serverless() {
-				waitTime := r.server.TurboEOFWaitDuration(len(paths))
-				dlog.Server.Debug(r.server.LogContext(), "Waiting for data transmission", "duration", waitTime)
-				time.Sleep(waitTime)
+				timeout := r.server.TurboEOFAckTimeout()
+				if r.server.WaitForTurboEOFAck(timeout) {
+					dlog.Server.Debug(r.server.LogContext(), "Turbo EOF acknowledged")
+				} else {
+					dlog.Server.Warn(
+						r.server.LogContext(),
+						"Timeout waiting for turbo EOF acknowledgement",
+						"timeout", timeout,
+						"remainingTurbo", r.server.TurboChannelLen(),
+					)
+				}
 			}
 		}
 	}
