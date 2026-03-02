@@ -23,9 +23,12 @@ type ServerHandler struct {
 	tailLimiter chan struct{}
 	serverCfg   *config.ServerConfig
 	regex       string
+	commands    map[string]commandHandler
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
 }
+
+type commandHandler func(context.Context, lcontext.LContext, int, []string, func())
 
 var _ Handler = (*ServerHandler)(nil)
 
@@ -54,6 +57,7 @@ func NewServerHandler(user *user.User, catLimiter,
 		regex:       ".",
 	}
 	h.handleCommandCb = h.handleUserCommand
+	h.commands = h.newCommandRegistry()
 
 	fqdn, err := config.Hostname()
 	if err != nil {
@@ -82,45 +86,55 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		}
 	}
 
-	switch commandName {
-	case "grep":
-		command := newReadCommand(h, omode.GrepClient)
-		go func() {
-			command.Start(ctx, ltx, argc, args, 1)
-			commandFinished()
-		}()
-	case "cat":
-		command := newReadCommand(h, omode.CatClient)
-		go func() {
-			command.Start(ctx, ltx, argc, args, 1)
-			commandFinished()
-		}()
-	case "tail":
-		command := newReadCommand(h, omode.TailClient)
-		go func() {
-			command.Start(ctx, ltx, argc, args, 10)
-			commandFinished()
-		}()
-	case "map":
-		command, aggregate, turboAggregate, err := newMapCommand(h, argc, args)
-		if err != nil {
-			h.sendln(h.serverMessages, err.Error())
-			dlog.Server.Error(h.user, err)
-			commandFinished()
-			return
-		}
-		h.aggregate = aggregate
-		h.turboAggregate = turboAggregate
-		go func() {
-			command.Start(ctx, h.maprMessages)
-			commandFinished()
-		}()
-	case ".ack":
-		h.handleAckCommand(argc, args)
-		commandFinished()
-	default:
+	handler, found := h.commands[commandName]
+	if !found {
 		h.sendln(h.serverMessages, dlog.Server.Error(h.user,
 			"Received unknown user command", commandName, argc, args))
 		commandFinished()
+		return
 	}
+
+	handler(ctx, ltx, argc, args, commandFinished)
+}
+
+func (h *ServerHandler) newCommandRegistry() map[string]commandHandler {
+	return map[string]commandHandler{
+		"grep": h.makeReadCommandHandler(omode.GrepClient, 1),
+		"cat":  h.makeReadCommandHandler(omode.CatClient, 1),
+		"tail": h.makeReadCommandHandler(omode.TailClient, 10),
+		"map":  h.handleMapCommand,
+		".ack": h.handleAckUserCommand,
+	}
+}
+
+func (h *ServerHandler) makeReadCommandHandler(mode omode.Mode, tailBackoff int) commandHandler {
+	return func(ctx context.Context, ltx lcontext.LContext, argc int, args []string, commandFinished func()) {
+		command := newReadCommand(h, mode)
+		go func() {
+			command.Start(ctx, ltx, argc, args, tailBackoff)
+			commandFinished()
+		}()
+	}
+}
+
+func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
+	command, aggregate, turboAggregate, err := newMapCommand(h, argc, args)
+	if err != nil {
+		h.sendln(h.serverMessages, err.Error())
+		dlog.Server.Error(h.user, err)
+		commandFinished()
+		return
+	}
+
+	h.aggregate = aggregate
+	h.turboAggregate = turboAggregate
+	go func() {
+		command.Start(ctx, h.maprMessages)
+		commandFinished()
+	}()
+}
+
+func (h *ServerHandler) handleAckUserCommand(_ context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
+	h.handleAckCommand(argc, args)
+	commandFinished()
 }
