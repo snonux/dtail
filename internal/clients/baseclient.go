@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -13,6 +14,12 @@ import (
 	"github.com/mimecast/dtail/internal/ssh/client"
 
 	gossh "golang.org/x/crypto/ssh"
+)
+
+const (
+	initialRetryDelay = 2 * time.Second
+	maxRetryDelay     = 60 * time.Second
+	retryJitterFactor = 0.2 // +/-20% jitter to avoid synchronized reconnect storms.
 )
 
 // This is the main client data structure.
@@ -102,6 +109,9 @@ func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status i
 func (c *baseClient) startConnection(ctx context.Context, i int,
 	conn connectors.Connector) (status int) {
 
+	retryDelay := initialRetryDelay
+	retryRandom := newRetryRandom(i)
+
 	for {
 		connCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
@@ -122,12 +132,68 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 		default:
 		}
 
-		// Yes, we want to retry.
-		time.Sleep(time.Second * 2)
-		dlog.Client.Debug(conn.Server(), "Reconnecting")
+		// Yes, we want to retry with exponential backoff and jitter.
+		sleepDuration := jitterRetryDelay(retryDelay, retryRandom)
+		dlog.Client.Debug(conn.Server(), "Reconnecting", "backoff", sleepDuration)
+		if !sleepWithContext(ctx, sleepDuration) {
+			return
+		}
+
+		retryDelay = nextRetryDelay(retryDelay)
 		conn = c.makeConnection(conn.Server(), c.sshAuthMethods, c.hostKeyCallback)
 		c.connections[i] = conn
 	}
+}
+
+func nextRetryDelay(current time.Duration) time.Duration {
+	if current <= 0 {
+		return initialRetryDelay
+	}
+
+	next := current * 2
+	if next > maxRetryDelay || next < current {
+		return maxRetryDelay
+	}
+	return next
+}
+
+func jitterRetryDelay(base time.Duration, random *rand.Rand) time.Duration {
+	if base <= 0 || random == nil {
+		return base
+	}
+
+	jitter := time.Duration(float64(base) * retryJitterFactor)
+	if jitter <= 0 {
+		return base
+	}
+
+	minDelay := base - jitter
+	maxDelay := base + jitter
+	if maxDelay < minDelay {
+		return base
+	}
+
+	return minDelay + time.Duration(random.Int63n(int64(maxDelay-minDelay+1)))
+}
+
+func sleepWithContext(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func newRetryRandom(seedOffset int) *rand.Rand {
+	return rand.New(rand.NewSource(time.Now().UnixNano() + int64(seedOffset)))
 }
 
 func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMethod,
