@@ -124,19 +124,14 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	// This is crucial for proper shutdown in server mode
 	if !r.server.serverCfg.TurboBoostDisable && r.server.aggregate == nil &&
 		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) {
-		if r.server.IsTurboMode() && r.server.turboEOF != nil {
+		if r.server.IsTurboMode() && r.server.HasTurboEOF() {
 			dlog.Server.Debug(r.server.user, "Turbo mode: flushing data before EOF signal")
 
 			// Ensure all turbo data is flushed before signaling EOF
 			r.server.flushTurboData()
 
-			// Signal EOF by closing the channel, but only if it hasn't been closed yet
-			select {
-			case <-r.server.turboEOF:
-				// Already closed
-			default:
-				close(r.server.turboEOF)
-			}
+			// Signal EOF by closing the channel, but only once.
+			r.server.SignalTurboEOF()
 
 			// Wait to ensure all data is transmitted
 			// This is especially important when files are queued due to concurrency limits

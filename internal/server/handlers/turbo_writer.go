@@ -200,7 +200,7 @@ func (w *DirectTurboWriter) Flush() error {
 
 	// Force flush any remaining data
 	err := w.flushBuffer()
-	
+
 	// For serverless mode, ensure everything is written to output
 	if w.serverless {
 		// Ensure writer is flushed if it supports it
@@ -208,7 +208,7 @@ func (w *DirectTurboWriter) Flush() error {
 			flusher.Flush()
 		}
 	}
-	
+
 	return err
 }
 
@@ -421,7 +421,8 @@ func (w *TurboNetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, s
 // sendToTurboChannel sends buffered data to the turbo channel with retry logic.
 // Handles channel backpressure by waiting and retrying. Must be called with mutex held.
 func (w *TurboNetworkWriter) sendToTurboChannel() error {
-	if w.handler.turboLines == nil {
+	turboCh := w.handler.GetTurboChannel()
+	if turboCh == nil {
 		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "turboLines channel is nil")
 		w.writeBuf.Reset()
 		return nil
@@ -434,7 +435,7 @@ func (w *TurboNetworkWriter) sendToTurboChannel() error {
 
 	// Send data to turbo channel, retry once if full
 	select {
-	case w.handler.turboLines <- data:
+	case turboCh <- data:
 		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel successfully")
 		w.writeBuf.Reset()
 		return nil
@@ -442,7 +443,7 @@ func (w *TurboNetworkWriter) sendToTurboChannel() error {
 		// Channel full, wait a bit and retry
 		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "channel full, waiting before retry")
 		time.Sleep(time.Millisecond)
-		w.handler.turboLines <- data
+		turboCh <- data
 		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel after retry")
 		w.writeBuf.Reset()
 		return nil
@@ -467,41 +468,42 @@ func (w *TurboNetworkWriter) WriteServerMessage(message string) error {
 // Flush ensures all data is written
 func (w *TurboNetworkWriter) Flush() error {
 	dlog.Server.Trace("TurboNetworkWriter.Flush", "called")
-	
+
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
-	
+
 	// If we have any buffered data, send it now
 	if w.writeBuf.Len() > 0 {
 		dlog.Server.Trace("TurboNetworkWriter.Flush", "flushing buffered data", "bufSize", w.writeBuf.Len())
-		
-		if w.handler.turboLines != nil {
+
+		turboCh := w.handler.GetTurboChannel()
+		if turboCh != nil {
 			data := make([]byte, w.writeBuf.Len())
 			copy(data, w.writeBuf.Bytes())
-			
+
 			// Force send the data
-			w.handler.turboLines <- data
+			turboCh <- data
 			w.writeBuf.Reset()
 			dlog.Server.Trace("TurboNetworkWriter.Flush", "flushed data to channel")
 		}
 	}
-	
+
 	// Wait for the channel to have some space to ensure data is being processed
 	// Don't close the EOF channel here as it may be used for multiple files
-	if w.handler.turboLines != nil {
+	if w.handler.GetTurboChannel() != nil {
 		// Wait until channel has been drained somewhat
-		for i := 0; i < 100 && len(w.handler.turboLines) > 900; i++ {
-			dlog.Server.Trace("TurboNetworkWriter.Flush", "waiting for channel to drain", "channelLen", len(w.handler.turboLines))
+		for i := 0; i < 100 && w.handler.TurboChannelLen() > 900; i++ {
+			dlog.Server.Trace("TurboNetworkWriter.Flush", "waiting for channel to drain", "channelLen", w.handler.TurboChannelLen())
 			time.Sleep(10 * time.Millisecond)
 		}
-		dlog.Server.Trace("TurboNetworkWriter.Flush", "channel status", "channelLen", len(w.handler.turboLines))
+		dlog.Server.Trace("TurboNetworkWriter.Flush", "channel status", "channelLen", w.handler.TurboChannelLen())
 	}
-	
+
 	// Wait a bit to ensure data is processed
 	// This is crucial for integration tests
 	time.Sleep(10 * time.Millisecond)
 	dlog.Server.Trace("TurboNetworkWriter.Flush", "completed")
-	
+
 	return nil
 }
 

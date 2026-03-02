@@ -28,6 +28,7 @@ func NewHealthHandler(user *user.User) *HealthHandler {
 			maprMessages:     make(chan string, 10),
 			ackCloseReceived: make(chan struct{}),
 			user:             user,
+			codec:            newProtocolCodec(user),
 		},
 	}
 	h.handleCommandCb = h.handleHealthCommand
