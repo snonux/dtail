@@ -33,13 +33,13 @@ func (c *shutdownCoordinator) finalizeWhenIdle() {
 		turboAggregate.Serialize(context.Background())
 		// In serverless mode, serialization is synchronous, so no wait needed.
 		if !c.server.Serverless() {
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(c.server.ShutdownTurboSerializeWait())
 		}
 	}
 
 	// Double-check that we really have no pending work before shutdown.
 	if !c.server.Serverless() {
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(c.server.ShutdownIdleRecheckWait())
 	}
 	finalPending, finalActive := c.server.PendingAndActive()
 	if finalPending == 0 && finalActive == 0 {

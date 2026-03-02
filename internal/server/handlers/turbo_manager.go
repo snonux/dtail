@@ -7,17 +7,79 @@ import (
 	user "github.com/mimecast/dtail/internal/user/server"
 )
 
+const (
+	defaultTurboChannelBufferSize = 1000
+	defaultTurboFlushTimeout      = 2 * time.Second
+	defaultTurboFlushPollInterval = 10 * time.Millisecond
+	defaultTurboReadRetryInterval = time.Millisecond
+)
+
+type turboManagerConfig struct {
+	channelBufferSize int
+	flushTimeout      time.Duration
+	flushPollInterval time.Duration
+	readRetryInterval time.Duration
+}
+
 type turboManager struct {
 	mode   bool
 	lines  chan []byte
 	buffer []byte
 	eof    chan struct{}
+
+	channelBufferSize int
+	flushTimeout      time.Duration
+	flushPollInterval time.Duration
+	readRetryInterval time.Duration
+}
+
+func (t *turboManager) configure(cfg turboManagerConfig) {
+	if cfg.channelBufferSize > 0 {
+		t.channelBufferSize = cfg.channelBufferSize
+	}
+	if cfg.flushTimeout > 0 {
+		t.flushTimeout = cfg.flushTimeout
+	}
+	if cfg.flushPollInterval > 0 {
+		t.flushPollInterval = cfg.flushPollInterval
+	}
+	if cfg.readRetryInterval > 0 {
+		t.readRetryInterval = cfg.readRetryInterval
+	}
+}
+
+func (t *turboManager) resolvedChannelBufferSize() int {
+	if t.channelBufferSize > 0 {
+		return t.channelBufferSize
+	}
+	return defaultTurboChannelBufferSize
+}
+
+func (t *turboManager) resolvedFlushTimeout() time.Duration {
+	if t.flushTimeout > 0 {
+		return t.flushTimeout
+	}
+	return defaultTurboFlushTimeout
+}
+
+func (t *turboManager) resolvedFlushPollInterval() time.Duration {
+	if t.flushPollInterval > 0 {
+		return t.flushPollInterval
+	}
+	return defaultTurboFlushPollInterval
+}
+
+func (t *turboManager) resolvedReadRetryInterval() time.Duration {
+	if t.readRetryInterval > 0 {
+		return t.readRetryInterval
+	}
+	return defaultTurboReadRetryInterval
 }
 
 func (t *turboManager) enable() {
 	t.mode = true
 	if t.lines == nil {
-		t.lines = make(chan []byte, 1000) // Large buffer for performance
+		t.lines = make(chan []byte, t.resolvedChannelBufferSize())
 	}
 	// Always create a new EOF channel for each batch of files.
 	t.eof = make(chan struct{})
@@ -62,7 +124,7 @@ func (t *turboManager) flush(user *user.User) {
 
 	dlog.Server.Debug(user, "Flushing turbo data", "channelLen", len(t.lines))
 
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(t.resolvedFlushTimeout())
 	for {
 		select {
 		case <-timeout:
@@ -74,7 +136,7 @@ func (t *turboManager) flush(user *user.User) {
 				return
 			}
 			// Give the reader time to process.
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(t.resolvedFlushPollInterval())
 		}
 	}
 }
@@ -113,7 +175,7 @@ func (t *turboManager) tryRead(p []byte, user *user.User) (n int, handled bool) 
 	default:
 		if channelLen > 0 {
 			dlog.Server.Trace(user, "baseHandler.Read", "channel has data but not available, waiting")
-			time.Sleep(time.Millisecond)
+			time.Sleep(t.resolvedReadRetryInterval())
 			select {
 			case turboData := <-t.lines:
 				dlog.Server.Trace(user, "baseHandler.Read", "got data after wait", "dataLen", len(turboData))

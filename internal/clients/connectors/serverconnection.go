@@ -41,6 +41,11 @@ func NewServerConnection(server string, userName string,
 	handler handlers.Handler, commands []string) *ServerConnection {
 
 	dlog.Client.Debug(server, "Creating new connection", server, handler, commands)
+	sshConnectTimeout := time.Duration(config.Common.SSHConnectTimeoutMs) * time.Millisecond
+	if sshConnectTimeout <= 0 {
+		sshConnectTimeout = 2 * time.Second
+	}
+
 	c := ServerConnection{
 		hostKeyCallback: hostKeyCallback,
 		server:          server,
@@ -50,7 +55,7 @@ func NewServerConnection(server string, userName string,
 			User:            userName,
 			Auth:            authMethods,
 			HostKeyCallback: hostKeyCallback.Wrap(),
-			Timeout:         time.Second * 2,
+			Timeout:         sshConnectTimeout,
 		},
 	}
 

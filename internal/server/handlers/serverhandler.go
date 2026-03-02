@@ -58,6 +58,7 @@ func NewServerHandler(user *user.User, catLimiter,
 	}
 	h.handleCommandCb = h.handleUserCommand
 	h.commands = h.newCommandRegistry()
+	h.turbo.configure(h.turboManagerConfig())
 
 	fqdn, err := config.Hostname()
 	if err != nil {

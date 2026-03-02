@@ -72,6 +72,32 @@ type ServerConfig struct {
 	// better performance through direct writing that bypasses internal channels.
 	// Set this to true only if you experience issues with turbo boost mode.
 	TurboBoostDisable bool `json:",omitempty"`
+	// Retry interval for glob retries in milliseconds.
+	ReadGlobRetryIntervalMs int `json:",omitempty"`
+	// Retry interval for re-reading in tail/cat loops in milliseconds.
+	ReadRetryIntervalMs int `json:",omitempty"`
+	// Buffer size used for aggregate read channels.
+	ReadAggregateLineBufferSize int `json:",omitempty"`
+	// Delay after turbo processor flush/close to allow data transmission, in milliseconds.
+	TurboTransmissionDelayMs int `json:",omitempty"`
+	// Turbo EOF wait base duration in milliseconds.
+	TurboEOFWaitBaseMs int `json:",omitempty"`
+	// Turbo EOF wait per-file duration in milliseconds.
+	TurboEOFWaitPerFileMs int `json:",omitempty"`
+	// Maximum turbo EOF wait duration in milliseconds.
+	TurboEOFWaitMaxMs int `json:",omitempty"`
+	// Turbo channel buffer size.
+	TurboChannelBufferSize int `json:",omitempty"`
+	// Turbo channel flush timeout in milliseconds.
+	TurboFlushTimeoutMs int `json:",omitempty"`
+	// Turbo channel flush poll interval in milliseconds.
+	TurboFlushPollIntervalMs int `json:",omitempty"`
+	// Turbo read retry interval in milliseconds when data is expected but not yet available.
+	TurboReadRetryIntervalMs int `json:",omitempty"`
+	// Wait for turbo aggregate serialization during shutdown in milliseconds.
+	ShutdownTurboSerializeWaitMs int `json:",omitempty"`
+	// Final idle recheck wait before shutdown in milliseconds.
+	ShutdownIdleRecheckWaitMs int `json:",omitempty"`
 }
 
 // Create a new default server configuration.
@@ -90,7 +116,20 @@ func newDefaultServerConfig() *ServerConfig {
 		Permissions: Permissions{
 			Default: defaultPermissions,
 		},
-		TurboBoostDisable:  false, // Default to false, meaning turbo boost is enabled by default
+		TurboBoostDisable:            false, // Default to false, meaning turbo boost is enabled by default
+		ReadGlobRetryIntervalMs:      5000,
+		ReadRetryIntervalMs:          2000,
+		ReadAggregateLineBufferSize:  10000,
+		TurboTransmissionDelayMs:     50,
+		TurboEOFWaitBaseMs:           500,
+		TurboEOFWaitPerFileMs:        10,
+		TurboEOFWaitMaxMs:            2000,
+		TurboChannelBufferSize:       1000,
+		TurboFlushTimeoutMs:          2000,
+		TurboFlushPollIntervalMs:     10,
+		TurboReadRetryIntervalMs:     1,
+		ShutdownTurboSerializeWaitMs: 500,
+		ShutdownIdleRecheckWaitMs:    10,
 	}
 }
 
