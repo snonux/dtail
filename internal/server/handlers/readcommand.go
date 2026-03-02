@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/line"
@@ -107,30 +106,30 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	paths []string, glob string, re regex.Regex, retryInterval time.Duration) {
 
 	dlog.Server.Info(r.server.user, "Processing files", "count", len(paths), "glob", glob)
-	
+
 	// Track pending files for this batch
 	atomic.AddInt32(&r.server.pendingFiles, int32(len(paths)))
 	dlog.Server.Info(r.server.user, "Added pending files", "count", len(paths), "totalPending", atomic.LoadInt32(&r.server.pendingFiles))
-	
+
 	var wg sync.WaitGroup
 	wg.Add(len(paths))
 	for _, path := range paths {
 		go r.readFileIfPermissions(ctx, ltx, &wg, path, glob, re)
 	}
 	wg.Wait()
-	
+
 	dlog.Server.Info(r.server.user, "All files processed", "count", len(paths))
 
 	// In turbo mode, signal EOF after all files are processed
 	// This is crucial for proper shutdown in server mode
-	if !config.Server.TurboBoostDisable && r.server.aggregate == nil && 
+	if !r.server.serverCfg.TurboBoostDisable && r.server.aggregate == nil &&
 		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) {
 		if r.server.IsTurboMode() && r.server.turboEOF != nil {
 			dlog.Server.Debug(r.server.user, "Turbo mode: flushing data before EOF signal")
-			
+
 			// Ensure all turbo data is flushed before signaling EOF
 			r.server.flushTurboData()
-			
+
 			// Signal EOF by closing the channel, but only if it hasn't been closed yet
 			select {
 			case <-r.server.turboEOF:
@@ -138,7 +137,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 			default:
 				close(r.server.turboEOF)
 			}
-			
+
 			// Wait to ensure all data is transmitted
 			// This is especially important when files are queued due to concurrency limits
 			// In serverless mode, data is written directly to stdout, so no wait is needed
@@ -170,7 +169,7 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 		// Decrement pending files counter when this file is done
 		remaining := atomic.AddInt32(&r.server.pendingFiles, -1)
 		dlog.Server.Debug(r.server.user, "File processing complete", "path", path, "remainingPending", remaining)
-		
+
 		// Check if we should trigger shutdown now
 		// Only shutdown if no files are pending AND no commands are active
 		if remaining == 0 && atomic.LoadInt32(&r.server.activeCommands) == 0 {
@@ -185,7 +184,7 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 					time.Sleep(500 * time.Millisecond)
 				}
 			}
-			
+
 			// Double-check that we really have no pending work
 			// In turbo mode, there might be a race condition
 			// In serverless mode, no need for this delay
@@ -202,7 +201,7 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 			}
 		}
 	}()
-	
+
 	globID := r.makeGlobID(path, glob)
 	if !r.server.user.HasFilePermission(path, "readfiles") {
 		dlog.Server.Error(r.server.user, "No permission to read file", path, globID)
@@ -217,7 +216,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	path, globID string, re regex.Regex) {
 
 	dlog.Server.Info(r.server.user, "Start reading", path, globID)
-	
+
 	// Log if grep is using literal mode optimization
 	if r.mode == omode.GrepClient {
 		if re.IsLiteral() {
@@ -226,7 +225,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 			dlog.Server.Info(r.server.user, "Using regex matching for pattern:", re.Pattern())
 		}
 	}
-	
+
 	var reader fs.FileReader
 	var limiter chan struct{}
 
@@ -270,12 +269,12 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	// Check if we should use the turbo boost optimizations
 	// Enable turbo boost for cat/grep/tail modes, and now also for MapReduce operations
 	// MapReduce now has a turbo mode implementation that bypasses channels
-	dlog.Server.Debug(r.server.user, "Checking turbo mode", "turboBoostDisable", config.Server.TurboBoostDisable, 
+	dlog.Server.Debug(r.server.user, "Checking turbo mode", "turboBoostDisable", r.server.serverCfg.TurboBoostDisable,
 		"mode", r.mode, "hasTurboAggregate", r.server.turboAggregate != nil, "hasAggregate", r.server.aggregate != nil)
 	// Only use turbo mode if:
 	// 1. Turbo boost is NOT disabled (it's enabled by default) AND
 	// 2. We have a turbo aggregate OR (we're in cat/grep/tail mode AND we don't have a regular aggregate)
-	if !config.Server.TurboBoostDisable &&
+	if !r.server.serverCfg.TurboBoostDisable &&
 		(r.server.turboAggregate != nil || ((r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) && r.server.aggregate == nil)) {
 		dlog.Server.Info(r.server.user, "Using turbo mode for reading", path, "mode", r.mode, "hasTurboAggregate", r.server.turboAggregate != nil)
 		r.readWithTurboProcessor(ctx, ltx, path, globID, re, reader)
@@ -296,7 +295,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 			// For non-MapReduce operations, use the server's lines channel
 			lines = r.server.lines
 		}
-		
+
 		if err := reader.Start(ctx, ltx, lines, re); err != nil {
 			dlog.Server.Error(r.server.user, path, globID, err)
 		}
@@ -322,7 +321,7 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 	path, globID string, re regex.Regex, reader fs.FileReader) {
 
 	dlog.Server.Info(r.server.user, "Using channel-less grep implementation", path, globID)
-	
+
 	// Log if grep is using literal mode optimization
 	if r.mode == omode.GrepClient {
 		if re.IsLiteral() {
@@ -337,7 +336,7 @@ func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LConte
 	var lines chan *line.Line
 
 	// Use the optimized version if turbo boost is not disabled (enabled by default)
-	turboBoostEnabled := !config.Server.TurboBoostDisable
+	turboBoostEnabled := !r.server.serverCfg.TurboBoostDisable
 
 	for {
 		if aggregate != nil {
@@ -387,7 +386,7 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 	path, globID string, re regex.Regex, reader fs.FileReader) {
 
 	dlog.Server.Info(r.server.user, "Using turbo channel-less implementation", path, globID)
-	
+
 	// Log if grep is using literal mode optimization
 	if r.mode == omode.GrepClient {
 		if re.IsLiteral() {
@@ -422,14 +421,14 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 
 	for {
 		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> starting read loop iteration")
-		
+
 		// Create a processor based on whether we're doing MapReduce or not
 		var processor interface {
 			ProcessLine(*bytes.Buffer, uint64, string) error
 			Flush() error
 			Close() error
 		}
-		
+
 		if r.server.turboAggregate != nil {
 			// Use turbo aggregate processor for MapReduce operations
 			dlog.Server.Info(r.server.user, "Using turbo aggregate processor for MapReduce", path, globID)
@@ -457,7 +456,7 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> closing processor")
 		processor.Close()
 		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> processor closed")
-		
+
 		// Give time for data to be transmitted
 		// This is crucial for integration tests to ensure all data is sent
 		// Skip this delay in serverless mode since data is written directly to stdout

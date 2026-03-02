@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
@@ -15,6 +14,13 @@ type stats struct {
 	mutex               sync.Mutex
 	currentConnections  int
 	lifetimeConnections uint64
+	maxConnections      int
+}
+
+func newStats(maxConnections int) stats {
+	return stats{
+		maxConnections: maxConnections,
+	}
 }
 
 func (s *stats) incrementConnections() {
@@ -57,9 +63,9 @@ func (s *stats) serverLimitExceeded() error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	if s.currentConnections >= config.Server.MaxConnections {
+	if s.currentConnections >= s.maxConnections {
 		return fmt.Errorf("Exceeded max allowed concurrent connections of %d",
-			config.Server.MaxConnections)
+			s.maxConnections)
 	}
 	return nil
 }

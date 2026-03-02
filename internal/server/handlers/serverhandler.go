@@ -21,6 +21,7 @@ type ServerHandler struct {
 	baseHandler
 	catLimiter  chan struct{}
 	tailLimiter chan struct{}
+	serverCfg   *config.ServerConfig
 	regex       string
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
@@ -30,9 +31,13 @@ var _ Handler = (*ServerHandler)(nil)
 
 // NewServerHandler returns the server handler.
 func NewServerHandler(user *user.User, catLimiter,
-	tailLimiter chan struct{}) *ServerHandler {
+	tailLimiter chan struct{}, serverCfg *config.ServerConfig) *ServerHandler {
 
 	dlog.Server.Debug(user, "Creating new server handler")
+	if serverCfg == nil {
+		dlog.Server.FatalPanic("Missing server config in NewServerHandler")
+	}
+
 	h := ServerHandler{
 		baseHandler: baseHandler{
 			done:             internal.NewDone(),
@@ -44,6 +49,7 @@ func NewServerHandler(user *user.User, catLimiter,
 		},
 		catLimiter:  catLimiter,
 		tailLimiter: tailLimiter,
+		serverCfg:   serverCfg,
 		regex:       ".",
 	}
 	h.handleCommandCb = h.handleUserCommand
@@ -68,7 +74,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		activeCommands := h.decrementActiveCommands()
 		pendingFiles := atomic.LoadInt32(&h.pendingFiles)
 		dlog.Server.Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
-		
+
 		// Only shutdown if no active commands AND no pending files
 		if activeCommands == 0 && pendingFiles == 0 {
 			h.shutdown()

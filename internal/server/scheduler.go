@@ -16,10 +16,12 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-type scheduler struct{}
+type scheduler struct {
+	cfg config.RuntimeConfig
+}
 
-func newScheduler() *scheduler {
-	return &scheduler{}
+func newScheduler(cfg config.RuntimeConfig) *scheduler {
+	return &scheduler{cfg: cfg}
 }
 
 func (s *scheduler) start(ctx context.Context) {
@@ -38,7 +40,7 @@ func (s *scheduler) start(ctx context.Context) {
 }
 
 func (s *scheduler) runJobs(ctx context.Context) {
-	for _, job := range config.Server.Schedule {
+	for _, job := range s.cfg.Server.Schedule {
 		if !job.Enable {
 			dlog.Server.Debug(job.Name, "Not running job as not enabled")
 			continue
@@ -68,7 +70,7 @@ func (s *scheduler) runJob(ctx context.Context, job config.Scheduled) {
 
 	servers := strings.Join(job.Servers, ",")
 	if servers == "" {
-		servers = config.Server.SSHBindAddress
+		servers = s.cfg.Server.SSHBindAddress
 	}
 	args := config.Args{
 		ConnectionsPerCPU: config.DefaultConnectionsPerCPU,

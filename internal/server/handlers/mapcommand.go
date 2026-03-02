@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/mapr/server"
 )
@@ -22,11 +21,11 @@ func newMapCommand(serverHandler *ServerHandler, argc int,
 
 	m := mapCommand{server: serverHandler}
 	queryStr := strings.Join(args[1:], " ")
-	
+
 	// If turbo boost is not disabled AND we're in server mode (not serverless), create a TurboAggregate
 	// Turbo boost is enabled by default and is a server-side optimization
-	dlog.Server.Debug("MapReduce mode check", "turboBoostDisable", config.Server.TurboBoostDisable, "serverless", serverHandler.serverless)
-	if !config.Server.TurboBoostDisable && !serverHandler.serverless {
+	dlog.Server.Debug("MapReduce mode check", "turboBoostDisable", serverHandler.serverCfg.TurboBoostDisable, "serverless", serverHandler.serverless)
+	if !serverHandler.serverCfg.TurboBoostDisable && !serverHandler.serverless {
 		dlog.Server.Info("Creating turbo aggregate for MapReduce", "query", queryStr)
 		turboAggregate, err := server.NewTurboAggregate(queryStr)
 		if err != nil {
@@ -35,7 +34,7 @@ func newMapCommand(serverHandler *ServerHandler, argc int,
 		m.turboAggregate = turboAggregate
 		return m, nil, turboAggregate, nil
 	}
-	
+
 	// Otherwise, create a regular Aggregate
 	aggregate, err := server.NewAggregate(queryStr)
 	if err != nil {

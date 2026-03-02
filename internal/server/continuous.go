@@ -13,10 +13,12 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-type continuous struct{}
+type continuous struct {
+	cfg config.RuntimeConfig
+}
 
-func newContinuous() *continuous {
-	return &continuous{}
+func newContinuous(cfg config.RuntimeConfig) *continuous {
+	return &continuous{cfg: cfg}
 }
 
 func (c *continuous) start(ctx context.Context) {
@@ -26,7 +28,7 @@ func (c *continuous) start(ctx context.Context) {
 }
 
 func (c *continuous) runJobs(ctx context.Context) {
-	for _, job := range config.Server.Continuous {
+	for _, job := range c.cfg.Server.Continuous {
 		if !job.Enable {
 			dlog.Server.Debug(job.Name, "Not running job as not enabled")
 			continue
@@ -53,7 +55,7 @@ func (c *continuous) runJob(ctx context.Context, job config.Continuous) {
 	outfile := fillDates(job.Outfile)
 	servers := strings.Join(job.Servers, ",")
 	if servers == "" {
-		servers = config.Server.SSHBindAddress
+		servers = c.cfg.Server.SSHBindAddress
 	}
 
 	args := config.Args{

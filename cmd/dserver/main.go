@@ -77,7 +77,7 @@ func main() {
 		}()
 	}
 
-	serv := server.New()
+	serv := server.New(config.CurrentRuntime())
 	status := serv.Start(ctx)
 	cancel()
 

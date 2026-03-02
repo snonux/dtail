@@ -75,6 +75,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			user,
 			make(chan struct{}, config.Server.MaxConcurrentCats),
 			make(chan struct{}, config.Server.MaxConcurrentTails),
+			config.Server,
 		)
 	}
 
@@ -86,14 +87,14 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 
 	// Use buffered channels to prevent deadlock
 	// This approach avoids the circular dependency of direct io.Copy
-	
+
 	// Channels for data flow
 	toServer := make(chan []byte, 100)
 	fromServer := make(chan []byte, 100)
-	
+
 	// Error tracking
 	errChan := make(chan error, 4)
-	
+
 	// Read from client handler
 	go func() {
 		defer close(toServer)
@@ -117,7 +118,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			}
 		}
 	}()
-	
+
 	// Write to server handler
 	go func() {
 		for data := range toServer {
@@ -127,7 +128,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			}
 		}
 	}()
-	
+
 	// Read from server handler
 	go func() {
 		defer close(fromServer)
@@ -151,7 +152,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			}
 		}
 	}()
-	
+
 	// Write to client handler
 	serverDone := make(chan struct{})
 	go func() {
@@ -163,7 +164,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			}
 		}
 	}()
-	
+
 	// Send commands after setting up the data flow
 	for _, command := range s.commands {
 		dlog.Client.Debug("Sending command to serverless server", command)
@@ -171,7 +172,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			dlog.Client.Debug(err)
 		}
 	}
-	
+
 	// Monitor for completion
 	go func() {
 		defer terminate()
@@ -184,17 +185,17 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			dlog.Client.Trace("<-ctx.Done()")
 		}
 	}()
-	
+
 	// Wait for completion
 	<-ctx.Done()
-	
+
 	// Check for errors
 	select {
 	case err := <-errChan:
 		return err
 	default:
 	}
-	
+
 	s.handler.Shutdown()
 	return nil
 }

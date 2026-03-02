@@ -20,6 +20,7 @@ import (
 
 // Server is the main server data structure.
 type Server struct {
+	cfg config.RuntimeConfig
 	// Various server statistics counters.
 	stats stats
 	// SSH server configuration.
@@ -35,21 +36,27 @@ type Server struct {
 }
 
 // New returns a new server.
-func New() *Server {
+func New(cfg config.RuntimeConfig) *Server {
+	if cfg.Server == nil || cfg.Common == nil {
+		dlog.Server.FatalPanic("Missing runtime server/common configuration")
+	}
+
 	dlog.Server.Info("Starting server", version.String())
 
 	s := Server{
+		cfg: cfg,
 		sshServerConfig: &gossh.ServerConfig{
 			Config: gossh.Config{
-				KeyExchanges: config.Server.KeyExchanges,
-				Ciphers:      config.Server.Ciphers,
-				MACs:         config.Server.MACs,
+				KeyExchanges: cfg.Server.KeyExchanges,
+				Ciphers:      cfg.Server.Ciphers,
+				MACs:         cfg.Server.MACs,
 			},
 		},
-		catLimiter:  make(chan struct{}, config.Server.MaxConcurrentCats),
-		tailLimiter: make(chan struct{}, config.Server.MaxConcurrentTails),
-		sched:       newScheduler(),
-		cont:        newContinuous(),
+		stats:       newStats(cfg.Server.MaxConnections),
+		catLimiter:  make(chan struct{}, cfg.Server.MaxConcurrentCats),
+		tailLimiter: make(chan struct{}, cfg.Server.MaxConcurrentTails),
+		sched:       newScheduler(cfg),
+		cont:        newContinuous(cfg),
 	}
 
 	s.sshServerConfig.PasswordCallback = s.Callback
@@ -67,7 +74,7 @@ func New() *Server {
 // Start the server.
 func (s *Server) Start(ctx context.Context) int {
 	dlog.Server.Info("Starting server")
-	bindAt := fmt.Sprintf("%s:%d", config.Server.SSHBindAddress, config.Common.SSHPort)
+	bindAt := fmt.Sprintf("%s:%d", s.cfg.Server.SSHBindAddress, s.cfg.Common.SSHPort)
 	dlog.Server.Info("Binding server", bindAt)
 
 	listener, err := net.Listen("tcp", bindAt)
@@ -193,7 +200,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	case config.HealthUser:
 		handler = handlers.NewHealthHandler(user)
 	default:
-		handler = handlers.NewServerHandler(user, s.catLimiter, s.tailLimiter)
+		handler = handlers.NewServerHandler(user, s.catLimiter, s.tailLimiter, s.cfg.Server)
 	}
 
 	terminate := func() {
@@ -262,14 +269,14 @@ func (s *Server) Callback(c gossh.ConnMetadata,
 			return nil, nil
 		}
 	case config.ScheduleUser:
-		for _, job := range config.Server.Schedule {
+		for _, job := range s.cfg.Server.Schedule {
 			if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
 				dlog.Server.Debug(user, "Granting SSH connection")
 				return nil, nil
 			}
 		}
 	case config.ContinuousUser:
-		for _, job := range config.Server.Continuous {
+		for _, job := range s.cfg.Server.Continuous {
 			if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
 				dlog.Server.Debug(user, "Granting SSH connection")
 				return nil, nil
