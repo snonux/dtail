@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
@@ -17,6 +18,8 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 )
+
+const sshHandshakeTimeout = 10 * time.Second
 
 // Server is the main server data structure.
 type Server struct {
@@ -118,9 +121,23 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	dlog.Server.Info("Handling connection")
 
+	// Prevent slow clients from holding connections open indefinitely before SSH handshake completes.
+	if err := conn.SetDeadline(time.Now().Add(sshHandshakeTimeout)); err != nil {
+		dlog.Server.Error("Failed to set SSH handshake deadline", err)
+		conn.Close()
+		return
+	}
+
 	sshConn, chans, reqs, err := gossh.NewServerConn(conn, s.sshServerConfig)
 	if err != nil {
 		dlog.Server.Error("Something just happened", err)
+		return
+	}
+
+	// Handshake succeeded; remove deadline so active sessions are not cut off by the handshake timeout.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		dlog.Server.Error("Failed to clear SSH handshake deadline", err)
+		sshConn.Close()
 		return
 	}
 
