@@ -80,16 +80,7 @@ func (w *DirectTurboWriter) writeServerlessLine(lineContent []byte, lineNum uint
 		// For colored serverless mode with test compatibility
 		// Build the complete line with protocol formatting for integration tests
 		var lineBuf bytes.Buffer
-		lineBuf.WriteString("REMOTE")
-		lineBuf.WriteString(protocol.FieldDelimiter)
-		lineBuf.WriteString(w.hostname)
-		lineBuf.WriteString(protocol.FieldDelimiter)
-		lineBuf.WriteString("100")
-		lineBuf.WriteString(protocol.FieldDelimiter)
-		lineBuf.WriteString(fmt.Sprintf("%v", lineNum))
-		lineBuf.WriteString(protocol.FieldDelimiter)
-		lineBuf.WriteString(sourceID)
-		lineBuf.WriteString(protocol.FieldDelimiter)
+		formatRemoteHeader(&lineBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID)
 
 		// Remove trailing newline if present (it will be added back after coloring)
 		content := lineContent
@@ -119,32 +110,14 @@ func (w *DirectTurboWriter) writeServerlessLine(lineContent []byte, lineNum uint
 // writeNetworkLine handles network mode output with protocol formatting.
 // Adds protocol headers for non-plain mode. Must be called with mutex held.
 func (w *DirectTurboWriter) writeNetworkLine(lineContent []byte, lineNum uint64, sourceID string) error {
-	// Include protocol formatting for network transmission
-	if !w.plain {
-		w.writeBuf.WriteString("REMOTE")
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(w.hostname)
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		// For direct writing, we don't have transmittedPerc, so use 100
-		w.writeBuf.WriteString("100")
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(fmt.Sprintf("%v", lineNum))
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(sourceID)
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-	}
-
-	// Write the actual line content
-	w.writeBuf.Write(lineContent)
-
-	// In plain mode, ensure line has a newline if it doesn't already
-	if w.plain && len(lineContent) > 0 && lineContent[len(lineContent)-1] != '\n' {
-		w.writeBuf.WriteByte('\n')
-	}
-
-	// Add message delimiter for network protocol
-	if !w.plain {
-		w.writeBuf.WriteByte(protocol.MessageDelimiter)
+	if w.plain {
+		w.writeBuf.Write(lineContent)
+		// In plain mode, ensure line has a newline if it doesn't already.
+		if len(lineContent) > 0 && lineContent[len(lineContent)-1] != '\n' {
+			w.writeBuf.WriteByte('\n')
+		}
+	} else {
+		formatRemoteLine(&w.writeBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID, lineContent)
 	}
 
 	// Update stats
@@ -180,15 +153,7 @@ func (w *DirectTurboWriter) WriteServerMessage(message string) error {
 		return w.flushBuffer()
 	}
 
-	// Handle normal server message
-	if !w.plain {
-		w.writeBuf.WriteString("SERVER")
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(w.hostname)
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-	}
-	w.writeBuf.WriteString(message)
-	w.writeBuf.WriteByte(protocol.MessageDelimiter)
+	formatServerMessage(&w.writeBuf, w.hostname, message, w.plain)
 
 	return w.flushBuffer()
 }
@@ -272,24 +237,12 @@ func (w *TurboChannelWriter) WriteLineData(lineContent []byte, lineNum uint64, s
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	// Build the output line
 	if !w.plain && !w.serverless {
-		w.writeBuf.WriteString("REMOTE")
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(w.hostname)
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		// For direct writing, we don't have transmittedPerc, so use 100
-		w.writeBuf.WriteString("100")
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(fmt.Sprintf("%v", lineNum))
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(sourceID)
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
+		formatRemoteLine(&w.writeBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID, lineContent)
+	} else {
+		w.writeBuf.Write(lineContent)
+		w.writeBuf.WriteByte(protocol.MessageDelimiter)
 	}
-
-	// Write the actual line content (already includes line endings)
-	w.writeBuf.Write(lineContent)
-	w.writeBuf.WriteByte(protocol.MessageDelimiter)
 
 	// Update stats
 	w.linesWritten++
@@ -329,15 +282,7 @@ func (w *TurboChannelWriter) WriteServerMessage(message string) error {
 		buf.WriteString(message)
 		buf.WriteByte(protocol.MessageDelimiter)
 	} else {
-		// Handle normal server message
-		if !w.plain {
-			buf.WriteString("SERVER")
-			buf.WriteString(protocol.FieldDelimiter)
-			buf.WriteString(w.hostname)
-			buf.WriteString(protocol.FieldDelimiter)
-		}
-		buf.WriteString(message)
-		buf.WriteByte(protocol.MessageDelimiter)
+		formatServerMessage(&buf, w.hostname, message, w.plain)
 	}
 
 	data := buf.Bytes()
@@ -390,24 +335,12 @@ func (w *TurboNetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, s
 
 	dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "lineNum", lineNum, "sourceID", sourceID, "contentLen", len(lineContent))
 
-	// Build the output line with protocol formatting
 	if !w.plain && !w.serverless {
-		w.writeBuf.WriteString("REMOTE")
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(w.hostname)
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		// For direct writing, we don't have transmittedPerc, so use 100
-		w.writeBuf.WriteString("100")
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(fmt.Sprintf("%v", lineNum))
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
-		w.writeBuf.WriteString(sourceID)
-		w.writeBuf.WriteString(protocol.FieldDelimiter)
+		formatRemoteLine(&w.writeBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID, lineContent)
+	} else {
+		w.writeBuf.Write(lineContent)
+		w.writeBuf.WriteByte(protocol.MessageDelimiter)
 	}
-
-	// Write the actual line content (already includes line endings)
-	w.writeBuf.Write(lineContent)
-	w.writeBuf.WriteByte(protocol.MessageDelimiter)
 
 	// Update stats
 	w.linesWritten++

@@ -96,15 +96,8 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			return
 		}
 
-		// Handle normal server message (display to the user)
-		if !h.plain {
-			h.readBuf.WriteString("SERVER")
-			h.readBuf.WriteString(protocol.FieldDelimiter)
-			h.readBuf.WriteString(h.hostname)
-			h.readBuf.WriteString(protocol.FieldDelimiter)
-		}
-		h.readBuf.WriteString(message)
-		h.readBuf.WriteByte(protocol.MessageDelimiter)
+		// Handle normal server message (display to the user).
+		formatServerMessage(&h.readBuf, h.hostname, message, h.plain)
 		n = copy(p, h.readBuf.Bytes())
 
 	case message := <-h.maprMessages:
@@ -118,20 +111,19 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 		n = copy(p, h.readBuf.Bytes())
 
 	case line := <-h.lines:
-		if !h.plain {
-			h.readBuf.WriteString("REMOTE")
-			h.readBuf.WriteString(protocol.FieldDelimiter)
-			h.readBuf.WriteString(h.hostname)
-			h.readBuf.WriteString(protocol.FieldDelimiter)
-			h.readBuf.WriteString(fmt.Sprintf("%3d", line.TransmittedPerc))
-			h.readBuf.WriteString(protocol.FieldDelimiter)
-			h.readBuf.WriteString(fmt.Sprintf("%v", line.Count))
-			h.readBuf.WriteString(protocol.FieldDelimiter)
-			h.readBuf.WriteString(line.SourceID)
-			h.readBuf.WriteString(protocol.FieldDelimiter)
+		if h.plain {
+			h.readBuf.Write(line.Content.Bytes())
+			h.readBuf.WriteByte(protocol.MessageDelimiter)
+		} else {
+			formatRemoteLine(
+				&h.readBuf,
+				h.hostname,
+				fmt.Sprintf("%3d", line.TransmittedPerc),
+				line.Count,
+				line.SourceID,
+				line.Content.Bytes(),
+			)
 		}
-		h.readBuf.WriteString(line.Content.String())
-		h.readBuf.WriteByte(protocol.MessageDelimiter)
 		n = copy(p, h.readBuf.Bytes())
 		pool.RecycleBytesBuffer(line.Content)
 		line.Recycle()

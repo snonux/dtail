@@ -18,12 +18,12 @@ type GrepLineProcessor struct {
 	hostname   string
 	plain      bool
 	serverless bool
-	
+
 	// Buffering for efficiency
-	writeBuf   bytes.Buffer
-	bufSize    int
-	mutex      sync.Mutex
-	
+	writeBuf bytes.Buffer
+	bufSize  int
+	mutex    sync.Mutex
+
 	// Stats
 	linesProcessed uint64
 	bytesWritten   uint64
@@ -65,38 +65,26 @@ func NewGrepLineProcessor(writer io.Writer, hostname string, plain, serverless b
 func (p *GrepLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uint64, sourceID string) error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	
-	// Build the output line
+
 	if !p.plain && !p.serverless {
-		p.writeBuf.WriteString("REMOTE")
-		p.writeBuf.WriteString(protocol.FieldDelimiter)
-		p.writeBuf.WriteString(p.hostname)
-		p.writeBuf.WriteString(protocol.FieldDelimiter)
-		// For grep, we don't have transmittedPerc, so use 100
-		p.writeBuf.WriteString("100")
-		p.writeBuf.WriteString(protocol.FieldDelimiter)
-		p.writeBuf.WriteString(fmt.Sprintf("%v", lineNum))
-		p.writeBuf.WriteString(protocol.FieldDelimiter)
-		p.writeBuf.WriteString(sourceID)
-		p.writeBuf.WriteString(protocol.FieldDelimiter)
+		formatRemoteLine(&p.writeBuf, p.hostname, defaultTransmittedPerc, lineNum, sourceID, lineContent.Bytes())
+	} else {
+		p.writeBuf.Write(lineContent.Bytes())
+		p.writeBuf.WriteByte(protocol.MessageDelimiter)
 	}
-	
-	// Write the actual line content
-	p.writeBuf.Write(lineContent.Bytes())
-	p.writeBuf.WriteByte(protocol.MessageDelimiter)
-	
+
 	// Recycle the line buffer
 	pool.RecycleBytesBuffer(lineContent)
-	
+
 	// Update stats
 	p.linesProcessed++
 	p.bytesWritten += uint64(p.writeBuf.Len())
-	
+
 	// Flush if buffer is getting full
 	if p.writeBuf.Len() >= p.bufSize {
 		return p.flushBuffer()
 	}
-	
+
 	return nil
 }
 
@@ -104,7 +92,7 @@ func (p *GrepLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uint6
 func (p *GrepLineProcessor) Flush() error {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	
+
 	return p.flushBuffer()
 }
 
@@ -113,10 +101,10 @@ func (p *GrepLineProcessor) flushBuffer() error {
 	if p.writeBuf.Len() == 0 {
 		return nil
 	}
-	
+
 	_, err := p.writer.Write(p.writeBuf.Bytes())
 	p.writeBuf.Reset()
-	
+
 	return err
 }
 
@@ -130,7 +118,7 @@ func (p *GrepLineProcessor) Close() error {
 func (p *GrepLineProcessor) Stats() (linesProcessed, bytesWritten uint64) {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	
+
 	return p.linesProcessed, p.bytesWritten
 }
 
@@ -158,17 +146,17 @@ func (p *ServerMessageProcessor) SendMessage(message string) error {
 	if p.serverless {
 		return nil
 	}
-	
+
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	
+
 	var buf bytes.Buffer
-	
+
 	// Skip empty server messages when in plain mode
 	if p.plain && (message == "" || message == "\n") {
 		return nil
 	}
-	
+
 	// Handle hidden messages
 	if len(message) > 0 && message[0] == '.' {
 		buf.WriteString(message)
@@ -176,17 +164,9 @@ func (p *ServerMessageProcessor) SendMessage(message string) error {
 		_, err := p.writer.Write(buf.Bytes())
 		return err
 	}
-	
-	// Handle normal server message
-	if !p.plain {
-		buf.WriteString("SERVER")
-		buf.WriteString(protocol.FieldDelimiter)
-		buf.WriteString(p.hostname)
-		buf.WriteString(protocol.FieldDelimiter)
-	}
-	buf.WriteString(message)
-	buf.WriteByte(protocol.MessageDelimiter)
-	
+
+	formatServerMessage(&buf, p.hostname, message, p.plain)
+
 	_, err := p.writer.Write(buf.Bytes())
 	return err
 }
