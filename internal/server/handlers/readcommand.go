@@ -264,10 +264,11 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 		// In server mode, use the network writer with turbo channels
 		// Create a new instance for each file to ensure thread safety
 		writer = &TurboNetworkWriter{
-			handler:    &r.server.baseHandler,
-			hostname:   r.server.hostname,
-			plain:      r.server.plain,
-			serverless: r.server.serverless,
+			turboLines:     r.server.GetTurboChannel(),
+			serverMessages: r.server.serverMessages,
+			hostname:       r.server.hostname,
+			plain:          r.server.plain,
+			serverless:     r.server.serverless,
 		}
 	}
 
