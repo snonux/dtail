@@ -20,16 +20,18 @@ import (
 )
 
 type readCommand struct {
-	server *ServerHandler
-	mode   omode.Mode
+	server              *ServerHandler
+	mode                omode.Mode
+	shutdownCoordinator *shutdownCoordinator
 }
 
 type readStrategy func(context.Context, lcontext.LContext, fs.FileReader, regex.Regex) error
 
 func newReadCommand(server *ServerHandler, mode omode.Mode) *readCommand {
 	return &readCommand{
-		server: server,
-		mode:   mode,
+		server:              server,
+		mode:                mode,
+		shutdownCoordinator: newShutdownCoordinator(server),
 	}
 }
 
@@ -163,40 +165,7 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 
 	defer wg.Done()
 	defer func() {
-		// Decrement pending files counter when this file is done
-		remaining := atomic.AddInt32(&r.server.pendingFiles, -1)
-		dlog.Server.Debug(r.server.user, "File processing complete", "path", path, "remainingPending", remaining)
-
-		// Check if we should trigger shutdown now
-		// Only shutdown if no files are pending AND no commands are active
-		if remaining == 0 && atomic.LoadInt32(&r.server.activeCommands) == 0 {
-			// If we have a turbo aggregate, trigger final serialization
-			if r.server.turboAggregate != nil {
-				dlog.Server.Info(r.server.user, "Triggering final turbo aggregate serialization")
-				r.server.turboAggregate.Serialize(context.Background())
-				// Give more time for serialization to complete
-				// This is critical when processing many files concurrently
-				// In serverless mode, serialization is synchronous, so no wait needed
-				if !r.server.serverless {
-					time.Sleep(500 * time.Millisecond)
-				}
-			}
-
-			// Double-check that we really have no pending work
-			// In turbo mode, there might be a race condition
-			// In serverless mode, no need for this delay
-			if !r.server.serverless {
-				time.Sleep(10 * time.Millisecond)
-			}
-			finalPending := atomic.LoadInt32(&r.server.pendingFiles)
-			finalActive := atomic.LoadInt32(&r.server.activeCommands)
-			if finalPending == 0 && finalActive == 0 {
-				dlog.Server.Debug(r.server.user, "No active commands and no pending files after double-check, triggering shutdown")
-				r.server.shutdown()
-			} else {
-				dlog.Server.Debug(r.server.user, "Shutdown check cancelled", "finalPending", finalPending, "finalActive", finalActive)
-			}
-		}
+		r.shutdownCoordinator.onFileProcessed(path)
 	}()
 
 	globID := r.makeGlobID(path, glob)
