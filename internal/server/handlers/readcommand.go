@@ -24,6 +24,8 @@ type readCommand struct {
 	mode   omode.Mode
 }
 
+type readStrategy func(context.Context, lcontext.LContext, fs.FileReader, regex.Regex) error
+
 func newReadCommand(server *ServerHandler, mode omode.Mode) *readCommand {
 	return &readCommand{
 		server: server,
@@ -211,15 +213,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	path, globID string, re regex.Regex) {
 
 	dlog.Server.Info(r.server.user, "Start reading", path, globID)
-
-	// Log if grep is using literal mode optimization
-	if r.mode == omode.GrepClient {
-		if re.IsLiteral() {
-			dlog.Server.Info(r.server.user, "Using optimized literal string matching for pattern:", re.Pattern())
-		} else {
-			dlog.Server.Info(r.server.user, "Using regex matching for pattern:", re.Pattern())
-		}
-	}
+	r.logRegexMode(re)
 
 	var reader fs.FileReader
 	var limiter chan struct{}
@@ -276,120 +270,14 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 
-	// Original channel-based implementation
-	aggregate := r.server.aggregate
-	var lines chan *line.Line
-
-	for {
-		if aggregate != nil {
-			// For MapReduce operations, create a new channel that goes only to the aggregate
-			// This prevents lines from being sent to the client
-			lines = make(chan *line.Line, 10000)
-			aggregate.NextLinesCh <- lines
-		} else {
-			// For non-MapReduce operations, use the server's lines channel
-			lines = r.server.lines
-		}
-
-		if err := reader.Start(ctx, ltx, lines, re); err != nil {
-			dlog.Server.Error(r.server.user, path, globID, err)
-		}
-		if aggregate != nil {
-			// Also makes aggregate to Flush
-			close(lines)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if !reader.Retry() {
-				return
-			}
-		}
-		time.Sleep(time.Second * 2)
-		dlog.Server.Info(path, globID, "Reading file again")
-	}
-}
-
-func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LContext,
-	path, globID string, re regex.Regex, reader fs.FileReader) {
-
-	dlog.Server.Info(r.server.user, "Using channel-less grep implementation", path, globID)
-
-	// Log if grep is using literal mode optimization
-	if r.mode == omode.GrepClient {
-		if re.IsLiteral() {
-			dlog.Server.Info(r.server.user, "Using optimized literal string matching for pattern:", re.Pattern())
-		} else {
-			dlog.Server.Info(r.server.user, "Using regex matching for pattern:", re.Pattern())
-		}
-	}
-
-	// Use the existing lines channel but with the processor-based reader
-	aggregate := r.server.aggregate
-	var lines chan *line.Line
-
-	// Use the optimized version if turbo boost is not disabled (enabled by default)
-	turboBoostEnabled := !r.server.serverCfg.TurboBoostDisable
-
-	for {
-		if aggregate != nil {
-			// For MapReduce operations, create a new channel that goes only to the aggregate
-			// This prevents lines from being sent to the client
-			lines = make(chan *line.Line, 10000)
-			aggregate.NextLinesCh <- lines
-		} else {
-			// For non-MapReduce operations, use the server's lines channel
-			lines = r.server.lines
-		}
-
-		// Create a processor that sends to the lines channel
-		processor := NewChannellessLineProcessor(lines, globID)
-		defer processor.Close()
-
-		var err error
-		if turboBoostEnabled {
-			err = reader.StartWithProcessorOptimized(ctx, ltx, processor, re)
-		} else {
-			err = reader.StartWithProcessor(ctx, ltx, processor, re)
-		}
-
-		if err != nil {
-			dlog.Server.Error(r.server.user, path, globID, err)
-		}
-
-		if aggregate != nil {
-			// Also makes aggregate to Flush
-			close(lines)
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			if !reader.Retry() {
-				return
-			}
-		}
-		time.Sleep(time.Second * 2)
-		dlog.Server.Info(path, globID, "Reading file again")
-	}
+	r.executeReadLoop(ctx, ltx, path, globID, re, reader, r.readViaChannels())
 }
 
 func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.LContext,
 	path, globID string, re regex.Regex, reader fs.FileReader) {
 
 	dlog.Server.Info(r.server.user, "Using turbo channel-less implementation", path, globID)
-
-	// Log if grep is using literal mode optimization
-	if r.mode == omode.GrepClient {
-		if re.IsLiteral() {
-			dlog.Server.Info(r.server.user, "Using optimized literal string matching for pattern:", re.Pattern())
-		} else {
-			dlog.Server.Info(r.server.user, "Using regex matching for pattern:", re.Pattern())
-		}
-	}
+	r.logRegexMode(re)
 
 	// Enable turbo mode if not already enabled
 	if !r.server.IsTurboMode() {
@@ -414,50 +302,15 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 		}
 	}
 
+	r.executeReadLoop(ctx, ltx, path, globID, re, reader, r.readViaTurboProcessor(path, globID, writer))
+}
+
+func (r *readCommand) executeReadLoop(ctx context.Context, ltx lcontext.LContext,
+	path, globID string, re regex.Regex, reader fs.FileReader, strategy readStrategy) {
+
 	for {
-		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> starting read loop iteration")
-
-		// Create a processor based on whether we're doing MapReduce or not
-		var processor interface {
-			ProcessLine(*bytes.Buffer, uint64, string) error
-			Flush() error
-			Close() error
-		}
-
-		if r.server.turboAggregate != nil {
-			// Use turbo aggregate processor for MapReduce operations
-			dlog.Server.Info(r.server.user, "Using turbo aggregate processor for MapReduce", path, globID)
-			processor = server.NewTurboAggregateProcessor(r.server.turboAggregate, globID)
-		} else {
-			// Use direct line processor for cat/grep/tail
-			processor = NewDirectLineProcessor(writer, globID)
-		}
-
-		// Use the optimized reader
-		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> reader.StartWithPocessorOptimized -> about to start")
-		err := reader.StartWithProcessorOptimized(ctx, ltx, processor, re)
-		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> reader.StartWithPocessorOptimized -> completed")
-		if err != nil {
+		if err := strategy(ctx, ltx, reader, re); err != nil {
 			dlog.Server.Error(r.server.user, path, globID, err)
-		}
-
-		// Ensure we flush before closing
-		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> flushing processor")
-		if flushErr := processor.Flush(); flushErr != nil {
-			dlog.Server.Error(r.server.user, path, globID, "flush error", flushErr)
-		}
-
-		// Close the processor after each iteration
-		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> closing processor")
-		processor.Close()
-		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> processor closed")
-
-		// Give time for data to be transmitted
-		// This is crucial for integration tests to ensure all data is sent
-		// Skip this delay in serverless mode since data is written directly to stdout
-		if !r.server.serverless {
-			dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> waiting for data transmission")
-			time.Sleep(50 * time.Millisecond)
 		}
 
 		select {
@@ -468,8 +321,90 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 				return
 			}
 		}
+
 		time.Sleep(time.Second * 2)
 		dlog.Server.Info(path, globID, "Reading file again")
+	}
+}
+
+func (r *readCommand) readViaChannels() readStrategy {
+	return func(ctx context.Context, ltx lcontext.LContext, reader fs.FileReader, re regex.Regex) error {
+		aggregate := r.server.aggregate
+		var linesCh chan *line.Line
+
+		if aggregate != nil {
+			// For MapReduce operations, create a new channel that goes only to the aggregate.
+			linesCh = make(chan *line.Line, 10000)
+			aggregate.NextLinesCh <- linesCh
+		} else {
+			// For non-MapReduce operations, use the server's shared lines channel.
+			linesCh = r.server.lines
+		}
+
+		err := reader.Start(ctx, ltx, linesCh, re)
+		if aggregate != nil {
+			// Closing the aggregate line channel triggers flush.
+			close(linesCh)
+		}
+
+		return err
+	}
+}
+
+func (r *readCommand) readViaTurboProcessor(path, globID string, writer TurboWriter) readStrategy {
+	return func(ctx context.Context, ltx lcontext.LContext, reader fs.FileReader, re regex.Regex) error {
+		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> starting read loop iteration")
+
+		var processor interface {
+			ProcessLine(*bytes.Buffer, uint64, string) error
+			Flush() error
+			Close() error
+		}
+
+		if r.server.turboAggregate != nil {
+			// Use turbo aggregate processor for MapReduce operations.
+			dlog.Server.Info(r.server.user, "Using turbo aggregate processor for MapReduce", path, globID)
+			processor = server.NewTurboAggregateProcessor(r.server.turboAggregate, globID)
+		} else {
+			// Use direct line processor for cat/grep/tail.
+			processor = NewDirectLineProcessor(writer, globID)
+		}
+
+		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> reader.StartWithPocessorOptimized -> about to start")
+		startErr := reader.StartWithProcessorOptimized(ctx, ltx, processor, re)
+		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> reader.StartWithPocessorOptimized -> completed")
+
+		// Ensure we flush and close the processor before retry checks.
+		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> flushing processor")
+		if flushErr := processor.Flush(); flushErr != nil {
+			dlog.Server.Error(r.server.user, path, globID, "flush error", flushErr)
+		}
+		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> closing processor")
+		if closeErr := processor.Close(); closeErr != nil {
+			dlog.Server.Error(r.server.user, path, globID, "close error", closeErr)
+		}
+		dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> processor closed")
+
+		// Give time for data to be transmitted.
+		// This is crucial for integration tests to ensure all data is sent
+		// Skip this delay in serverless mode since data is written directly to stdout
+		if !r.server.serverless {
+			dlog.Server.Trace(r.server.user, path, globID, "readWithTurboProcessor -> waiting for data transmission")
+			time.Sleep(50 * time.Millisecond)
+		}
+
+		return startErr
+	}
+}
+
+func (r *readCommand) logRegexMode(re regex.Regex) {
+	if r.mode != omode.GrepClient {
+		return
+	}
+	if re.IsLiteral() {
+		dlog.Server.Info(r.server.user, "Using optimized literal string matching for pattern:", re.Pattern())
+	} else {
+		dlog.Server.Info(r.server.user, "Using regex matching for pattern:", re.Pattern())
 	}
 }
 
