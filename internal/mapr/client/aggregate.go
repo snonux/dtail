@@ -67,7 +67,7 @@ func (a *Aggregate) Aggregate(message string) error {
 	// Merge data from group into global group.
 	isMerged, err := a.globalGroup.MergeNoblock(a.query, a.group)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("unable to merge aggregate data for server %s: %w", a.server, err)
 	}
 	if isMerged {
 		// Re-init local group (make it empty again).
