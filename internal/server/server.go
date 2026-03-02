@@ -36,7 +36,11 @@ type Server struct {
 	sched *scheduler
 	// Mointor log files for pattern (if configured)
 	cont *continuous
+	// Authentication strategies keyed by SSH username.
+	authStrategies map[string]authStrategy
 }
+
+type authStrategy func(*user.User, string, string) bool
 
 // New returns a new server.
 func New(cfg config.RuntimeConfig) *Server {
@@ -61,6 +65,7 @@ func New(cfg config.RuntimeConfig) *Server {
 		sched:       newScheduler(cfg),
 		cont:        newContinuous(cfg),
 	}
+	s.authStrategies = s.newAuthStrategies()
 
 	s.sshServerConfig.PasswordCallback = s.Callback
 	s.sshServerConfig.PublicKeyCallback = server.PublicKeyCallback
@@ -279,30 +284,47 @@ func (s *Server) Callback(c gossh.ConnMetadata,
 	splitted := strings.Split(c.RemoteAddr().String(), ":")
 	remoteIP := splitted[0]
 
-	switch user.Name {
-	case config.HealthUser:
-		if authInfo == config.HealthUser {
-			dlog.Server.Debug(user, "Granting permissions to health user")
-			return nil, nil
-		}
-	case config.ScheduleUser:
-		for _, job := range s.cfg.Server.Schedule {
-			if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
-				dlog.Server.Debug(user, "Granting SSH connection")
-				return nil, nil
-			}
-		}
-	case config.ContinuousUser:
-		for _, job := range s.cfg.Server.Continuous {
-			if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
-				dlog.Server.Debug(user, "Granting SSH connection")
-				return nil, nil
-			}
-		}
-	default:
+	if strategy, found := s.authStrategies[user.Name]; found && strategy(user, authInfo, remoteIP) {
+		return nil, nil
 	}
 
 	return nil, fmt.Errorf("user %s not authorized", user)
+}
+
+func (s *Server) newAuthStrategies() map[string]authStrategy {
+	return map[string]authStrategy{
+		config.HealthUser:     s.authorizeHealthUser,
+		config.ScheduleUser:   s.authorizeScheduleUser,
+		config.ContinuousUser: s.authorizeContinuousUser,
+	}
+}
+
+func (s *Server) authorizeHealthUser(user *user.User, authInfo, _ string) bool {
+	if authInfo != config.HealthUser {
+		return false
+	}
+	dlog.Server.Debug(user, "Granting permissions to health user")
+	return true
+}
+
+func (s *Server) authorizeScheduleUser(user *user.User, authInfo, remoteIP string) bool {
+	for _, job := range s.cfg.Server.Schedule {
+		if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
+			dlog.Server.Debug(user, "Granting SSH connection")
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) authorizeContinuousUser(user *user.User, authInfo, remoteIP string) bool {
+	for _, job := range s.cfg.Server.Continuous {
+		if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
+			dlog.Server.Debug(user, "Granting SSH connection")
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) backgroundCanSSH(user *user.User, jobName, remoteIP,

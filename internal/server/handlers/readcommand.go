@@ -147,6 +147,8 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 				timeout := r.server.TurboEOFAckTimeout()
 				if r.server.WaitForTurboEOFAck(timeout) {
 					dlog.Server.Debug(r.server.LogContext(), "Turbo EOF acknowledged")
+					// Allow transport buffers to flush after acknowledgement.
+					time.Sleep(r.server.ShutdownTurboSerializeWait())
 				} else {
 					dlog.Server.Warn(
 						r.server.LogContext(),
