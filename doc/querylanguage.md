@@ -52,7 +52,7 @@ STRINGOPERATOR := eq|ne|contains|ncontains|lacks|hasprefix|nhasprefix|hassuffix|
 ORDERFIELD := FIELD|AGGREGATION(FIELD)
 SET := $VARIABLE = FLOAT|STRING|FIELD|FUNCTION(FIELD)
 LOGFORMAT := default|generic|generickv|...
-AGGREGATION := count|sum|min|max|avg|last|len
+AGGREGATION := count|sum|min|max|avg|last|len|percentage|percentile
 FUNCTION := md5sum|maskdigits
 ```
 

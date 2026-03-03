@@ -292,3 +292,39 @@ func TestQuotedSelectCondition(t *testing.T) {
 			"'select' clause but got '%v': %s\n%v", q.Select[3].Operation, queryStr, q)
 	}
 }
+
+func TestParseQueryPercentageAndPercentile(t *testing.T) {
+	queryStr := "select percentage($value),percentile($value) from stats group by $host order by percentile($value)"
+
+	q, err := NewQuery(queryStr)
+	if err != nil {
+		t.Errorf("Query parse error: %s\n%v: %v", queryStr, q, err)
+	}
+	if len(q.Select) != 2 {
+		t.Fatalf("Expected two elements in 'select' clause but got '%v': %s\n%v",
+			q.Select, queryStr, q)
+	}
+
+	if q.Select[0].Operation != Percentage {
+		t.Errorf("Expected 'percentage' as first select aggregation but got '%v': %s\n%v",
+			q.Select[0].Operation, queryStr, q)
+	}
+	if q.Select[0].FieldStorage != "percentage($value)" {
+		t.Errorf("Expected percentage field storage but got '%v': %s\n%v",
+			q.Select[0].FieldStorage, queryStr, q)
+	}
+
+	if q.Select[1].Operation != Percentile {
+		t.Errorf("Expected 'percentile' as second select aggregation but got '%v': %s\n%v",
+			q.Select[1].Operation, queryStr, q)
+	}
+	if q.Select[1].FieldStorage != "percentile($value)" {
+		t.Errorf("Expected percentile field storage but got '%v': %s\n%v",
+			q.Select[1].FieldStorage, queryStr, q)
+	}
+
+	if q.OrderBy != "percentile($value)" {
+		t.Errorf("Expected order by percentile($value) but got '%v': %s\n%v",
+			q.OrderBy, queryStr, q)
+	}
+}

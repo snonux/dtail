@@ -46,6 +46,10 @@ func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 		case Sum:
 			fallthrough
 		case Avg:
+			fallthrough
+		case Percentage:
+			fallthrough
+		case Percentile:
 			value := set.FValues[storage]
 			s.addFloat(storage, value)
 		case Min:
@@ -177,6 +181,10 @@ func (s *AggregateSet) Aggregate(key string, agg AggregateOperation, value strin
 	case Sum:
 		fallthrough
 	case Avg:
+		fallthrough
+	case Percentage:
+		fallthrough
+	case Percentile:
 		s.addFloat(key, f)
 	case Min:
 		s.addFloatMin(key, f)
