@@ -1,0 +1,117 @@
+package handlers
+
+import (
+	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"testing"
+	"time"
+
+	"github.com/mimecast/dtail/internal"
+	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/lcontext"
+	sshserver "github.com/mimecast/dtail/internal/ssh/server"
+	userserver "github.com/mimecast/dtail/internal/user/server"
+
+	gossh "golang.org/x/crypto/ssh"
+)
+
+func TestHandleAuthKeyCommandSuccess(t *testing.T) {
+	handler := newAuthKeyTestHandler("authkey-success-user", true)
+	key := handlerTestPublicKey(t, 31)
+	keyArg := base64.StdEncoding.EncodeToString(key.Marshal())
+
+	commandFinished := false
+	handler.handleAuthKeyCommand(context.Background(), lcontext.LContext{}, 2,
+		[]string{"AUTHKEY", keyArg}, func() {
+			commandFinished = true
+		})
+
+	if !commandFinished {
+		t.Fatalf("Expected commandFinished callback to be called")
+	}
+	if message := readServerMessage(t, handler.serverMessages); message != "AUTHKEY OK\n" {
+		t.Fatalf("Unexpected response: %q", message)
+	}
+	if !sshserver.ServerAuthKeyStore().Has(handler.user.Name, key) {
+		t.Fatalf("Expected key to be stored for user")
+	}
+
+	sshserver.ServerAuthKeyStore().Remove(handler.user.Name, key)
+}
+
+func TestHandleAuthKeyCommandFeatureDisabled(t *testing.T) {
+	handler := newAuthKeyTestHandler("authkey-disabled-user", false)
+	key := handlerTestPublicKey(t, 32)
+	keyArg := base64.StdEncoding.EncodeToString(key.Marshal())
+
+	handler.handleAuthKeyCommand(context.Background(), lcontext.LContext{}, 2,
+		[]string{"AUTHKEY", keyArg}, func() {})
+
+	if message := readServerMessage(t, handler.serverMessages); message != "AUTHKEY ERR feature disabled\n" {
+		t.Fatalf("Unexpected response: %q", message)
+	}
+	if sshserver.ServerAuthKeyStore().Has(handler.user.Name, key) {
+		t.Fatalf("Expected no key to be stored while feature is disabled")
+	}
+}
+
+func TestHandleAuthKeyCommandInvalidPayload(t *testing.T) {
+	handler := newAuthKeyTestHandler("authkey-invalid-user", true)
+
+	handler.handleAuthKeyCommand(context.Background(), lcontext.LContext{}, 2,
+		[]string{"AUTHKEY", "not-base64"}, func() {})
+
+	if message := readServerMessage(t, handler.serverMessages); message != "AUTHKEY ERR invalid base64\n" {
+		t.Fatalf("Unexpected response for invalid base64: %q", message)
+	}
+
+	validButNonSSH := base64.StdEncoding.EncodeToString([]byte("not-an-ssh-key"))
+	handler.handleAuthKeyCommand(context.Background(), lcontext.LContext{}, 2,
+		[]string{"AUTHKEY", validButNonSSH}, func() {})
+	if message := readServerMessage(t, handler.serverMessages); message != "AUTHKEY ERR invalid public key\n" {
+		t.Fatalf("Unexpected response for invalid key bytes: %q", message)
+	}
+}
+
+func newAuthKeyTestHandler(userName string, authKeyEnabled bool) *ServerHandler {
+	return &ServerHandler{
+		baseHandler: baseHandler{
+			done:           internal.NewDone(),
+			serverMessages: make(chan string, 4),
+			user:           &userserver.User{Name: userName},
+		},
+		serverCfg: &config.ServerConfig{
+			AuthKeyEnabled: authKeyEnabled,
+		},
+	}
+}
+
+func handlerTestPublicKey(t *testing.T, seedByte byte) gossh.PublicKey {
+	t.Helper()
+
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = seedByte
+	}
+
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	publicKey, err := gossh.NewPublicKey(privateKey.Public())
+	if err != nil {
+		t.Fatalf("Unable to build ssh public key: %s", err.Error())
+	}
+
+	return publicKey
+}
+
+func readServerMessage(t *testing.T, messages <-chan string) string {
+	t.Helper()
+
+	select {
+	case message := <-messages:
+		return message
+	case <-time.After(time.Second):
+		t.Fatalf("Timed out waiting for server message")
+		return ""
+	}
+}

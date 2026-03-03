@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"strings"
 	"sync/atomic"
 
@@ -11,7 +12,10 @@ import (
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/omode"
+	sshserver "github.com/mimecast/dtail/internal/ssh/server"
 	user "github.com/mimecast/dtail/internal/user/server"
+
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // ServerHandler implements the Reader and Writer interfaces to handle
@@ -100,11 +104,13 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 
 func (h *ServerHandler) newCommandRegistry() map[string]commandHandler {
 	return map[string]commandHandler{
-		"grep": h.makeReadCommandHandler(omode.GrepClient, 1),
-		"cat":  h.makeReadCommandHandler(omode.CatClient, 1),
-		"tail": h.makeReadCommandHandler(omode.TailClient, 10),
-		"map":  h.handleMapCommand,
-		".ack": h.handleAckUserCommand,
+		"grep":    h.makeReadCommandHandler(omode.GrepClient, 1),
+		"cat":     h.makeReadCommandHandler(omode.CatClient, 1),
+		"tail":    h.makeReadCommandHandler(omode.TailClient, 10),
+		"map":     h.handleMapCommand,
+		".ack":    h.handleAckUserCommand,
+		"AUTHKEY": h.handleAuthKeyCommand,
+		"authkey": h.handleAuthKeyCommand,
 	}
 }
 
@@ -138,4 +144,35 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 func (h *ServerHandler) handleAckUserCommand(_ context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
 	h.handleAckCommand(argc, args)
 	commandFinished()
+}
+
+func (h *ServerHandler) handleAuthKeyCommand(_ context.Context, _ lcontext.LContext,
+	argc int, args []string, commandFinished func()) {
+
+	defer commandFinished()
+
+	if !h.serverCfg.AuthKeyEnabled {
+		h.sendln(h.serverMessages, "AUTHKEY ERR feature disabled")
+		return
+	}
+
+	if argc < 2 || strings.TrimSpace(args[1]) == "" {
+		h.sendln(h.serverMessages, "AUTHKEY ERR missing public key")
+		return
+	}
+
+	decodedPubKey, err := base64.StdEncoding.DecodeString(args[1])
+	if err != nil {
+		h.sendln(h.serverMessages, "AUTHKEY ERR invalid base64")
+		return
+	}
+
+	pubKey, err := gossh.ParsePublicKey(decodedPubKey)
+	if err != nil {
+		h.sendln(h.serverMessages, "AUTHKEY ERR invalid public key")
+		return
+	}
+
+	sshserver.ServerAuthKeyStore().Add(h.user.Name, pubKey)
+	h.sendln(h.serverMessages, "AUTHKEY OK")
 }

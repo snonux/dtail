@@ -72,6 +72,8 @@ type ServerConfig struct {
 	// better performance through direct writing that bypasses internal channels.
 	// Set this to true only if you experience issues with turbo boost mode.
 	TurboBoostDisable bool `json:",omitempty"`
+	// Enable in-memory auth-key registration and fast reconnect.
+	AuthKeyEnabled bool `json:",omitempty"`
 	// Retry interval for glob retries in milliseconds.
 	ReadGlobRetryIntervalMs int `json:",omitempty"`
 	// Retry interval for re-reading in tail/cat loops in milliseconds.
@@ -119,6 +121,7 @@ func newDefaultServerConfig() *ServerConfig {
 			Default: defaultPermissions,
 		},
 		TurboBoostDisable:            false, // Default to false, meaning turbo boost is enabled by default
+		AuthKeyEnabled:               true,
 		ReadGlobRetryIntervalMs:      5000,
 		ReadRetryIntervalMs:          2000,
 		ReadAggregateLineBufferSize:  10000,
