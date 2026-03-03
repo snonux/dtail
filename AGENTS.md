@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-DTail (Distributed Tail) is a DevOps tool written in Go for distributed log operations across multiple servers. It provides secure, concurrent access to logs on many machines using SSH protocol, supporting tail, cat, grep, and MapReduce operations.
+DTail (Distributed Tail) is a DevOps tool written in Go for distributed log operations across multiple servers. It provides secure, concurrent access to logs on many machines using SSH protocol, supporting tail, cat, grep, MapReduce operations, and auth-key fast reconnect optimization for repeated SSH connections.
 
 ## Build Commands
 
@@ -165,10 +165,27 @@ make profile-help
   DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
   ```
 - Integration tests are run by setting DTAIL_INTEGRATION_TEST_RUN_MODE to yes, and by running 'make test'
-- Integration tests verify: DCat, DGrep, DMap (MapReduce), DServer, DTail, DTailHealth functionality
+- Integration tests verify: DCat, DGrep, DMap (MapReduce), DServer, DTail, DTailHealth, and auth-key fast reconnect functionality
 - All tests run with race detection enabled (`--race` flag)
 
 ## Known Limitations
+
+### Auth-Key Fast Reconnect
+Auth-key fast reconnect is enabled by default. The client can register a public key with `dserver` over an already-authenticated session, and subsequent connections can use this in-memory key before falling back to normal SSH auth.
+
+**Technical Details:**
+- Client sends `AUTHKEY <base64-pubkey>` command during session setup
+- Server stores keys in memory, per user, with TTL and max-keys limits
+- SSH `PublicKeyCallback` checks in-memory auth-key store before `authorized_keys`
+- If fast-path auth misses (restart/expiry/mismatch), normal SSH auth is used automatically
+
+**Config and Flags:**
+- Client flag: `--auth-key-path` (default `~/.ssh/id_rsa`)
+- Client flag: `--no-auth-key` (disable feature)
+- Client env: `DTAIL_AUTH_KEY_PATH` (alias for auth key path)
+- Server config: `AuthKeyEnabled` (default `true`)
+- Server config: `AuthKeyTTLSeconds` (default `86400`)
+- Server config: `AuthKeyMaxPerUser` (default `5`)
 
 ### Turbo Mode and MapReduce Operations
 Turbo boost mode is enabled by default and provides performance optimizations for both direct output operations (cat, grep, tail) and MapReduce operations when running in server mode. It can be explicitly disabled via DTAIL_TURBOBOOST_DISABLE=yes or TurboBoostDisable in the config file.
@@ -278,19 +295,30 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 
 5. **Compression Support**: Automatic handling of gzip and zstd compressed files in `/internal/io/`
 
+6. **Auth-Key Fast Reconnect**: Client registers a public key via `AUTHKEY`; server validates against in-memory auth-key cache before falling back to `authorized_keys`
+
 ## Important Implementation Details
 
 - **Main Server Loop**: `/internal/server/server.go` - Core server processing logic
 - **Client Base**: `/internal/clients/baseClient.go` - Common client functionality
 - **MapReduce Parser**: `/internal/mapr/parse/` - SQL-like query language parser
 - **Log Format Parsers**: `/internal/mapr/logformat/` - Extensible log parsing system
-- **SSH Authorization**: `/internal/server/user/authsshkey.go` - SSH key validation
+- **SSH Authorization Callback**: `/internal/ssh/server/publickeycallback.go` - auth-key fast-path + `authorized_keys` fallback
+- **Auth-Key Cache**: `/internal/ssh/server/authkeystore.go` - in-memory per-user key cache (TTL/max-keys)
+- **AUTHKEY Handler**: `/internal/server/handlers/serverhandler.go` - session command handling for auth-key registration
 
 ## Configuration Files
 
 - Server config: `/etc/dserver/dtail.json` or `./dtail.json`
 - Example configs: `/examples/`
 - Docker configs: `/docker/`
+
+### Auth-Key Related Options
+
+- Client: `--auth-key-path`, `--no-auth-key`
+- Client config: `Client.AuthKeyPath`, `Client.AuthKeyDisable`
+- Client env: `DTAIL_AUTH_KEY_PATH`
+- Server config: `Server.AuthKeyEnabled`, `Server.AuthKeyTTLSeconds`, `Server.AuthKeyMaxPerUser`
 
 ## Common Development Tasks
 

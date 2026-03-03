@@ -20,6 +20,45 @@ Installation and Usage
 
 * Check out the [DTail Documentation](doc/index.md)
 
+Auth-Key Fast Reconnect
+=======================
+
+DTail supports an optional SSH auth optimization for repeated reconnects.
+After a normal authenticated SSH session is established, the client can
+register a local public key with `dserver` using an `AUTHKEY` command. The
+server stores this key in memory only and checks it before `authorized_keys`
+on subsequent connections.
+
+This reduces repeated hardware-token signing (for example YubiKey-backed SSH
+agent keys) while keeping transparent fallback to normal SSH authentication.
+
+Client options:
+
+* `--auth-key-path` path to the private key to offer first and register
+  (default: `~/.ssh/id_rsa`)
+* `--no-auth-key` disable auth-key registration/fast-path and use normal SSH
+  behavior only
+
+Server configuration (`dtail.json`):
+
+```json
+{
+  "Server": {
+    "AuthKeyEnabled": true,
+    "AuthKeyTTLSeconds": 86400,
+    "AuthKeyMaxPerUser": 5
+  }
+}
+```
+
+Security notes:
+
+* Registered keys are stored in memory only (no disk persistence)
+* Registration is accepted only over an already-authenticated session
+* TTL expiry and per-user key limits bound key lifetime and memory growth
+* If fast-path auth is unavailable (restart/expiry/mismatch), DTail falls back
+  to normal SSH auth automatically
+
 More
 ====
 
