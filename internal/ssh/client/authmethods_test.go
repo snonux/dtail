@@ -49,6 +49,8 @@ func (s *mockSigner) Sign(_ io.Reader, _ []byte) (*gossh.Signature, error) {
 func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 	homeDir := "/tmp/dtail-auth-order"
 	t.Setenv("HOME", homeDir)
+	// Keep this unit test deterministic regardless of integration-mode env.
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
@@ -107,6 +109,8 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 	homeDir := "/tmp/dtail-auth-dedupe"
 	t.Setenv("HOME", homeDir)
+	// Keep this unit test deterministic regardless of integration-mode env.
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
