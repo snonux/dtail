@@ -203,5 +203,6 @@ func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMe
 			c.maker.makeCommands())
 	}
 	return connectors.NewServerConnection(server, c.UserName, sshAuthMethods,
-		hostKeyCallback, c.maker.makeHandler(server), c.maker.makeCommands())
+		hostKeyCallback, c.maker.makeHandler(server), c.maker.makeCommands(),
+		c.Args.SSHPrivateKeyFilePath)
 }

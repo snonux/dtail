@@ -90,12 +90,57 @@ func (h *baseHandler) handleMessage(message string) {
 		h.handleHiddenMessage(message)
 		return
 	}
+	if h.handleAuthKeyMessage(message) {
+		return
+	}
 
 	// Add newline only if the message doesn't already end with one
 	if len(message) > 0 && message[len(message)-1] == '\n' {
 		dlog.Client.Raw(message)
 	} else {
 		dlog.Client.Raw(message + "\n")
+	}
+}
+
+func (h *baseHandler) handleAuthKeyMessage(message string) bool {
+	isAuthKeyMessage, authKeyOK, authKeyDetail := parseAuthKeyMessage(message)
+	if !isAuthKeyMessage {
+		return false
+	}
+
+	if authKeyOK {
+		dlog.Client.Debug(h.server, "AUTHKEY registration accepted by server")
+		return true
+	}
+
+	if authKeyDetail == "" {
+		dlog.Client.Warn(h.server, "AUTHKEY registration failed")
+		return true
+	}
+
+	dlog.Client.Warn(h.server, "AUTHKEY registration failed", authKeyDetail)
+	return true
+}
+
+func parseAuthKeyMessage(message string) (isAuthKeyMessage bool, ok bool, detail string) {
+	if message == "" {
+		return false, false, ""
+	}
+
+	payload := strings.TrimSpace(message)
+	parts := strings.Split(payload, protocol.FieldDelimiter)
+	if len(parts) > 0 {
+		payload = strings.TrimSpace(parts[len(parts)-1])
+	}
+
+	switch {
+	case payload == "AUTHKEY OK":
+		return true, true, ""
+	case strings.HasPrefix(payload, "AUTHKEY ERR"):
+		detail := strings.TrimSpace(strings.TrimPrefix(payload, "AUTHKEY ERR"))
+		return true, false, detail
+	default:
+		return false, false, ""
 	}
 }
 
