@@ -33,6 +33,11 @@ func ServerAuthKeyStore() *AuthKeyStore {
 	return authKeyStore
 }
 
+// ConfigureAuthKeyStore reinitializes the process-wide auth key cache using config values.
+func ConfigureAuthKeyStore(authKeyTTLSeconds, authKeyMaxPerUser int) {
+	authKeyStore = NewAuthKeyStore(time.Duration(authKeyTTLSeconds)*time.Second, authKeyMaxPerUser)
+}
+
 // NewAuthKeyStore builds a thread-safe auth key store.
 func NewAuthKeyStore(ttl time.Duration, maxKeysPerUser int) *AuthKeyStore {
 	return newAuthKeyStoreWithClock(ttl, maxKeysPerUser, time.Now)

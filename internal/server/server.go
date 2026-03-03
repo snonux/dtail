@@ -49,6 +49,7 @@ func New(cfg config.RuntimeConfig) *Server {
 	}
 
 	dlog.Server.Info("Starting server", version.String())
+	server.ConfigureAuthKeyStore(cfg.Server.AuthKeyTTLSeconds, cfg.Server.AuthKeyMaxPerUser)
 
 	s := Server{
 		cfg: cfg,

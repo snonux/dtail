@@ -30,6 +30,7 @@ func main() {
 	userName := user.Name()
 
 	flag.BoolVar(&args.NoColor, "noColor", false, "Disable ANSII terminal colors")
+	flag.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")
 	flag.BoolVar(&args.Quiet, "quiet", false, "Quiet output mode")
 	flag.BoolVar(&args.Plain, "plain", false, "Plain output mode")
 	flag.BoolVar(&args.TrustAllHosts, "trustAllHosts", false, "Trust all unknown host keys")
@@ -44,11 +45,12 @@ func main() {
 	flag.StringVar(&args.Logger, "logger", config.DefaultClientLogger, "Logger name")
 	flag.StringVar(&args.LogLevel, "logLevel", config.DefaultLogLevel, "Log level")
 	flag.StringVar(&args.SSHPrivateKeyFilePath, "key", "", "Path to private key")
+	flag.StringVar(&args.SSHPrivateKeyFilePath, "auth-key-path", "", "Path to auth key/private key (default ~/.ssh/id_rsa)")
 	flag.StringVar(&args.ServersStr, "servers", "", "Remote servers to connect")
 	flag.StringVar(&args.UserName, "user", userName, "Your system user name")
 	flag.StringVar(&args.What, "files", "", "File(s) to read")
 	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
-	
+
 	// Add profiling flags
 	profiling.AddFlags(&profileFlags)
 
@@ -86,15 +88,15 @@ func main() {
 	}
 
 	status := client.Start(ctx, signal.InterruptCh(ctx))
-	
+
 	// Log final metrics if profiling is enabled
 	if profileFlags.Enabled() {
 		profiler.LogMetrics("shutdown")
 	}
-	
+
 	// Stop profiler before exit
 	profiler.Stop()
-	
+
 	cancel()
 
 	wg.Wait()

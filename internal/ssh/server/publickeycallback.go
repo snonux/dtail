@@ -23,9 +23,11 @@ func PublicKeyCallback(c gossh.ConnMetadata,
 	}
 	dlog.Server.Info(user, "Incoming authorization")
 
-	if permissions := authKeyStorePermissions(user.Name, offeredPubKey); permissions != nil {
-		dlog.Server.Info(user, "Authorized by in-memory auth key store")
-		return permissions, nil
+	if config.Server != nil && config.Server.AuthKeyEnabled {
+		if permissions := authKeyStorePermissions(user.Name, offeredPubKey); permissions != nil {
+			dlog.Server.Info(user, "Authorized by in-memory auth key store")
+			return permissions, nil
+		}
 	}
 
 	authorizedKeysFile, err := authorizedKeysFile(user)

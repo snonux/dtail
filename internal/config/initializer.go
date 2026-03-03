@@ -92,6 +92,10 @@ func (in *initializer) processEnvVars(args *Args) {
 	if len(sshPrivateKeyPathFile) > 0 && args.SSHPrivateKeyFilePath == "" {
 		args.SSHPrivateKeyFilePath = sshPrivateKeyPathFile
 	}
+	authKeyPath := os.Getenv("DTAIL_AUTH_KEY_PATH")
+	if len(authKeyPath) > 0 && args.SSHPrivateKeyFilePath == "" {
+		args.SSHPrivateKeyFilePath = authKeyPath
+	}
 	// Check if turbo boost should be disabled from environment variable
 	// Turbo boost is enabled by default, can be explicitly disabled
 	if Env("DTAIL_TURBOBOOST_DISABLE") {
@@ -112,6 +116,18 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 	}
 	if args.NoColor {
 		in.Client.TermColorsEnable = false
+	}
+	if args.NoAuthKey {
+		in.Client.AuthKeyDisable = true
+	}
+	if in.Client.AuthKeyDisable {
+		args.NoAuthKey = true
+	}
+	if args.SSHPrivateKeyFilePath == "" {
+		args.SSHPrivateKeyFilePath = in.Client.AuthKeyPath
+	}
+	if args.SSHPrivateKeyFilePath != "" {
+		in.Client.AuthKeyPath = args.SSHPrivateKeyFilePath
 	}
 	if args.LogDir != "" {
 		in.Common.LogDir = args.LogDir

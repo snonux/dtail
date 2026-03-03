@@ -32,6 +32,7 @@ type ServerConnection struct {
 	handler         handlers.Handler
 	commands        []string
 	authKeyPath     string
+	authKeyDisabled bool
 	hostKeyCallback client.HostKeyCallback
 	throttlingDone  bool
 }
@@ -41,7 +42,8 @@ var _ Connector = (*ServerConnection)(nil)
 // NewServerConnection returns a new DTail SSH server connection.
 func NewServerConnection(server string, userName string,
 	authMethods []ssh.AuthMethod, hostKeyCallback client.HostKeyCallback,
-	handler handlers.Handler, commands []string, authKeyPath string) *ServerConnection {
+	handler handlers.Handler, commands []string, authKeyPath string,
+	authKeyDisabled bool) *ServerConnection {
 
 	dlog.Client.Debug(server, "Creating new connection", server, handler, commands)
 	sshConnectTimeout := time.Duration(config.Common.SSHConnectTimeoutMs) * time.Millisecond
@@ -55,6 +57,7 @@ func NewServerConnection(server string, userName string,
 		handler:         handler,
 		commands:        commands,
 		authKeyPath:     resolveAuthKeyPath(authKeyPath),
+		authKeyDisabled: authKeyDisabled,
 		config: &ssh.ClientConfig{
 			User:            userName,
 			Auth:            authMethods,
@@ -228,7 +231,11 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 			dlog.Client.Debug(err)
 		}
 	}
-	c.sendAuthKeyRegistrationCommand()
+	if c.authKeyDisabled {
+		dlog.Client.Debug(c.server, "Skipping AUTHKEY registration because auth-key is disabled")
+	} else {
+		c.sendAuthKeyRegistrationCommand()
+	}
 
 	if !c.throttlingDone {
 		dlog.Client.Debug(c.server, "Unthrottling connection (2)",

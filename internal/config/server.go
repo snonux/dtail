@@ -74,6 +74,10 @@ type ServerConfig struct {
 	TurboBoostDisable bool `json:",omitempty"`
 	// Enable in-memory auth-key registration and fast reconnect.
 	AuthKeyEnabled bool `json:",omitempty"`
+	// Auth-key cache entry TTL in seconds.
+	AuthKeyTTLSeconds int `json:",omitempty"`
+	// Maximum number of cached auth keys per user.
+	AuthKeyMaxPerUser int `json:",omitempty"`
 	// Retry interval for glob retries in milliseconds.
 	ReadGlobRetryIntervalMs int `json:",omitempty"`
 	// Retry interval for re-reading in tail/cat loops in milliseconds.
@@ -122,6 +126,8 @@ func newDefaultServerConfig() *ServerConfig {
 		},
 		TurboBoostDisable:            false, // Default to false, meaning turbo boost is enabled by default
 		AuthKeyEnabled:               true,
+		AuthKeyTTLSeconds:            86400,
+		AuthKeyMaxPerUser:            5,
 		ReadGlobRetryIntervalMs:      5000,
 		ReadRetryIntervalMs:          2000,
 		ReadAggregateLineBufferSize:  10000,

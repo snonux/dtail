@@ -23,6 +23,7 @@ type Args struct {
 	Logger                string
 	LogLevel              string
 	Mode                  omode.Mode
+	NoAuthKey             bool
 	NoColor               bool
 	QueryStr              string
 	Quiet                 bool
@@ -56,6 +57,7 @@ func (a *Args) String() string {
 	sb.WriteString(fmt.Sprintf("%s:%v,", "LogLevel", a.LogLevel))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Logger", a.Logger))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Mode", a.Mode))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "NoAuthKey", a.NoAuthKey))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "NoColor", a.NoColor))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "QueryStr", a.QueryStr))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Quiet", a.Quiet))

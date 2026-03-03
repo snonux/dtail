@@ -1,6 +1,10 @@
 package config
 
-import "github.com/mimecast/dtail/internal/color"
+import (
+	"os"
+
+	"github.com/mimecast/dtail/internal/color"
+)
 
 type remoteTermColors struct {
 	DelimiterAttr color.Attribute
@@ -104,12 +108,16 @@ type termColors struct {
 type ClientConfig struct {
 	TermColorsEnable bool       `json:",omitempty"`
 	TermColors       termColors `json:",omitempty"`
+	AuthKeyPath      string     `json:",omitempty"`
+	AuthKeyDisable   bool       `json:",omitempty"`
 }
 
 // Create a new default client configuration.
 func newDefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
 		TermColorsEnable: true,
+		AuthKeyPath:      defaultAuthKeyPath(),
+		AuthKeyDisable:   false,
 		TermColors: termColors{
 			Remote: remoteTermColors{
 				DelimiterAttr: color.AttrDim,
@@ -197,4 +205,16 @@ func newDefaultClientConfig() *ClientConfig {
 			},
 		},
 	}
+}
+
+func defaultAuthKeyPath() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		homeDir = os.Getenv("HOME")
+	}
+	if homeDir == "" {
+		return "~/.ssh/id_rsa"
+	}
+
+	return homeDir + "/.ssh/id_rsa"
 }
