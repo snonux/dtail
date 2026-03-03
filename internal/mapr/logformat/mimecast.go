@@ -1,5 +1,4 @@
 //go:build !proprietary
-// +build !proprietary
 
 package logformat
 
