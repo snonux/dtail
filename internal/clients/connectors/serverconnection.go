@@ -224,17 +224,18 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 		}
 	}()
 
-	// Send all commands to client.
+	if c.authKeyDisabled {
+		dlog.Client.Debug(c.server, "Skipping AUTHKEY registration because auth-key is disabled")
+	} else {
+		c.sendAuthKeyRegistrationCommand()
+	}
+
+	// Send all requested commands to the server.
 	for _, command := range c.commands {
 		dlog.Client.Debug(command)
 		if err := c.handler.SendMessage(command); err != nil {
 			dlog.Client.Debug(err)
 		}
-	}
-	if c.authKeyDisabled {
-		dlog.Client.Debug(c.server, "Skipping AUTHKEY registration because auth-key is disabled")
-	} else {
-		c.sendAuthKeyRegistrationCommand()
 	}
 
 	if !c.throttlingDone {

@@ -79,14 +79,17 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	argc int, args []string, commandName string) {
 
 	dlog.Server.Debug(h.user, "Handling user command", argc, args)
+	shutdownOnCompletion := shouldShutdownOnCommandCompletion(commandName)
 	h.incrementActiveCommands()
 	commandFinished := func() {
 		activeCommands := h.decrementActiveCommands()
 		pendingFiles := atomic.LoadInt32(&h.pendingFiles)
 		dlog.Server.Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
 
-		// Only shutdown if no active commands AND no pending files
-		if activeCommands == 0 && pendingFiles == 0 {
+		// Only shutdown if no active commands AND no pending files.
+		// AUTHKEY is a session-side effect command and should not terminate the shell
+		// because user commands may still follow in the same session.
+		if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 {
 			h.shutdown()
 		}
 	}
@@ -100,6 +103,10 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	}
 
 	handler(ctx, ltx, argc, args, commandFinished)
+}
+
+func shouldShutdownOnCommandCompletion(commandName string) bool {
+	return !strings.EqualFold(commandName, "AUTHKEY")
 }
 
 func (h *ServerHandler) newCommandRegistry() map[string]commandHandler {

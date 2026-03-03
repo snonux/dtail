@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"io"
 	"reflect"
 	"testing"
 
@@ -10,42 +11,84 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+type mockPublicKey struct {
+	id string
+}
+
+func (k *mockPublicKey) Type() string {
+	return "ssh-rsa"
+}
+
+func (k *mockPublicKey) Marshal() []byte {
+	return []byte(k.id)
+}
+
+func (k *mockPublicKey) Verify(_ []byte, _ *gossh.Signature) error {
+	return nil
+}
+
+type mockSigner struct {
+	key gossh.PublicKey
+}
+
+func newMockSigner(id string) gossh.Signer {
+	return &mockSigner{key: &mockPublicKey{id: id}}
+}
+
+func (s *mockSigner) PublicKey() gossh.PublicKey {
+	return s.key
+}
+
+func (s *mockSigner) Sign(_ io.Reader, _ []byte) (*gossh.Signature, error) {
+	return &gossh.Signature{
+		Format: "ssh-rsa",
+		Blob:   []byte("sig"),
+	}, nil
+}
+
 func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 	homeDir := "/tmp/dtail-auth-order"
 	t.Setenv("HOME", homeDir)
 
-	originalPrivateKeyAuthMethod := privateKeyAuthMethod
-	originalAgentAuthMethod := agentAuthMethod
+	originalPrivateKeySigner := privateKeySigner
+	originalAgentSigners := agentSigners
 	originalLogger := dlog.Client
 	dlog.Client = &dlog.DLog{}
 	t.Cleanup(func() {
-		privateKeyAuthMethod = originalPrivateKeyAuthMethod
-		agentAuthMethod = originalAgentAuthMethod
+		privateKeySigner = originalPrivateKeySigner
+		agentSigners = originalAgentSigners
 		dlog.Client = originalLogger
 	})
 
 	var callOrder []string
-	successfulPrivateKeys := map[string]bool{
-		"/custom/id_fast":        true,
-		homeDir + "/.ssh/id_rsa": true,
-		homeDir + "/.ssh/id_dsa": true,
+	successfulPrivateKeys := map[string]gossh.Signer{
+		"/custom/id_fast":        newMockSigner("custom"),
+		homeDir + "/.ssh/id_rsa": newMockSigner("default-rsa"),
+		homeDir + "/.ssh/id_dsa": newMockSigner("default-dsa"),
 	}
 
-	privateKeyAuthMethod = func(path string) (gossh.AuthMethod, error) {
+	privateKeySigner = func(path string) (gossh.Signer, error) {
 		callOrder = append(callOrder, "private:"+path)
-		if !successfulPrivateKeys[path] {
+		signer, found := successfulPrivateKeys[path]
+		if !found {
 			return nil, fmt.Errorf("missing private key: %s", path)
 		}
-		return gossh.Password(path), nil
+		return signer, nil
 	}
-	agentAuthMethod = func(keyIndex int) (gossh.AuthMethod, error) {
+	agentSigners = func(keyIndex int) ([]gossh.Signer, error) {
 		callOrder = append(callOrder, fmt.Sprintf("agent:%d", keyIndex))
-		return gossh.Password("agent"), nil
+		return []gossh.Signer{newMockSigner("agent")}, nil
 	}
 
 	methods := collectKnownHostsAuthMethods("/custom/id_fast", 7)
-	if len(methods) != 4 {
-		t.Fatalf("Expected 4 auth methods, got %d", len(methods))
+	if len(methods) != 1 {
+		t.Fatalf("Expected 1 auth method, got %d", len(methods))
+	}
+
+	callOrder = nil
+	signers := collectKnownHostsSigners("/custom/id_fast", 7)
+	if len(signers) != 4 {
+		t.Fatalf("Expected 4 signers, got %d", len(signers))
 	}
 
 	expectedOrder := []string{
@@ -65,32 +108,39 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 	homeDir := "/tmp/dtail-auth-dedupe"
 	t.Setenv("HOME", homeDir)
 
-	originalPrivateKeyAuthMethod := privateKeyAuthMethod
-	originalAgentAuthMethod := agentAuthMethod
+	originalPrivateKeySigner := privateKeySigner
+	originalAgentSigners := agentSigners
 	originalLogger := dlog.Client
 	dlog.Client = &dlog.DLog{}
 	t.Cleanup(func() {
-		privateKeyAuthMethod = originalPrivateKeyAuthMethod
-		agentAuthMethod = originalAgentAuthMethod
+		privateKeySigner = originalPrivateKeySigner
+		agentSigners = originalAgentSigners
 		dlog.Client = originalLogger
 	})
 
+	sharedSigner := newMockSigner("shared")
 	var callOrder []string
-	privateKeyAuthMethod = func(path string) (gossh.AuthMethod, error) {
+	privateKeySigner = func(path string) (gossh.Signer, error) {
 		callOrder = append(callOrder, "private:"+path)
 		if path == homeDir+"/.ssh/id_rsa" {
-			return gossh.Password(path), nil
+			return sharedSigner, nil
 		}
 		return nil, fmt.Errorf("missing private key: %s", path)
 	}
-	agentAuthMethod = func(keyIndex int) (gossh.AuthMethod, error) {
+	agentSigners = func(keyIndex int) ([]gossh.Signer, error) {
 		callOrder = append(callOrder, fmt.Sprintf("agent:%d", keyIndex))
-		return gossh.Password("agent"), nil
+		return []gossh.Signer{sharedSigner}, nil
 	}
 
 	methods := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", 2)
-	if len(methods) != 2 {
-		t.Fatalf("Expected 2 auth methods, got %d", len(methods))
+	if len(methods) != 1 {
+		t.Fatalf("Expected 1 auth method, got %d", len(methods))
+	}
+
+	callOrder = nil
+	signers := collectKnownHostsSigners(homeDir+"/.ssh/id_rsa", 2)
+	if len(signers) != 1 {
+		t.Fatalf("Expected duplicate keys to collapse to 1 signer, got %d", len(signers))
 	}
 
 	expectedOrder := []string{
