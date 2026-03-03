@@ -129,14 +129,23 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 
 	dlog.Server.Info(r.server.LogContext(), "All files processed", "count", len(paths))
 
-	// In turbo mode, signal EOF after all files are processed
-	// This is crucial for proper shutdown in server mode
+	// In turbo mode, only the final active command should signal EOF and wait for
+	// acknowledgement. Signaling per command in high-concurrency cat/grep sessions
+	// causes repeated EOF timeouts and races with still-running commands.
 	if !r.server.TurboBoostDisabled() && !r.server.HasRegularAggregate() &&
 		(r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient) {
 		if r.server.IsTurboMode() && r.server.HasTurboEOF() {
+			pending, active := r.server.PendingAndActive()
+			shouldSignalEOF := pending == 0 && active == 1
+			if !shouldSignalEOF {
+				dlog.Server.Trace(r.server.LogContext(), "Skipping turbo EOF signal for non-final command",
+					"pending", pending, "active", active)
+				return
+			}
+
 			dlog.Server.Debug(r.server.LogContext(), "Turbo mode: flushing data before EOF signal")
 
-			// Ensure all turbo data is flushed before signaling EOF
+			// Ensure all turbo data is flushed before signaling EOF.
 			r.server.FlushTurboData()
 
 			// Signal EOF by closing the channel, but only once.

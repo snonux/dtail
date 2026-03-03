@@ -28,6 +28,7 @@ func main() {
 	flag.StringVar(&args.Logger, "logger", config.DefaultHealthCheckLogger, "Logger name")
 	flag.StringVar(&args.LogLevel, "logLevel", "none", "Log level")
 	flag.StringVar(&args.ServersStr, "server", "", "Remote server to connect")
+	flag.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")
 	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
 	flag.Parse()
 

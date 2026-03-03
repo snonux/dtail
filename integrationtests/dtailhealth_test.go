@@ -143,7 +143,7 @@ func testDTailHealth2WithServer(t *testing.T, logger *TestLogger) {
 	ctx = WithTestLogger(ctx, logger)
 	defer cancel()
 
-	// Start dserver  
+	// Start dserver
 	_, _, _, err := startCommand(ctx, t,
 		"", "../dserver",
 		"--cfg", "none",
@@ -218,7 +218,7 @@ func testDTailHealthCheck3WithServer(t *testing.T, logger *TestLogger) {
 	}
 
 	_, err = runCommandRetry(ctx, t, 10, outFile,
-		"../dtailhealth", "--server", fmt.Sprintf("%s:%d", bindAddress, port))
+		"../dtailhealth", "--server", fmt.Sprintf("%s:%d", bindAddress, port), "--no-auth-key")
 	if err != nil {
 		t.Error(err)
 		return
