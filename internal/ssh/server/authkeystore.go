@@ -17,6 +17,8 @@ type authKeyEntry struct {
 	registeredAt time.Time
 }
 
+var authKeyStore = NewAuthKeyStore(0, 0)
+
 // AuthKeyStore is an in-memory, per-user cache of SSH public keys.
 type AuthKeyStore struct {
 	mu             sync.RWMutex

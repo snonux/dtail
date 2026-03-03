@@ -23,6 +23,11 @@ func PublicKeyCallback(c gossh.ConnMetadata,
 	}
 	dlog.Server.Info(user, "Incoming authorization")
 
+	if permissions := authKeyStorePermissions(user.Name, offeredPubKey); permissions != nil {
+		dlog.Server.Info(user, "Authorized by in-memory auth key store")
+		return permissions, nil
+	}
+
 	authorizedKeysFile, err := authorizedKeysFile(user)
 	if err != nil {
 		return nil, err
@@ -56,12 +61,24 @@ func verifyAuthorizedKeys(user *user.User, authorizedKeysBytes []byte,
 
 	dlog.Server.Debug(user, "Offered public key fingerprint", gossh.FingerprintSHA256(offeredPubKey))
 	if authorizedKeysMap[string(offeredPubKey.Marshal())] {
-		return &gossh.Permissions{
-			Extensions: map[string]string{"pubkey-fp": gossh.FingerprintSHA256(offeredPubKey)},
-		}, nil
+		return permissionsFromPublicKey(offeredPubKey), nil
 	}
 
 	return nil, fmt.Errorf("%s|public key of user not authorized", user)
+}
+
+func authKeyStorePermissions(userName string, offeredPubKey gossh.PublicKey) *gossh.Permissions {
+	if !authKeyStore.Has(userName, offeredPubKey) {
+		return nil
+	}
+
+	return permissionsFromPublicKey(offeredPubKey)
+}
+
+func permissionsFromPublicKey(offeredPubKey gossh.PublicKey) *gossh.Permissions {
+	return &gossh.Permissions{
+		Extensions: map[string]string{"pubkey-fp": gossh.FingerprintSHA256(offeredPubKey)},
+	}
 }
 
 func authorizedKeysFile(user *user.User) (string, error) {
