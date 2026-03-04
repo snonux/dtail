@@ -15,7 +15,7 @@ func TestDTailWithServer(t *testing.T) {
 	testLogger := NewTestLogger("TestDTailWithServer")
 	defer testLogger.WriteLogFile()
 	cleanupTmpFiles(t)
-	
+
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
 		return
@@ -91,6 +91,7 @@ func TestDTailWithServer(t *testing.T) {
 
 	var greetingsRecv []string
 
+readLoop:
 	for len(greetingsRecv) < len(greetings) {
 		select {
 		case line := <-serverCh:
@@ -105,7 +106,7 @@ func TestDTailWithServer(t *testing.T) {
 			}
 		case <-ctx.Done():
 			t.Log("Done reading client and server pipes")
-			break
+			break readLoop
 		}
 	}
 
@@ -157,7 +158,7 @@ func TestDTailColorTable(t *testing.T) {
 
 func testDTailColorTableServerless(t *testing.T, logger *TestLogger) {
 	ctx := WithTestLogger(context.Background(), logger)
-	
+
 	outFile := "dtailcolortable.stdout.tmp"
 	expectedOutFile := "dtailcolortable.expected"
 
@@ -199,7 +200,7 @@ func testDTailColorTableWithServer(t *testing.T, logger *TestLogger) {
 	// Give server time to start
 	time.Sleep(500 * time.Millisecond)
 
-	_, err = runCommand(ctx, t, outFile, "../dtail", 
+	_, err = runCommand(ctx, t, outFile, "../dtail",
 		"--colorTable",
 		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
 		"--trustAllHosts")
