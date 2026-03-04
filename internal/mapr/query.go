@@ -164,14 +164,14 @@ func (q *Query) parseTokens(tokens []token) ([]token, error) {
 			}
 		case "group":
 			tokens = tokensConsumeOptional(tokens[1:], "by")
-			if tokens == nil || len(tokens) < 1 {
+			if len(tokens) < 1 {
 				return tokens, errors.New(invalidQuery + unexpectedEnd)
 			}
 			tokens, q.GroupBy = tokensConsumeStr(tokens)
 			q.GroupKey = strings.Join(q.GroupBy, ",")
 		case "rorder":
 			tokens = tokensConsumeOptional(tokens[1:], "by")
-			if tokens == nil || len(tokens) < 1 {
+			if len(tokens) < 1 {
 				return tokens, errors.New(invalidQuery + unexpectedEnd)
 			}
 			tokens, found = tokensConsume(tokens)
@@ -182,7 +182,7 @@ func (q *Query) parseTokens(tokens []token) ([]token, error) {
 			q.ReverseOrder = true
 		case "order":
 			tokens = tokensConsumeOptional(tokens[1:], "by")
-			if tokens == nil || len(tokens) < 1 {
+			if len(tokens) < 1 {
 				return tokens, errors.New(invalidQuery + unexpectedEnd)
 			}
 			tokens, found = tokensConsume(tokens)
