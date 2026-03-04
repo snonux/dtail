@@ -29,9 +29,11 @@ func (s *scheduler) start(ctx context.Context) {
 	// First run after just 10s!
 	time.Sleep(time.Second * 2)
 	s.runJobs(ctx)
+	runTicker := time.NewTicker(time.Minute)
+	defer runTicker.Stop()
 	for {
 		select {
-		case <-time.After(time.Minute):
+		case <-runTicker.C:
 			s.runJobs(ctx)
 		case <-ctx.Done():
 			return

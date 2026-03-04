@@ -35,10 +35,12 @@ func (c *continuous) runJobs(ctx context.Context) {
 		}
 		go func(job config.Continuous) {
 			c.runJob(ctx, job)
+			retryTicker := time.NewTicker(time.Minute)
+			defer retryTicker.Stop()
 			for {
 				select {
-				// Retry after a minute
-				case <-time.After(time.Minute):
+				// Retry after a minute.
+				case <-retryTicker.C:
 					c.runJob(ctx, job)
 				case <-ctx.Done():
 					return
@@ -98,9 +100,11 @@ func (c *continuous) runJob(ctx context.Context, job config.Continuous) {
 
 func (c *continuous) waitForDayChange(ctx context.Context) bool {
 	startTime := time.Now()
+	checkTicker := time.NewTicker(time.Second)
+	defer checkTicker.Stop()
 	for {
 		select {
-		case <-time.After(time.Second):
+		case <-checkTicker.C:
 			if time.Now().Day() != startTime.Day() {
 				return true
 			}
