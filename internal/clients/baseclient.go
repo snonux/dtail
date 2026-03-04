@@ -114,9 +114,9 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 
 	for {
 		connCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
 
 		conn.Start(connCtx, cancel, c.throttleCh, c.stats.connectionsEstCh)
+		cancel()
 		// Retrieve status code from handler (dtail client will exit with that status)
 		status = conn.Handler().Status()
 
