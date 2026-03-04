@@ -309,7 +309,8 @@ func (s *Server) authorizeHealthUser(user *user.User, authInfo, _ string) bool {
 }
 
 func (s *Server) authorizeScheduleUser(user *user.User, authInfo, remoteIP string) bool {
-	for _, job := range s.cfg.Server.Schedule {
+	for i := range s.cfg.Server.Schedule {
+		job := &s.cfg.Server.Schedule[i]
 		if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
 			dlog.Server.Debug(user, "Granting SSH connection")
 			return true
@@ -319,7 +320,8 @@ func (s *Server) authorizeScheduleUser(user *user.User, authInfo, remoteIP strin
 }
 
 func (s *Server) authorizeContinuousUser(user *user.User, authInfo, remoteIP string) bool {
-	for _, job := range s.cfg.Server.Continuous {
+	for i := range s.cfg.Server.Continuous {
+		job := &s.cfg.Server.Continuous[i]
 		if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
 			dlog.Server.Debug(user, "Granting SSH connection")
 			return true

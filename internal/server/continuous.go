@@ -28,12 +28,13 @@ func (c *continuous) start(ctx context.Context) {
 }
 
 func (c *continuous) runJobs(ctx context.Context) {
-	for _, job := range c.cfg.Server.Continuous {
+	for i := range c.cfg.Server.Continuous {
+		job := &c.cfg.Server.Continuous[i]
 		if !job.Enable {
 			dlog.Server.Debug(job.Name, "Not running job as not enabled")
 			continue
 		}
-		go func(job config.Continuous) {
+		go func(job *config.Continuous) {
 			c.runJob(ctx, job)
 			retryTicker := time.NewTicker(time.Minute)
 			defer retryTicker.Stop()
@@ -50,7 +51,7 @@ func (c *continuous) runJobs(ctx context.Context) {
 	}
 }
 
-func (c *continuous) runJob(ctx context.Context, job config.Continuous) {
+func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 	dlog.Server.Debug(job.Name, "Processing job")
 
 	files := fillDates(job.Files)

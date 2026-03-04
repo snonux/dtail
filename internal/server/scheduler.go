@@ -42,7 +42,8 @@ func (s *scheduler) start(ctx context.Context) {
 }
 
 func (s *scheduler) runJobs(ctx context.Context) {
-	for _, job := range s.cfg.Server.Schedule {
+	for i := range s.cfg.Server.Schedule {
+		job := &s.cfg.Server.Schedule[i]
 		if !job.Enable {
 			dlog.Server.Debug(job.Name, "Not running job as not enabled")
 			continue
@@ -60,7 +61,7 @@ func (s *scheduler) runJobs(ctx context.Context) {
 	}
 }
 
-func (s *scheduler) runJob(ctx context.Context, job config.Scheduled) {
+func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
 	files := fillDates(job.Files)
 	outfile := fillDates(job.Outfile)
 
