@@ -18,10 +18,12 @@ import (
 // FileSize represents the size category of test files
 type FileSize int
 
+// Supported benchmark file sizes.
 const (
-	Small  FileSize = 10 * 1024 * 1024        // 10MB
-	Medium FileSize = 100 * 1024 * 1024       // 100MB
-	Large  FileSize = 1024 * 1024 * 1024      // 1GB
+	// Small represents a 10MB test file.
+	Small  FileSize = 10 * 1024 * 1024   // 10MB
+	Medium FileSize = 100 * 1024 * 1024  // 100MB
+	Large  FileSize = 1024 * 1024 * 1024 // 1GB
 )
 
 func (fs FileSize) String() string {
@@ -40,7 +42,9 @@ func (fs FileSize) String() string {
 // LogFormat represents different log format types
 type LogFormat int
 
+// Supported synthetic log formats.
 const (
+	// SimpleLogFormat contains plain text log lines.
 	SimpleLogFormat LogFormat = iota
 	MapReduceLogFormat
 	MixedLogFormat
@@ -49,7 +53,9 @@ const (
 // CompressionType represents file compression options
 type CompressionType int
 
+// Supported compression modes for generated test files.
 const (
+	// NoCompression stores test data without compression.
 	NoCompression CompressionType = iota
 	GzipCompression
 	ZstdCompression
@@ -163,30 +169,30 @@ func generateCompressedFile(tmpFile, finalFile string, config TestDataConfig, cr
 // writeLogLines generates log content based on config
 func writeLogLines(w io.Writer, config TestDataConfig) error {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	
+
 	// Calculate approximate lines needed
 	avgLineSize := 150 // bytes
 	totalLines := int(config.Size) / avgLineSize
-	
+
 	// Pre-generate some template lines for variation
 	templateLines := generateTemplateLines(config.Format, config.LineVariation, config.Pattern, config.PatternRate, rng)
-	
+
 	bytesWritten := 0
 	for i := 0; i < totalLines && bytesWritten < int(config.Size); i++ {
 		// Pick a random template line
 		line := templateLines[rng.Intn(len(templateLines))]
-		
+
 		// Write with current timestamp
 		timestampedLine := strings.Replace(line, "{TIMESTAMP}", generateTimestamp(i), 1)
 		timestampedLine = strings.Replace(timestampedLine, "{COUNTER}", fmt.Sprintf("%d", i), 1)
-		
+
 		n, err := fmt.Fprintln(w, timestampedLine)
 		if err != nil {
 			return err
 		}
 		bytesWritten += n
 	}
-	
+
 	return nil
 }
 
@@ -194,10 +200,10 @@ func writeLogLines(w io.Writer, config TestDataConfig) error {
 func generateTemplateLines(format LogFormat, variation int, pattern string, patternRate int, rng *rand.Rand) []string {
 	numTemplates := max(10, variation) // At least 10 templates
 	templates := make([]string, 0, numTemplates)
-	
+
 	for i := 0; i < numTemplates; i++ {
 		includePattern := pattern != "" && rng.Intn(100) < patternRate
-		
+
 		switch format {
 		case SimpleLogFormat:
 			templates = append(templates, generateSimpleLogLine(i, includePattern, pattern, rng))
@@ -211,7 +217,7 @@ func generateTemplateLines(format LogFormat, variation int, pattern string, patt
 			}
 		}
 	}
-	
+
 	return templates
 }
 
@@ -219,14 +225,14 @@ func generateTemplateLines(format LogFormat, variation int, pattern string, patt
 func generateSimpleLogLine(id int, includePattern bool, pattern string, rng *rand.Rand) string {
 	levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
 	level := levels[rng.Intn(len(levels))]
-	
+
 	message := fmt.Sprintf("Processing request %d", id)
 	if includePattern && pattern != "" {
 		message = fmt.Sprintf("%s %s", message, pattern)
 	}
-	
+
 	// Format: LEVEL|TIMESTAMP|THREAD|FILE:LINE|MESSAGE
-	return fmt.Sprintf("%s|{TIMESTAMP}|thread-%d|app.go:%d|%s", 
+	return fmt.Sprintf("%s|{TIMESTAMP}|thread-%d|app.go:%d|%s",
 		level, rng.Intn(10)+1, rng.Intn(1000)+1, message)
 }
 
@@ -235,12 +241,12 @@ func generateMapReduceLogLine(id int, includePattern bool, pattern string, rng *
 	goroutines := rng.Intn(50) + 10
 	connections := rng.Intn(100)
 	lifetime := rng.Intn(1000) + 100
-	
+
 	message := "MAPREDUCE:STATS"
 	if includePattern && pattern != "" {
 		message = fmt.Sprintf("%s|%s", message, pattern)
 	}
-	
+
 	// Format matching the integration test data
 	return fmt.Sprintf("INFO|{TIMESTAMP}|1|stats.go:56|8|%d|7|0.%02d|471h%dm%ds|%s|currentConnections=%d|lifetimeConnections=%d",
 		goroutines, rng.Intn(100), rng.Intn(60), rng.Intn(60), message, connections, lifetime)
@@ -260,19 +266,19 @@ func CleanupBenchmarkFiles(pattern string) error {
 	if pattern == "" {
 		pattern = "dtail_bench_*.tmp*"
 	}
-	
+
 	tempDir := os.TempDir()
 	matches, err := filepath.Glob(filepath.Join(tempDir, pattern))
 	if err != nil {
 		return err
 	}
-	
+
 	for _, match := range matches {
 		if err := os.Remove(match); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 

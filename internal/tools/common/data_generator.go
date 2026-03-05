@@ -12,11 +12,13 @@ import (
 // DataFormat represents the format of generated data
 type DataFormat string
 
+// Supported data generator output formats.
 const (
-	FormatLog        DataFormat = "log"
-	FormatCSV        DataFormat = "csv"
-	FormatDTail      DataFormat = "dtail"
-	FormatMapReduce  DataFormat = "mapreduce"
+	// FormatLog generates generic log lines.
+	FormatLog       DataFormat = "log"
+	FormatCSV       DataFormat = "csv"
+	FormatDTail     DataFormat = "dtail"
+	FormatMapReduce DataFormat = "mapreduce"
 )
 
 // DataGenerator generates test data for profiling and benchmarking
@@ -112,7 +114,7 @@ func (g *DataGenerator) generateLogFile(filename string, targetSize int64) error
 
 		line := fmt.Sprintf("[%s] %s - User %s performed %s action (duration: %dms, status: %s)\n",
 			timestamp, level, user, action, duration, status)
-		
+
 		n, err := writer.WriteString(line)
 		if err != nil {
 			return err
@@ -157,7 +159,7 @@ func (g *DataGenerator) generateCSVFile(filename string, targetSize int64) error
 		}
 
 		line := fmt.Sprintf("%s,%s,%s,%d,%s\n", timestamp, user, action, duration, status)
-		
+
 		n, err := writer.WriteString(line)
 		if err != nil {
 			return err
@@ -180,14 +182,14 @@ func (g *DataGenerator) generateDTailFormatFile(filename string, targetSize int6
 
 	var currentSize int64
 	lineNum := 0
-	hostnames := []string{"server01", "server02", "server03", "server04", "server05", 
+	hostnames := []string{"server01", "server02", "server03", "server04", "server05",
 		"server06", "server07", "server08", "server09", "server10"}
 
 	for currentSize < targetSize {
 		lineNum++
 		hostname := hostnames[lineNum%len(hostnames)]
-		timestamp := fmt.Sprintf("%02d%02d-%02d%02d%02d", 
-			10+(lineNum/86400)%12, (lineNum/3600)%30+1, 
+		timestamp := fmt.Sprintf("%02d%02d-%02d%02d%02d",
+			10+(lineNum/86400)%12, (lineNum/3600)%30+1,
 			(lineNum/3600)%24, (lineNum/60)%60, lineNum%60)
 		goroutines := 10 + (lineNum % 50)
 		cgocalls := lineNum % 100
@@ -199,7 +201,7 @@ func (g *DataGenerator) generateDTailFormatFile(filename string, targetSize int6
 
 		line := fmt.Sprintf("INFO|%s|1|stats.go:56|%d|%d|%d|%.2f|%s|MAPREDUCE:STATS|hostname=%s|currentConnections=%d|lifetimeConnections=%d\n",
 			timestamp, cpus, goroutines, cgocalls, loadavg, uptime, hostname, currentConnections, lifetimeConnections)
-		
+
 		n, err := writer.WriteString(line)
 		if err != nil {
 			return err
@@ -220,13 +222,13 @@ func (g *DataGenerator) generateDTailFormatFileWithLines(filename string, lines 
 	writer := bufio.NewWriter(file)
 	defer writer.Flush()
 
-	hostnames := []string{"server01", "server02", "server03", "server04", "server05", 
+	hostnames := []string{"server01", "server02", "server03", "server04", "server05",
 		"server06", "server07", "server08", "server09", "server10"}
 
 	for i := 1; i <= lines; i++ {
 		hostname := hostnames[i%len(hostnames)]
-		timestamp := fmt.Sprintf("%02d%02d-%02d%02d%02d", 
-			10+(i/86400)%12, (i/3600)%30+1, 
+		timestamp := fmt.Sprintf("%02d%02d-%02d%02d%02d",
+			10+(i/86400)%12, (i/3600)%30+1,
 			(i/3600)%24, (i/60)%60, i%60)
 		goroutines := 10 + (i % 50)
 		cgocalls := i % 100
@@ -238,7 +240,7 @@ func (g *DataGenerator) generateDTailFormatFileWithLines(filename string, lines 
 
 		line := fmt.Sprintf("INFO|%s|1|stats.go:56|%d|%d|%d|%.2f|%s|MAPREDUCE:STATS|hostname=%s|currentConnections=%d|lifetimeConnections=%d\n",
 			timestamp, cpus, goroutines, cgocalls, loadavg, uptime, hostname, currentConnections, lifetimeConnections)
-		
+
 		if _, err := writer.WriteString(line); err != nil {
 			return err
 		}

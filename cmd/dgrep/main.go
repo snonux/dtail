@@ -1,18 +1,12 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"os"
-	"sync"
 
-	"net/http"
-	_ "net/http"
-	_ "net/http/pprof"
-
+	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
 	"github.com/mimecast/dtail/internal/profiling"
 	"github.com/mimecast/dtail/internal/source"
@@ -67,48 +61,23 @@ func main() {
 		version.PrintAndExit()
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	wg.Add(1)
-	dlog.Start(ctx, &wg, source.Client)
-
-	// Set up profiling
-	profiler := profiling.NewProfiler(profileFlags.ToConfig("dgrep"))
-	defer profiler.Stop()
+	runtime := cli.NewClientRuntime(nil, profileFlags, "dgrep")
 
 	if grep != "" {
 		args.RegexStr = grep
 	}
 
-	if pprof != "" {
-		dlog.Client.Info("Starting PProf", pprof)
-		go func() {
-			panic(http.ListenAndServe(pprof, nil))
-		}()
-	}
-
-	// Log initial metrics if profiling is enabled
-	if profileFlags.Enabled() {
-		profiler.LogMetrics("startup")
-	}
+	runtime.StartPProf(pprof)
+	runtime.LogStartupMetrics()
 
 	client, err := clients.NewGrepClient(args)
 	if err != nil {
+		runtime.Stop()
 		panic(err)
 	}
 
-	status := client.Start(ctx, signal.InterruptCh(ctx))
-
-	// Log final metrics if profiling is enabled
-	if profileFlags.Enabled() {
-		profiler.LogMetrics("shutdown")
-	}
-
-	// Stop profiler before exit
-	profiler.Stop()
-
-	cancel()
-
-	wg.Wait()
+	status := client.Start(runtime.Context(), signal.InterruptCh(runtime.Context()))
+	runtime.LogShutdownMetrics()
+	runtime.Stop()
 	os.Exit(status)
 }

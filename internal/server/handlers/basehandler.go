@@ -128,13 +128,9 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 		pool.RecycleBytesBuffer(line.Content)
 		line.Recycle()
 
-	case <-time.After(time.Second):
-		select {
-		case <-h.done.Done():
-			err = io.EOF
-			return
-		default:
-		}
+	case <-h.done.Done():
+		err = io.EOF
+		return
 	}
 	return
 }

@@ -243,8 +243,7 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) {
 	}
 
 	// Read old known hosts file, to see which are old and new entries
-	os.OpenFile(c.knownHostsPath, os.O_RDONLY|os.O_CREATE, 0666)
-	oldFd, err := os.Open(c.knownHostsPath)
+	oldFd, err := os.OpenFile(c.knownHostsPath, os.O_RDONLY|os.O_CREATE, 0600)
 	if err != nil {
 		panic(err)
 	}
@@ -257,8 +256,13 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) {
 		address := strings.SplitN(line, " ", 2)[0]
 
 		if _, ok := addresses[address]; !ok {
-			newFd.WriteString(fmt.Sprintf("%s\n", line))
+			if _, err := newFd.WriteString(fmt.Sprintf("%s\n", line)); err != nil {
+				panic(err)
+			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		panic(err)
 	}
 
 	// Now, replace old known hosts file

@@ -4,17 +4,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"net/http"
-	_ "net/http"
-	_ "net/http/pprof"
 	"os"
-	"sync"
 	"time"
 
+	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/profiling"
@@ -91,39 +87,27 @@ func main() {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	baseCtx := context.Background()
+	var timeoutCancel context.CancelFunc
 	if shutdownAfter > 0 {
 		// NEXT: This does not work (auto shutdown)
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(shutdownAfter)*time.Second)
-		defer cancel()
+		baseCtx, timeoutCancel = context.WithTimeout(baseCtx, time.Duration(shutdownAfter)*time.Second)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	dlog.Start(ctx, &wg, source.Client)
-
-	// Set up profiling
-	profiler := profiling.NewProfiler(profileFlags.ToConfig("dtail"))
-	defer profiler.Stop()
+	runtime := cli.NewClientRuntime(baseCtx, profileFlags, "dtail")
 
 	if checkHealth {
 		fmt.Println("WARN: DTail health check has moved to separate binary dtailhealth" +
 			" - please adjust the monitoring scripts!")
-		cancel()
+		runtime.Stop()
+		if timeoutCancel != nil {
+			timeoutCancel()
+		}
 		os.Exit(1)
 	}
 
-	if pprof != "" {
-		dlog.Client.Info("Starting PProf", pprof)
-		go func() {
-			panic(http.ListenAndServe(pprof, nil))
-		}()
-	}
-
-	// Log initial metrics if profiling is enabled
-	if profileFlags.Enabled() {
-		profiler.LogMetrics("startup")
-	}
+	runtime.StartPProf(pprof)
+	runtime.LogStartupMetrics()
 
 	var client clients.Client
 	var err error
@@ -132,23 +116,24 @@ func main() {
 	switch args.QueryStr {
 	case "":
 		if client, err = clients.NewTailClient(args); err != nil {
+			runtime.Stop()
 			panic(err)
 		}
 	default:
 		if client, err = clients.NewMaprClient(args, clients.DefaultMode); err != nil {
+			runtime.Stop()
 			panic(err)
 		}
 	}
 
-	status := client.Start(ctx, signal.InterruptChWithCancel(ctx, cancel))
-
-	// Log final metrics if profiling is enabled
-	if profileFlags.Enabled() {
-		profiler.LogMetrics("shutdown")
+	status := client.Start(
+		runtime.Context(),
+		signal.InterruptChWithCancel(runtime.Context(), runtime.Cancel),
+	)
+	runtime.LogShutdownMetrics()
+	runtime.Stop()
+	if timeoutCancel != nil {
+		timeoutCancel()
 	}
-
-	cancel()
-
-	wg.Wait()
 	os.Exit(status)
 }

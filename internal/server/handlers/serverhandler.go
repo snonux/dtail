@@ -180,6 +180,6 @@ func (h *ServerHandler) handleAuthKeyCommand(_ context.Context, _ lcontext.LCont
 		return
 	}
 
-	sshserver.ServerAuthKeyStore().Add(h.user.Name, pubKey)
+	sshserver.AuthKeys().Add(h.user.Name, pubKey)
 	h.sendln(h.serverMessages, "AUTHKEY OK")
 }

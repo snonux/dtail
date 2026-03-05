@@ -38,18 +38,29 @@ clean:
 	@echo "Removing .prof files..."
 	find . -name "*.prof" -type f -delete
 vet:
-	find . -type d | grep -E -v '(./examples|./log|./doc)' | while read dir; do \
-	  echo ${GO} vet $$dir; \
-	  ${GO} vet $$dir; \
+	@set -e; \
+	packages=`${GO} list ./... | grep -v '^github.com/mimecast/dtail/benchmarks/cmd$$'`; \
+	for pkg in $$packages; do \
+	  echo ${GO} vet $$pkg; \
+	  ${GO} vet $$pkg; \
 	done
 	sh -c 'grep -R NEXT: .'
 	sh -c 'grep -R TODO: .'
 lint:
-	${GO} get golang.org/x/lint/golint
-	find . -type d | while read dir; do \
-	  echo golint $$dir; \
-	  golint $$dir; \
-	done | grep -F .go:
+	@set -e; \
+	${GO} install golang.org/x/lint/golint@v0.0.0-20241112194109-818c5a804067; \
+	gobin=`${GO} env GOBIN`; \
+	if [ -z "$$gobin" ]; then \
+	  gobin=`${GO} env GOPATH`/bin; \
+	fi; \
+	golint_bin=$$gobin/golint; \
+	packages=`${GO} list ./... | grep -v '^github.com/mimecast/dtail/benchmarks/cmd$$'`; \
+	echo "Using $$golint_bin"; \
+	output=`$$golint_bin $$packages || true`; \
+	if [ -n "$$output" ]; then \
+	  echo "$$output"; \
+	  exit 1; \
+	fi
 test:
 	${GO} clean -testcache
 	set -e; find . -name '*_test.go' | while read file; do dirname $$file; done | \

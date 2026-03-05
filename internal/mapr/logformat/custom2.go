@@ -2,6 +2,7 @@ package logformat
 
 import "errors"
 
+// ErrCustom2NotImplemented indicates custom2 parser is only a template.
 var ErrCustom2NotImplemented error = errors.New("custom2 log format is not implemented")
 
 // Template for creating a custom log format.

@@ -52,27 +52,27 @@ func (tl *TestLogger) LogFileComparison(fileA, fileB, method string) {
 func (tl *TestLogger) WriteLogFile() error {
 	tl.mu.Lock()
 	defer tl.mu.Unlock()
-	
+
 	logFile := fmt.Sprintf("%s.log", tl.testName)
 	f, err := os.Create(logFile)
 	if err != nil {
 		return fmt.Errorf("failed to create log file: %w", err)
 	}
 	defer f.Close()
-	
+
 	fmt.Fprintf(f, "Test: %s\n", tl.testName)
 	fmt.Fprintf(f, "Timestamp: %s\n\n", time.Now().Format(time.RFC3339))
-	
+
 	fmt.Fprintf(f, "=== EXTERNAL COMMANDS EXECUTED (in order) ===\n")
 	for i, cmd := range tl.commandHistory {
 		fmt.Fprintf(f, "%d. %s\n", i+1, cmd)
 	}
-	
+
 	fmt.Fprintf(f, "\n=== FILE COMPARISONS ===\n")
 	for _, comparison := range tl.fileComparisons {
 		fmt.Fprintf(f, "%s\n", comparison)
 	}
-	
+
 	return nil
 }
 
@@ -100,7 +100,7 @@ func cleanupTmpFiles(t *testing.T) {
 		t.Logf("Warning: failed to glob .tmp files: %v", err)
 		return
 	}
-	
+
 	for _, file := range matches {
 		if err := os.Remove(file); err != nil {
 			t.Logf("Warning: failed to remove %s: %v", file, err)
@@ -137,7 +137,7 @@ func DefaultServerConfig() *ServerConfig {
 }
 
 // startTestServer starts a dserver with the given configuration
-func startTestServer(t *testing.T, ctx context.Context, cfg *ServerConfig) error {
+func startTestServer(ctx context.Context, t *testing.T, cfg *ServerConfig) error {
 	t.Helper()
 	if cfg == nil {
 		cfg = DefaultServerConfig()
@@ -232,7 +232,7 @@ func (ts *TestServer) Start(logLevel string) error {
 		// Give the server a moment to release the port
 		time.Sleep(100 * time.Millisecond)
 	})
-	return startTestServer(ts.t, ts.ctx, &ServerConfig{
+	return startTestServer(ts.ctx, ts.t, &ServerConfig{
 		Port:        ts.port,
 		BindAddress: ts.bindAddress,
 		LogLevel:    logLevel,
@@ -252,7 +252,7 @@ func (ts *TestServer) StartWithConfig(cfg *ServerConfig) error {
 	}
 	cfg.Port = ts.port
 	cfg.BindAddress = ts.bindAddress
-	return startTestServer(ts.t, ts.ctx, cfg)
+	return startTestServer(ts.ctx, ts.t, cfg)
 }
 
 // Address returns the server address in host:port format
@@ -288,7 +288,7 @@ func NewCommandArgs() *CommandArgs {
 // ToSlice converts CommandArgs to a string slice for command execution
 func (c *CommandArgs) ToSlice() []string {
 	args := []string{"--cfg", c.Config}
-	
+
 	if c.LogLevel != "" {
 		args = append(args, "--logLevel", c.LogLevel)
 	}
@@ -301,10 +301,10 @@ func (c *CommandArgs) ToSlice() []string {
 	if c.NoColor {
 		args = append(args, "--noColor")
 	}
-	
+
 	// Add ExtraArgs before server/files args for commands like dgrep where order matters
 	args = append(args, c.ExtraArgs...)
-	
+
 	if len(c.Servers) > 0 {
 		args = append(args, "--servers", strings.Join(c.Servers, ","))
 	}
@@ -314,7 +314,7 @@ func (c *CommandArgs) ToSlice() []string {
 	if len(c.Files) > 0 {
 		args = append(args, "--files", strings.Join(c.Files, ","))
 	}
-	
+
 	return args
 }
 
@@ -341,7 +341,7 @@ func runDualModeTest(t *testing.T, test DualModeTest) {
 // verifyFileExists checks if a file exists and is not empty
 func verifyFileExists(t *testing.T, filename string) error {
 	t.Helper()
-	
+
 	info, err := os.Stat(filename)
 	if err != nil {
 		return fmt.Errorf("file %s not created: %w", filename, err)
@@ -349,7 +349,7 @@ func verifyFileExists(t *testing.T, filename string) error {
 	if info.Size() == 0 {
 		return fmt.Errorf("file %s is empty", filename)
 	}
-	
+
 	return nil
 }
 
@@ -386,7 +386,7 @@ func verifyColoredOutput(t *testing.T, outFile string, expectServerMetadata bool
 }
 
 // runCommandAndVerify runs a command and verifies the output against an expected file
-func runCommandAndVerify(t *testing.T, ctx context.Context, outFile, expectedFile, cmd string, args ...string) error {
+func runCommandAndVerify(ctx context.Context, t *testing.T, outFile, expectedFile, cmd string, args ...string) error {
 	t.Helper()
 
 	_, err := runCommand(ctx, t, outFile, cmd, args...)
@@ -402,7 +402,7 @@ func runCommandAndVerify(t *testing.T, ctx context.Context, outFile, expectedFil
 }
 
 // runCommandAndVerifyContents runs a command and verifies the output contents (ignoring order)
-func runCommandAndVerifyContents(t *testing.T, ctx context.Context, outFile, expectedFile, cmd string, args ...string) error {
+func runCommandAndVerifyContents(ctx context.Context, t *testing.T, outFile, expectedFile, cmd string, args ...string) error {
 	t.Helper()
 
 	_, err := runCommand(ctx, t, outFile, cmd, args...)
@@ -456,16 +456,16 @@ func GetStandardTestPaths() *StandardTestPaths {
 // verifyQueryFile checks if the query file contains the expected query content
 func verifyQueryFile(t *testing.T, queryFile, expectedQuery string) error {
 	t.Helper()
-	
+
 	content, err := os.ReadFile(queryFile)
 	if err != nil {
 		return fmt.Errorf("failed to read query file: %w", err)
 	}
-	
+
 	actualQuery := string(content)
 	if actualQuery != expectedQuery {
 		return fmt.Errorf("query mismatch:\nExpected: %s\nActual: %s", expectedQuery, actualQuery)
 	}
-	
+
 	return nil
 }

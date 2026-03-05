@@ -13,13 +13,13 @@ import (
 	"github.com/mimecast/dtail/internal/tools/common"
 )
 
-// ProfileInfo holds information about a profile file
-type ProfileInfo struct {
-	Path     string
-	Tool     string
-	Type     string // cpu, mem, alloc
-	ModTime  string
-	Size     int64
+// Info holds information about a profile file.
+type Info struct {
+	Path    string
+	Tool    string
+	Type    string // cpu, mem, alloc
+	ModTime string
+	Size    int64
 }
 
 func runAnalyze(cfg *Config) error {
@@ -58,7 +58,7 @@ func listProfiles(cfg *Config) error {
 	}
 
 	// Group by tool
-	byTool := make(map[string][]ProfileInfo)
+	byTool := make(map[string][]Info)
 	for _, p := range profiles {
 		byTool[p.Tool] = append(byTool[p.Tool], p)
 	}
@@ -74,26 +74,26 @@ func listProfiles(cfg *Config) error {
 	for _, tool := range tools {
 		fmt.Printf("\n%s profiles:\n", tool)
 		toolProfiles := byTool[tool]
-		
+
 		// Sort by modification time (newest first)
 		sort.Slice(toolProfiles, func(i, j int) bool {
 			return toolProfiles[i].ModTime > toolProfiles[j].ModTime
 		})
 
 		for _, p := range toolProfiles {
-			fmt.Printf("  %-8s %s  %8s  %s\n", 
+			fmt.Printf("  %-8s %s  %8s  %s\n",
 				p.Type, p.ModTime, common.FormatSize(p.Size), filepath.Base(p.Path))
 		}
 	}
 
 	fmt.Printf("\nTotal: %d profiles\n", len(profiles))
 	fmt.Printf("\nUsage: dtail-tools profile -mode analyze <profile_file>\n")
-	
+
 	return nil
 }
 
-func findProfiles(dir string) ([]ProfileInfo, error) {
-	var profiles []ProfileInfo
+func findProfiles(dir string) ([]Info, error) {
+	var profiles []Info
 
 	pattern := filepath.Join(dir, "*.prof")
 	matches, err := filepath.Glob(pattern)
@@ -117,7 +117,7 @@ func findProfiles(dir string) ([]ProfileInfo, error) {
 		tool := parts[0]
 		profType := parts[1]
 
-		profiles = append(profiles, ProfileInfo{
+		profiles = append(profiles, Info{
 			Path:    path,
 			Tool:    tool,
 			Type:    profType,
@@ -158,11 +158,11 @@ func analyzeProfile(profilePath string, args ...string) error {
 
 func showTopFunctions(profilePath string, count int, isMemProfile bool) error {
 	args := []string{"tool", "pprof", "-top", fmt.Sprintf("-nodecount=%d", count)}
-	
+
 	if isMemProfile {
 		args = append(args, "-alloc_space")
 	}
-	
+
 	args = append(args, profilePath)
 
 	cmd := exec.Command("go", args...)
@@ -178,22 +178,22 @@ func showTopFunctions(profilePath string, count int, isMemProfile bool) error {
 
 	fmt.Printf("Top %d functions (sorted by flat):\n", count)
 	fmt.Println("================================================================")
-	
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		
+
 		// Skip header lines
-		if strings.HasPrefix(line, "File:") || strings.HasPrefix(line, "Type:") || 
-		   strings.HasPrefix(line, "Time:") || strings.HasPrefix(line, "Duration:") {
+		if strings.HasPrefix(line, "File:") || strings.HasPrefix(line, "Type:") ||
+			strings.HasPrefix(line, "Time:") || strings.HasPrefix(line, "Duration:") {
 			continue
 		}
-		
+
 		// Start printing from the table header
 		if strings.Contains(line, "flat") && strings.Contains(line, "cum") {
 			inTop = true
 			fmt.Println("# Command: go " + strings.Join(args[1:], " "))
 		}
-		
+
 		if inTop {
 			fmt.Println(line)
 			if line != "" {
@@ -216,6 +216,6 @@ func openWebProfile(profilePath string) error {
 	cmd := exec.Command("go", "tool", "pprof", "-http=:8080", profilePath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	
+
 	return cmd.Run()
 }

@@ -29,13 +29,18 @@ func (in *initializer) parseConfig(args *Args) error {
 		return in.parseSpecificConfig(args.ConfigFile)
 	}
 
-	if homeDir, err := os.UserHomeDir(); err != nil {
-		var paths []string
-		paths = append(paths, fmt.Sprintf("%s/.config/dtail/dtail.conf", homeDir))
-		paths = append(paths, fmt.Sprintf("%s/.dtail.conf", homeDir))
+	homeDir, err := os.UserHomeDir()
+	if err == nil && homeDir != "" {
+		paths := []string{
+			fmt.Sprintf("%s/.config/dtail/dtail.conf", homeDir),
+			fmt.Sprintf("%s/.dtail.conf", homeDir),
+		}
 		for _, configPath := range paths {
-			if _, err := os.Stat(configPath); os.IsNotExist(err) {
-				continue
+			if _, err := os.Stat(configPath); err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return err
 			}
 			if err := in.parseSpecificConfig(configPath); err != nil {
 				return err

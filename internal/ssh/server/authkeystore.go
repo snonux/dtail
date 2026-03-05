@@ -28,8 +28,8 @@ type AuthKeyStore struct {
 	now            func() time.Time
 }
 
-// ServerAuthKeyStore returns the process-wide auth key cache used by the SSH server.
-func ServerAuthKeyStore() *AuthKeyStore {
+// AuthKeys returns the process-wide auth key cache used by the SSH server.
+func AuthKeys() *AuthKeyStore {
 	return authKeyStore
 }
 
