@@ -92,6 +92,7 @@ func (in *initializer) processEnvVars(args *Args) {
 	if Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		os.Setenv("DTAIL_HOSTNAME_OVERRIDE", "integrationtest")
 		in.Server.MaxLineLength = 1024
+		in.Server.TurboBoostDisable = true
 	}
 	sshPrivateKeyPathFile := os.Getenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH")
 	if len(sshPrivateKeyPathFile) > 0 && args.SSHPrivateKeyFilePath == "" {

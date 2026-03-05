@@ -77,6 +77,13 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 		return n, nil
 	}
 
+	pollInterval := time.Second
+	if h.turbo.enabled() {
+		// Turbo reads require tighter wake-ups so we can continue draining the turbo channel.
+		pollInterval = h.turbo.resolvedReadRetryInterval()
+	}
+	poll := time.After(pollInterval)
+
 	select {
 	case message := <-h.serverMessages:
 		if len(message) > 0 && message[0] == '.' {
@@ -130,6 +137,16 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 
 	case <-h.done.Done():
 		err = io.EOF
+		return
+
+	case <-poll:
+		// Wake periodically so turbo mode transitions don't leave this read blocked forever.
+		select {
+		case <-h.done.Done():
+			err = io.EOF
+			return
+		default:
+		}
 		return
 	}
 	return

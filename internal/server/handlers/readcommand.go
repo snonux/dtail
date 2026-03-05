@@ -372,6 +372,8 @@ func (r *readCommand) ensureTurboModeEnabled() {
 		return
 	}
 	r.server.EnableTurboMode()
+	// Wake a potentially blocked reader goroutine so it can switch to turbo drain path.
+	r.server.SendServerMessage(".turbo wake")
 }
 
 func (r *readCommand) makeTurboWriter() TurboWriter {

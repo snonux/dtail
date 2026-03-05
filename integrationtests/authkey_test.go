@@ -92,10 +92,10 @@ func testAuthKeyTTLExpiry(t *testing.T) {
 		t.Fatalf("Expected second connection to succeed, exit=%d err=%v", exitCode, err)
 	}
 	assertDCatSuccessfulOutput(t, "authkey_ttl_2.tmp")
-	waitForServerLogs()
-	fastPathCountAfterSecond := server.CountLogLinesContaining(authKeyFastPathLog)
+	fastPathCountAfterSecond := waitForLogCountAtLeast(server, authKeyFastPathLog, 1, 5*time.Second)
 	if fastPathCountAfterSecond < 1 {
-		t.Fatalf("Expected fast-path hit before TTL expiry, count=%d", fastPathCountAfterSecond)
+		t.Fatalf("Expected fast-path hit before TTL expiry, count=%d\nserver logs:\n%s",
+			fastPathCountAfterSecond, strings.Join(server.LogLines(), "\n"))
 	}
 
 	time.Sleep(time.Duration(ttlSeconds+1) * time.Second)
@@ -195,6 +195,10 @@ func (s *authKeyServer) CountLogLinesContaining(substring string) int {
 	return s.logs.countContaining(substring)
 }
 
+func (s *authKeyServer) LogLines() []string {
+	return s.logs.snapshot()
+}
+
 type authKeyServerLogs struct {
 	mu    sync.Mutex
 	lines []string
@@ -225,6 +229,15 @@ func (l *authKeyServerLogs) countContaining(substring string) int {
 	return count
 }
 
+func (l *authKeyServerLogs) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	lines := make([]string, len(l.lines))
+	copy(lines, l.lines)
+	return lines
+}
+
 func startAuthKeyServer(t *testing.T, cfgFile string) *authKeyServer {
 	t.Helper()
 
@@ -241,7 +254,8 @@ func startAuthKeyServer(t *testing.T, cfgFile string) *authKeyServer {
 		args = append(args, "--cfg", cfgFile)
 	}
 
-	stdoutCh, stderrCh, cmdErrCh, err := startCommand(ctx, t, "", "../dserver", args...)
+	stdoutCh, stderrCh, cmdErrCh, err := startCommandWithEnv(ctx, t, "", "../dserver",
+		map[string]string{"DTAIL_TURBOBOOST_DISABLE": "yes"}, args...)
 	if err != nil {
 		cancel()
 		t.Fatalf("Unable to start dserver: %v", err)
@@ -360,4 +374,22 @@ func createAuthKeyPair(t *testing.T, keyName string) string {
 
 func waitForServerLogs() {
 	time.Sleep(300 * time.Millisecond)
+}
+
+func waitForLogCountAtLeast(server *authKeyServer, substring string, minCount int, timeout time.Duration) int {
+	if minCount <= 0 {
+		return server.CountLogLinesContaining(substring)
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		count := server.CountLogLinesContaining(substring)
+		if count >= minCount {
+			return count
+		}
+		if time.Now().After(deadline) {
+			return count
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }

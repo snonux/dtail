@@ -95,7 +95,9 @@ func (c *KnownHostsCallback) Wrap() ssh.HostKeyCallback {
 			ipLine:     knownhosts.Line([]string{remote.String()}, key),
 			responseCh: make(chan response),
 		}
-		dlog.Client.Warn("Encountered unknown host", unknown)
+		// Keep host trust discovery diagnostics out of normal command output.
+		// In trust-all and plain modes this warning can corrupt tool output.
+		dlog.Client.Debug("Encountered unknown host", unknown.server, unknown.remote.String())
 		// Notify user that there is an unknown host
 		c.unknownCh <- unknown
 		// Wait for user input.
@@ -148,7 +150,8 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 
 	select {
 	case <-c.trustAllHostsCh:
-		dlog.Client.Warn("Trusting host keys of servers", servers)
+		// Trust-all mode is non-interactive; avoid warning-level noise on stdout.
+		dlog.Client.Debug("Trusting host keys of servers", servers)
 		c.trustHosts(hosts)
 		return
 	default:
