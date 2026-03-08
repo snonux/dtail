@@ -368,7 +368,9 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 				f.updatePosition()
 				lineBuf := pool.BytesBuffer.Get().(*bytes.Buffer)
 				lineBuf.Write(partialLine.Bytes())
-				filterProcessor.ProcessFilteredLine(lineBuf)
+				if err := filterProcessor.ProcessFilteredLine(lineBuf); err != nil {
+					return err
+				}
 			}
 			return nil
 		default:

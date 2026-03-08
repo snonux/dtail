@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -170,7 +171,7 @@ func (w *DirectTurboWriter) Flush() error {
 	if w.serverless {
 		// Ensure writer is flushed if it supports it
 		if flusher, ok := w.writer.(interface{ Flush() error }); ok {
-			flusher.Flush()
+			err = errors.Join(err, flusher.Flush())
 		}
 	}
 

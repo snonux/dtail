@@ -156,7 +156,9 @@ func (f *readFile) handleReadErrorProcessor(ctx context.Context, err error, fd *
 		if len(message.Bytes()) > 0 {
 			// Process the last line if it doesn't end with newline
 			f.updatePosition()
-			processor.ProcessFilteredLine(message)
+			if processErr := processor.ProcessFilteredLine(message); processErr != nil {
+				return abortReading, processErr
+			}
 		}
 		return abortReading, nil
 	}
