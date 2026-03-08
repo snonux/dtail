@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
@@ -282,8 +281,13 @@ func (s *Server) Callback(c gossh.ConnMetadata,
 	}
 
 	authInfo := string(authPayload)
-	splitted := strings.Split(c.RemoteAddr().String(), ":")
-	remoteIP := splitted[0]
+	remoteAddr := c.RemoteAddr().String()
+	remoteIP, _, splitErr := net.SplitHostPort(remoteAddr)
+	if splitErr != nil {
+		dlog.Server.Debug(user, "Unable to split remote address host/port, using raw address",
+			"remoteAddr", remoteAddr, "error", splitErr)
+		remoteIP = remoteAddr
+	}
 
 	if strategy, found := s.authStrategies[user.Name]; found && strategy(user, authInfo, remoteIP) {
 		return nil, nil
