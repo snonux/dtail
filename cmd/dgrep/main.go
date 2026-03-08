@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -62,7 +63,7 @@ func main() {
 		version.PrintAndExit()
 	}
 
-	runtime := cli.NewClientRuntime(nil, profileFlags, "dgrep")
+	runtime := cli.NewClientRuntime(context.Background(), profileFlags, "dgrep")
 
 	if grep != "" {
 		args.RegexStr = grep

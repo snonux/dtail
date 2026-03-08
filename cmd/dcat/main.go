@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -56,7 +57,7 @@ func main() {
 		version.PrintAndExit()
 	}
 
-	runtime := cli.NewClientRuntime(nil, profileFlags, "dcat")
+	runtime := cli.NewClientRuntime(context.Background(), profileFlags, "dcat")
 	runtime.StartPProf(pprof)
 	runtime.LogStartupMetrics()
 
