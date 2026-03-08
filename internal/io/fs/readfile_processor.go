@@ -29,10 +29,12 @@ func (f *readFile) StartWithProcessor(ctx context.Context, ltx lcontext.LContext
 		return err
 	}
 
-	truncate := make(chan struct{})
-	defer close(truncate)
+	truncateCtx, cancelTruncate := context.WithCancel(ctx)
+	defer cancelTruncate()
 
-	go f.periodicTruncateCheck(ctx, truncate)
+	truncate := make(chan struct{})
+
+	go f.periodicTruncateCheck(truncateCtx, truncate)
 
 	// Process file with direct callbacks instead of channels
 	err = f.readWithProcessor(ctx, fd, reader, truncate, ltx, processor, re)

@@ -226,7 +226,6 @@ func (f *readFile) StartWithProcessorOptimized(ctx context.Context, ltx lcontext
 	defer cancelTruncate()
 	
 	truncate := make(chan struct{})
-	defer close(truncate)
 
 	go f.periodicTruncateCheck(truncateCtx, truncate)
 
