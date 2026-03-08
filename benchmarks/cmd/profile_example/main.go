@@ -281,7 +281,7 @@ func suggestOptimizations(tool string, analysis string) {
 // Helper function to demonstrate how to use profiling in tests
 func ExampleBenchmarkWithProfiling() {
 	// This would typically be in a _test.go file
-	fmt.Println(`
+	fmt.Print(`
 Example benchmark with profiling:
 
 func BenchmarkDCatLargeFile(b *testing.B) {
