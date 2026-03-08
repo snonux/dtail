@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 
 	"github.com/mimecast/dtail/internal/cli"
@@ -73,7 +74,8 @@ func main() {
 	client, err := clients.NewGrepClient(args)
 	if err != nil {
 		runtime.Stop()
-		panic(err)
+		fmt.Fprintf(os.Stderr, "unable to create dgrep client: %v\n", err)
+		os.Exit(1)
 	}
 
 	status := client.Start(runtime.Context(), signal.InterruptCh(runtime.Context()))

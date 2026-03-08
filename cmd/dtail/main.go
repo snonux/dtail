@@ -95,6 +95,14 @@ func main() {
 	}
 
 	runtime := cli.NewClientRuntime(baseCtx, profileFlags, "dtail")
+	exitWithError := func(err error) {
+		runtime.Stop()
+		if timeoutCancel != nil {
+			timeoutCancel()
+		}
+		fmt.Fprintf(os.Stderr, "unable to initialize dtail client: %v\n", err)
+		os.Exit(1)
+	}
 
 	if checkHealth {
 		fmt.Println("WARN: DTail health check has moved to separate binary dtailhealth" +
@@ -116,13 +124,11 @@ func main() {
 	switch args.QueryStr {
 	case "":
 		if client, err = clients.NewTailClient(args); err != nil {
-			runtime.Stop()
-			panic(err)
+			exitWithError(err)
 		}
 	default:
 		if client, err = clients.NewMaprClient(args, clients.DefaultMode); err != nil {
-			runtime.Stop()
-			panic(err)
+			exitWithError(err)
 		}
 	}
 

@@ -73,7 +73,9 @@ func main() {
 	if pprof != "" {
 		dlog.Client.Info("Starting PProf", pprof)
 		go func() {
-			panic(http.ListenAndServe(pprof, nil))
+			if err := http.ListenAndServe(pprof, nil); err != nil {
+				dlog.Client.Error("PProf server exited", err)
+			}
 		}()
 	}
 
