@@ -145,11 +145,32 @@ func (c MaprClient) makeCommands() (commands []string) {
 func (c *MaprClient) periodicReportResults(ctx context.Context) {
 	rampUpSleep := c.query.Interval / 2
 	dlog.Client.Debug("Ramp up sleeping before processing mapreduce results", rampUpSleep)
-	time.Sleep(rampUpSleep)
+
+	if rampUpSleep > 0 {
+		rampUpTimer := time.NewTimer(rampUpSleep)
+		select {
+		case <-rampUpTimer.C:
+		case <-ctx.Done():
+			if !rampUpTimer.Stop() {
+				select {
+				case <-rampUpTimer.C:
+				default:
+				}
+			}
+			return
+		}
+	}
+
+	interval := c.query.Interval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
 	for {
 		select {
-		case <-time.After(c.query.Interval):
+		case <-ticker.C:
 			dlog.Client.Debug("Gathering interim mapreduce result")
 			if err := c.reportResults(false); err != nil {
 				dlog.Client.Error("Unable to gather mapreduce result", err)

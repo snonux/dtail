@@ -39,6 +39,9 @@ func newTailStats(servers int) *stats {
 func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 	statsCh <-chan string, quiet bool) {
 
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
 	var connectedLast int
 	for {
 		var force bool
@@ -48,7 +51,7 @@ func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 		case message := <-statsCh:
 			messages = append(messages, message)
 			force = true
-		case <-time.After(time.Second * 3):
+		case <-ticker.C:
 		case <-ctx.Done():
 			return
 		}
