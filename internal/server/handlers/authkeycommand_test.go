@@ -33,11 +33,10 @@ func TestHandleAuthKeyCommandSuccess(t *testing.T) {
 	if message := readServerMessage(t, handler.serverMessages); message != "AUTHKEY OK\n" {
 		t.Fatalf("Unexpected response: %q", message)
 	}
-	if !sshserver.AuthKeys().Has(handler.user.Name, key) {
+	if !handler.authKeyStore.Has(handler.user.Name, key) {
 		t.Fatalf("Expected key to be stored for user")
 	}
-
-	sshserver.AuthKeys().Remove(handler.user.Name, key)
+	handler.authKeyStore.Remove(handler.user.Name, key)
 }
 
 func TestHandleAuthKeyCommandFeatureDisabled(t *testing.T) {
@@ -51,7 +50,7 @@ func TestHandleAuthKeyCommandFeatureDisabled(t *testing.T) {
 	if message := readServerMessage(t, handler.serverMessages); message != "AUTHKEY ERR feature disabled\n" {
 		t.Fatalf("Unexpected response: %q", message)
 	}
-	if sshserver.AuthKeys().Has(handler.user.Name, key) {
+	if handler.authKeyStore.Has(handler.user.Name, key) {
 		t.Fatalf("Expected no key to be stored while feature is disabled")
 	}
 }
@@ -84,6 +83,7 @@ func newAuthKeyTestHandler(userName string, authKeyEnabled bool) *ServerHandler 
 		serverCfg: &config.ServerConfig{
 			AuthKeyEnabled: authKeyEnabled,
 		},
+		authKeyStore: sshserver.NewAuthKeyStore(time.Hour, 5),
 	}
 }
 

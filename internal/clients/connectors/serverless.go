@@ -8,6 +8,7 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
+	sshserver "github.com/mimecast/dtail/internal/ssh/server"
 	user "github.com/mimecast/dtail/internal/user/server"
 )
 
@@ -76,6 +77,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			make(chan struct{}, config.Server.MaxConcurrentCats),
 			make(chan struct{}, config.Server.MaxConcurrentTails),
 			config.Server,
+			sshserver.AuthKeys(),
 		)
 	}
 

@@ -37,6 +37,8 @@ type Server struct {
 	cont *continuous
 	// Authentication strategies keyed by SSH username.
 	authStrategies map[string]authStrategy
+	// In-memory auth key cache for fast reconnect.
+	authKeyStore *server.AuthKeyStore
 }
 
 type authStrategy func(*user.User, string, string) bool
@@ -48,7 +50,6 @@ func New(cfg config.RuntimeConfig) *Server {
 	}
 
 	dlog.Server.Info("Starting server", version.String())
-	server.ConfigureAuthKeyStore(cfg.Server.AuthKeyTTLSeconds, cfg.Server.AuthKeyMaxPerUser)
 
 	s := Server{
 		cfg: cfg,
@@ -64,11 +65,19 @@ func New(cfg config.RuntimeConfig) *Server {
 		tailLimiter: make(chan struct{}, cfg.Server.MaxConcurrentTails),
 		sched:       newScheduler(cfg),
 		cont:        newContinuous(cfg),
+		authKeyStore: server.NewAuthKeyStore(
+			time.Duration(cfg.Server.AuthKeyTTLSeconds)*time.Second,
+			cfg.Server.AuthKeyMaxPerUser,
+		),
 	}
 	s.authStrategies = s.newAuthStrategies()
 
 	s.sshServerConfig.PasswordCallback = s.Callback
-	s.sshServerConfig.PublicKeyCallback = server.PublicKeyCallback
+	s.sshServerConfig.PublicKeyCallback = server.NewPublicKeyCallback(
+		cfg.Server.AuthKeyEnabled,
+		cfg.Common.CacheDir,
+		s.authKeyStore,
+	)
 
 	private, err := gossh.ParsePrivateKey(server.PrivateHostKey())
 	if err != nil {
@@ -222,7 +231,13 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	case config.HealthUser:
 		handler = handlers.NewHealthHandler(user)
 	default:
-		handler = handlers.NewServerHandler(user, s.catLimiter, s.tailLimiter, s.cfg.Server)
+		handler = handlers.NewServerHandler(
+			user,
+			s.catLimiter,
+			s.tailLimiter,
+			s.cfg.Server,
+			s.authKeyStore,
+		)
 	}
 
 	terminate := func() {

@@ -23,11 +23,12 @@ import (
 // This handler implements the handler of the SSH server.
 type ServerHandler struct {
 	baseHandler
-	catLimiter  chan struct{}
-	tailLimiter chan struct{}
-	serverCfg   *config.ServerConfig
-	regex       string
-	commands    map[string]commandHandler
+	catLimiter   chan struct{}
+	tailLimiter  chan struct{}
+	serverCfg    *config.ServerConfig
+	authKeyStore *sshserver.AuthKeyStore
+	regex        string
+	commands     map[string]commandHandler
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
 }
@@ -38,7 +39,8 @@ var _ Handler = (*ServerHandler)(nil)
 
 // NewServerHandler returns the server handler.
 func NewServerHandler(user *user.User, catLimiter,
-	tailLimiter chan struct{}, serverCfg *config.ServerConfig) *ServerHandler {
+	tailLimiter chan struct{}, serverCfg *config.ServerConfig,
+	authKeyStore *sshserver.AuthKeyStore) *ServerHandler {
 
 	dlog.Server.Debug(user, "Creating new server handler")
 	if serverCfg == nil {
@@ -55,10 +57,14 @@ func NewServerHandler(user *user.User, catLimiter,
 			user:             user,
 			codec:            newProtocolCodec(user),
 		},
-		catLimiter:  catLimiter,
-		tailLimiter: tailLimiter,
-		serverCfg:   serverCfg,
-		regex:       ".",
+		catLimiter:   catLimiter,
+		tailLimiter:  tailLimiter,
+		serverCfg:    serverCfg,
+		authKeyStore: authKeyStore,
+		regex:        ".",
+	}
+	if h.authKeyStore == nil {
+		h.authKeyStore = sshserver.AuthKeys()
 	}
 	h.handleCommandCb = h.handleUserCommand
 	h.commands = h.newCommandRegistry()
@@ -180,6 +186,10 @@ func (h *ServerHandler) handleAuthKeyCommand(_ context.Context, _ lcontext.LCont
 		return
 	}
 
-	sshserver.AuthKeys().Add(h.user.Name, pubKey)
+	if h.authKeyStore == nil {
+		h.sendln(h.serverMessages, "AUTHKEY ERR internal key store unavailable")
+		return
+	}
+	h.authKeyStore.Add(h.user.Name, pubKey)
 	h.sendln(h.serverMessages, "AUTHKEY OK")
 }

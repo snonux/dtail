@@ -17,20 +17,44 @@ import (
 func PublicKeyCallback(c gossh.ConnMetadata,
 	offeredPubKey gossh.PublicKey) (*gossh.Permissions, error) {
 
+	authKeyEnabled := config.Server != nil && config.Server.AuthKeyEnabled
+	cacheDir := ""
+	if config.Common != nil {
+		cacheDir = config.Common.CacheDir
+	}
+	return publicKeyCallback(c, offeredPubKey, authKeyEnabled, cacheDir, authKeyStore)
+}
+
+// NewPublicKeyCallback creates an instance-scoped SSH public key callback.
+// It avoids relying on package-level mutable configuration/state.
+func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
+	keyStore *AuthKeyStore) func(gossh.ConnMetadata, gossh.PublicKey) (*gossh.Permissions, error) {
+
+	if keyStore == nil {
+		keyStore = authKeyStore
+	}
+	return func(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey) (*gossh.Permissions, error) {
+		return publicKeyCallback(c, offeredPubKey, authKeyEnabled, cacheDir, keyStore)
+	}
+}
+
+func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
+	authKeyEnabled bool, cacheDir string, keyStore *AuthKeyStore) (*gossh.Permissions, error) {
+
 	user, err := user.New(c.User(), c.RemoteAddr().String())
 	if err != nil {
 		return nil, err
 	}
 	dlog.Server.Info(user, "Incoming authorization")
 
-	if config.Server != nil && config.Server.AuthKeyEnabled {
-		if permissions := authKeyStorePermissions(user.Name, offeredPubKey); permissions != nil {
+	if authKeyEnabled {
+		if permissions := authKeyStorePermissions(keyStore, user.Name, offeredPubKey); permissions != nil {
 			dlog.Server.Info(user, "Authorized by in-memory auth key store")
 			return permissions, nil
 		}
 	}
 
-	authorizedKeysFile, err := authorizedKeysFile(user)
+	authorizedKeysFile, err := authorizedKeysFile(user, cacheDir)
 	if err != nil {
 		return nil, err
 	}
@@ -69,8 +93,10 @@ func verifyAuthorizedKeys(user *user.User, authorizedKeysBytes []byte,
 	return nil, fmt.Errorf("%s|public key of user not authorized", user)
 }
 
-func authKeyStorePermissions(userName string, offeredPubKey gossh.PublicKey) *gossh.Permissions {
-	if !authKeyStore.Has(userName, offeredPubKey) {
+func authKeyStorePermissions(keyStore *AuthKeyStore, userName string,
+	offeredPubKey gossh.PublicKey) *gossh.Permissions {
+
+	if keyStore == nil || !keyStore.Has(userName, offeredPubKey) {
 		return nil
 	}
 
@@ -83,7 +109,7 @@ func permissionsFromPublicKey(offeredPubKey gossh.PublicKey) *gossh.Permissions 
 	}
 }
 
-func authorizedKeysFile(user *user.User) (string, error) {
+func authorizedKeysFile(user *user.User, cacheDir string) (string, error) {
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		// In this case, we expect a pub key in the current directory.
 		return "./id_rsa.pub", nil
@@ -95,10 +121,12 @@ func authorizedKeysFile(user *user.User) (string, error) {
 	}
 
 	// Check for cached version in the dserver directory.
-	authorizedKeysFile := fmt.Sprintf("%s/%s/%s.authorized_keys", cwd,
-		config.Common.CacheDir, user.Name)
-	if _, err = os.Stat(authorizedKeysFile); err == nil {
-		return authorizedKeysFile, nil
+	var authorizedKeysFile string
+	if cacheDir != "" {
+		authorizedKeysFile = fmt.Sprintf("%s/%s/%s.authorized_keys", cwd, cacheDir, user.Name)
+		if _, err = os.Stat(authorizedKeysFile); err == nil {
+			return authorizedKeysFile, nil
+		}
 	}
 
 	// As the last option, check the regular SSH path.
