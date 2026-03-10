@@ -79,7 +79,7 @@ func New(cfg config.RuntimeConfig) *Server {
 		s.authKeyStore,
 	)
 
-	private, err := gossh.ParsePrivateKey(server.PrivateHostKey())
+	private, err := gossh.ParsePrivateKey(server.PrivateHostKey(cfg.Server.HostKeyFile, cfg.Server.HostKeyBits))
 	if err != nil {
 		dlog.Server.FatalPanic(err)
 	}
@@ -165,7 +165,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 func (s *Server) handleChannel(ctx context.Context, sshConn gossh.Conn,
 	newChannel gossh.NewChannel) {
 
-	user, err := user.New(sshConn.User(), sshConn.RemoteAddr().String())
+	user, err := user.New(sshConn.User(), sshConn.RemoteAddr().String(), s.cfg.Server.UserPermissions)
 	if err != nil {
 		dlog.Server.Error(user, err)
 		if err := newChannel.Reject(gossh.Prohibited, err.Error()); err != nil {
@@ -290,7 +290,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 func (s *Server) Callback(c gossh.ConnMetadata,
 	authPayload []byte) (*gossh.Permissions, error) {
 
-	user, err := user.New(c.User(), c.RemoteAddr().String())
+	user, err := user.New(c.User(), c.RemoteAddr().String(), s.cfg.Server.UserPermissions)
 	if err != nil {
 		return nil, err
 	}

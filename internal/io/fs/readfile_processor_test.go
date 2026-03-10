@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
@@ -41,12 +40,10 @@ func (p *captureProcessor) Close() error {
 }
 
 func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
-	setServerConfigForProcessorTests(t)
-
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1))
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
 	processor := &captureProcessor{}
 
 	if err := cat.readFile.StartWithProcessorOptimized(
@@ -65,8 +62,6 @@ func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
 }
 
 func TestProcessorVariantsReturnOpenError(t *testing.T) {
-	setServerConfigForProcessorTests(t)
-
 	re := regex.NewNoop()
 	missingFile := filepath.Join(t.TempDir(), "missing.log")
 
@@ -90,7 +85,7 @@ func TestProcessorVariantsReturnOpenError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cat := NewCatFile(missingFile, "glob-id", make(chan string, 1))
+			cat := NewCatFile(missingFile, "glob-id", make(chan string, 1), defaultMaxLineLength)
 			err := tt.start(&cat.readFile, context.Background(), lcontext.LContext{}, &captureProcessor{}, re)
 			if err == nil {
 				t.Fatalf("expected error for missing file")
@@ -100,13 +95,11 @@ func TestProcessorVariantsReturnOpenError(t *testing.T) {
 }
 
 func TestStartWithProcessorOptimizedPropagatesProcessError(t *testing.T) {
-	setServerConfigForProcessorTests(t)
-
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	re := regex.NewNoop()
 	expectedErr := errors.New("processor failure")
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1))
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
 	processor := &captureProcessor{
 		errAtLine:  1,
 		processErr: expectedErr,
@@ -123,16 +116,26 @@ func TestStartWithProcessorOptimizedPropagatesProcessError(t *testing.T) {
 	}
 }
 
-func setServerConfigForProcessorTests(t *testing.T) {
-	t.Helper()
+func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
+	filePath := writeProcessorTestFile(t, "abcdef\n")
+	re := regex.NewNoop()
 
-	previousServer := config.Server
-	config.Server = &config.ServerConfig{
-		MaxLineLength: 1024 * 1024,
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), 3)
+	processor := &captureProcessor{}
+
+	if err := cat.readFile.StartWithProcessorOptimized(
+		context.Background(),
+		lcontext.LContext{},
+		processor,
+		re,
+	); err != nil {
+		t.Fatalf("optimized reader start failed: %v", err)
 	}
-	t.Cleanup(func() {
-		config.Server = previousServer
-	})
+
+	want := []string{"abc", "def\n"}
+	if !reflect.DeepEqual(processor.lines, want) {
+		t.Fatalf("unexpected processed lines: got=%v want=%v", processor.lines, want)
+	}
 }
 
 func writeProcessorTestFile(t *testing.T, content string) string {

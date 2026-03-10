@@ -145,14 +145,26 @@ func newDefaultServerConfig() *ServerConfig {
 	}
 }
 
-// ServerUserPermissions retrieves the permission set of a given user.
-func ServerUserPermissions(userName string) (permissions []string, err error) {
-	permissions = Server.Permissions.Default
-	if p, ok := Server.Permissions.Users[userName]; ok {
+// UserPermissions retrieves the permission set of a given user.
+func (c *ServerConfig) UserPermissions(userName string) (permissions []string, err error) {
+	if c == nil {
+		return nil, errors.New("missing server config")
+	}
+
+	permissions = c.Permissions.Default
+	if p, ok := c.Permissions.Users[userName]; ok {
 		permissions = p
 	}
 	if len(permissions) == 0 {
 		err = errors.New("Empty set of permission, user won't be able to open any files")
 	}
 	return
+}
+
+// ServerUserPermissions retrieves the permission set of a given user.
+func ServerUserPermissions(userName string) (permissions []string, err error) {
+	if Server == nil {
+		return nil, errors.New("missing server config")
+	}
+	return Server.UserPermissions(userName)
 }

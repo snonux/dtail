@@ -204,13 +204,13 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 
 	switch r.mode {
 	case omode.GrepClient, omode.CatClient:
-		catFile := fs.NewCatFile(path, globID, r.server.ServerMessagesChannel())
+		catFile := fs.NewCatFile(path, globID, r.server.ServerMessagesChannel(), r.server.MaxLineLength())
 		reader = &catFile
 		limiter = r.server.CatLimiter()
 	case omode.TailClient:
 		fallthrough
 	default:
-		tailFile := fs.NewTailFile(path, globID, r.server.ServerMessagesChannel())
+		tailFile := fs.NewTailFile(path, globID, r.server.ServerMessagesChannel(), r.server.MaxLineLength())
 		reader = &tailFile
 		limiter = r.server.TailLimiter()
 	}

@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -112,7 +111,7 @@ func (f *readFile) handleReadByteProcessor(ctx context.Context, b byte,
 		return continueReading
 
 	default:
-		if message.Len() >= config.Server.MaxLineLength {
+		if message.Len() >= f.lineLimit() {
 			if !f.warnedAboutLongLine {
 				f.serverMessages <- dlog.Common.Warn(f.filePath,
 					"Long log line, splitting into multiple lines") + "\n"

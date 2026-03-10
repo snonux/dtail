@@ -8,9 +8,19 @@ import (
 	"github.com/mimecast/dtail/internal/ssh"
 )
 
+const (
+	defaultHostKeyBits = 4096
+	defaultHostKeyFile = "./cache/ssh_host_key"
+)
+
 // PrivateHostKey retrieves the private server RSA host key.
-func PrivateHostKey() []byte {
-	hostKeyFile := config.Server.HostKeyFile
+func PrivateHostKey(hostKeyFile string, hostKeyBits int) []byte {
+	if hostKeyFile == "" {
+		hostKeyFile = defaultHostKeyFile
+	}
+	if hostKeyBits <= 0 {
+		hostKeyBits = defaultHostKeyBits
+	}
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		hostKeyFile = "./ssh_host_key"
 	}
@@ -18,7 +28,7 @@ func PrivateHostKey() []byte {
 
 	if os.IsNotExist(err) {
 		dlog.Server.Info("Generating private server RSA host key")
-		privateKey, err := ssh.GeneratePrivateRSAKey(config.Server.HostKeyBits)
+		privateKey, err := ssh.GeneratePrivateRSAKey(hostKeyBits)
 
 		if err != nil {
 			dlog.Server.FatalPanic("Failed to generate private server RSA host key", err)

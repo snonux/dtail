@@ -60,7 +60,11 @@ func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) error {
 	dlog.Client.Debug("Creating server handler for a serverless session")
 
-	user, err := user.New(s.userName, s.Server())
+	var permissionLookup user.PermissionLookup
+	if config.Server != nil {
+		permissionLookup = config.Server.UserPermissions
+	}
+	user, err := user.New(s.userName, s.Server(), permissionLookup)
 	if err != nil {
 		return err
 	}

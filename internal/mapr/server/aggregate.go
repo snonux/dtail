@@ -34,7 +34,7 @@ type Aggregate struct {
 }
 
 // NewAggregate return a new server side aggregator.
-func NewAggregate(queryStr string) (*Aggregate, error) {
+func NewAggregate(queryStr string, defaultLogFormat string) (*Aggregate, error) {
 	query, err := mapr.NewQuery(queryStr)
 	if err != nil {
 		return nil, err
@@ -46,16 +46,7 @@ func NewAggregate(queryStr string) (*Aggregate, error) {
 	}
 	s := strings.Split(fqdn, ".")
 
-	var parserName string
-	switch query.LogFormat {
-	case "":
-		parserName = config.Server.MapreduceLogFormat
-		if query.Table == "" {
-			parserName = "generic"
-		}
-	default:
-		parserName = query.LogFormat
-	}
+	parserName := resolveParserName(query, defaultLogFormat)
 
 	dlog.Server.Info("Creating log format parser", parserName)
 	logParser, err := logformat.NewParser(parserName, query)

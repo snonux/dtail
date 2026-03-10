@@ -24,11 +24,20 @@ type User struct {
 	permissions []string
 }
 
+// PermissionLookup resolves permissions for a given SSH user.
+type PermissionLookup func(string) ([]string, error)
+
 // New returns a new user.
-func New(name, remoteAddress string) (*User, error) {
-	permissions, err := config.ServerUserPermissions(name)
-	if err != nil {
-		return nil, err
+func New(name, remoteAddress string, permissionLookup PermissionLookup) (*User, error) {
+	var (
+		permissions []string
+		err         error
+	)
+	if permissionLookup != nil {
+		permissions, err = permissionLookup(name)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &User{
 		Name:          name,

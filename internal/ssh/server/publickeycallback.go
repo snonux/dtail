@@ -12,19 +12,6 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// PublicKeyCallback is for the server to check whether a public SSH key is
-// authorized ot not.
-func PublicKeyCallback(c gossh.ConnMetadata,
-	offeredPubKey gossh.PublicKey) (*gossh.Permissions, error) {
-
-	authKeyEnabled := config.Server != nil && config.Server.AuthKeyEnabled
-	cacheDir := ""
-	if config.Common != nil {
-		cacheDir = config.Common.CacheDir
-	}
-	return publicKeyCallback(c, offeredPubKey, authKeyEnabled, cacheDir, authKeyStore)
-}
-
 // NewPublicKeyCallback creates an instance-scoped SSH public key callback.
 // It avoids relying on package-level mutable configuration/state.
 func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
@@ -41,7 +28,7 @@ func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
 func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
 	authKeyEnabled bool, cacheDir string, keyStore *AuthKeyStore) (*gossh.Permissions, error) {
 
-	user, err := user.New(c.User(), c.RemoteAddr().String())
+	user, err := user.New(c.User(), c.RemoteAddr().String(), nil)
 	if err != nil {
 		return nil, err
 	}

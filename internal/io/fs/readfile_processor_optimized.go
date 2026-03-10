@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -106,7 +105,7 @@ func (f *readFile) scanLinesPreserveEndings(data []byte, atEOF bool) (advance in
 		return 0, nil, nil
 	}
 
-	maxLineLen := config.Server.MaxLineLength
+	maxLineLen := f.lineLimit()
 
 	// Look for a newline
 	if i := bytes.IndexByte(data, '\n'); i >= 0 {
@@ -154,7 +153,7 @@ func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int,
 		return 0, nil, nil
 	}
 
-	maxLineLen := config.Server.MaxLineLength
+	maxLineLen := f.lineLimit()
 
 	// Look for a newline
 	if i := bytes.IndexByte(data, '\n'); i >= 0 {
@@ -312,7 +311,7 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 					partialLine.Write(data)
 
 					// Check if line is too long
-					if partialLine.Len() >= config.Server.MaxLineLength {
+					if partialLine.Len() >= f.lineLimit() {
 						if !f.warnedAboutLongLine {
 							f.serverMessages <- dlog.Common.Warn(f.filePath,
 								"Long log line, splitting into multiple lines") + "\n"

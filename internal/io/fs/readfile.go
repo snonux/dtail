@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -26,9 +25,10 @@ import (
 type readStatus int
 
 const (
-	nothing         readStatus = iota
-	abortReading    readStatus = iota
-	continueReading readStatus = iota
+	nothing              readStatus = iota
+	abortReading         readStatus = iota
+	continueReading      readStatus = iota
+	defaultMaxLineLength            = 1024 * 1024
 )
 
 // Used to tail and filter a local log file.
@@ -49,6 +49,8 @@ type readFile struct {
 	seekEOF bool
 	// Warned already about a long line.
 	warnedAboutLongLine bool
+	// Maximum line length before a line is split.
+	maxLineLength int
 }
 
 // String returns the string representation of the readFile
@@ -70,6 +72,13 @@ func (f readFile) FilePath() string {
 // Retry reading the file on error?
 func (f readFile) Retry() bool {
 	return f.retry
+}
+
+func (f *readFile) lineLimit() int {
+	if f.maxLineLength <= 0 {
+		return defaultMaxLineLength
+	}
+	return f.maxLineLength
 }
 
 // Start tailing a log file.
@@ -328,7 +337,7 @@ func (f *readFile) handleReadByte(ctx context.Context, b byte,
 			return abortReading, message
 		}
 	default:
-		if message.Len() >= config.Server.MaxLineLength {
+		if message.Len() >= f.lineLimit() {
 			if !f.warnedAboutLongLine {
 				f.serverMessages <- dlog.Common.Warn(f.filePath,
 					"Long log line, splitting into multiple lines") + "\n"

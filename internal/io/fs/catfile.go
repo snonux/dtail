@@ -6,7 +6,9 @@ type CatFile struct {
 }
 
 // NewCatFile returns a new file catter.
-func NewCatFile(filePath string, globID string, serverMessages chan<- string) CatFile {
+func NewCatFile(filePath string, globID string, serverMessages chan<- string,
+	maxLineLength int) CatFile {
+
 	return CatFile{
 		readFile: readFile{
 			filePath:       filePath,
@@ -15,6 +17,7 @@ func NewCatFile(filePath string, globID string, serverMessages chan<- string) Ca
 			retry:          false,
 			canSkipLines:   false,
 			seekEOF:        false,
+			maxLineLength:  maxLineLength,
 		},
 	}
 }

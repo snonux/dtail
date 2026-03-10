@@ -57,7 +57,7 @@ type rawLine struct {
 }
 
 // NewTurboAggregate returns a new turbo mode aggregator.
-func NewTurboAggregate(queryStr string) (*TurboAggregate, error) {
+func NewTurboAggregate(queryStr string, defaultLogFormat string) (*TurboAggregate, error) {
 	query, err := mapr.NewQuery(queryStr)
 	if err != nil {
 		return nil, err
@@ -69,16 +69,7 @@ func NewTurboAggregate(queryStr string) (*TurboAggregate, error) {
 	}
 	s := strings.Split(fqdn, ".")
 
-	var parserName string
-	switch query.LogFormat {
-	case "":
-		parserName = config.Server.MapreduceLogFormat
-		if query.Table == "" {
-			parserName = "generic"
-		}
-	default:
-		parserName = query.LogFormat
-	}
+	parserName := resolveParserName(query, defaultLogFormat)
 
 	dlog.Server.Info("Creating turbo log format parser",
 		"parserName", parserName,

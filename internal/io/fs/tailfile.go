@@ -6,7 +6,9 @@ type TailFile struct {
 }
 
 // NewTailFile returns a new file tailer.
-func NewTailFile(filePath string, globID string, serverMessages chan<- string) TailFile {
+func NewTailFile(filePath string, globID string, serverMessages chan<- string,
+	maxLineLength int) TailFile {
+
 	return TailFile{
 		readFile: readFile{
 			filePath:       filePath,
@@ -15,6 +17,7 @@ func NewTailFile(filePath string, globID string, serverMessages chan<- string) T
 			retry:          true,
 			canSkipLines:   true,
 			seekEOF:        true,
+			maxLineLength:  maxLineLength,
 		},
 	}
 }

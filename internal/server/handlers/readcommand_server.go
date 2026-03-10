@@ -55,6 +55,7 @@ type readCommandTurbo interface {
 type readCommandTiming interface {
 	ReadGlobRetryInterval() time.Duration
 	ReadRetryInterval() time.Duration
+	MaxLineLength() int
 	AggregateLinesChannelBufferSize() int
 	TurboDataTransmissionDelay() time.Duration
 	TurboEOFWaitDuration(fileCount int) time.Duration
@@ -203,6 +204,11 @@ func (h *ServerHandler) ReadGlobRetryInterval() time.Duration {
 // ReadRetryInterval returns the retry interval for repeated file reads.
 func (h *ServerHandler) ReadRetryInterval() time.Duration {
 	return durationFromMilliseconds(h.serverCfg.ReadRetryIntervalMs, 2*time.Second)
+}
+
+// MaxLineLength returns the configured max line length for file readers.
+func (h *ServerHandler) MaxLineLength() int {
+	return positiveIntOrDefault(h.serverCfg.MaxLineLength, 1024*1024)
 }
 
 // AggregateLinesChannelBufferSize returns the aggregate lines channel buffer size.

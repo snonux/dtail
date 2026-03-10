@@ -21,13 +21,17 @@ func newMapCommand(serverHandler *ServerHandler, argc int,
 
 	m := mapCommand{server: serverHandler}
 	queryStr := strings.Join(args[1:], " ")
+	defaultLogFormat := ""
+	if serverHandler.serverCfg != nil {
+		defaultLogFormat = serverHandler.serverCfg.MapreduceLogFormat
+	}
 
 	// If turbo boost is not disabled AND we're in server mode (not serverless), create a TurboAggregate
 	// Turbo boost is enabled by default and is a server-side optimization
 	dlog.Server.Debug("MapReduce mode check", "turboBoostDisable", serverHandler.serverCfg.TurboBoostDisable, "serverless", serverHandler.serverless)
 	if !serverHandler.serverCfg.TurboBoostDisable && !serverHandler.serverless {
 		dlog.Server.Info("Creating turbo aggregate for MapReduce", "query", queryStr)
-		turboAggregate, err := server.NewTurboAggregate(queryStr)
+		turboAggregate, err := server.NewTurboAggregate(queryStr, defaultLogFormat)
 		if err != nil {
 			return m, nil, nil, err
 		}
@@ -36,7 +40,7 @@ func newMapCommand(serverHandler *ServerHandler, argc int,
 	}
 
 	// Otherwise, create a regular Aggregate
-	aggregate, err := server.NewAggregate(queryStr)
+	aggregate, err := server.NewAggregate(queryStr, defaultLogFormat)
 	if err != nil {
 		return m, nil, nil, err
 	}
