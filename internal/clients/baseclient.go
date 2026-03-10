@@ -25,6 +25,7 @@ const (
 // This is the main client data structure.
 type baseClient struct {
 	config.Args
+	runtime *clientRuntimeBoundary
 	// To display client side stats
 	stats *stats
 	// We have one connection per remote server.
@@ -45,6 +46,9 @@ type baseClient struct {
 
 func (c *baseClient) init() {
 	dlog.Client.Debug("Initiating base client", c.Args.String())
+	if c.runtime == nil {
+		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime())
+	}
 
 	flag := regex.Default
 	if c.Args.RegexInvert {
@@ -73,7 +77,7 @@ func (c *baseClient) makeConnections(maker maker) {
 			c.sshAuthMethods, c.hostKeyCallback))
 	}
 
-	c.stats = newTailStats(len(c.connections))
+	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause())
 }
 
 func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
@@ -200,9 +204,9 @@ func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMe
 	hostKeyCallback client.HostKeyCallback) connectors.Connector {
 	if c.Args.Serverless {
 		return connectors.NewServerless(c.UserName, c.maker.makeHandler(server),
-			c.maker.makeCommands())
+			c.maker.makeCommands(), c.runtime)
 	}
 	return connectors.NewServerConnection(server, c.UserName, sshAuthMethods,
 		hostKeyCallback, c.maker.makeHandler(server), c.maker.makeCommands(),
-		c.Args.SSHPrivateKeyFilePath, c.Args.NoAuthKey)
+		c.Args.SSHPrivateKeyFilePath, c.Args.NoAuthKey, c.runtime)
 }

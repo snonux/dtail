@@ -86,8 +86,8 @@ func (g *GlobalGroupSet) WriteResult(query *Query, finalResult bool) error {
 }
 
 // Result returns the result of the mapreduce aggregation as a string.
-func (g *GlobalGroupSet) Result(query *Query, rowsLimit int) (string, int, error) {
+func (g *GlobalGroupSet) Result(query *Query, rowsLimit int, renderer ResultRenderer) (string, int, error) {
 	g.semaphore <- struct{}{}
 	defer func() { <-g.semaphore }()
-	return g.GroupSet.Result(query, rowsLimit)
+	return g.GroupSet.Result(query, rowsLimit, renderer)
 }

@@ -24,6 +24,7 @@ func NewTailClient(args config.Args) (*TailClient, error) {
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      true,
+			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
 		},
 	}
 

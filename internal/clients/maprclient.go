@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
-	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -73,6 +72,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      retry,
+			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
 		},
 		query:      query,
 		cumulative: cumulative,
@@ -201,9 +201,9 @@ func (c *MaprClient) printResults() error {
 	}
 
 	if c.cumulative {
-		result, numRows, err = c.globalGroup.Result(c.query, rowsLimit)
+		result, numRows, err = c.globalGroup.Result(c.query, rowsLimit, c.runtime.output.MaprResultRenderer())
 	} else {
-		result, numRows, err = c.globalGroup.SwapOut().Result(c.query, rowsLimit)
+		result, numRows, err = c.globalGroup.SwapOut().Result(c.query, rowsLimit, c.runtime.output.MaprResultRenderer())
 	}
 	if err != nil {
 		return fmt.Errorf("unable to render mapreduce result: %w", err)
@@ -220,13 +220,7 @@ func (c *MaprClient) printResults() error {
 		return nil
 	}
 
-	rawQuery := c.query.RawQuery
-	if config.Client.TermColorsEnable {
-		rawQuery = color.PaintStrWithAttr(rawQuery,
-			config.Client.TermColors.MaprTable.RawQueryFg,
-			config.Client.TermColors.MaprTable.RawQueryBg,
-			config.Client.TermColors.MaprTable.RawQueryAttr)
-	}
+	rawQuery := c.runtime.output.PaintMaprRawQuery(c.query.RawQuery)
 	dlog.Client.Raw(fmt.Sprintf("%s\n", rawQuery))
 
 	if rowsLimit > 0 && numRows > rowsLimit {

@@ -33,7 +33,7 @@ func main() {
 	flag.Parse()
 
 	if displayVersion {
-		version.PrintAndExit()
+		version.PrintAndExit(false)
 	}
 
 	config.Setup(source.HealthCheck, &args, flag.Args())

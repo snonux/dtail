@@ -5,31 +5,35 @@ import (
 	"io"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
-	sshserver "github.com/mimecast/dtail/internal/ssh/server"
-	user "github.com/mimecast/dtail/internal/user/server"
 )
+
+// ServerlessHandlerFactory creates the in-process server-side handler used by serverless mode.
+type ServerlessHandlerFactory interface {
+	NewServerlessHandler(userName string) (serverHandlers.Handler, error)
+}
 
 // Serverless creates a server object directly without TCP.
 type Serverless struct {
-	handler  handlers.Handler
-	commands []string
-	userName string
+	handler        handlers.Handler
+	commands       []string
+	userName       string
+	handlerFactory ServerlessHandlerFactory
 }
 
 var _ Connector = (*Serverless)(nil)
 
 // NewServerless starts a new serverless session.
 func NewServerless(userName string, handler handlers.Handler,
-	commands []string) *Serverless {
+	commands []string, handlerFactory ServerlessHandlerFactory) *Serverless {
 
 	dlog.Client.Debug("Creating new serverless connector", handler, commands)
 	return &Serverless{
-		userName: userName,
-		handler:  handler,
-		commands: commands,
+		userName:       userName,
+		handler:        handler,
+		commands:       commands,
+		handlerFactory: handlerFactory,
 	}
 }
 
@@ -60,29 +64,12 @@ func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) error {
 	dlog.Client.Debug("Creating server handler for a serverless session")
 
-	var permissionLookup user.PermissionLookup
-	if config.Server != nil {
-		permissionLookup = config.Server.UserPermissions
+	if s.handlerFactory == nil {
+		return io.ErrClosedPipe
 	}
-	user, err := user.New(s.userName, s.Server(), permissionLookup)
+	serverHandler, err := s.handlerFactory.NewServerlessHandler(s.userName)
 	if err != nil {
 		return err
-	}
-
-	var serverHandler serverHandlers.Handler
-	switch s.userName {
-	case config.HealthUser:
-		dlog.Client.Debug("Creating serverless health handler")
-		serverHandler = serverHandlers.NewHealthHandler(user)
-	default:
-		dlog.Client.Debug("Creating serverless server handler")
-		serverHandler = serverHandlers.NewServerHandler(
-			user,
-			make(chan struct{}, config.Server.MaxConcurrentCats),
-			make(chan struct{}, config.Server.MaxConcurrentTails),
-			config.Server,
-			sshserver.AuthKeys(),
-		)
 	}
 
 	terminate := func() {

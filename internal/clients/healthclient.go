@@ -28,6 +28,7 @@ func NewHealthClient(args config.Args) (*HealthClient, error) {
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      false,
+			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
 		},
 	}
 

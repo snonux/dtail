@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/mimecast/dtail/internal/color"
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -25,8 +24,8 @@ func String() string {
 }
 
 // PaintedString is a prettier string representation of the DTail version.
-func PaintedString() string {
-	if !config.Client.TermColorsEnable {
+func PaintedString(colorsEnabled bool) string {
+	if !colorsEnabled {
 		return String()
 	}
 
@@ -43,12 +42,12 @@ func PaintedString() string {
 }
 
 // Print the version.
-func Print() {
-	fmt.Println(PaintedString())
+func Print(colorsEnabled bool) {
+	fmt.Println(PaintedString(colorsEnabled))
 }
 
 // PrintAndExit prints the program version and exists.
-func PrintAndExit() {
-	Print()
+func PrintAndExit(colorsEnabled bool) {
+	Print(colorsEnabled)
 	os.Exit(0)
 }

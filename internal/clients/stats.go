@@ -8,8 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/color"
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -24,13 +22,22 @@ type stats struct {
 	connected int
 	// To synchronize concurrent access.
 	mutex sync.Mutex
+	// Formats interrupt-driven stats output.
+	formatter interruptMessageFormatter
+	// Controls how long interrupt output remains visible.
+	interruptPause time.Duration
 }
 
-func newTailStats(servers int) *stats {
+func newTailStats(servers int, formatter interruptMessageFormatter, interruptPause time.Duration) *stats {
+	if interruptPause <= 0 {
+		interruptPause = 3 * time.Second
+	}
 	return &stats{
 		servers:          servers,
 		connectionsEstCh: make(chan struct{}, servers),
 		connected:        0,
+		formatter:        formatter,
+		interruptPause:   interruptPause,
 	}
 }
 
@@ -84,17 +91,13 @@ func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 func (s *stats) printStatsDueInterrupt(messages []string) {
 	dlog.Client.Pause()
 	for i, message := range messages {
-		if i > 0 && config.Client.TermColorsEnable {
-			fmt.Println(color.PaintStrWithAttr(message,
-				config.Client.TermColors.Client.ClientFg,
-				config.Client.TermColors.Client.ClientBg,
-				config.Client.TermColors.Client.ClientAttr,
-			))
+		if s.formatter != nil {
+			fmt.Println(s.formatter.FormatInterruptMessage(i, message))
 			continue
 		}
 		fmt.Printf(" %s\n", message)
 	}
-	time.Sleep(time.Second * time.Duration(config.InterruptTimeoutS))
+	time.Sleep(s.interruptPause)
 	dlog.Client.Resume()
 }
 

@@ -60,7 +60,8 @@ func main() {
 	config.Setup(source.Client, &args, flag.Args())
 
 	if displayVersion {
-		version.PrintAndExit()
+		runtimeCfg := config.CurrentRuntime()
+		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
 	}
 
 	runtime := cli.NewClientRuntime(context.Background(), profileFlags, "dmap")

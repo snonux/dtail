@@ -46,9 +46,10 @@ func main() {
 	config.Setup(source.Server, &args, flag.Args())
 
 	if displayVersion {
-		version.PrintAndExit()
+		runtimeCfg := config.CurrentRuntime()
+		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
 	}
-	version.Print()
+	version.Print(false)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if shutdownAfter > 0 {
