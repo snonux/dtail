@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 )
@@ -14,4 +15,7 @@ type Connector interface {
 	Server() string
 	// Handler for the connection.
 	Handler() handlers.Handler
+	// SupportsQueryUpdates reports whether the connected server advertised
+	// runtime query replacement support within the given timeout.
+	SupportsQueryUpdates(timeout time.Duration) bool
 }

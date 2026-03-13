@@ -9,6 +9,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/protocol"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -129,6 +130,49 @@ func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
 	}
 }
 
+func TestServerConnectionSupportsQueryUpdates(t *testing.T) {
+	resetClientLogger(t)
+
+	conn := &ServerConnection{
+		handler: &mockHandler{
+			waitForCapabilities: true,
+			capabilities: map[string]bool{
+				protocol.CapabilityQueryUpdateV1: true,
+			},
+		},
+	}
+
+	if !conn.SupportsQueryUpdates(10 * time.Millisecond) {
+		t.Fatalf("expected query-update capability to be detected")
+	}
+}
+
+func TestServerConnectionSupportsQueryUpdatesFallsBackForOlderServers(t *testing.T) {
+	resetClientLogger(t)
+
+	conn := &ServerConnection{
+		handler: &mockHandler{},
+	}
+
+	if conn.SupportsQueryUpdates(5 * time.Millisecond) {
+		t.Fatalf("expected old-server fallback when no capability is advertised")
+	}
+}
+
+func TestServerConnectionSupportsQueryUpdatesRequiresCapabilityFlag(t *testing.T) {
+	resetClientLogger(t)
+
+	conn := &ServerConnection{
+		handler: &mockHandler{
+			waitForCapabilities: true,
+		},
+	}
+
+	if conn.SupportsQueryUpdates(10 * time.Millisecond) {
+		t.Fatalf("expected capability wait success alone to be insufficient")
+	}
+}
+
 type testSSHSettings struct {
 	port    int
 	timeout time.Duration
@@ -165,7 +209,9 @@ func resetClientLogger(t *testing.T) {
 }
 
 type mockHandler struct {
-	commands []string
+	commands            []string
+	capabilities        map[string]bool
+	waitForCapabilities bool
 }
 
 var _ handlers.Handler = (*mockHandler)(nil)
@@ -176,11 +222,15 @@ func (m *mockHandler) SendMessage(command string) error {
 }
 
 func (m *mockHandler) Capabilities() []string {
-	return nil
+	var capabilities []string
+	for capability := range m.capabilities {
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities
 }
 
-func (m *mockHandler) HasCapability(string) bool {
-	return false
+func (m *mockHandler) HasCapability(name string) bool {
+	return m.capabilities[name]
 }
 
 func (m *mockHandler) Server() string {
@@ -200,7 +250,7 @@ func (m *mockHandler) Done() <-chan struct{} {
 }
 
 func (m *mockHandler) WaitForCapabilities(timeout time.Duration) bool {
-	return false
+	return m.waitForCapabilities
 }
 
 func (m *mockHandler) Read(_ []byte) (int, error) {

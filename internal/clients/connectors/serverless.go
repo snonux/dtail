@@ -3,6 +3,7 @@ package connectors
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
@@ -45,6 +46,12 @@ func (s *Serverless) Server() string {
 // Handler returns the handler used for the serverless connection.
 func (s *Serverless) Handler() handlers.Handler {
 	return s.handler
+}
+
+// SupportsQueryUpdates reports whether the in-process server advertised
+// runtime query update support to the client handler.
+func (s *Serverless) SupportsQueryUpdates(timeout time.Duration) bool {
+	return supportsQueryUpdates(s.handler, timeout)
 }
 
 // Start the serverless connection.

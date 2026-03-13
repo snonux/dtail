@@ -13,6 +13,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/ssh/client"
 
 	"golang.org/x/crypto/ssh"
@@ -27,6 +28,7 @@ type SSHSettings interface {
 const (
 	defaultSSHConnectTimeout = 2 * time.Second
 	defaultSSHPort           = 2222
+	defaultCapabilityWait    = 250 * time.Millisecond
 )
 
 // ServerConnection represents a connection to a single remote dtail server via
@@ -93,6 +95,13 @@ func (c *ServerConnection) Server() string { return c.server }
 
 // Handler returns the handler used for the connection.
 func (c *ServerConnection) Handler() handlers.Handler { return c.handler }
+
+// SupportsQueryUpdates reports whether the remote server advertised the
+// runtime query replacement capability. Older servers simply time out and
+// return false here without affecting the legacy command path.
+func (c *ServerConnection) SupportsQueryUpdates(timeout time.Duration) bool {
+	return supportsQueryUpdates(c.handler, timeout)
+}
 
 // Attempt to parse the server port address from the provided server FQDN.
 func (c *ServerConnection) initServerPort(defaultPort int) {
@@ -318,4 +327,19 @@ func extractAuthKeyBase64(authKeyPubBytes []byte) (string, error) {
 	}
 
 	return "", fmt.Errorf("no public key found")
+}
+
+func supportsQueryUpdates(handler handlers.Handler, timeout time.Duration) bool {
+	if handler == nil {
+		return false
+	}
+
+	if timeout <= 0 {
+		timeout = defaultCapabilityWait
+	}
+	if !handler.WaitForCapabilities(timeout) {
+		return false
+	}
+
+	return handler.HasCapability(protocol.CapabilityQueryUpdateV1)
 }
