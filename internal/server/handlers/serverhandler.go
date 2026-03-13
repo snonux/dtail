@@ -12,6 +12,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 	sshserver "github.com/mimecast/dtail/internal/ssh/server"
 	user "github.com/mimecast/dtail/internal/user/server"
 
@@ -29,6 +30,7 @@ type ServerHandler struct {
 	authKeyStore *sshserver.AuthKeyStore
 	regex        string
 	commands     map[string]commandHandler
+	sessionState sessionCommandState
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
 }
@@ -77,6 +79,7 @@ func NewServerHandler(user *user.User, catLimiter,
 
 	s := strings.Split(fqdn, ".")
 	h.hostname = s[0]
+	h.send(h.serverMessages, protocol.HiddenCapabilitiesPrefix+protocol.CapabilityQueryUpdateV1)
 
 	return &h
 }
@@ -112,7 +115,14 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 }
 
 func shouldShutdownOnCommandCompletion(commandName string) bool {
-	return !strings.EqualFold(commandName, "AUTHKEY")
+	switch {
+	case strings.EqualFold(commandName, "AUTHKEY"):
+		return false
+	case strings.EqualFold(commandName, "SESSION"):
+		return false
+	default:
+		return true
+	}
 }
 
 func (h *ServerHandler) newCommandRegistry() map[string]commandHandler {
@@ -123,7 +133,9 @@ func (h *ServerHandler) newCommandRegistry() map[string]commandHandler {
 		"map":     h.handleMapCommand,
 		".ack":    h.handleAckUserCommand,
 		"AUTHKEY": h.handleAuthKeyCommand,
+		"SESSION": h.handleSessionCommand,
 		"authkey": h.handleAuthKeyCommand,
+		"session": h.handleSessionCommand,
 	}
 }
 

@@ -180,28 +180,30 @@ func (h *baseHandler) handleCommand(commandStr string) {
 		h.sendln(h.serverMessages, dlog.Server.Error(h.user, err))
 		return
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go func() {
-		<-h.done.Done()
-		cancel()
-	}()
+	ctx, _ := h.newCommandContext(context.Background())
 
+	if err := h.dispatchCommand(ctx, args, argc); err != nil {
+		h.sendln(h.serverMessages, dlog.Server.Error(h.user, err))
+	}
+}
+
+func (h *baseHandler) dispatchCommand(ctx context.Context, args []string, argc int) error {
 	parts := strings.Split(args[0], ":")
 	commandName := parts[0]
 
 	// Either no options or empty options provided.
 	if len(parts) == 1 || len(parts[1]) == 0 {
 		h.handleCommandCb(ctx, lcontext.LContext{}, argc, args, commandName)
-		return
+		return nil
 	}
 
 	options, ltx, err := config.DeserializeOptions(parts[1:])
 	if err != nil {
-		h.sendln(h.serverMessages, dlog.Server.Error(h.user, err))
-		return
+		return err
 	}
 	h.handleOptions(options)
 	h.handleCommandCb(ctx, ltx, argc, args, commandName)
+	return nil
 }
 
 func (h *baseHandler) handleProtocolVersion(args []string) ([]string, int, string, error) {
@@ -210,6 +212,30 @@ func (h *baseHandler) handleProtocolVersion(args []string) ([]string, int, strin
 
 func (h *baseHandler) handleBase64(args []string, argc int) ([]string, int, error) {
 	return h.codec.handleBase64(args, argc)
+}
+
+func (h *baseHandler) handleRawCommand(ctx context.Context, command string) error {
+	args := strings.Fields(command)
+	if len(args) == 0 {
+		return fmt.Errorf("empty command")
+	}
+	return h.dispatchCommand(ctx, args, len(args))
+}
+
+func (h *baseHandler) newCommandContext(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-h.done.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 func (h *baseHandler) handleAckCommand(argc int, args []string) {
