@@ -211,7 +211,9 @@ func (h *ServerHandler) handleAuthKeyCommand(_ context.Context, _ lcontext.LCont
 
 func (h *ServerHandler) newGeneratedMaprMessagesChannel(ctx context.Context, generation uint64) (chan string, func()) {
 	maprMessages := make(chan string, 16)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for {
 			select {
 			case message, ok := <-maprMessages:
@@ -228,5 +230,6 @@ func (h *ServerHandler) newGeneratedMaprMessagesChannel(ctx context.Context, gen
 	}()
 	return maprMessages, func() {
 		close(maprMessages)
+		<-done
 	}
 }
