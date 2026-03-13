@@ -98,7 +98,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		// Only shutdown if no active commands AND no pending files.
 		// AUTHKEY is a session-side effect command and should not terminate the shell
 		// because user commands may still follow in the same session.
-		if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 {
+		if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 && !h.sessionState.keepAlive() {
 			h.shutdown()
 		}
 	}
