@@ -3,6 +3,7 @@ package connectors
 import (
 	"context"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
@@ -76,13 +77,16 @@ func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 	throttleCh, statsCh chan struct{}) {
 
 	dlog.Client.Debug("Starting serverless connector")
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer cancel()
 		if err := s.handle(ctx, cancel); err != nil {
 			dlog.Client.Warn(err)
 		}
 	}()
 	<-ctx.Done()
+	<-done
 }
 
 func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) error {
@@ -111,9 +115,12 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 
 	// Error tracking
 	errChan := make(chan error, 4)
+	var ioWg sync.WaitGroup
 
 	// Read from client handler
+	ioWg.Add(1)
 	go func() {
+		defer ioWg.Done()
 		defer close(toServer)
 		buf := make([]byte, 32*1024)
 		for {
@@ -137,7 +144,9 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	}()
 
 	// Write to server handler
+	ioWg.Add(1)
 	go func() {
+		defer ioWg.Done()
 		for data := range toServer {
 			if _, err := serverHandler.Write(data); err != nil {
 				errChan <- err
@@ -147,7 +156,9 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	}()
 
 	// Read from server handler
+	ioWg.Add(1)
 	go func() {
+		defer ioWg.Done()
 		defer close(fromServer)
 		buf := make([]byte, 64*1024) // Larger buffer for server responses
 		for {
@@ -172,7 +183,9 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 
 	// Write to client handler
 	serverDone := make(chan struct{})
+	ioWg.Add(1)
 	go func() {
+		defer ioWg.Done()
 		defer close(serverDone)
 		for data := range fromServer {
 			if _, err := s.handler.Write(data); err != nil {
@@ -192,6 +205,18 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		select {
 		case <-s.handler.Done():
 			dlog.Client.Trace("<-s.handler.Done()")
+			// The client handler marks itself done as soon as it receives the
+			// hidden close message. Keep the in-process server alive long enough
+			// for the remaining output and close ACK to drain instead of canceling
+			// the whole session immediately.
+			select {
+			case <-serverDone:
+				dlog.Client.Trace("Server transfer done after client close")
+			case <-ctx.Done():
+				dlog.Client.Trace("<-ctx.Done() while waiting for server transfer")
+			case <-time.After(6 * time.Second):
+				dlog.Client.Debug("Timed out waiting for server transfer after client close")
+			}
 		case <-serverDone:
 			dlog.Client.Trace("Server transfer done")
 		case <-ctx.Done():
@@ -201,6 +226,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 
 	// Wait for completion
 	<-ctx.Done()
+	ioWg.Wait()
 
 	// Check for errors
 	select {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -218,6 +219,60 @@ func TestDirectTurboWriter_MultipleLines(t *testing.T) {
 	outputLines := strings.Count(buf.String(), "\n")
 	if outputLines != 5 {
 		t.Errorf("Expected 5 lines in output, got %d", outputLines)
+	}
+}
+
+type shortWriter struct {
+	maxChunk int
+	buf      bytes.Buffer
+}
+
+func (w *shortWriter) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	n := len(p)
+	if w.maxChunk > 0 && n > w.maxChunk {
+		n = w.maxChunk
+	}
+	w.buf.Write(p[:n])
+	return n, nil
+}
+
+func TestDirectTurboWriter_FlushHandlesShortWrites(t *testing.T) {
+	writer := &shortWriter{maxChunk: 5}
+	w := NewDirectTurboWriter(writer, "testhost", true, true)
+
+	if err := w.WriteLineData([]byte("abcdefghij"), 1, "source.log"); err != nil {
+		t.Fatalf("WriteLineData failed: %v", err)
+	}
+
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	if got, want := writer.buf.String(), "abcdefghij\n"; got != want {
+		t.Fatalf("expected full output %q, got %q", want, got)
+	}
+}
+
+type zeroWriter struct{}
+
+func (zeroWriter) Write(p []byte) (int, error) {
+	return 0, nil
+}
+
+func TestDirectTurboWriter_FlushFailsOnZeroProgress(t *testing.T) {
+	w := NewDirectTurboWriter(zeroWriter{}, "testhost", true, true)
+
+	if err := w.WriteLineData([]byte("data"), 1, "source.log"); err != nil {
+		t.Fatalf("WriteLineData failed: %v", err)
+	}
+
+	if err := w.Flush(); err == nil {
+		t.Fatal("expected Flush to fail on zero-progress writes")
+	} else if err != io.ErrShortWrite {
+		t.Fatalf("expected io.ErrShortWrite, got %v", err)
 	}
 }
 

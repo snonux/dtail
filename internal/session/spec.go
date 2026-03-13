@@ -24,9 +24,14 @@ type Spec struct {
 
 // NewSpec returns a session specification from client args.
 func NewSpec(args config.Args) Spec {
+	files := splitFiles(args.What)
+	if args.Serverless && len(files) == 0 && supportsServerlessPipe(args.Mode) {
+		files = []string{"-"}
+	}
+
 	return Spec{
 		Mode:        args.Mode,
-		Files:       splitFiles(args.What),
+		Files:       files,
 		Options:     args.SerializeOptions(),
 		Query:       strings.TrimSpace(args.QueryStr),
 		Regex:       args.RegexStr,
@@ -147,6 +152,15 @@ func splitFiles(what string) []string {
 		files = append(files, file)
 	}
 	return files
+}
+
+func supportsServerlessPipe(mode omode.Mode) bool {
+	switch mode {
+	case omode.TailClient, omode.CatClient, omode.GrepClient, omode.MapClient:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s Spec) encodedPayload() (string, error) {

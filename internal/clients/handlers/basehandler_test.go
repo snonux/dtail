@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal"
+	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -170,5 +171,36 @@ func TestHandleSessionAckMessage(t *testing.T) {
 	}
 	if ack.Action != "update" || ack.Generation != 4 {
 		t.Fatalf("unexpected session ack: %#v", ack)
+	}
+}
+
+func TestHandleCloseConnectionAcknowledgesBeforeShutdown(t *testing.T) {
+	originalLogger := dlog.Client
+	dlog.Client = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Client = originalLogger
+	})
+
+	handler := baseHandler{
+		done:     internal.NewDone(),
+		server:   "server-under-test",
+		commands: make(chan string, 1),
+	}
+
+	handler.handleHiddenMessage(".syn close connection")
+
+	select {
+	case command := <-handler.commands:
+		if command == "" {
+			t.Fatal("expected close acknowledgement command")
+		}
+	case <-time.After(10 * time.Millisecond):
+		t.Fatal("expected close acknowledgement command to be queued")
+	}
+
+	select {
+	case <-handler.Done():
+	default:
+		t.Fatal("expected handler to be shut down after close acknowledgement")
 	}
 }

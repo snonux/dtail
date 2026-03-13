@@ -2,6 +2,7 @@ package integrationtests
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -36,7 +37,9 @@ func runCommand(ctx context.Context, t *testing.T, stdoutFile, cmdStr string,
 	cmd := exec.CommandContext(ctx, cmdStr, args...)
 	out, err := cmd.CombinedOutput()
 	t.Log("Done running command!", err)
-	_, _ = fd.Write(out)
+	if _, copyErr := io.Copy(fd, bytes.NewReader(out)); copyErr != nil {
+		return exitCodeFromError(err), copyErr
+	}
 
 	return exitCodeFromError(err), err
 }

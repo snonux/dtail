@@ -192,7 +192,9 @@ func (h *baseHandler) handleHiddenMessage(message string) {
 		strings.HasPrefix(message, protocol.HiddenSessionErrorPrefix):
 		h.handleSessionAckMessage(message)
 	case strings.HasPrefix(message, ".syn close connection"):
-		go h.SendMessage(".ack close connection")
+		if err := h.SendMessage(".ack close connection"); err != nil {
+			dlog.Client.Debug(h.server, "Unable to acknowledge close connection", err)
+		}
 		h.Shutdown()
 	}
 }

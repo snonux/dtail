@@ -131,3 +131,17 @@ func TestNewSessionSpecSplitsFiles(t *testing.T) {
 		t.Fatalf("unexpected timeout: %d", spec.Timeout)
 	}
 }
+
+func TestNewSessionSpecUsesPipeSentinelForServerlessStdin(t *testing.T) {
+	t.Parallel()
+
+	spec := NewSessionSpec(config.Args{
+		Mode:       omode.GrepClient,
+		Serverless: true,
+		RegexStr:   "ERROR",
+	})
+
+	if len(spec.Files) != 1 || spec.Files[0] != "-" {
+		t.Fatalf("unexpected files for serverless stdin: %#v", spec.Files)
+	}
+}

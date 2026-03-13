@@ -205,10 +205,21 @@ func (w *DirectTurboWriter) flushBuffer() error {
 	// In serverless mode with colors, data is already processed line by line
 	// so we don't need to do any additional formatting here
 
-	_, err := w.writer.Write(data)
+	for len(data) > 0 {
+		n, err := w.writer.Write(data)
+		if err != nil {
+			w.writeBuf.Reset()
+			return err
+		}
+		if n <= 0 {
+			w.writeBuf.Reset()
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
 	w.writeBuf.Reset()
 
-	return err
+	return nil
 }
 
 // Stats returns writing statistics
