@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -206,7 +207,9 @@ func (f *readFile) read(ctx context.Context, fd *os.File, reader *bufio.Reader,
 			if abortReading == status {
 				return err
 			}
-			time.Sleep(time.Millisecond * 100)
+			if !ctxutil.Sleep(ctx, 100*time.Millisecond) {
+				return nil
+			}
 			continue
 		}
 

@@ -399,23 +399,29 @@ func (w *TurboNetworkWriter) sendToTurboChannel() error {
 
 	data := make([]byte, w.writeBuf.Len())
 	copy(data, w.writeBuf.Bytes())
+	encoded := encodeGeneratedBytes(w.generation, data)
 
 	dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sending to turboLines channel", "dataLen", len(data))
 
-	// Send data to turbo channel, retry once if full
-	select {
-	case w.turboLines <- encodeGeneratedBytes(w.generation, data):
-		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel successfully")
-		w.writeBuf.Reset()
-		return nil
-	default:
-		// Channel full, wait a bit and retry
-		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "channel full, waiting before retry")
-		time.Sleep(time.Millisecond)
-		w.turboLines <- encodeGeneratedBytes(w.generation, data)
-		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel after retry")
-		w.writeBuf.Reset()
-		return nil
+	for {
+		if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+			dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "generation became stale while waiting to send")
+			w.writeBuf.Reset()
+			return nil
+		}
+
+		select {
+		case w.turboLines <- encoded:
+			dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel successfully")
+			w.writeBuf.Reset()
+			return nil
+		default:
+			dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "channel full, waiting before retry")
+			if !waitForGenerationRetry(w.generation, w.activeGeneration, time.Millisecond) {
+				w.writeBuf.Reset()
+				return nil
+			}
+		}
 	}
 }
 
@@ -449,12 +455,9 @@ func (w *TurboNetworkWriter) Flush() error {
 		dlog.Server.Trace("TurboNetworkWriter.Flush", "flushing buffered data", "bufSize", w.writeBuf.Len())
 
 		if w.turboLines != nil {
-			data := make([]byte, w.writeBuf.Len())
-			copy(data, w.writeBuf.Bytes())
-
-			// Force send the data
-			w.turboLines <- encodeGeneratedBytes(w.generation, data)
-			w.writeBuf.Reset()
+			if err := w.sendToTurboChannel(); err != nil {
+				return err
+			}
 			dlog.Server.Trace("TurboNetworkWriter.Flush", "flushed data to channel")
 		}
 	}
@@ -464,15 +467,22 @@ func (w *TurboNetworkWriter) Flush() error {
 	if w.turboLines != nil {
 		// Wait until channel has been drained somewhat
 		for i := 0; i < 100 && len(w.turboLines) > 900; i++ {
+			if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+				return nil
+			}
 			dlog.Server.Trace("TurboNetworkWriter.Flush", "waiting for channel to drain", "channelLen", len(w.turboLines))
-			time.Sleep(10 * time.Millisecond)
+			if !waitForGenerationRetry(w.generation, w.activeGeneration, 10*time.Millisecond) {
+				return nil
+			}
 		}
 		dlog.Server.Trace("TurboNetworkWriter.Flush", "channel status", "channelLen", len(w.turboLines))
 	}
 
 	// Wait a bit to ensure data is processed
 	// This is crucial for integration tests
-	time.Sleep(10 * time.Millisecond)
+	if !waitForGenerationRetry(w.generation, w.activeGeneration, 10*time.Millisecond) {
+		return nil
+	}
 	dlog.Server.Trace("TurboNetworkWriter.Flush", "completed")
 
 	return nil
@@ -489,6 +499,21 @@ func shouldWriteGeneration(generation uint64, activeGeneration func() uint64) bo
 	}
 
 	return currentGeneration == generation
+}
+
+func waitForGenerationRetry(generation uint64, activeGeneration func() uint64, delay time.Duration) bool {
+	if !shouldWriteGeneration(generation, activeGeneration) {
+		return false
+	}
+	if delay <= 0 {
+		return shouldWriteGeneration(generation, activeGeneration)
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	<-timer.C
+
+	return shouldWriteGeneration(generation, activeGeneration)
 }
 
 // DirectLineProcessor processes lines directly without channels in turbo mode

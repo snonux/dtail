@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -77,7 +78,9 @@ func (f *readFile) readWithProcessor(ctx context.Context, fd *os.File, reader *b
 			if abortReading == status {
 				return err
 			}
-			time.Sleep(time.Millisecond * 100)
+			if !ctxutil.Sleep(ctx, 100*time.Millisecond) {
+				return nil
+			}
 			continue
 		}
 

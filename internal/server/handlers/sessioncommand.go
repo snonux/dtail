@@ -253,7 +253,7 @@ func (h *ServerHandler) resetSessionAggregates() {
 		h.aggregate = nil
 	}
 	if h.turboAggregate != nil {
-		h.turboAggregate.Shutdown()
+		h.turboAggregate.Abort()
 		h.turboAggregate = nil
 	}
 }

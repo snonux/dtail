@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -346,6 +347,8 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 				return err
 			}
 
+			waitForMoreData := true
+
 			// EOF handling
 			select {
 			case <-ctx.Done():
@@ -354,8 +357,12 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 				if isTruncated, err := f.truncated(fd); isTruncated {
 					return err
 				}
-			case <-time.After(100 * time.Millisecond):
-				// Continue reading after a short delay
+				waitForMoreData = false
+			default:
+			}
+
+			if waitForMoreData && !ctxutil.Sleep(ctx, 100*time.Millisecond) {
+				return nil
 			}
 		}
 

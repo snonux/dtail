@@ -3,8 +3,11 @@ package handlers
 import (
 	"bytes"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -350,6 +353,47 @@ func TestTurboChannelWriter_Stats(t *testing.T) {
 	}
 	if bytesWritten == 0 {
 		t.Error("Expected non-zero bytes written")
+	}
+}
+
+func TestTurboNetworkWriterStopsWaitingWhenGenerationBecomesStale(t *testing.T) {
+	originalLogger := dlog.Server
+	dlog.Server = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Server = originalLogger
+	})
+
+	turboLines := make(chan []byte, 1)
+	turboLines <- []byte("occupied")
+
+	var activeGeneration atomic.Uint64
+	activeGeneration.Store(1)
+
+	writer := &TurboNetworkWriter{
+		turboLines: turboLines,
+		generation: 1,
+		activeGeneration: func() uint64 {
+			return activeGeneration.Load()
+		},
+	}
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		activeGeneration.Store(2)
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WriteLineData returned unexpected error: %v", err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("WriteLineData did not stop after the generation became stale")
 	}
 }
 

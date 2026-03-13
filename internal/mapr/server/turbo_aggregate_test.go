@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
@@ -309,5 +310,23 @@ func TestTurboAggregateConcurrency(t *testing.T) {
 
 	if !foundExpectedCount {
 		t.Error("Did not find expected count of 1000 in results")
+	}
+}
+
+func TestTurboAggregateAbortReturnsPromptlyWithActiveProcessors(t *testing.T) {
+	aggregate := &TurboAggregate{}
+	aggregate.done = internal.NewDone()
+	aggregate.activeProcessors.Store(1)
+
+	done := make(chan struct{})
+	go func() {
+		aggregate.Abort()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Abort did not return promptly while processors were still active")
 	}
 }
