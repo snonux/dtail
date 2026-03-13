@@ -42,6 +42,12 @@ type baseClient struct {
 	sessionSpec SessionSpec
 	// Connection maker helper.
 	maker maker
+	// Optional factory override for retry/reconnect tests.
+	connectionFactory func(server string, authMethods []gossh.AuthMethod,
+		hostKeyCallback client.HostKeyCallback, sessionSpec SessionSpec,
+		interactive bool) connectors.Connector
+	// Optional sleep override for retry tests.
+	sleepFn func(context.Context, time.Duration) bool
 	// Regex is the regular expresion object for line filtering
 	Regex regex.Regex
 }
@@ -155,7 +161,7 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 		// Yes, we want to retry with exponential backoff and jitter.
 		sleepDuration := jitterRetryDelay(retryDelay, retryRandom)
 		dlog.Client.Debug(conn.Server(), "Reconnecting", "backoff", sleepDuration)
-		if !sleepWithContext(ctx, sleepDuration) {
+		if !c.sleepRetry(ctx, sleepDuration) {
 			return
 		}
 
@@ -218,6 +224,10 @@ func newRetryRandom(seedOffset int) *rand.Rand {
 
 func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMethod,
 	hostKeyCallback client.HostKeyCallback) connectors.Connector {
+	if c.connectionFactory != nil {
+		return c.connectionFactory(server, sshAuthMethods, hostKeyCallback,
+			c.sessionSpec, c.Args.InteractiveQuery)
+	}
 	if c.Args.Serverless {
 		return connectors.NewServerless(c.UserName, c.maker.makeHandler(server),
 			c.maker.makeCommands(), c.sessionSpec, c.Args.InteractiveQuery, c.runtime)
@@ -226,4 +236,11 @@ func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMe
 		hostKeyCallback, c.maker.makeHandler(server), c.maker.makeCommands(),
 		c.sessionSpec, c.Args.InteractiveQuery, c.Args.SSHPrivateKeyFilePath,
 		c.Args.NoAuthKey, c.runtime)
+}
+
+func (c *baseClient) sleepRetry(ctx context.Context, delay time.Duration) bool {
+	if c.sleepFn != nil {
+		return c.sleepFn(ctx, delay)
+	}
+	return sleepWithContext(ctx, delay)
 }
