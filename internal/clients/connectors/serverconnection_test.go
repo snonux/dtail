@@ -175,6 +175,14 @@ func (m *mockHandler) SendMessage(command string) error {
 	return nil
 }
 
+func (m *mockHandler) Capabilities() []string {
+	return nil
+}
+
+func (m *mockHandler) HasCapability(string) bool {
+	return false
+}
+
 func (m *mockHandler) Server() string {
 	return "mock"
 }
@@ -189,6 +197,10 @@ func (m *mockHandler) Done() <-chan struct{} {
 	ch := make(chan struct{})
 	close(ch)
 	return ch
+}
+
+func (m *mockHandler) WaitForCapabilities(timeout time.Duration) bool {
+	return false
 }
 
 func (m *mockHandler) Read(_ []byte) (int, error) {

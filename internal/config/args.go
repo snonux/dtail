@@ -18,7 +18,9 @@ type Args struct {
 	Arguments             []string
 	ConfigFile            string
 	ConnectionsPerCPU     int
+	ControlTTYPath        string
 	Discovery             string
+	InteractiveQuery      bool
 	LogDir                string
 	Logger                string
 	LogLevel              string
@@ -52,7 +54,9 @@ func (a *Args) String() string {
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Arguments", a.Arguments))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "ConfigFile", a.ConfigFile))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "ConnectionsPerCPU", a.ConnectionsPerCPU))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "ControlTTYPath", a.ControlTTYPath))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Discovery", a.Discovery))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "InteractiveQuery", a.InteractiveQuery))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "LogDir", a.LogDir))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "LogLevel", a.LogLevel))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Logger", a.Logger))

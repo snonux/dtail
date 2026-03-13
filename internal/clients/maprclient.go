@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
@@ -118,28 +117,22 @@ func (c MaprClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewMaprHandler(server, c.query, c.globalGroup)
 }
 
-func (c MaprClient) makeCommands() (commands []string) {
-	// Include options with the map command so serverless mode is properly detected
-	commands = append(commands, fmt.Sprintf("map:%s %s", c.Args.SerializeOptions(), c.query.RawQuery))
-	modeStr := "cat"
-	if c.Mode == omode.TailClient {
-		modeStr = "tail"
-	}
+func (c MaprClient) makeSessionSpec() (SessionSpec, error) {
+	sessionSpec := NewSessionSpec(c.Args)
+	sessionSpec.Query = c.query.RawQuery
+	return sessionSpec, nil
+}
 
-	for _, file := range strings.Split(c.What, ",") {
-		regex, err := c.Regex.Serialize()
-		if err != nil {
-			dlog.Client.FatalPanic(err)
-		}
-		if c.Timeout > 0 {
-			commands = append(commands, fmt.Sprintf("timeout %d %s %s %s", c.Timeout,
-				modeStr, file, regex))
-			continue
-		}
-		commands = append(commands, fmt.Sprintf("%s:%s %s %s",
-			modeStr, c.Args.SerializeOptions(), file, regex))
+func (c MaprClient) makeCommands() (commands []string) {
+	sessionSpec, err := c.makeSessionSpec()
+	if err != nil {
+		dlog.Client.FatalPanic("unable to build map session spec", err)
 	}
-	return
+	commands, err = sessionSpec.Commands()
+	if err != nil {
+		dlog.Client.FatalPanic("unable to build map commands from session spec", err)
+	}
+	return commands
 }
 
 func (c *MaprClient) periodicReportResults(ctx context.Context) {

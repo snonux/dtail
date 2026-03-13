@@ -1,9 +1,7 @@
 package clients
 
 import (
-	"fmt"
 	"runtime"
-	"strings"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
@@ -37,15 +35,18 @@ func (c TailClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewClientHandler(server)
 }
 
+func (c TailClient) makeSessionSpec() (SessionSpec, error) {
+	return NewSessionSpec(c.Args), nil
+}
+
 func (c TailClient) makeCommands() (commands []string) {
-	regex, err := c.Regex.Serialize()
+	sessionSpec, err := c.makeSessionSpec()
 	if err != nil {
-		dlog.Client.FatalPanic(err)
+		dlog.Client.FatalPanic("unable to build tail session spec", err)
 	}
-	for _, file := range strings.Split(c.What, ",") {
-		commands = append(commands, fmt.Sprintf("%s:%s %s %s",
-			c.Mode.String(), c.Args.SerializeOptions(), file, regex))
+	commands, err = sessionSpec.Commands()
+	if err != nil {
+		dlog.Client.FatalPanic("unable to build tail commands from session spec", err)
 	}
-	dlog.Client.Debug(commands)
-	return
+	return commands
 }

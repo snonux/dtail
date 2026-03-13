@@ -38,6 +38,8 @@ type baseClient struct {
 	throttleCh chan struct{}
 	// Retry connection upon failure?
 	retry bool
+	// The current connection-wide session specification.
+	sessionSpec SessionSpec
 	// Connection maker helper.
 	maker maker
 	// Regex is the regular expresion object for line filtering
@@ -70,6 +72,13 @@ func (c *baseClient) init() {
 
 func (c *baseClient) makeConnections(maker maker) {
 	c.maker = maker
+	if builder, ok := maker.(sessionSpecMaker); ok {
+		sessionSpec, err := builder.makeSessionSpec()
+		if err != nil {
+			dlog.Client.FatalPanic("unable to build session specification", err)
+		}
+		c.sessionSpec = sessionSpec
+	}
 
 	discoveryService := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle)
 	for _, server := range discoveryService.ServerList() {

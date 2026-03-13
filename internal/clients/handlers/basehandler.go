@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal"
@@ -20,6 +22,11 @@ type baseHandler struct {
 	commands     chan string
 	receiveBuf   bytes.Buffer
 	status       int
+
+	capabilitiesMu sync.RWMutex
+	capabilities   map[string]struct{}
+	capabilitiesCh chan struct{}
+	capabilitiesOk sync.Once
 }
 
 func (h *baseHandler) String() string {
@@ -38,6 +45,26 @@ func (h *baseHandler) Server() string {
 
 func (h *baseHandler) Status() int {
 	return h.status
+}
+
+func (h *baseHandler) Capabilities() []string {
+	h.capabilitiesMu.RLock()
+	defer h.capabilitiesMu.RUnlock()
+
+	capabilities := make([]string, 0, len(h.capabilities))
+	for capability := range h.capabilities {
+		capabilities = append(capabilities, capability)
+	}
+	sort.Strings(capabilities)
+	return capabilities
+}
+
+func (h *baseHandler) HasCapability(name string) bool {
+	h.capabilitiesMu.RLock()
+	defer h.capabilitiesMu.RUnlock()
+
+	_, ok := h.capabilities[name]
+	return ok
 }
 
 // SendMessage to the server.
@@ -148,14 +175,66 @@ func parseAuthKeyMessage(message string) (isAuthKeyMessage bool, ok bool, detail
 // to the end user.
 func (h *baseHandler) handleHiddenMessage(message string) {
 	switch {
+	case strings.HasPrefix(message, protocol.HiddenCapabilitiesPrefix):
+		h.handleCapabilitiesMessage(message)
 	case strings.HasPrefix(message, ".syn close connection"):
 		go h.SendMessage(".ack close connection")
 		h.Shutdown()
 	}
 }
 
+func (h *baseHandler) handleCapabilitiesMessage(message string) {
+	capabilities := strings.Fields(strings.TrimPrefix(message, protocol.HiddenCapabilitiesPrefix))
+
+	h.capabilitiesMu.Lock()
+	defer h.capabilitiesMu.Unlock()
+
+	if h.capabilities == nil {
+		h.capabilities = make(map[string]struct{})
+	}
+	for _, capability := range capabilities {
+		if capability == "" {
+			continue
+		}
+		h.capabilities[capability] = struct{}{}
+	}
+
+	h.capabilitiesOk.Do(func() {
+		if h.capabilitiesCh != nil {
+			close(h.capabilitiesCh)
+		}
+	})
+}
+
 func (h *baseHandler) Done() <-chan struct{} {
 	return h.done.Done()
+}
+
+func (h *baseHandler) WaitForCapabilities(timeout time.Duration) bool {
+	if h.capabilitiesCh == nil {
+		return false
+	}
+
+	if timeout <= 0 {
+		select {
+		case <-h.capabilitiesCh:
+			return true
+		default:
+			return false
+		}
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-h.capabilitiesCh:
+		return true
+	case <-h.Done():
+		return false
+	case <-timer.C:
+		return false
+	}
 }
 
 func (h *baseHandler) Shutdown() {

@@ -18,11 +18,13 @@ func NewClientHandler(server string) *ClientHandler {
 
 	return &ClientHandler{
 		baseHandler{
-			server:       server,
-			shellStarted: false,
-			commands:     make(chan string),
-			status:       -1,
-			done:         internal.NewDone(),
+			server:         server,
+			shellStarted:   false,
+			commands:       make(chan string),
+			status:         -1,
+			done:           internal.NewDone(),
+			capabilities:   make(map[string]struct{}),
+			capabilitiesCh: make(chan struct{}),
 		},
 	}
 }

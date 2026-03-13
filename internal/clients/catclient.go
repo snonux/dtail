@@ -2,9 +2,7 @@ package clients
 
 import (
 	"errors"
-	"fmt"
 	"runtime"
-	"strings"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
@@ -42,14 +40,18 @@ func (c CatClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewClientHandler(server)
 }
 
+func (c CatClient) makeSessionSpec() (SessionSpec, error) {
+	return NewSessionSpec(c.Args), nil
+}
+
 func (c CatClient) makeCommands() (commands []string) {
-	regex, err := c.Regex.Serialize()
+	sessionSpec, err := c.makeSessionSpec()
 	if err != nil {
-		dlog.Client.FatalPanic(err)
+		dlog.Client.FatalPanic("unable to build cat session spec", err)
 	}
-	for _, file := range strings.Split(c.What, ",") {
-		commands = append(commands, fmt.Sprintf("%s:%s %s %s",
-			c.Mode.String(), c.Args.SerializeOptions(), file, regex))
+	commands, err = sessionSpec.Commands()
+	if err != nil {
+		dlog.Client.FatalPanic("unable to build cat commands from session spec", err)
 	}
-	return
+	return commands
 }

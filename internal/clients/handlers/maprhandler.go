@@ -25,11 +25,13 @@ func NewMaprHandler(server string, query *mapr.Query,
 
 	return &MaprHandler{
 		baseHandler: baseHandler{
-			server:       server,
-			shellStarted: false,
-			commands:     make(chan string),
-			status:       -1,
-			done:         internal.NewDone(),
+			server:         server,
+			shellStarted:   false,
+			commands:       make(chan string),
+			status:         -1,
+			done:           internal.NewDone(),
+			capabilities:   make(map[string]struct{}),
+			capabilitiesCh: make(chan struct{}),
 		},
 		query:     query,
 		aggregate: client.NewAggregate(server, query, globalGroup),
