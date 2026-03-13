@@ -284,7 +284,10 @@ func startAuthKeyServer(t *testing.T, cfgFile string) *authKeyServer {
 		}
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, "localhost", port); err != nil {
+		cancel()
+		t.Fatalf("Unable to start dserver: %v", err)
+	}
 	return &authKeyServer{
 		ctx:    ctx,
 		cancel: cancel,

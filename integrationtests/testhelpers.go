@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -157,9 +158,42 @@ func startTestServer(ctx context.Context, t *testing.T, cfg *ServerConfig) error
 		return err
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
-	return nil
+	return waitForServerReady(ctx, cfg.BindAddress, cfg.Port)
+}
+
+func waitForServerReady(ctx context.Context, bindAddress string, port int) error {
+	address := fmt.Sprintf("%s:%d", bindAddress, port)
+	deadline := time.Now().Add(10 * time.Second)
+	var lastErr error
+	var lastOutput string
+
+	for {
+		cmd := exec.CommandContext(ctx, "../dtailhealth", "--server", address, "--no-auth-key")
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		lastOutput = strings.TrimSpace(string(out))
+
+		if ctx.Err() != nil {
+			return fmt.Errorf("wait for dserver %s: %w", address, ctx.Err())
+		}
+		if time.Now().After(deadline) {
+			if lastOutput != "" {
+				return fmt.Errorf("timed out waiting for dserver %s: %w (%s)", address, lastErr, lastOutput)
+			}
+			return fmt.Errorf("timed out waiting for dserver %s: %w", address, lastErr)
+		}
+
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("wait for dserver %s: %w", address, ctx.Err())
+		case <-timer.C:
+		}
+	}
 }
 
 // createTestContext creates a context with cancel that will be cleaned up automatically

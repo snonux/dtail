@@ -81,11 +81,14 @@ func testDGrep1WithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
-	_, err = runCommand(ctx, t, outFile,
-		"../dgrep",
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dgrep", func() error {
+		return compareFilesWithContext(ctx, t, outFile, expectedOutFile)
+	},
 		"--plain",
 		"--cfg", "none",
 		"--grep", "1002-071947",
@@ -93,15 +96,8 @@ func testDGrep1WithServer(t *testing.T, logger *TestLogger) {
 		"--trustAllHosts",
 		"--noColor",
 		"--files", inFile)
-
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
 	cancel()
-
-	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
+	if err != nil {
 		t.Error(err)
 		return
 	}
@@ -195,52 +191,42 @@ func testDGrep1ColorsWithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
-	// Run without --plain and without --noColor to get colored output
-	_, err = runCommand(ctx, t, outFile,
-		"../dgrep",
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dgrep", func() error {
+		info, statErr := os.Stat(outFile)
+		if statErr != nil {
+			return fmt.Errorf("output file not created: %w", statErr)
+		}
+		if info.Size() == 0 {
+			return fmt.Errorf("output file is empty")
+		}
+		content, readErr := os.ReadFile(outFile)
+		if readErr != nil {
+			return fmt.Errorf("failed to read output file: %w", readErr)
+		}
+		if !strings.Contains(string(content), "REMOTE") && !strings.Contains(string(content), "SERVER") {
+			preview := string(content)
+			if len(preview) > 500 {
+				preview = preview[:500]
+			}
+			return fmt.Errorf("server mode output does not contain server metadata. First 500 chars:\n%s", preview)
+		}
+		return nil
+	},
 		"--cfg", "none",
 		"--grep", "1002-071947",
 		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
 		"--trustAllHosts",
 		"--files", inFile)
-
+	cancel()
 	if err != nil {
 		t.Error(err)
 		return
 	}
-
-	cancel()
-
-	// Verify it ran successfully and produced output
-	info, err := os.Stat(outFile)
-	if err != nil {
-		t.Error("Output file not created:", err)
-		return
-	}
-	if info.Size() == 0 {
-		t.Error("Output file is empty")
-		return
-	}
-
-	// In server mode, output should contain server metadata
-	content, err := os.ReadFile(outFile)
-	if err != nil {
-		t.Error("Failed to read output file:", err)
-		return
-	}
-	if !strings.Contains(string(content), "REMOTE") && !strings.Contains(string(content), "SERVER") {
-		preview := string(content)
-		if len(preview) > 500 {
-			preview = preview[:500]
-		}
-		t.Errorf("Server mode output does not contain server metadata. First 500 chars:\n%s", preview)
-		return
-	}
-
-	// Log verification
 	logger.LogFileComparison(outFile, "server metadata (REMOTE/SERVER)", "contains check")
 }
 
@@ -314,11 +300,14 @@ func testDGrep2WithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
-	_, err = runCommand(ctx, t, outFile,
-		"../dgrep",
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dgrep", func() error {
+		return compareFilesWithContext(ctx, t, outFile, expectedOutFile)
+	},
 		"--plain",
 		"--cfg", "none",
 		"--grep", "1002-07194[789]",
@@ -326,15 +315,8 @@ func testDGrep2WithServer(t *testing.T, logger *TestLogger) {
 		"--trustAllHosts",
 		"--noColor",
 		"--files", inFile)
-
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
 	cancel()
-
-	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
+	if err != nil {
 		t.Error(err)
 		return
 	}
@@ -412,11 +394,14 @@ func testDGrepContext1WithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
-	_, err = runCommand(ctx, t, outFile,
-		"../dgrep",
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dgrep", func() error {
+		return compareFilesWithContext(ctx, t, outFile, expectedOutFile)
+	},
 		"--plain",
 		"--cfg", "none",
 		"--grep", "1002-071947",
@@ -426,15 +411,8 @@ func testDGrepContext1WithServer(t *testing.T, logger *TestLogger) {
 		"--trustAllHosts",
 		"--noColor",
 		"--files", inFile)
-
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
 	cancel()
-
-	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
+	if err != nil {
 		t.Error(err)
 		return
 	}
@@ -513,11 +491,14 @@ func testDGrepContext2WithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
-	_, err = runCommand(ctx, t, outFile,
-		"../dgrep",
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dgrep", func() error {
+		return compareFilesWithContext(ctx, t, outFile, expectedOutFile)
+	},
 		"--plain",
 		"--cfg", "none",
 		"--grep", "1002-071947",
@@ -528,15 +509,8 @@ func testDGrepContext2WithServer(t *testing.T, logger *TestLogger) {
 		"--trustAllHosts",
 		"--noColor",
 		"--files", inFile)
-
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
 	cancel()
-
-	if err := compareFilesWithContext(ctx, t, outFile, expectedOutFile); err != nil {
+	if err != nil {
 		t.Error(err)
 		return
 	}
@@ -560,7 +534,7 @@ func TestDGrepPipeToStdin(t *testing.T) {
 
 func testDGrepStdinServerless(t *testing.T, logger *TestLogger) {
 	inFile := "mapr_testdata.log"
-	outFile := "dgrepstdin.stdout.tmp" 
+	outFile := "dgrepstdin.stdout.tmp"
 	expectedOutFile := "dgrep1.txt.expected"
 	ctx := WithTestLogger(context.Background(), logger)
 
@@ -571,7 +545,7 @@ func testDGrepStdinServerless(t *testing.T, logger *TestLogger) {
 		"--plain",
 		"--cfg", "none",
 		"--grep", "1002-071947")
-	
+
 	if err != nil {
 		t.Error(err)
 		return

@@ -82,27 +82,23 @@ func testDCat1WithServer(t *testing.T, logger *TestLogger, inFile string) error 
 		return err
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return err
+	}
 
-	// Run dcat against the server
-	_, err = runCommand(ctx, t, outFile,
-		"../dcat", "--plain", "--cfg", "none",
+	// Run dcat against the server and wait for the full file to be available.
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dcat", func() error {
+		return compareFilesWithContext(ctx, t, outFile, inFile)
+	},
+		"--plain", "--cfg", "none",
 		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
 		"--files", inFile,
 		"--trustAllHosts",
 		"--noColor")
-	if err != nil {
-		return err
-	}
 
 	cancel()
-
-	if err := compareFilesWithContext(ctx, t, outFile, inFile); err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func TestDCat1Colors(t *testing.T) {
@@ -189,50 +185,42 @@ func testDCat1ColorsWithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
-
-	// Run without --plain and without --noColor to get colored output
-	_, err = runCommand(ctx, t, outFile,
-		"../dcat", "--cfg", "none",
-		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
-		"--files", inFile,
-		"--trustAllHosts")
-	if err != nil {
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
 		t.Error(err)
 		return
 	}
 
-	cancel()
-
-	// Just verify it ran successfully and produced output
-	info, err := os.Stat(outFile)
-	if err != nil {
-		t.Error("Output file not created:", err)
-		return
-	}
-	if info.Size() == 0 {
-		t.Error("Output file is empty")
-		return
-	}
-
-	// In server mode, output should contain server metadata unless --plain is used
-	content, err := os.ReadFile(outFile)
-	if err != nil {
-		t.Error("Failed to read output file:", err)
-		return
-	}
-	// In server mode with colors, look for REMOTE or SERVER (without pipe as it may be colored)
-	if !strings.Contains(string(content), "REMOTE") && !strings.Contains(string(content), "SERVER") {
-		preview := string(content)
-		if len(preview) > 500 {
-			preview = preview[:500]
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dcat", func() error {
+		info, statErr := os.Stat(outFile)
+		if statErr != nil {
+			return fmt.Errorf("output file not created: %w", statErr)
 		}
-		t.Errorf("Server mode output does not contain server metadata. First 500 chars:\n%s", preview)
+		if info.Size() == 0 {
+			return fmt.Errorf("output file is empty")
+		}
+
+		content, readErr := os.ReadFile(outFile)
+		if readErr != nil {
+			return fmt.Errorf("failed to read output file: %w", readErr)
+		}
+		if !strings.Contains(string(content), "REMOTE") && !strings.Contains(string(content), "SERVER") {
+			preview := string(content)
+			if len(preview) > 500 {
+				preview = preview[:500]
+			}
+			return fmt.Errorf("server mode output does not contain server metadata. First 500 chars:\n%s", preview)
+		}
+		return nil
+	},
+		"--cfg", "none",
+		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
+		"--files", inFile,
+		"--trustAllHosts")
+	cancel()
+	if err != nil {
+		t.Error(err)
 		return
 	}
-
-	// Log verification
 	logger.LogFileComparison(outFile, "server metadata (REMOTE/SERVER)", "contains check")
 }
 
@@ -309,28 +297,26 @@ func testDCat2WithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
 	// Cat file 100 times in one session.
 	var files []string
 	for i := 0; i < 100; i++ {
 		files = append(files, inFile)
 	}
-	
+
 	args := []string{"--plain", "--logLevel", "error", "--cfg", "none",
 		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
 		"--trustAllHosts", "--noColor", "--files", strings.Join(files, ",")}
 
-	_, err = runCommand(ctx, t, outFile, "../dcat", args...)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dcat", func() error {
+		return compareFilesContentsWithContext(ctx, t, outFile, expectedFile)
+	}, args...)
 	cancel()
-
-	if err := compareFilesContentsWithContext(ctx, t, outFile, expectedFile); err != nil {
+	if err != nil {
 		t.Error(err)
 		return
 	}
@@ -403,8 +389,10 @@ func testDCat3WithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
 	args := []string{"--plain", "--logLevel", "error", "--cfg", "none",
 		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
@@ -414,15 +402,11 @@ func testDCat3WithServer(t *testing.T, logger *TestLogger) {
 
 	// Notice, with DTAIL_INTEGRATION_TEST_RUN_MODE the DTail max line length is set
 	// to 1024!
-	_, err = runCommand(ctx, t, outFile, "../dcat", args...)
-	if err != nil {
-		t.Error(err)
-		return
-	}
-
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dcat", func() error {
+		return compareFilesContentsWithContext(ctx, t, outFile, expectedFile)
+	}, args...)
 	cancel()
-
-	if err := compareFilesContentsWithContext(ctx, t, outFile, expectedFile); err != nil {
+	if err != nil {
 		t.Error(err)
 		return
 	}
@@ -493,24 +477,21 @@ func testDCatColorsWithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
-
-	_, err = runCommand(ctx, t, outFile,
-		"../dcat", "--logLevel", "error", "--cfg", "none",
-		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
-		"--files", inFile,
-		"--trustAllHosts",
-		"--noColor")
-
-	if err != nil {
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
 		t.Error(err)
 		return
 	}
 
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dcat", func() error {
+		return compareFilesWithContext(ctx, t, outFile, expectedFile)
+	},
+		"--logLevel", "error", "--cfg", "none",
+		"--servers", fmt.Sprintf("%s:%d", bindAddress, port),
+		"--files", inFile,
+		"--trustAllHosts",
+		"--noColor")
 	cancel()
-
-	if err := compareFilesWithContext(ctx, t, outFile, expectedFile); err != nil {
+	if err != nil {
 		t.Error(err)
 		return
 	}

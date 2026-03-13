@@ -28,7 +28,7 @@ func runCommand(ctx context.Context, t *testing.T, stdoutFile, cmdStr string,
 	t.Log("Creating stdout file", stdoutFile)
 	fd, err := os.Create(stdoutFile)
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 	defer fd.Close()
 
@@ -51,6 +51,47 @@ func runCommandRetry(ctx context.Context, t *testing.T, retries int, stdoutFile,
 		}
 	}
 	return
+}
+
+func runCommandUntilValid(ctx context.Context, t *testing.T, attempts int, delay time.Duration,
+	stdoutFile, cmd string, validate func() error, args ...string) error {
+
+	t.Helper()
+
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		exitCode, err := runCommand(ctx, t, stdoutFile, cmd, args...)
+		if err == nil {
+			if validateErr := validate(); validateErr == nil {
+				return nil
+			} else {
+				lastErr = validateErr
+			}
+		} else {
+			lastErr = fmt.Errorf("command %s failed with exit code %d: %w", cmd, exitCode, err)
+		}
+
+		if i == attempts-1 {
+			break
+		}
+
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			if lastErr != nil {
+				return lastErr
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+
+	return lastErr
 }
 
 func startCommand(ctx context.Context, t *testing.T, inPipeFile,
@@ -76,7 +117,7 @@ func startCommandWithEnv(ctx context.Context, t *testing.T, inPipeFile,
 
 	t.Log(cmdStr, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, cmdStr, args...)
-	
+
 	// Always inherit environment variables
 	cmd.Env = os.Environ()
 	// Add any additional environment variables if provided

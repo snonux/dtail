@@ -259,19 +259,19 @@ ERROR: Network down
 		isRegex       bool
 		expectedCount int
 	}{
-		{"ERROR", false, 3},            // Literal
-		{"ERROR.*full", true, 1},       // Regex
-		{"WARNING", false, 1},          // Literal
-		{"(ERROR|WARNING)", true, 4},   // Regex
-		{"Process started", false, 1},  // Literal with space
-		{"^INFO:", true, 1},            // Regex with anchor
+		{"ERROR", false, 3},           // Literal
+		{"ERROR.*full", true, 1},      // Regex
+		{"WARNING", false, 1},         // Literal
+		{"(ERROR|WARNING)", true, 4},  // Regex
+		{"Process started", false, 1}, // Literal with space
+		{"^INFO:", true, 1},           // Regex with anchor
 	}
 
 	t.Run("ServerlessMode", func(t *testing.T) {
 		for i, p := range patterns {
 			outFile := fmt.Sprintf("mixed_%d.stdout.tmp", i)
 			defer os.Remove(outFile)
-			
+
 			testLiteralPatternServerless(t, testLogger, testFile, outFile, p.pattern, p.expectedCount)
 		}
 	})
@@ -339,11 +339,33 @@ func testLiteralPatternWithServer(t *testing.T, logger *TestLogger, inFile, outF
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
-	_, err = runCommand(ctx, t, outFile,
-		"../dgrep",
+	err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dgrep", func() error {
+		content, readErr := os.ReadFile(outFile)
+		if readErr != nil {
+			return fmt.Errorf("failed to read output file: %w", readErr)
+		}
+
+		lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+		actualCount := 0
+		for _, line := range lines {
+			if line != "" {
+				actualCount++
+			}
+		}
+
+		if actualCount != expectedCount {
+			if actualCount > 0 && actualCount <= 10 {
+				return fmt.Errorf("pattern %q: expected %d matches, got %d\noutput:\n%s", pattern, expectedCount, actualCount, string(content))
+			}
+			return fmt.Errorf("pattern %q: expected %d matches, got %d", pattern, expectedCount, actualCount)
+		}
+		return nil
+	},
 		"--plain",
 		"--cfg", "none",
 		"--grep", pattern,
@@ -351,34 +373,9 @@ func testLiteralPatternWithServer(t *testing.T, logger *TestLogger, inFile, outF
 		"--trustAllHosts",
 		"--noColor",
 		"--files", inFile)
-
-	if err != nil {
-		t.Errorf("Failed to run dgrep with pattern '%s': %v", pattern, err)
-		return
-	}
-
 	cancel()
-
-	// Count matching lines
-	content, err := os.ReadFile(outFile)
 	if err != nil {
-		t.Errorf("Failed to read output file: %v", err)
-		return
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-	actualCount := 0
-	for _, line := range lines {
-		if line != "" {
-			actualCount++
-		}
-	}
-
-	if actualCount != expectedCount {
-		t.Errorf("Pattern '%s': expected %d matches, got %d", pattern, expectedCount, actualCount)
-		if actualCount > 0 && actualCount <= 10 {
-			t.Errorf("Output:\n%s", string(content))
-		}
+		t.Error(err)
 	}
 }
 

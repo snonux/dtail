@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/mimecast/dtail/internal/config"
 )
@@ -73,8 +72,10 @@ func testDTailHealth1WithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
 	t.Log("Server mode check without --server flag, is supposed to exit with warning state.")
 	// Run dtailhealth without specifying --server flag
@@ -157,8 +158,10 @@ func testDTailHealth2WithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
 	t.Log("Server mode negative test, checking unreachable server, is supposed to exit with a critical state.")
 	// Check an unreachable server (not the one we started)

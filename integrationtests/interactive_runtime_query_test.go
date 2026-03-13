@@ -51,6 +51,10 @@ func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T)
 		t.Fatalf("start dserver: %v", err)
 	}
 	serverLogs := startProcessOutputCollector(ctx, serverStdout, serverStderr)
+	if err := waitForServerReady(ctx, "localhost", port); err != nil {
+		t.Fatalf("wait for dserver: %v", err)
+	}
+	serverLogs.reset()
 
 	writerDone := make(chan error, 1)
 	go func() {
@@ -130,6 +134,10 @@ func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 		t.Fatalf("start dserver: %v", err)
 	}
 	serverLogs := startProcessOutputCollector(ctx, serverStdout, serverStderr)
+	if err := waitForServerReady(ctx, "localhost", port); err != nil {
+		t.Fatalf("wait for dserver: %v", err)
+	}
+	serverLogs.reset()
 
 	clientOutput, err := runInteractivePTYCommand(ctx, []string{
 		"../dgrep",
@@ -197,6 +205,12 @@ func (c *processOutputCollector) snapshot() []string {
 	out := make([]string, len(c.lines))
 	copy(out, c.lines)
 	return out
+}
+
+func (c *processOutputCollector) reset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lines = c.lines[:0]
 }
 
 func appendLinesOnSchedule(ctx context.Context, path string, steps []interactiveStep) error {

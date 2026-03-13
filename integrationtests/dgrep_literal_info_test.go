@@ -38,10 +38,10 @@ ERROR test line 5
 
 	// Test patterns - both literal and regex
 	tests := []struct {
-		name           string
-		pattern        string
-		expectLiteral  bool
-		expectedCount  int
+		name          string
+		pattern       string
+		expectLiteral bool
+		expectedCount int
 	}{
 		{
 			name:          "SimpleLiteral",
@@ -83,7 +83,7 @@ ERROR test line 5
 				"", "../dserver",
 				"--cfg", "none",
 				"--logger", "stdout",
-				"--logLevel", "info",  // Changed from error to info
+				"--logLevel", "info", // Changed from error to info
 				"--bindAddress", bindAddress,
 				"--port", fmt.Sprintf("%d", port),
 			)
@@ -96,7 +96,7 @@ ERROR test line 5
 			var serverOutput strings.Builder
 			var outputMutex sync.Mutex
 			outputDone := make(chan struct{})
-			
+
 			go func() {
 				defer close(outputDone)
 				for {
@@ -117,15 +117,34 @@ ERROR test line 5
 				}
 			}()
 
-			// Give server time to start
-			time.Sleep(500 * time.Millisecond)
+			if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+				t.Error(err)
+				return
+			}
 
 			// Run dgrep
 			outFile := fmt.Sprintf("dgrep_info_%s.stdout.tmp", test.name)
 			defer os.Remove(outFile)
 
-			_, err = runCommand(ctx, t, outFile,
-				"../dgrep",
+			err = runCommandUntilValid(ctx, t, 5, 200*time.Millisecond, outFile, "../dgrep", func() error {
+				content, readErr := os.ReadFile(outFile)
+				if readErr != nil {
+					return fmt.Errorf("failed to read output file: %w", readErr)
+				}
+
+				lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+				actualCount := 0
+				for _, line := range lines {
+					if line != "" {
+						actualCount++
+					}
+				}
+
+				if actualCount != test.expectedCount {
+					return fmt.Errorf("pattern %q: expected %d matches, got %d", test.pattern, test.expectedCount, actualCount)
+				}
+				return nil
+			},
 				"--plain",
 				"--cfg", "none",
 				"--grep", test.pattern,
@@ -144,31 +163,12 @@ ERROR test line 5
 
 			// Stop server
 			cancel()
-			
+
 			// Wait for output capture goroutine to finish
 			select {
 			case <-outputDone:
 			case <-time.After(2 * time.Second):
 				t.Log("Warning: output capture goroutine did not finish in time")
-			}
-
-			// Check grep output for correctness
-			content, err := os.ReadFile(outFile)
-			if err != nil {
-				t.Errorf("Failed to read output file: %v", err)
-				return
-			}
-
-			lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-			actualCount := 0
-			for _, line := range lines {
-				if line != "" {
-					actualCount++
-				}
-			}
-
-			if actualCount != test.expectedCount {
-				t.Errorf("Pattern '%s': expected %d matches, got %d", test.pattern, test.expectedCount, actualCount)
 			}
 
 			// Check server output for literal mode message

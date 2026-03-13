@@ -197,8 +197,10 @@ func testDTailColorTableWithServer(t *testing.T, logger *TestLogger) {
 		return
 	}
 
-	// Give server time to start
-	time.Sleep(500 * time.Millisecond)
+	if err := waitForServerReady(ctx, bindAddress, port); err != nil {
+		t.Error(err)
+		return
+	}
 
 	_, err = runCommand(ctx, t, outFile, "../dtail",
 		"--colorTable",
