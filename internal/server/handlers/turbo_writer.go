@@ -30,6 +30,7 @@ type DirectTurboWriter struct {
 	hostname   string
 	plain      bool
 	serverless bool
+	generation uint64
 
 	// Buffering for efficiency
 	writeBuf bytes.Buffer
@@ -39,6 +40,8 @@ type DirectTurboWriter struct {
 	// Stats
 	linesWritten uint64
 	bytesWritten uint64
+
+	activeGeneration func() uint64
 }
 
 var _ TurboWriter = (*DirectTurboWriter)(nil)
@@ -54,9 +57,19 @@ func NewDirectTurboWriter(writer io.Writer, hostname string, plain, serverless b
 	}
 }
 
+func NewGeneratedDirectTurboWriter(writer io.Writer, hostname string, plain, serverless bool, generation uint64, activeGeneration func() uint64) *DirectTurboWriter {
+	w := NewDirectTurboWriter(writer, hostname, plain, serverless)
+	w.generation = generation
+	w.activeGeneration = activeGeneration
+	return w
+}
+
 // WriteLineData writes formatted line data directly to output.
 // Dispatches to serverless or network mode handlers based on configuration.
 func (w *DirectTurboWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error {
+	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+		return nil
+	}
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
@@ -135,6 +148,9 @@ func (w *DirectTurboWriter) writeNetworkLine(lineContent []byte, lineNum uint64,
 
 // WriteServerMessage writes a server message
 func (w *DirectTurboWriter) WriteServerMessage(message string) error {
+	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+		return nil
+	}
 	if w.serverless {
 		return nil
 	}
@@ -209,6 +225,7 @@ type TurboChannelWriter struct {
 	hostname   string
 	plain      bool
 	serverless bool
+	generation uint64
 
 	// Buffering for efficiency
 	writeBuf bytes.Buffer
@@ -218,6 +235,8 @@ type TurboChannelWriter struct {
 	// Stats
 	linesWritten uint64
 	bytesWritten uint64
+
+	activeGeneration func() uint64
 }
 
 var _ TurboWriter = (*TurboChannelWriter)(nil)
@@ -233,8 +252,18 @@ func NewTurboChannelWriter(channel chan<- []byte, hostname string, plain, server
 	}
 }
 
+func NewGeneratedTurboChannelWriter(channel chan<- []byte, hostname string, plain, serverless bool, generation uint64, activeGeneration func() uint64) *TurboChannelWriter {
+	w := NewTurboChannelWriter(channel, hostname, plain, serverless)
+	w.generation = generation
+	w.activeGeneration = activeGeneration
+	return w
+}
+
 // WriteLineData formats and writes line data to the turbo channel
 func (w *TurboChannelWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error {
+	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+		return nil
+	}
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
@@ -255,7 +284,7 @@ func (w *TurboChannelWriter) WriteLineData(lineContent []byte, lineNum uint64, s
 	w.writeBuf.Reset()
 
 	select {
-	case w.channel <- data:
+	case w.channel <- encodeGeneratedBytes(w.generation, data):
 		return nil
 	default:
 		return fmt.Errorf("turbo channel full")
@@ -264,6 +293,9 @@ func (w *TurboChannelWriter) WriteLineData(lineContent []byte, lineNum uint64, s
 
 // WriteServerMessage writes a server message
 func (w *TurboChannelWriter) WriteServerMessage(message string) error {
+	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+		return nil
+	}
 	if w.serverless {
 		return nil
 	}
@@ -288,7 +320,7 @@ func (w *TurboChannelWriter) WriteServerMessage(message string) error {
 
 	data := buf.Bytes()
 	select {
-	case w.channel <- data:
+	case w.channel <- encodeGeneratedBytes(w.generation, data):
 		return nil
 	default:
 		return fmt.Errorf("turbo channel full")
@@ -315,6 +347,7 @@ type TurboNetworkWriter struct {
 	hostname       string
 	plain          bool
 	serverless     bool
+	generation     uint64
 
 	// Internal buffer for batching writes
 	writeBuf bytes.Buffer
@@ -324,11 +357,16 @@ type TurboNetworkWriter struct {
 	// Stats
 	linesWritten uint64
 	bytesWritten uint64
+
+	activeGeneration func() uint64
 }
 
 // WriteLineData formats and writes line data directly to the turbo channel.
 // Builds the protocol-formatted line and sends it via sendToTurboChannel.
 func (w *TurboNetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error {
+	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+		return nil
+	}
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
@@ -366,7 +404,7 @@ func (w *TurboNetworkWriter) sendToTurboChannel() error {
 
 	// Send data to turbo channel, retry once if full
 	select {
-	case w.turboLines <- data:
+	case w.turboLines <- encodeGeneratedBytes(w.generation, data):
 		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel successfully")
 		w.writeBuf.Reset()
 		return nil
@@ -374,7 +412,7 @@ func (w *TurboNetworkWriter) sendToTurboChannel() error {
 		// Channel full, wait a bit and retry
 		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "channel full, waiting before retry")
 		time.Sleep(time.Millisecond)
-		w.turboLines <- data
+		w.turboLines <- encodeGeneratedBytes(w.generation, data)
 		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel after retry")
 		w.writeBuf.Reset()
 		return nil
@@ -383,11 +421,14 @@ func (w *TurboNetworkWriter) sendToTurboChannel() error {
 
 // WriteServerMessage writes a server message
 func (w *TurboNetworkWriter) WriteServerMessage(message string) error {
+	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+		return nil
+	}
 	// Server messages are less critical in turbo mode
 	// We can send them through the normal channel
 	if w.serverMessages != nil {
 		select {
-		case w.serverMessages <- message:
+		case w.serverMessages <- encodeGeneratedMessage(w.generation, message):
 			return nil
 		default:
 			return fmt.Errorf("server message channel full")
@@ -412,7 +453,7 @@ func (w *TurboNetworkWriter) Flush() error {
 			copy(data, w.writeBuf.Bytes())
 
 			// Force send the data
-			w.turboLines <- data
+			w.turboLines <- encodeGeneratedBytes(w.generation, data)
 			w.writeBuf.Reset()
 			dlog.Server.Trace("TurboNetworkWriter.Flush", "flushed data to channel")
 		}
@@ -435,6 +476,19 @@ func (w *TurboNetworkWriter) Flush() error {
 	dlog.Server.Trace("TurboNetworkWriter.Flush", "completed")
 
 	return nil
+}
+
+func shouldWriteGeneration(generation uint64, activeGeneration func() uint64) bool {
+	if generation == 0 || activeGeneration == nil {
+		return true
+	}
+
+	currentGeneration := activeGeneration()
+	if currentGeneration == 0 {
+		return true
+	}
+
+	return currentGeneration == generation
 }
 
 // DirectLineProcessor processes lines directly without channels in turbo mode

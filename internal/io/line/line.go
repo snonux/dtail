@@ -30,6 +30,8 @@ type Line struct {
 	// directories in case multiple log files with the same basename are
 	// followed.
 	SourceID string
+	// Session generation this line belongs to. Zero means unscoped/legacy output.
+	Generation uint64
 }
 
 // New creaters a new line object. This is a DTail internal helper structure for reading files.
@@ -39,6 +41,7 @@ func New(content *bytes.Buffer, count uint64, transmittedPerc int, sourceID stri
 	l.Count = count
 	l.TransmittedPerc = transmittedPerc
 	l.SourceID = sourceID
+	l.Generation = 0
 	return l
 }
 
@@ -72,4 +75,5 @@ func (l *Line) NullValues() {
 	l.Count = 0
 	l.TransmittedPerc = 0
 	l.SourceID = ""
+	l.Generation = 0
 }

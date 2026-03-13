@@ -37,6 +37,7 @@ type readCommandLifecycle interface {
 	AddPendingFiles(delta int32) int32
 	CompletePendingFile() (remaining int32, activeCommands int32)
 	PendingAndActive() (pending int32, activeCommands int32)
+	ActiveSessionGeneration() uint64
 	TriggerShutdown()
 }
 
@@ -165,6 +166,11 @@ func (h *ServerHandler) PendingAndActive() (pending int32, activeCommands int32)
 	pending = atomic.LoadInt32(&h.pendingFiles)
 	activeCommands = atomic.LoadInt32(&h.activeCommands)
 	return pending, activeCommands
+}
+
+// ActiveSessionGeneration returns the currently active interactive session generation.
+func (h *ServerHandler) ActiveSessionGeneration() uint64 {
+	return h.sessionState.currentGeneration()
 }
 
 // TriggerShutdown starts the handler shutdown sequence.

@@ -195,7 +195,7 @@ func (t *turboManager) flush(user *user.User) {
 
 // tryRead tries to serve data from turbo state and channels.
 // Returns handled=false when caller should continue with normal path.
-func (t *turboManager) tryRead(p []byte, user *user.User) (n int, handled bool) {
+func (t *turboManager) tryRead(p []byte, user *user.User, shouldDropGeneration func(uint64) bool) (n int, handled bool) {
 	if !t.mode {
 		return 0, false
 	}
@@ -215,57 +215,69 @@ func (t *turboManager) tryRead(p []byte, user *user.User) (n int, handled bool) 
 	channelLen := len(t.lines)
 	dlog.Server.Trace(user, "baseHandler.Read", "checking turboLines channel", "channelLen", channelLen)
 
-	select {
-	case turboData := <-t.lines:
-		dlog.Server.Trace(user, "baseHandler.Read", "got data from turboLines", "dataLen", len(turboData))
-		t.eofEmptySince = time.Time{}
-		n = copy(p, turboData)
-		if n < len(turboData) {
-			t.buffer = turboData[n:]
-			dlog.Server.Trace(user, "baseHandler.Read", "buffering remaining data", "bufferedLen", len(t.buffer))
-		}
-		return n, true
-	default:
-		if channelLen > 0 {
-			dlog.Server.Trace(user, "baseHandler.Read", "channel has data but not available, waiting")
-			time.Sleep(t.resolvedReadRetryInterval())
-			select {
-			case turboData := <-t.lines:
-				dlog.Server.Trace(user, "baseHandler.Read", "got data after wait", "dataLen", len(turboData))
+	for {
+		select {
+		case turboData := <-t.lines:
+			generation, decodedData := decodeGeneratedBytes(turboData)
+			if shouldDropGeneration != nil && shouldDropGeneration(generation) {
 				t.eofEmptySince = time.Time{}
-				n = copy(p, turboData)
-				if n < len(turboData) {
-					t.buffer = turboData[n:]
-				}
-				return n, true
-			default:
-				// Still no data.
+				continue
 			}
-		}
-
-		if t.eof != nil {
-			select {
-			case <-t.eof:
-				if len(t.lines) > 0 {
+			dlog.Server.Trace(user, "baseHandler.Read", "got data from turboLines", "dataLen", len(decodedData))
+			t.eofEmptySince = time.Time{}
+			n = copy(p, decodedData)
+			if n < len(decodedData) {
+				t.buffer = decodedData[n:]
+				dlog.Server.Trace(user, "baseHandler.Read", "buffering remaining data", "bufferedLen", len(t.buffer))
+			}
+			return n, true
+		default:
+			if channelLen > 0 {
+				dlog.Server.Trace(user, "baseHandler.Read", "channel has data but not available, waiting")
+				time.Sleep(t.resolvedReadRetryInterval())
+				select {
+				case turboData := <-t.lines:
+					generation, decodedData := decodeGeneratedBytes(turboData)
+					if shouldDropGeneration != nil && shouldDropGeneration(generation) {
+						t.eofEmptySince = time.Time{}
+						continue
+					}
+					dlog.Server.Trace(user, "baseHandler.Read", "got data after wait", "dataLen", len(decodedData))
 					t.eofEmptySince = time.Time{}
-					break
+					n = copy(p, decodedData)
+					if n < len(decodedData) {
+						t.buffer = decodedData[n:]
+					}
+					return n, true
+				default:
+					// Still no data.
 				}
-
-				if t.eofEmptySince.IsZero() {
-					t.eofEmptySince = time.Now()
-					break
-				}
-
-				if time.Since(t.eofEmptySince) >= t.resolvedEOFAckQuietPeriod() {
-					dlog.Server.Trace(user, "baseHandler.Read", "EOF acknowledged and channel stable-empty, disabling turbo mode")
-					t.mode = false
-					t.signalEOFAck()
-				}
-			default:
 			}
-		}
 
-		dlog.Server.Trace(user, "baseHandler.Read", "no data in turboLines, falling through")
-		return 0, false
+			if t.eof != nil {
+				select {
+				case <-t.eof:
+					if len(t.lines) > 0 {
+						t.eofEmptySince = time.Time{}
+						break
+					}
+
+					if t.eofEmptySince.IsZero() {
+						t.eofEmptySince = time.Now()
+						break
+					}
+
+					if time.Since(t.eofEmptySince) >= t.resolvedEOFAckQuietPeriod() {
+						dlog.Server.Trace(user, "baseHandler.Read", "EOF acknowledged and channel stable-empty, disabling turbo mode")
+						t.mode = false
+						t.signalEOFAck()
+					}
+				default:
+				}
+			}
+
+			dlog.Server.Trace(user, "baseHandler.Read", "no data in turboLines, falling through")
+			return 0, false
+		}
 	}
 }

@@ -71,6 +71,7 @@ func NewServerHandler(user *user.User, catLimiter,
 	h.handleCommandCb = h.handleUserCommand
 	h.commands = h.newCommandRegistry()
 	h.turbo.configure(h.turboManagerConfig())
+	h.baseHandler.activeGeneration = h.sessionState.currentGeneration
 
 	fqdn, err := config.Hostname()
 	if err != nil {
@@ -160,8 +161,10 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 
 	h.aggregate = aggregate
 	h.turboAggregate = turboAggregate
+	maprMessages, closeMaprMessages := h.newGeneratedMaprMessagesChannel(ctx, sessionGenerationFromContext(ctx))
 	go func() {
-		command.Start(ctx, h.maprMessages)
+		defer closeMaprMessages()
+		command.Start(ctx, maprMessages)
 		commandFinished()
 	}()
 }
@@ -204,4 +207,26 @@ func (h *ServerHandler) handleAuthKeyCommand(_ context.Context, _ lcontext.LCont
 	}
 	h.authKeyStore.Add(h.user.Name, pubKey)
 	h.sendln(h.serverMessages, "AUTHKEY OK")
+}
+
+func (h *ServerHandler) newGeneratedMaprMessagesChannel(ctx context.Context, generation uint64) (chan string, func()) {
+	maprMessages := make(chan string, 16)
+	go func() {
+		for {
+			select {
+			case message, ok := <-maprMessages:
+				if !ok {
+					return
+				}
+				h.send(h.maprMessages, encodeGeneratedMessage(generation, message))
+			case <-ctx.Done():
+				return
+			case <-h.done.Done():
+				return
+			}
+		}
+	}()
+	return maprMessages, func() {
+		close(maprMessages)
+	}
 }

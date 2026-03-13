@@ -140,6 +140,7 @@ func (s *sessionCommandState) start(handler *ServerHandler, spec session.Spec) (
 	s.spec = spec
 	s.cancel = cancel
 	s.mu.Unlock()
+	ctx = withSessionGeneration(ctx, 1)
 
 	handler.resetSessionAggregates()
 	if err := handler.dispatchSessionCommands(ctx, commands); err != nil {
@@ -172,6 +173,7 @@ func (s *sessionCommandState) update(handler *ServerHandler, spec session.Spec, 
 	s.spec = spec
 	s.cancel = cancel
 	s.mu.Unlock()
+	ctx = withSessionGeneration(ctx, generation)
 
 	if oldCancel != nil {
 		oldCancel()
@@ -218,6 +220,12 @@ func (s *sessionCommandState) keepAlive() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.active
+}
+
+func (s *sessionCommandState) currentGeneration() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.generation
 }
 
 func (s *sessionCommandState) reset() {
