@@ -333,6 +333,36 @@ func TestServerConnectionApplySessionSpecRejectsUnexpectedAck(t *testing.T) {
 	}
 }
 
+func TestServerConnectionApplySessionSpecTimesOutWaitingForAck(t *testing.T) {
+	resetClientLogger(t)
+
+	mock := &mockHandler{
+		waitForCapabilities: true,
+		capabilities: map[string]bool{
+			protocol.CapabilityQueryUpdateV1: true,
+		},
+	}
+	conn := &ServerConnection{
+		server:  "srv1",
+		handler: mock,
+	}
+
+	err := conn.ApplySessionSpec(sessionspec.Spec{
+		Mode:  omode.TailClient,
+		Files: []string{"/var/log/app.log"},
+		Regex: "ERROR",
+	}, 10*time.Millisecond)
+	if !errors.Is(err, ErrSessionAckTimeout) {
+		t.Fatalf("expected ErrSessionAckTimeout, got %v", err)
+	}
+	if len(mock.commands) != 1 {
+		t.Fatalf("expected session command to be sent before timeout, got %d", len(mock.commands))
+	}
+	if _, _, ok := conn.CommittedSession(); ok {
+		t.Fatalf("unexpected committed session after missing ack")
+	}
+}
+
 type testSSHSettings struct {
 	port    int
 	timeout time.Duration
