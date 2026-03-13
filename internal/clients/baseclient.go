@@ -213,9 +213,10 @@ func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMe
 	hostKeyCallback client.HostKeyCallback) connectors.Connector {
 	if c.Args.Serverless {
 		return connectors.NewServerless(c.UserName, c.maker.makeHandler(server),
-			c.maker.makeCommands(), c.runtime)
+			c.maker.makeCommands(), c.sessionSpec, c.Args.InteractiveQuery, c.runtime)
 	}
 	return connectors.NewServerConnection(server, c.UserName, sshAuthMethods,
 		hostKeyCallback, c.maker.makeHandler(server), c.maker.makeCommands(),
-		c.Args.SSHPrivateKeyFilePath, c.Args.NoAuthKey, c.runtime)
+		c.sessionSpec, c.Args.InteractiveQuery, c.Args.SSHPrivateKeyFilePath,
+		c.Args.NoAuthKey, c.runtime)
 }

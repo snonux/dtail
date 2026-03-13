@@ -8,6 +8,7 @@ import (
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
+	sessionspec "github.com/mimecast/dtail/internal/session"
 )
 
 // ServerlessHandlerFactory creates the in-process server-side handler used by serverless mode.
@@ -19,6 +20,9 @@ type ServerlessHandlerFactory interface {
 type Serverless struct {
 	handler        handlers.Handler
 	commands       []string
+	sessionSpec    sessionspec.Spec
+	sessionState   committedSessionState
+	interactive    bool
 	userName       string
 	handlerFactory ServerlessHandlerFactory
 }
@@ -27,13 +31,16 @@ var _ Connector = (*Serverless)(nil)
 
 // NewServerless starts a new serverless session.
 func NewServerless(userName string, handler handlers.Handler,
-	commands []string, handlerFactory ServerlessHandlerFactory) *Serverless {
+	commands []string, sessionSpec sessionspec.Spec, interactive bool,
+	handlerFactory ServerlessHandlerFactory) *Serverless {
 
 	dlog.Client.Debug("Creating new serverless connector", handler, commands)
 	return &Serverless{
 		userName:       userName,
 		handler:        handler,
 		commands:       commands,
+		sessionSpec:    sessionSpec,
+		interactive:    interactive,
 		handlerFactory: handlerFactory,
 	}
 }
@@ -52,6 +59,16 @@ func (s *Serverless) Handler() handlers.Handler {
 // runtime query update support to the client handler.
 func (s *Serverless) SupportsQueryUpdates(timeout time.Duration) bool {
 	return supportsQueryUpdates(s.handler, timeout)
+}
+
+// ApplySessionSpec starts or updates the in-process interactive session state.
+func (s *Serverless) ApplySessionSpec(spec sessionspec.Spec, timeout time.Duration) error {
+	return applySessionSpec(s.Server(), s.handler, &s.sessionState, spec, timeout)
+}
+
+// CommittedSession returns the last server-acknowledged session state.
+func (s *Serverless) CommittedSession() (sessionspec.Spec, uint64, bool) {
+	return s.sessionState.snapshot()
 }
 
 // Start the serverless connection.
@@ -165,12 +182,8 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		}
 	}()
 
-	// Send commands after setting up the data flow
-	for _, command := range s.commands {
-		dlog.Client.Debug("Sending command to serverless server", command)
-		if err := s.handler.SendMessage(command); err != nil {
-			dlog.Client.Debug(err)
-		}
+	if err := dispatchInitialCommands(s.Server(), s.handler, s.commands, s.interactive, s.sessionSpec, &s.sessionState); err != nil {
+		return err
 	}
 
 	// Monitor for completion

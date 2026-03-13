@@ -16,4 +16,5 @@ type Handler interface {
 	Shutdown()
 	Done() <-chan struct{}
 	WaitForCapabilities(timeout time.Duration) bool
+	WaitForSessionAck(timeout time.Duration) (SessionAck, bool)
 }

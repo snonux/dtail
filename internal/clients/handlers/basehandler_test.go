@@ -65,6 +65,7 @@ func TestHandleCapabilitiesMessage(t *testing.T) {
 		done:           internal.NewDone(),
 		capabilities:   make(map[string]struct{}),
 		capabilitiesCh: make(chan struct{}),
+		sessionAcks:    make(chan SessionAck, 1),
 	}
 
 	handler.handleHiddenMessage(".syn capabilities query-update-v1 feature-two")
@@ -90,9 +91,84 @@ func TestWaitForCapabilitiesTimeout(t *testing.T) {
 		done:           internal.NewDone(),
 		capabilities:   make(map[string]struct{}),
 		capabilitiesCh: make(chan struct{}),
+		sessionAcks:    make(chan SessionAck, 1),
 	}
 
 	if handler.WaitForCapabilities(5 * time.Millisecond) {
 		t.Fatalf("expected capabilities wait to time out")
+	}
+}
+
+func TestParseSessionAckMessage(t *testing.T) {
+	tests := []struct {
+		name    string
+		message string
+		want    SessionAck
+		wantOK  bool
+	}{
+		{
+			name:    "start ok",
+			message: ".syn session start ok 7",
+			want: SessionAck{
+				Action:     "start",
+				Generation: 7,
+			},
+			wantOK: true,
+		},
+		{
+			name:    "update ok",
+			message: ".syn session update ok 8",
+			want: SessionAck{
+				Action:     "update",
+				Generation: 8,
+			},
+			wantOK: true,
+		},
+		{
+			name:    "error",
+			message: ".syn session err query sessions not supported yet",
+			want: SessionAck{
+				Action: "error",
+				Error:  "query sessions not supported yet",
+			},
+			wantOK: true,
+		},
+		{
+			name:    "invalid",
+			message: ".syn session start ok nope",
+			wantOK:  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := parseSessionAckMessage(tc.message)
+			if ok != tc.wantOK {
+				t.Fatalf("unexpected ok flag: got %v want %v", ok, tc.wantOK)
+			}
+			if !tc.wantOK {
+				return
+			}
+			if got != tc.want {
+				t.Fatalf("unexpected ack: got %#v want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestHandleSessionAckMessage(t *testing.T) {
+	handler := baseHandler{
+		done:        internal.NewDone(),
+		sessionAcks: make(chan SessionAck, 1),
+	}
+
+	handler.handleHiddenMessage(".syn session update ok 4")
+
+	ack, ok := handler.WaitForSessionAck(10 * time.Millisecond)
+	if !ok {
+		t.Fatalf("expected session ack")
+	}
+	if ack.Action != "update" || ack.Generation != 4 {
+		t.Fatalf("unexpected session ack: %#v", ack)
 	}
 }

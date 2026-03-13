@@ -1,6 +1,8 @@
 package session
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -43,6 +45,30 @@ func (s Spec) Commands() ([]string, error) {
 	default:
 		return s.readCommands(s.Mode.String())
 	}
+}
+
+// StartCommand returns the SESSION START command for this specification.
+func (s Spec) StartCommand() (string, error) {
+	payload, err := s.encodedPayload()
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("SESSION START %s", payload), nil
+}
+
+// UpdateCommand returns the SESSION UPDATE command for this specification.
+func (s Spec) UpdateCommand(generation uint64) (string, error) {
+	payload, err := s.encodedPayload()
+	if err != nil {
+		return "", err
+	}
+
+	if generation == 0 {
+		return fmt.Sprintf("SESSION UPDATE %s", payload), nil
+	}
+
+	return fmt.Sprintf("SESSION UPDATE %d %s", generation, payload), nil
 }
 
 func (s Spec) queryCommands() ([]string, error) {
@@ -121,4 +147,13 @@ func splitFiles(what string) []string {
 		files = append(files, file)
 	}
 	return files
+}
+
+func (s Spec) encodedPayload() (string, error) {
+	payload, err := json.Marshal(s)
+	if err != nil {
+		return "", fmt.Errorf("marshal session spec: %w", err)
+	}
+
+	return base64.StdEncoding.EncodeToString(payload), nil
 }

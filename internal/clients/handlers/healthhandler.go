@@ -26,6 +26,7 @@ func NewHealthHandler(server string) *HealthHandler {
 			done:           internal.NewDone(),
 			capabilities:   make(map[string]struct{}),
 			capabilitiesCh: make(chan struct{}),
+			sessionAcks:    make(chan SessionAck, 4),
 		},
 	}
 }

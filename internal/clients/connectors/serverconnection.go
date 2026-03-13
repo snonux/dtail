@@ -14,6 +14,7 @@ import (
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
+	sessionspec "github.com/mimecast/dtail/internal/session"
 	"github.com/mimecast/dtail/internal/ssh/client"
 
 	"golang.org/x/crypto/ssh"
@@ -43,6 +44,9 @@ type ServerConnection struct {
 	config          *ssh.ClientConfig
 	handler         handlers.Handler
 	commands        []string
+	sessionSpec     sessionspec.Spec
+	sessionState    committedSessionState
+	interactive     bool
 	authKeyPath     string
 	authKeyDisabled bool
 	hostKeyCallback client.HostKeyCallback
@@ -54,8 +58,8 @@ var _ Connector = (*ServerConnection)(nil)
 // NewServerConnection returns a new DTail SSH server connection.
 func NewServerConnection(server string, userName string,
 	authMethods []ssh.AuthMethod, hostKeyCallback client.HostKeyCallback,
-	handler handlers.Handler, commands []string, authKeyPath string,
-	authKeyDisabled bool, settings SSHSettings) *ServerConnection {
+	handler handlers.Handler, commands []string, sessionSpec sessionspec.Spec,
+	interactive bool, authKeyPath string, authKeyDisabled bool, settings SSHSettings) *ServerConnection {
 
 	dlog.Client.Debug(server, "Creating new connection", server, handler, commands)
 	sshConnectTimeout := defaultSSHConnectTimeout
@@ -76,6 +80,8 @@ func NewServerConnection(server string, userName string,
 		server:          server,
 		handler:         handler,
 		commands:        commands,
+		sessionSpec:     sessionSpec,
+		interactive:     interactive,
 		authKeyPath:     resolveAuthKeyPath(authKeyPath),
 		authKeyDisabled: authKeyDisabled,
 		config: &ssh.ClientConfig{
@@ -101,6 +107,17 @@ func (c *ServerConnection) Handler() handlers.Handler { return c.handler }
 // return false here without affecting the legacy command path.
 func (c *ServerConnection) SupportsQueryUpdates(timeout time.Duration) bool {
 	return supportsQueryUpdates(c.handler, timeout)
+}
+
+// ApplySessionSpec starts or updates the interactive session state on the
+// existing SSH connection when runtime query updates are supported.
+func (c *ServerConnection) ApplySessionSpec(spec sessionspec.Spec, timeout time.Duration) error {
+	return applySessionSpec(c.server, c.handler, &c.sessionState, spec, timeout)
+}
+
+// CommittedSession returns the last server-acknowledged session state.
+func (c *ServerConnection) CommittedSession() (sessionspec.Spec, uint64, bool) {
+	return c.sessionState.snapshot()
 }
 
 // Attempt to parse the server port address from the provided server FQDN.
@@ -257,12 +274,8 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 		c.sendAuthKeyRegistrationCommand()
 	}
 
-	// Send all requested commands to the server.
-	for _, command := range c.commands {
-		dlog.Client.Debug(command)
-		if err := c.handler.SendMessage(command); err != nil {
-			dlog.Client.Debug(err)
-		}
+	if err := dispatchInitialCommands(c.server, c.handler, c.commands, c.interactive, c.sessionSpec, &c.sessionState); err != nil {
+		return err
 	}
 
 	if !c.throttlingDone {
