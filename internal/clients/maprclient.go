@@ -11,6 +11,7 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/mapr"
+	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -29,14 +30,10 @@ const (
 // MaprClient is used for running mapreduce aggregations on remote files.
 type MaprClient struct {
 	baseClient
-	// Global group set for merged mapr aggregation results
-	globalGroup *mapr.GlobalGroupSet
-	// The query object (constructed from queryStr)
-	query *mapr.Query
-	// Additative result or new result every interval run?
-	cumulative bool
-	// The last result string received
-	lastResult string
+	// Shared mapreduce state for all handlers and reporting paths.
+	session *maprclient.SessionState
+	// Selected cumulative reporting mode.
+	mode MaprClientMode
 }
 
 // NewMaprClient returns a new mapreduce client.
@@ -53,19 +50,6 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 	// Don't retry connection if in tail mode and no outfile specified.
 	retry := args.Mode == omode.TailClient && !query.HasOutfile()
 
-	var cumulative bool
-	switch maprClientMode {
-	case CumulativeMode:
-		cumulative = true
-	case NonCumulativeMode:
-		cumulative = false
-	default:
-		// Result is comulative if we are in MapClient mode or with outfile
-		cumulative = args.Mode == omode.MapClient || query.HasOutfile()
-	}
-
-	dlog.Client.Debug("Cumulative mapreduce mode?", cumulative)
-
 	c := MaprClient{
 		baseClient: baseClient{
 			Args:       args,
@@ -73,22 +57,14 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 			retry:      retry,
 			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
 		},
-		query:      query,
-		cumulative: cumulative,
+		session: maprclient.NewSessionState(query),
+		mode:    maprClientMode,
 	}
+	dlog.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
-	switch c.query.Table {
-	case "", ".":
-		c.RegexStr = "."
-	case "*":
-		c.RegexStr = "\\|MAPREDUCE:\\|"
-	default:
-		c.RegexStr = fmt.Sprintf("\\|MAPREDUCE:%s\\|", c.query.Table)
-	}
-
-	c.globalGroup = mapr.NewGlobalGroupSet()
+	c.setRegexForQuery(query)
 	c.baseClient.init()
-	c.baseClient.makeConnections(c)
+	c.baseClient.makeConnections(&c)
 
 	return &c, nil
 }
@@ -100,7 +76,7 @@ func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status i
 	status = c.baseClient.Start(ctx, statsCh)
 
 	// Always write final result for cumulative mode (includes outfile case)
-	if c.cumulative {
+	if snapshot := c.session.Snapshot(); c.isCumulative(snapshot.Query) {
 		dlog.Client.Debug("Writing final mapreduce result")
 		if err := c.reportResults(true); err != nil {
 			dlog.Client.Error("Unable to write final mapreduce result", err)
@@ -113,17 +89,19 @@ func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status i
 
 // NEXT: Make this a callback function rather trying to use polymorphism to call
 // this. This applies to all clients. It will make the code easier to read.
-func (c MaprClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewMaprHandler(server, c.query, c.globalGroup)
+func (c *MaprClient) makeHandler(server string) handlers.Handler {
+	return handlers.NewMaprHandler(server, c.session)
 }
 
-func (c MaprClient) makeSessionSpec() (SessionSpec, error) {
+func (c *MaprClient) makeSessionSpec() (SessionSpec, error) {
 	sessionSpec := NewSessionSpec(c.Args)
-	sessionSpec.Query = c.query.RawQuery
+	if snapshot := c.session.Snapshot(); snapshot.Query != nil {
+		sessionSpec.Query = snapshot.Query.RawQuery
+	}
 	return sessionSpec, nil
 }
 
-func (c MaprClient) makeCommands() (commands []string) {
+func (c *MaprClient) makeCommands() (commands []string) {
 	sessionSpec, err := c.makeSessionSpec()
 	if err != nil {
 		dlog.Client.FatalPanic("unable to build map session spec", err)
@@ -136,84 +114,96 @@ func (c MaprClient) makeCommands() (commands []string) {
 }
 
 func (c *MaprClient) periodicReportResults(ctx context.Context) {
-	rampUpSleep := c.query.Interval / 2
-	dlog.Client.Debug("Ramp up sleeping before processing mapreduce results", rampUpSleep)
+	var (
+		lastGeneration uint64
+		seenGeneration bool
+	)
 
-	if rampUpSleep > 0 {
-		rampUpTimer := time.NewTimer(rampUpSleep)
+	for {
+		snapshot := c.session.Snapshot()
+		rampUp := !seenGeneration || snapshot.Generation != lastGeneration
+		lastGeneration = snapshot.Generation
+		seenGeneration = true
+
+		delay := c.reportDelay(snapshot.Query, rampUp)
+		dlog.Client.Debug("Sleeping before processing mapreduce results", "generation", snapshot.Generation, "delay", delay)
+
+		timer := time.NewTimer(delay)
 		select {
-		case <-rampUpTimer.C:
-		case <-ctx.Done():
-			if !rampUpTimer.Stop() {
+		case <-timer.C:
+			dlog.Client.Debug("Gathering interim mapreduce result")
+			if err := c.reportResults(false); err != nil {
+				dlog.Client.Error("Unable to gather mapreduce result", err)
+			}
+		case <-c.session.Changes():
+			if !timer.Stop() {
 				select {
-				case <-rampUpTimer.C:
+				case <-timer.C:
+				default:
+				}
+			}
+			dlog.Client.Debug("Mapreduce query generation changed, recalculating report interval")
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
 				default:
 				}
 			}
 			return
 		}
 	}
-
-	interval := c.query.Interval
-	if interval <= 0 {
-		interval = time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			dlog.Client.Debug("Gathering interim mapreduce result")
-			if err := c.reportResults(false); err != nil {
-				dlog.Client.Error("Unable to gather mapreduce result", err)
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
 }
 
 func (c *MaprClient) reportResults(finalResult bool) error {
-	if c.query.HasOutfile() {
-		return c.writeResultsToOutfile(finalResult)
+	snapshot := c.session.Snapshot()
+	if snapshot.Query == nil || snapshot.GlobalGroup == nil {
+		return nil
 	}
-	return c.printResults()
+
+	if snapshot.Query.HasOutfile() {
+		return c.writeResultsToOutfile(snapshot, finalResult)
+	}
+	return c.printResults(snapshot)
 }
 
-func (c *MaprClient) printResults() error {
+func (c *MaprClient) printResults(snapshot maprclient.SessionSnapshot) error {
 	var result string
 	var err error
 	var numRows int
 	rowsLimit := -1
 
-	if c.query.Limit == -1 {
+	if snapshot.Query.Limit == -1 {
 		// Limit output to 10 rows when the result is printed to stdout.
 		// This can be overriden with the limit clause though.
 		rowsLimit = 10
 	}
 
-	if c.cumulative {
-		result, numRows, err = c.globalGroup.Result(c.query, rowsLimit, c.runtime.output.MaprResultRenderer())
+	if c.isCumulative(snapshot.Query) {
+		result, numRows, err = snapshot.GlobalGroup.Result(snapshot.Query, rowsLimit, c.runtime.output.MaprResultRenderer())
 	} else {
-		result, numRows, err = c.globalGroup.SwapOut().Result(c.query, rowsLimit, c.runtime.output.MaprResultRenderer())
+		result, numRows, err = snapshot.GlobalGroup.SwapOut().Result(snapshot.Query, rowsLimit, c.runtime.output.MaprResultRenderer())
 	}
 	if err != nil {
 		return fmt.Errorf("unable to render mapreduce result: %w", err)
 	}
 
-	if result == c.lastResult {
+	changed, ok := c.session.CommitRenderedResult(snapshot.Generation, result)
+	if !ok {
+		dlog.Client.Debug("Discarding stale mapreduce result", "generation", snapshot.Generation)
+		return nil
+	}
+	if !changed {
 		dlog.Client.Debug("Result hasn't changed compared to last time...")
 		return nil
 	}
-	c.lastResult = result
 
 	if numRows == 0 {
 		dlog.Client.Debug("Empty result set this time...")
 		return nil
 	}
 
-	rawQuery := c.runtime.output.PaintMaprRawQuery(c.query.RawQuery)
+	rawQuery := c.runtime.output.PaintMaprRawQuery(snapshot.Query.RawQuery)
 	dlog.Client.Raw(fmt.Sprintf("%s\n", rawQuery))
 
 	if rowsLimit > 0 && numRows > rowsLimit {
@@ -224,18 +214,77 @@ func (c *MaprClient) printResults() error {
 	return nil
 }
 
-func (c *MaprClient) writeResultsToOutfile(finalResult bool) error {
-	dlog.Client.Debug("writeResultsToOutfile called", "finalResult", finalResult, "cumulative", c.cumulative)
-	if c.cumulative {
-		if err := c.globalGroup.WriteResult(c.query, finalResult); err != nil {
+func (c *MaprClient) writeResultsToOutfile(snapshot maprclient.SessionSnapshot, finalResult bool) error {
+	cumulative := c.isCumulative(snapshot.Query)
+	dlog.Client.Debug("writeResultsToOutfile called", "finalResult", finalResult, "cumulative", cumulative, "generation", snapshot.Generation)
+	if cumulative {
+		if err := snapshot.GlobalGroup.WriteResult(snapshot.Query, finalResult); err != nil {
 			return fmt.Errorf("unable to write cumulative mapreduce result: %w", err)
 		}
 		dlog.Client.Debug("WriteResult completed for cumulative mode")
 		return nil
 	}
-	if err := c.globalGroup.SwapOut().WriteResult(c.query, true); err != nil {
+	if err := snapshot.GlobalGroup.SwapOut().WriteResult(snapshot.Query, true); err != nil {
 		return fmt.Errorf("unable to write non-cumulative mapreduce result: %w", err)
 	}
 	dlog.Client.Debug("WriteResult completed for non-cumulative mode")
 	return nil
+}
+
+func (c *MaprClient) commitSessionSpec(spec SessionSpec, generation uint64) error {
+	if spec.Query == "" {
+		return errors.New("missing mapreduce query")
+	}
+
+	query, err := c.session.CommitQuery(spec.Query, generation)
+	if err != nil {
+		return err
+	}
+
+	c.Args.QueryStr = spec.Query
+	c.setRegexForQuery(query)
+	return nil
+}
+
+func (c *MaprClient) isCumulative(query *mapr.Query) bool {
+	switch c.mode {
+	case CumulativeMode:
+		return true
+	case NonCumulativeMode:
+		return false
+	default:
+		return c.Args.Mode == omode.MapClient || (query != nil && query.HasOutfile())
+	}
+}
+
+func (c *MaprClient) setRegexForQuery(query *mapr.Query) {
+	if query == nil {
+		c.RegexStr = "."
+		return
+	}
+
+	switch query.Table {
+	case "", ".":
+		c.RegexStr = "."
+	case "*":
+		c.RegexStr = "\\|MAPREDUCE:\\|"
+	default:
+		c.RegexStr = fmt.Sprintf("\\|MAPREDUCE:%s\\|", query.Table)
+	}
+}
+
+func (c *MaprClient) reportDelay(query *mapr.Query, rampUp bool) time.Duration {
+	interval := time.Second
+	if query != nil && query.Interval > 0 {
+		interval = query.Interval
+	}
+	if !rampUp {
+		return interval
+	}
+
+	delay := interval / 2
+	if delay <= 0 {
+		return interval
+	}
+	return delay
 }

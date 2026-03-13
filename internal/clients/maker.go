@@ -15,3 +15,7 @@ type maker interface {
 type sessionSpecMaker interface {
 	makeSessionSpec() (SessionSpec, error)
 }
+
+type sessionCommitter interface {
+	commitSessionSpec(spec SessionSpec, generation uint64) error
+}
