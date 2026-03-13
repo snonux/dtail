@@ -90,6 +90,13 @@ func (c *baseClient) makeConnections(maker maker) {
 }
 
 func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
+	if c.Args.InteractiveQuery {
+		return c.startInteractiveControl(ctx, statsCh)
+	}
+	return c.runConnections(ctx, statsCh)
+}
+
+func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) (status int) {
 	dlog.Client.Trace("Starting base client")
 	// Can be nil when serverless.
 	if c.hostKeyCallback != nil {

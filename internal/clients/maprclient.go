@@ -258,19 +258,7 @@ func (c *MaprClient) isCumulative(query *mapr.Query) bool {
 }
 
 func (c *MaprClient) setRegexForQuery(query *mapr.Query) {
-	if query == nil {
-		c.RegexStr = "."
-		return
-	}
-
-	switch query.Table {
-	case "", ".":
-		c.RegexStr = "."
-	case "*":
-		c.RegexStr = "\\|MAPREDUCE:\\|"
-	default:
-		c.RegexStr = fmt.Sprintf("\\|MAPREDUCE:%s\\|", query.Table)
-	}
+	c.RegexStr = maprRegexForQuery(query)
 }
 
 func (c *MaprClient) reportDelay(query *mapr.Query, rampUp bool) time.Duration {
