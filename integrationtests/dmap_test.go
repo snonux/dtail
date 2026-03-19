@@ -3,6 +3,7 @@ package integrationtests
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 )
 
@@ -33,7 +34,7 @@ func TestDMap1(t *testing.T) {
 			t.Run(subtestName, func(t *testing.T) {
 				t.Log("Testing dmap with input file")
 				testDmap1Serverless(t, testLogger, query, subtestName, false)
-				
+
 				t.Log("Testing dmap with stdin input pipe")
 				testDmap1Serverless(t, testLogger, query, subtestName, true)
 			})
@@ -57,7 +58,7 @@ func testDmap1Serverless(t *testing.T, logger *TestLogger, query, subtestName st
 	expectedCsvFile := fmt.Sprintf("dmap1%s.csv.expected", subtestName)
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 	query = fmt.Sprintf("%s outfile %s", query, csvFile)
-	
+
 	cleanupFiles(t, csvFile, queryFile)
 
 	ctxTimeout, cancel := createTestContextWithTimeout(t)
@@ -104,7 +105,7 @@ func testDmap1WithServer(t *testing.T, logger *TestLogger, query, subtestName st
 	expectedCsvFile := fmt.Sprintf("dmap1%s.csv.expected", subtestName)
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 	query = fmt.Sprintf("%s outfile %s", query, csvFile)
-	
+
 	cleanupFiles(t, csvFile, queryFile)
 
 	server := NewTestServer(t)
@@ -148,6 +149,99 @@ func TestDMap2(t *testing.T) {
 		ServerlessTest: func(t *testing.T) { testDMap2Serverless(t, testLogger) },
 		ServerTest:     func(t *testing.T) { testDMap2WithServer(t, testLogger) },
 	})
+}
+
+func TestDMapOutfileArbitraryPath(t *testing.T) {
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDMapOutfileArbitraryPath")
+	defer testLogger.WriteLogFile()
+	runDualModeTest(t, DualModeTest{
+		Name: "TestDMapOutfileArbitraryPath",
+		ServerlessTest: func(t *testing.T) {
+			testDMapOutfileArbitraryPathServerless(t, testLogger)
+		},
+		ServerTest: func(t *testing.T) {
+			testDMapOutfileArbitraryPathWithServer(t, testLogger)
+		},
+	})
+}
+
+func testDMapOutfileArbitraryPathServerless(t *testing.T, logger *TestLogger) {
+	paths := GetStandardTestPaths()
+	outFile := "dmap_outfile_arbitrary_serverless.stdout.tmp"
+	csvFile := filepath.Join(t.TempDir(), "dmap_outfile_arbitrary_serverless.csv")
+	expectedCsvFile := "dmap2.csv.expected"
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
+		"outfile %s", csvFile)
+
+	if !filepath.IsAbs(csvFile) {
+		t.Fatalf("expected absolute outfile path, got %q", csvFile)
+	}
+	cleanupFiles(t, outFile, csvFile, queryFile)
+
+	ctxTimeout, cancel := createTestContextWithTimeout(t)
+	ctx := WithTestLogger(ctxTimeout, logger)
+	defer cancel()
+
+	_, err := runCommand(ctx, t, outFile,
+		"../dmap", "--query", query, "--cfg", "none", paths.MaprTestData)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	if err := compareFilesContentsWithContext(ctx, t, csvFile, expectedCsvFile); err != nil {
+		t.Error(err)
+	}
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
+		t.Error(err)
+	}
+}
+
+func testDMapOutfileArbitraryPathWithServer(t *testing.T, logger *TestLogger) {
+	ctx := WithTestLogger(context.Background(), logger)
+	paths := GetStandardTestPaths()
+	outFile := "dmap_outfile_arbitrary_server.stdout.tmp"
+	csvFile := filepath.Join(t.TempDir(), "dmap_outfile_arbitrary_server.csv")
+	expectedCsvFile := "dmap2.csv.expected"
+	queryFile := fmt.Sprintf("%s.query", csvFile)
+	query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
+		"avg($goroutines),min($goroutines) group by $time order by count($time) "+
+		"outfile %s", csvFile)
+
+	if !filepath.IsAbs(csvFile) {
+		t.Fatalf("expected absolute outfile path, got %q", csvFile)
+	}
+	cleanupFiles(t, outFile, csvFile, queryFile)
+
+	server := NewTestServer(t)
+	if err := server.Start("error"); err != nil {
+		t.Error(err)
+		return
+	}
+
+	args := NewCommandArgs()
+	args.Servers = []string{server.Address()}
+	args.TrustAllHosts = true
+	args.NoColor = true
+	args.Files = []string{paths.MaprTestData}
+	args.ExtraArgs = []string{"--query", query}
+
+	_, err := runCommand(server.ctx, t, outFile,
+		"../dmap", args.ToSlice()...)
+	if err != nil {
+		t.Error(err)
+		return
+	}
+
+	if err := compareFilesContentsWithContext(ctx, t, csvFile, expectedCsvFile); err != nil {
+		t.Error(err)
+	}
+	if err := verifyQueryFile(t, queryFile, query); err != nil {
+		t.Error(err)
+	}
 }
 
 func testDMap2Serverless(t *testing.T, logger *TestLogger) {
@@ -258,7 +352,7 @@ func testDMap3Serverless(t *testing.T, logger *TestLogger) {
 
 	args := NewCommandArgs()
 	args.ExtraArgs = []string{"--query", query}
-	
+
 	_, err := runCommand(ctx, t, outFile,
 		"../dmap", append(args.ToSlice(), inputFiles...)...)
 	if err != nil {
@@ -344,14 +438,14 @@ func testDMap4AppendServerless(t *testing.T, logger *TestLogger) {
 	paths := GetStandardTestPaths()
 	csvFile := "dmap4_serverless.csv.tmp"
 	queryFile := fmt.Sprintf("%s.query", csvFile)
-	
+
 	// Clean up files once at the beginning
 	cleanupFiles(t, csvFile, queryFile)
-	
+
 	t.Run("FirstQuery", func(t *testing.T) {
 		stdout := "dmap4_serverless.stdout1.tmp"
 		cleanupFiles(t, stdout)
-		
+
 		// First query
 		query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
 			"avg($goroutines),min($goroutines) group by $time order by count($time) "+
@@ -365,12 +459,12 @@ func testDMap4AppendServerless(t *testing.T, logger *TestLogger) {
 			t.Error(err)
 			return
 		}
-		
+
 		// Verify the CSV output
 		if err := compareFilesContentsWithContext(ctx, t, csvFile, "dmap4_query1.csv.expected"); err != nil {
 			t.Error(err)
 		}
-		
+
 		// Verify the query file
 		if err := verifyQueryFile(t, queryFile, query); err != nil {
 			t.Error(err)
@@ -380,7 +474,7 @@ func testDMap4AppendServerless(t *testing.T, logger *TestLogger) {
 	t.Run("SecondQueryWithAppend", func(t *testing.T) {
 		stdout := "dmap4_serverless.stdout2.tmp"
 		cleanupFiles(t, stdout)
-		
+
 		// Second query with append
 		query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
 			"avg($goroutines),min($goroutines) group by $time order by avg($goroutines) reverse "+
@@ -394,7 +488,7 @@ func testDMap4AppendServerless(t *testing.T, logger *TestLogger) {
 			t.Error(err)
 			return
 		}
-		
+
 		// Verify the CSV output (should still be the first query result - append doesn't change existing file)
 		if err := compareFilesContentsWithContext(ctx, t, csvFile, "dmap4_query1.csv.expected"); err != nil {
 			t.Error(err)
@@ -404,7 +498,7 @@ func testDMap4AppendServerless(t *testing.T, logger *TestLogger) {
 	t.Run("ThirdQueryWithAppend", func(t *testing.T) {
 		stdout := "dmap4_serverless.stdout3.tmp"
 		cleanupFiles(t, stdout)
-		
+
 		// Third query with append (different structure)
 		query := fmt.Sprintf("from STATS select count($line),$hostname "+
 			"group by $hostname "+
@@ -418,12 +512,12 @@ func testDMap4AppendServerless(t *testing.T, logger *TestLogger) {
 			t.Error(err)
 			return
 		}
-		
+
 		// Verify the CSV output (should still be the first query result - append doesn't change existing file)
 		if err := compareFilesContentsWithContext(ctx, t, csvFile, "dmap4_query1.csv.expected"); err != nil {
 			t.Error(err)
 		}
-		
+
 		// For append test, the query file should still contain the first query
 		firstQuery := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
 			"avg($goroutines),min($goroutines) group by $time order by count($time) "+
@@ -458,12 +552,12 @@ func testDMap4AppendWithServer(t *testing.T, logger *TestLogger) {
 	t.Run("FirstQuery", func(t *testing.T) {
 		stdout := "dmap4_server.stdout1.tmp"
 		cleanupFiles(t, stdout)
-		
+
 		// First query
 		query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
 			"avg($goroutines),min($goroutines) group by $time order by count($time) "+
 			"outfile %s", csvFile)
-		
+
 		args := *baseArgs
 		args.ExtraArgs = []string{"--query", query}
 
@@ -473,12 +567,12 @@ func testDMap4AppendWithServer(t *testing.T, logger *TestLogger) {
 			t.Error(err)
 			return
 		}
-		
+
 		// Verify the CSV output
 		if err := compareFilesContentsWithContext(ctx, t, csvFile, "dmap4_query1.csv.expected"); err != nil {
 			t.Error(err)
 		}
-		
+
 		// Verify the query file
 		if err := verifyQueryFile(t, queryFile, query); err != nil {
 			t.Error(err)
@@ -488,12 +582,12 @@ func testDMap4AppendWithServer(t *testing.T, logger *TestLogger) {
 	t.Run("SecondQueryWithAppend", func(t *testing.T) {
 		stdout := "dmap4_server.stdout2.tmp"
 		cleanupFiles(t, stdout)
-		
+
 		// Second query with append
 		query := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
 			"avg($goroutines),min($goroutines) group by $time order by avg($goroutines) reverse "+
 			"outfile append:%s", csvFile)
-		
+
 		args := *baseArgs
 		args.ExtraArgs = []string{"--query", query}
 
@@ -503,7 +597,7 @@ func testDMap4AppendWithServer(t *testing.T, logger *TestLogger) {
 			t.Error(err)
 			return
 		}
-		
+
 		// Verify the CSV output (should still be the first query result - append doesn't change existing file)
 		if err := compareFilesContentsWithContext(ctx, t, csvFile, "dmap4_query1.csv.expected"); err != nil {
 			t.Error(err)
@@ -513,12 +607,12 @@ func testDMap4AppendWithServer(t *testing.T, logger *TestLogger) {
 	t.Run("ThirdQueryWithAppend", func(t *testing.T) {
 		stdout := "dmap4_server.stdout3.tmp"
 		cleanupFiles(t, stdout)
-		
+
 		// Third query with append (different structure)
 		query := fmt.Sprintf("from STATS select count($line),$hostname "+
 			"group by $hostname "+
 			"outfile append:%s", csvFile)
-		
+
 		args := *baseArgs
 		args.ExtraArgs = []string{"--query", query}
 
@@ -528,12 +622,12 @@ func testDMap4AppendWithServer(t *testing.T, logger *TestLogger) {
 			t.Error(err)
 			return
 		}
-		
+
 		// Verify the CSV output (should still be the first query result - append doesn't change existing file)
 		if err := compareFilesContentsWithContext(ctx, t, csvFile, "dmap4_query1.csv.expected"); err != nil {
 			t.Error(err)
 		}
-		
+
 		// For append test, the query file should still contain the first query
 		firstQuery := fmt.Sprintf("from STATS select count($time),$time,max($goroutines),"+
 			"avg($goroutines),min($goroutines) group by $time order by count($time) "+
