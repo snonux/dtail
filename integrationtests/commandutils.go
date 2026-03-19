@@ -16,7 +16,11 @@ import (
 
 func runCommand(ctx context.Context, t *testing.T, stdoutFile, cmdStr string,
 	args ...string) (int, error) {
+	return runCommandWithEnv(ctx, t, stdoutFile, cmdStr, nil, args...)
+}
 
+func runCommandWithEnv(ctx context.Context, t *testing.T, stdoutFile, cmdStr string,
+	env map[string]string, args ...string) (int, error) {
 	if _, err := os.Stat(cmdStr); err != nil {
 		return 0, fmt.Errorf("no such executable '%s', please compile first: %w", cmdStr, err)
 	}
@@ -35,6 +39,10 @@ func runCommand(ctx context.Context, t *testing.T, stdoutFile, cmdStr string,
 
 	t.Log("Running command", cmdStr, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, cmdStr, args...)
+	cmd.Env = os.Environ()
+	for key, value := range env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
+	}
 	out, err := cmd.CombinedOutput()
 	t.Log("Done running command!", err)
 	if _, copyErr := io.Copy(fd, bytes.NewReader(out)); copyErr != nil {
