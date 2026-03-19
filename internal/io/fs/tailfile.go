@@ -21,3 +21,12 @@ func NewTailFile(filePath string, globID string, serverMessages chan<- string,
 		},
 	}
 }
+
+// NewValidatedTailFile returns a new file tailer backed by a rooted open target.
+func NewValidatedTailFile(filePath string, target ValidatedReadTarget, globID string,
+	serverMessages chan<- string, maxLineLength int) TailFile {
+
+	tail := NewTailFile(filePath, globID, serverMessages, maxLineLength)
+	tail.readFile.validatedTarget = &target
+	return tail
+}

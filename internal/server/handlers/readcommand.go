@@ -71,7 +71,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	if isPipe {
 		dlog.Server.Debug("Reading data from stdin pipe")
 		// Empty file path and globID "-" represents reading from the stdin pipe.
-		r.read(ctx, ltx, "", "-", re)
+		r.read(ctx, ltx, "", nil, "-", re)
 		return
 	}
 
@@ -200,17 +200,18 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 	}()
 
 	globID := r.makeGlobID(path, glob)
-	if !r.server.CanReadFile(path) {
+	target, ok := r.server.PrepareReadTarget(path)
+	if !ok {
 		dlog.Server.Error(r.server.LogContext(), "No permission to read file", path, globID)
 		r.sendServerMessage(dlog.Server.Warn(r.server.LogContext(),
 			"Unable to read file(s), check server logs"))
 		return
 	}
-	r.read(ctx, ltx, path, globID, re)
+	r.read(ctx, ltx, path, &target, globID, re)
 }
 
 func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
-	path, globID string, re regex.Regex) {
+	path string, target *fs.ValidatedReadTarget, globID string, re regex.Regex) {
 
 	dlog.Server.Info(r.server.LogContext(), "Start reading", path, globID)
 	r.logRegexMode(re)
@@ -222,14 +223,24 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 
 	switch r.mode {
 	case omode.GrepClient, omode.CatClient:
-		catFile := fs.NewCatFile(path, globID, serverMessages, r.server.MaxLineLength())
-		reader = &catFile
+		if target != nil {
+			catFile := fs.NewValidatedCatFile(path, *target, globID, serverMessages, r.server.MaxLineLength())
+			reader = &catFile
+		} else {
+			catFile := fs.NewCatFile(path, globID, serverMessages, r.server.MaxLineLength())
+			reader = &catFile
+		}
 		limiter = r.server.CatLimiter()
 	case omode.TailClient:
 		fallthrough
 	default:
-		tailFile := fs.NewTailFile(path, globID, serverMessages, r.server.MaxLineLength())
-		reader = &tailFile
+		if target != nil {
+			tailFile := fs.NewValidatedTailFile(path, *target, globID, serverMessages, r.server.MaxLineLength())
+			reader = &tailFile
+		} else {
+			tailFile := fs.NewTailFile(path, globID, serverMessages, r.server.MaxLineLength())
+			reader = &tailFile
+		}
 		limiter = r.server.TailLimiter()
 	}
 

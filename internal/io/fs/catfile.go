@@ -21,3 +21,12 @@ func NewCatFile(filePath string, globID string, serverMessages chan<- string,
 		},
 	}
 }
+
+// NewValidatedCatFile returns a new file catter backed by a rooted open target.
+func NewValidatedCatFile(filePath string, target ValidatedReadTarget, globID string,
+	serverMessages chan<- string, maxLineLength int) CatFile {
+
+	cat := NewCatFile(filePath, globID, serverMessages, maxLineLength)
+	cat.readFile.validatedTarget = &target
+	return cat
+}

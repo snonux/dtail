@@ -4,6 +4,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/mapr/server"
 )
@@ -13,7 +14,7 @@ type readCommandContext interface {
 }
 
 type readCommandFiles interface {
-	CanReadFile(path string) bool
+	PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool)
 	CatLimiter() chan struct{}
 	TailLimiter() chan struct{}
 }
@@ -87,9 +88,9 @@ func (h *ServerHandler) SendServerMessage(message string) {
 	h.sendln(h.serverMessages, message)
 }
 
-// CanReadFile reports whether the current user can read the given path.
-func (h *ServerHandler) CanReadFile(path string) bool {
-	return h.user.HasFilePermission(path, "readfiles")
+// PrepareReadTarget validates the current user's access to the given path.
+func (h *ServerHandler) PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool) {
+	return h.user.ValidateReadTarget(path, "readfiles")
 }
 
 // ServerMessagesChannel returns the server message channel.

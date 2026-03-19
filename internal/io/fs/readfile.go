@@ -38,6 +38,8 @@ type readFile struct {
 	stats
 	// Path of log file to tail.
 	filePath string
+	// Rooted target used for validated server-side re-opens.
+	validatedTarget *ValidatedReadTarget
 	// The glob identifier of the file.
 	globID string
 	// Channel to send a server message to the dtail client
@@ -134,7 +136,7 @@ func (f *readFile) makeReader() (*bufio.Reader, *os.File, io.Closer, error) {
 }
 
 func (f *readFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompressor io.Closer, err error) {
-	if fd, err = os.Open(f.filePath); err != nil {
+	if fd, err = f.openFile(); err != nil {
 		return
 	}
 
@@ -146,6 +148,13 @@ func (f *readFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompre
 
 	reader, decompressor, err = f.makeCompressedFileReader(fd)
 	return
+}
+
+func (f *readFile) openFile() (*os.File, error) {
+	if f.validatedTarget != nil {
+		return f.validatedTarget.Open()
+	}
+	return os.Open(f.filePath)
 }
 
 func (f *readFile) makePipeReader() (*bufio.Reader, *os.File, io.Closer, error) {
@@ -276,7 +285,7 @@ func (f *readFile) truncated(fd *os.File) (bool, error) {
 		return true, err
 	}
 	// Can not open file at original path.
-	pathFd, err := os.Open(f.filePath)
+	pathFd, err := f.openFile()
 	if err != nil {
 		return true, err
 	}

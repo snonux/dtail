@@ -2,17 +2,15 @@ package server
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/fs/permissions"
 )
-
-const maxLinkDepth int = 100
 
 // User represents an end-user which connected to the server via the DTail client.
 type User struct {
@@ -52,27 +50,26 @@ func (u *User) String() string {
 }
 
 // HasFilePermission is used to determine whether user is allowed to read a file.
-func (u *User) HasFilePermission(filePath, permissionType string) (hasPermission bool) {
-	dlog.Server.Debug(u, filePath, permissionType, "Checking config permissions")
-	if u.Name == config.ScheduleUser || u.Name == config.ContinuousUser {
-		// Background user has same permissions as dtail process itself.
-		return true
-	}
+func (u *User) HasFilePermission(filePath, permissionType string) bool {
+	_, hasPermission := u.ValidateReadTarget(filePath, permissionType)
+	return hasPermission
+}
 
+// ValidateReadTarget resolves and authorizes a file path for server-side reads.
+func (u *User) ValidateReadTarget(filePath, permissionType string) (fs.ValidatedReadTarget, bool) {
+	dlog.Server.Debug(u, filePath, permissionType, "Checking config permissions")
 	cleanPath, err := filepath.EvalSymlinks(filePath)
 	if err != nil {
 		dlog.Server.Error(u, filePath, permissionType,
 			"Unable to evaluate symlinks", err)
-		hasPermission = false
-		return
+		return fs.ValidatedReadTarget{}, false
 	}
 
 	cleanPath, err = filepath.Abs(cleanPath)
 	if err != nil {
 		dlog.Server.Error(u, cleanPath, permissionType,
 			"Unable to make file path absolute", err)
-		hasPermission = false
-		return
+		return fs.ValidatedReadTarget{}, false
 	}
 
 	if cleanPath != filePath {
@@ -80,11 +77,23 @@ func (u *User) HasFilePermission(filePath, permissionType string) (hasPermission
 			"Calculated new clean path from original file path (possibly symlink)")
 	}
 
-	hasPermission, err = u.hasFilePermission(cleanPath, permissionType)
-	if err != nil {
-		dlog.Server.Warn(u, cleanPath, err)
+	if u.Name != config.ScheduleUser && u.Name != config.ContinuousUser {
+		hasPermission, permissionErr := u.hasFilePermission(cleanPath, permissionType)
+		if permissionErr != nil {
+			dlog.Server.Warn(u, cleanPath, permissionErr)
+		}
+		if !hasPermission {
+			return fs.ValidatedReadTarget{}, false
+		}
 	}
-	return
+
+	target, err := fs.NewValidatedReadTarget(cleanPath)
+	if err != nil {
+		dlog.Server.Warn(u, cleanPath, permissionType, "Unable to validate read target", err)
+		return fs.ValidatedReadTarget{}, false
+	}
+
+	return target, true
 }
 
 func (u *User) hasFilePermission(cleanPath, permissionType string) (bool, error) {
@@ -95,14 +104,6 @@ func (u *User) hasFilePermission(cleanPath, permissionType string) (bool, error)
 	dlog.Server.Info(u, cleanPath, permissionType,
 		"User with OS file system permissions to path")
 
-	// Only allow to follow regular files or symlinks.
-	info, err := os.Lstat(cleanPath)
-	if err != nil {
-		return false, fmt.Errorf("Unable to determine file type: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("Can only open regular files or follow symlinks")
-	}
 	hasPermission, err := u.iteratePaths(cleanPath, permissionType)
 	if err != nil {
 		return false, err
