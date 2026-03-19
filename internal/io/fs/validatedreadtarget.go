@@ -9,8 +9,7 @@ import (
 // ValidatedReadTarget stores a resolved regular file path for rooted re-opens.
 type ValidatedReadTarget struct {
 	resolvedPath string
-	rootDir      string
-	rootName     string
+	rootedPath   RootedPath
 }
 
 // NewValidatedReadTarget returns a rooted target for a resolved regular file.
@@ -28,16 +27,20 @@ func NewValidatedReadTarget(resolvedPath string) (ValidatedReadTarget, error) {
 		return ValidatedReadTarget{}, fmt.Errorf("validated read target must be a regular file: %s", cleanedPath)
 	}
 
+	rootedPath, err := NewRootedPath(cleanedPath)
+	if err != nil {
+		return ValidatedReadTarget{}, err
+	}
+
 	return ValidatedReadTarget{
 		resolvedPath: cleanedPath,
-		rootDir:      filepath.Dir(cleanedPath),
-		rootName:     filepath.Base(cleanedPath),
+		rootedPath:   rootedPath,
 	}, nil
 }
 
 // Open re-opens the validated file beneath its resolved parent directory.
 func (t ValidatedReadTarget) Open() (*os.File, error) {
-	root, err := os.OpenRoot(t.rootDir)
+	root, err := t.rootedPath.OpenRoot()
 	if err != nil {
 		return nil, fmt.Errorf("open root for %s: %w", t.resolvedPath, err)
 	}
@@ -47,7 +50,7 @@ func (t ValidatedReadTarget) Open() (*os.File, error) {
 		return nil, err
 	}
 
-	fd, err := root.Open(t.rootName)
+	fd, err := root.Open(t.rootedPath.Name())
 	if err != nil {
 		return nil, fmt.Errorf("open rooted file %s: %w", t.resolvedPath, err)
 	}
@@ -65,7 +68,7 @@ func (t ValidatedReadTarget) Open() (*os.File, error) {
 }
 
 func (t ValidatedReadTarget) validateEntry(root *os.Root) error {
-	info, err := root.Lstat(t.rootName)
+	info, err := root.Lstat(t.rootedPath.Name())
 	if err != nil {
 		return fmt.Errorf("lstat rooted file %s: %w", t.resolvedPath, err)
 	}

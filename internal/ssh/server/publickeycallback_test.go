@@ -1,8 +1,14 @@
 package server
 
 import (
+	"bytes"
+	"os"
+	goUser "os/user"
+	"path/filepath"
 	"testing"
 	"time"
+
+	serveruser "github.com/mimecast/dtail/internal/user/server"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -38,4 +44,107 @@ func TestAuthKeyStorePermissions(t *testing.T) {
 	if permissions := authKeyStorePermissions(authKeyStore, "alice", unknownKey); permissions != nil {
 		t.Fatalf("Expected nil permissions for unknown key")
 	}
+}
+
+func TestFindAuthorizedKeysPathUsesCacheDirWhenPresent(t *testing.T) {
+	cwd := t.TempDir()
+	cacheDir := "cache"
+	user := testServerUser(t, "alice")
+	wantPath := filepath.Join(cwd, cacheDir, "alice.authorized_keys")
+	if err := os.MkdirAll(filepath.Dir(wantPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	want := gossh.MarshalAuthorizedKey(testPublicKey(t, 31))
+	if err := os.WriteFile(wantPath, want, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	rootedPath, err := findAuthorizedKeysPath(user, cacheDir, cwd, func(string) (*goUser.User, error) {
+		t.Fatalf("lookupUser should not be called when cached authorized_keys exists")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("findAuthorizedKeysPath failed: %v", err)
+	}
+	if rootedPath.Path() != wantPath {
+		t.Fatalf("findAuthorizedKeysPath returned %q, want %q", rootedPath.Path(), wantPath)
+	}
+
+	got, err := rootedPath.ReadFile()
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("ReadFile returned %q, want %q", got, want)
+	}
+}
+
+func TestFindAuthorizedKeysPathFallsBackToHomeAuthorizedKeys(t *testing.T) {
+	cwd := t.TempDir()
+	homeDir := t.TempDir()
+	user := testServerUser(t, "alice")
+	wantPath := filepath.Join(homeDir, ".ssh", "authorized_keys")
+	if err := os.MkdirAll(filepath.Dir(wantPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	want := gossh.MarshalAuthorizedKey(testPublicKey(t, 32))
+	if err := os.WriteFile(wantPath, want, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	rootedPath, err := findAuthorizedKeysPath(user, "cache", cwd, func(name string) (*goUser.User, error) {
+		return &goUser.User{Username: name, HomeDir: homeDir}, nil
+	})
+	if err != nil {
+		t.Fatalf("findAuthorizedKeysPath failed: %v", err)
+	}
+	if rootedPath.Path() != wantPath {
+		t.Fatalf("findAuthorizedKeysPath returned %q, want %q", rootedPath.Path(), wantPath)
+	}
+
+	got, err := rootedPath.ReadFile()
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("ReadFile returned %q, want %q", got, want)
+	}
+}
+
+func TestFindAuthorizedKeysPathRejectsEscapingHomeSymlink(t *testing.T) {
+	cwd := t.TempDir()
+	homeDir := t.TempDir()
+	user := testServerUser(t, "alice")
+	sshDir := filepath.Join(homeDir, ".ssh")
+	if err := os.MkdirAll(sshDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+
+	outsidePath := filepath.Join(homeDir, "outside_authorized_keys")
+	if err := os.WriteFile(outsidePath, gossh.MarshalAuthorizedKey(testPublicKey(t, 33)), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..", "outside_authorized_keys"),
+		filepath.Join(sshDir, "authorized_keys")); err != nil {
+		t.Fatalf("Symlink failed: %v", err)
+	}
+
+	_, err := findAuthorizedKeysPath(user, "", cwd, func(name string) (*goUser.User, error) {
+		return &goUser.User{Username: name, HomeDir: homeDir}, nil
+	})
+	if err == nil {
+		t.Fatalf("findAuthorizedKeysPath succeeded for escaping authorized_keys symlink")
+	}
+}
+
+func testServerUser(t *testing.T, name string) *serveruser.User {
+	t.Helper()
+
+	user, err := serveruser.New(name, "127.0.0.1:2222", nil)
+	if err != nil {
+		t.Fatalf("serveruser.New failed: %v", err)
+	}
+	return user
 }
