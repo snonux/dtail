@@ -170,6 +170,21 @@ make profile-help
 
 ## Known Limitations
 
+### Interactive Query Reload
+Interactive query control is opt-in on the client with `--interactive-query`.
+The controlling TTY accepts `:reload <flags>`, `:show`, `:help`, and `:quit`.
+
+**Compatibility and session semantics:**
+- Initial interactive bootstrap prefers `SESSION START` when the server
+  advertises capability `query-update-v1`
+- If that capability is absent, startup falls back to the legacy command stream
+  automatically so mixed-version client/server combinations still run
+- Live `:reload` updates require every active server connection to advertise
+  `query-update-v1`; unsupported servers cause the reload to be rejected while
+  the current workload keeps running
+- Successful reloads reuse the existing SSH session and advance a generation
+  boundary so stale output from older workloads is dropped
+
 ### Auth-Key Fast Reconnect
 Auth-key fast reconnect is enabled by default. The client can register a public key with `dserver` over an already-authenticated session, and subsequent connections can use this in-memory key before falling back to normal SSH auth.
 
