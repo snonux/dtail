@@ -30,6 +30,7 @@ func TestAuthKeyFastReconnectIntegration(t *testing.T) {
 	t.Run("TTLExpiry", testAuthKeyTTLExpiry)
 	t.Run("MaxKeysPerUser", testAuthKeyMaxKeysPerUser)
 	t.Run("NoAuthKeyFlag", testNoAuthKeyFlagDisablesFeature)
+	t.Run("PassphraseProtectedKey", testPassphraseKeyAuthKeyRegistrationAndFastReconnect)
 }
 
 func testAuthKeyRegistrationFastPathAndFallback(t *testing.T) {
@@ -172,6 +173,41 @@ func testNoAuthKeyFlagDisablesFeature(t *testing.T) {
 	}
 }
 
+func testPassphraseKeyAuthKeyRegistrationAndFastReconnect(t *testing.T) {
+	const passphrase = "secret-passphrase"
+
+	authKeyPath := createPassphraseAuthKeyPair(t, "authkey-passphrase", passphrase)
+	server := startAuthKeyServer(t, "")
+	defer server.Stop()
+
+	env := map[string]string{
+		"DTAIL_KEY_PASSPHRASE": passphrase,
+	}
+
+	exitCode, err := runDCatWithAuthKeyAndEnv(server.Context(), t,
+		"authkey_passphrase_1.tmp", server.Address(), authKeyPath, false, env)
+	if err != nil || exitCode != 0 {
+		t.Fatalf("Expected first passphrase-protected connection to succeed, exit=%d err=%v", exitCode, err)
+	}
+	assertDCatSuccessfulOutput(t, "authkey_passphrase_1.tmp")
+	waitForServerLogs()
+	if got := server.CountLogLinesContaining(authKeyFastPathLog); got != 0 {
+		t.Fatalf("Expected first passphrase-protected connection to use fallback, fast-path count=%d", got)
+	}
+
+	exitCode, err = runDCatWithAuthKeyAndEnv(server.Context(), t,
+		"authkey_passphrase_2.tmp", server.Address(), authKeyPath, false, env)
+	if err != nil || exitCode != 0 {
+		t.Fatalf("Expected second passphrase-protected connection to succeed, exit=%d err=%v", exitCode, err)
+	}
+	assertDCatSuccessfulOutput(t, "authkey_passphrase_2.tmp")
+	fastPathCount := waitForLogCountAtLeast(server, authKeyFastPathLog, 1, 5*time.Second)
+	if fastPathCount < 1 {
+		t.Fatalf("Expected passphrase-protected key to use fast-path on reconnect, count=%d\nserver logs:\n%s",
+			fastPathCount, strings.Join(server.LogLines(), "\n"))
+	}
+}
+
 type authKeyServer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -298,6 +334,11 @@ func startAuthKeyServer(t *testing.T, cfgFile string) *authKeyServer {
 
 func runDCatWithAuthKey(ctx context.Context, t *testing.T, outFile,
 	serverAddress, authKeyPath string, noAuthKey bool) (int, error) {
+	return runDCatWithAuthKeyAndEnv(ctx, t, outFile, serverAddress, authKeyPath, noAuthKey, nil)
+}
+
+func runDCatWithAuthKeyAndEnv(ctx context.Context, t *testing.T, outFile,
+	serverAddress, authKeyPath string, noAuthKey bool, env map[string]string) (int, error) {
 	t.Helper()
 
 	args := []string{
@@ -313,7 +354,7 @@ func runDCatWithAuthKey(ctx context.Context, t *testing.T, outFile,
 		args = append(args, "--no-auth-key")
 	}
 
-	return runCommand(ctx, t, outFile, "../dcat", args...)
+	return runCommandWithEnv(ctx, t, outFile, "../dcat", env, args...)
 }
 
 func assertDCatSuccessfulOutput(t *testing.T, outFile string) {
@@ -362,6 +403,34 @@ func createAuthKeyPair(t *testing.T, keyName string) string {
 	})
 	if err := os.WriteFile(keyPath, privateKeyBytes, 0600); err != nil {
 		t.Fatalf("Unable to write private key: %v", err)
+	}
+
+	publicKey, err := gossh.NewPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("Unable to generate public key: %v", err)
+	}
+	if err := os.WriteFile(keyPath+".pub", gossh.MarshalAuthorizedKey(publicKey), 0600); err != nil {
+		t.Fatalf("Unable to write public key: %v", err)
+	}
+
+	return keyPath
+}
+
+func createPassphraseAuthKeyPair(t *testing.T, keyName, passphrase string) string {
+	t.Helper()
+
+	keyPath := filepath.Join(t.TempDir(), keyName)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Unable to generate private key: %v", err)
+	}
+
+	privateKeyBlock, err := gossh.MarshalPrivateKeyWithPassphrase(privateKey, "", []byte(passphrase))
+	if err != nil {
+		t.Fatalf("Unable to marshal encrypted private key: %v", err)
+	}
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(privateKeyBlock), 0600); err != nil {
+		t.Fatalf("Unable to write encrypted private key: %v", err)
 	}
 
 	publicKey, err := gossh.NewPublicKey(&privateKey.PublicKey)
