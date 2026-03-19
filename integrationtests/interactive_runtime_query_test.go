@@ -58,10 +58,14 @@ func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T)
 
 	writerDone := make(chan error, 1)
 	go func() {
+		if err := waitForCollectorSubstring(ctx, serverLogs, "Start reading|"+followFile+"|"+followFile); err != nil {
+			writerDone <- err
+			return
+		}
 		writerDone <- appendLinesOnSchedule(ctx, followFile, []interactiveStep{
-			{Delay: 200 * time.Millisecond, Input: "ERROR initial"},
-			{Delay: 1200 * time.Millisecond, Input: "ERROR late"},
-			{Delay: 1400 * time.Millisecond, Input: "WARN live"},
+			{Delay: 100 * time.Millisecond, Input: "ERROR initial"},
+			{Delay: 3000 * time.Millisecond, Input: "ERROR late"},
+			{Delay: 3200 * time.Millisecond, Input: "WARN live"},
 		})
 	}()
 
@@ -77,8 +81,8 @@ func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T)
 		"--trustAllHosts",
 		"--interactive-query",
 	}, []interactiveStep{
-		{Delay: 700 * time.Millisecond, Input: ":reload --grep WARN"},
-		{Delay: 1700 * time.Millisecond, Input: ":quit"},
+		{Delay: 3 * time.Second, Input: ":reload --grep WARN"},
+		{Delay: 6 * time.Second, Input: ":quit"},
 	})
 	if err != nil {
 		t.Fatalf("run interactive dtail: %v\noutput:\n%s", err, clientOutput)
@@ -151,8 +155,8 @@ func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 		"--trustAllHosts",
 		"--interactive-query",
 	}, []interactiveStep{
-		{Delay: 400 * time.Millisecond, Input: ":reload --grep WARN"},
-		{Delay: 1000 * time.Millisecond, Input: ":quit"},
+		{Delay: 3500 * time.Millisecond, Input: ":reload --grep WARN"},
+		{Delay: 5500 * time.Millisecond, Input: ":quit"},
 	})
 	if err != nil {
 		t.Fatalf("run interactive dgrep: %v\noutput:\n%s", err, clientOutput)
@@ -323,4 +327,23 @@ func countSubstring(lines []string, needle string) int {
 		}
 	}
 	return count
+}
+
+func waitForCollectorSubstring(ctx context.Context, collector *processOutputCollector, needle string) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		for _, line := range collector.snapshot() {
+			if strings.Contains(line, needle) {
+				return nil
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }

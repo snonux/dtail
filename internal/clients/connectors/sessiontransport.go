@@ -27,6 +27,7 @@ var (
 const defaultSessionAckTimeout = 2 * time.Second
 
 type committedSessionState struct {
+	applyMu    sync.Mutex
 	mu         sync.RWMutex
 	committed  bool
 	generation uint64
@@ -78,6 +79,11 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 
 func applySessionSpec(server string, handler handlers.Handler,
 	state *committedSessionState, spec sessionspec.Spec, timeout time.Duration) error {
+
+	// Serialize session transitions so an interactive reload cannot race the
+	// initial SESSION START bootstrap on the same connection.
+	state.applyMu.Lock()
+	defer state.applyMu.Unlock()
 
 	if handler == nil {
 		return ErrSessionUnsupported
