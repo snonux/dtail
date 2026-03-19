@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -121,7 +122,20 @@ func PrivateKeySigner(keyFile string) (gossh.Signer, error) {
 	}
 	key, err := gossh.ParsePrivateKey(buffer)
 	if err != nil {
-		return nil, err
+		var passphraseMissingErr *gossh.PassphraseMissingError
+		if !errors.As(err, &passphraseMissingErr) {
+			return nil, err
+		}
+
+		passphrase := os.Getenv("DTAIL_KEY_PASSPHRASE")
+		if passphrase == "" {
+			return nil, err
+		}
+
+		key, err = gossh.ParsePrivateKeyWithPassphrase(buffer, []byte(passphrase))
+		if err != nil {
+			return nil, err
+		}
 	}
 	return key, nil
 }
