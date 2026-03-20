@@ -20,6 +20,10 @@ type Parser interface {
 	MakeFields(string) (map[string]string, error)
 }
 
+type queryAwareParser interface {
+	setQuery(*mapr.Query)
+}
+
 // ParserFactory builds a Parser for a specific log format.
 type ParserFactory func(hostname, timeZoneName string, timeZoneOffset int) (Parser, error)
 
@@ -86,7 +90,9 @@ func NewParser(logFormatName string, query *mapr.Query) (Parser, error) {
 	timeZoneName, timeZoneOffset := now.Zone()
 
 	if parserFactory, found := getParserFactory(logFormatName); found {
-		return parserFactory(hostname, timeZoneName, timeZoneOffset)
+		parser, err := parserFactory(hostname, timeZoneName, timeZoneOffset)
+		configureParserQuery(parser, query)
+		return parser, err
 	}
 
 	defaultFactory, found := getParserFactory("default")
@@ -99,5 +105,17 @@ func NewParser(logFormatName string, query *mapr.Query) (Parser, error) {
 		return p, fmt.Errorf("No '%s' mapr log format and problem creating default one: %v",
 			logFormatName, err)
 	}
+	configureParserQuery(p, query)
 	return p, fmt.Errorf("No '%s' mapr log format", logFormatName)
+}
+
+func configureParserQuery(parser Parser, query *mapr.Query) {
+	if parser == nil {
+		return
+	}
+	queryAware, ok := parser.(queryAwareParser)
+	if !ok {
+		return
+	}
+	queryAware.setQuery(query)
 }

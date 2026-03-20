@@ -62,8 +62,12 @@ func TestTurboAggregateVsRegular(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		// Start the turbo aggregate
-		turboAgg.Start(ctx, messages)
+		startDone := make(chan struct{})
+		go func() {
+			defer close(startDone)
+			turboAgg.Start(ctx, messages)
+		}()
+		waitForTurboAggregateStart(t, turboAgg)
 
 		// Process lines
 		processor := NewTurboAggregateProcessor(turboAgg, "test")
@@ -92,6 +96,7 @@ func TestTurboAggregateVsRegular(t *testing.T) {
 
 		// Cancel context to stop background goroutines
 		cancel()
+		<-startDone
 
 		// Collect results with timeout
 		done := make(chan struct{})
@@ -169,15 +174,20 @@ func TestTurboAggregateVsRegular(t *testing.T) {
 		}
 		close(lines)
 
-		// Wait for processing
-		time.Sleep(100 * time.Millisecond)
-
-		// Shutdown
-		regularAgg.Shutdown()
+		// Wait for the aggregate to drain the closed line channel and serialize naturally.
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			regularAgg.Shutdown()
+			cancel()
+			t.Fatal("Timeout waiting for regular aggregate to finish")
+		}
 		cancel()
-
-		// Wait for the Start goroutine to finish
-		wg.Wait()
 
 		// Collect results
 		close(messages)
@@ -232,10 +242,15 @@ func TestTurboAggregateConcurrency(t *testing.T) {
 
 	// Channel to collect messages
 	messages := make(chan string, 1000)
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Start the turbo aggregate
-	turboAgg.Start(ctx, messages)
+	startDone := make(chan struct{})
+	go func() {
+		defer close(startDone)
+		turboAgg.Start(ctx, messages)
+	}()
+	waitForTurboAggregateStart(t, turboAgg)
 
 	// Process multiple "files" concurrently
 	var wg sync.WaitGroup
@@ -269,6 +284,8 @@ func TestTurboAggregateConcurrency(t *testing.T) {
 
 	// Shutdown and get results
 	turboAgg.Shutdown()
+	cancel()
+	<-startDone
 
 	// Collect results
 	time.Sleep(200 * time.Millisecond)
@@ -291,9 +308,8 @@ func TestTurboAggregateConcurrency(t *testing.T) {
 		t.Errorf("Expected %d lines processed, got %d", expectedLines, turboAgg.linesProcessed.Load())
 	}
 
-	// Verify file count (may be higher if test was run multiple times)
-	if turboAgg.filesProcessed.Load() < uint64(numFiles) {
-		t.Errorf("Expected at least %d files processed, got %d", numFiles, turboAgg.filesProcessed.Load())
+	if turboAgg.filesProcessed.Load() != uint64(numFiles) {
+		t.Errorf("Expected %d files processed, got %d", numFiles, turboAgg.filesProcessed.Load())
 	}
 
 	// Parse result to check count
@@ -328,5 +344,40 @@ func TestTurboAggregateAbortReturnsPromptlyWithActiveProcessors(t *testing.T) {
 	case <-done:
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Abort did not return promptly while processors were still active")
+	}
+}
+
+func TestTurboAggregateProcessorCountsFlushOnce(t *testing.T) {
+	aggregate := &TurboAggregate{
+		done:      internal.NewDone(),
+		batchSize: 16,
+	}
+
+	processor := NewTurboAggregateProcessor(aggregate, "test")
+	if err := processor.Flush(); err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+	if err := processor.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	if got := aggregate.filesProcessed.Load(); got != 1 {
+		t.Fatalf("expected filesProcessed to be 1, got %d", got)
+	}
+	if got := aggregate.activeProcessors.Load(); got != 0 {
+		t.Fatalf("expected activeProcessors to be 0, got %d", got)
+	}
+}
+
+func waitForTurboAggregateStart(t *testing.T, aggregate *TurboAggregate) {
+	t.Helper()
+
+	if aggregate.started == nil {
+		t.Fatal("turbo aggregate missing start signal")
+	}
+	select {
+	case <-aggregate.started:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("turbo aggregate did not finish Start initialization")
 	}
 }

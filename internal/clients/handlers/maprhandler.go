@@ -75,3 +75,13 @@ func (h *MaprHandler) handleAggregateMessage(message string) {
 		dlog.Client.Error("Unable to aggregate data", h.server, message, err)
 	}
 }
+
+// Shutdown flushes any pending aggregate state before marking the handler done.
+func (h *MaprHandler) Shutdown() {
+	if h.aggregate != nil {
+		if err := h.aggregate.Flush(); err != nil {
+			dlog.Client.Error("Unable to flush aggregate data on shutdown", h.server, err)
+		}
+	}
+	h.baseHandler.Shutdown()
+}

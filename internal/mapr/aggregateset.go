@@ -79,13 +79,13 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 
 	sb.WriteString(groupKey)
 	sb.WriteString(protocol.AggregateDelimiter)
-	sb.WriteString(fmt.Sprintf("%d", s.Samples))
+	sb.WriteString(strconv.Itoa(s.Samples))
 	sb.WriteString(protocol.AggregateDelimiter)
 
 	for k, v := range s.FValues {
 		sb.WriteString(k)
 		sb.WriteString(protocol.AggregateKVDelimiter)
-		sb.WriteString(fmt.Sprintf("%v", v))
+		sb.WriteString(strconv.FormatFloat(v, 'f', -1, 64))
 		sb.WriteString(protocol.AggregateDelimiter)
 	}
 

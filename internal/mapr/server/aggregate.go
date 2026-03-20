@@ -12,7 +12,6 @@ import (
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/mapr/logformat"
-	"github.com/mimecast/dtail/internal/protocol"
 )
 
 // Aggregate is for aggregating mapreduce data on the DTail server side.
@@ -282,7 +281,7 @@ func (a *Aggregate) aggregateAndSerialize(ctx context.Context,
 	serialize := func() {
 		dlog.Server.Info("Serializing mapreduce result")
 		group.Serialize(ctx, maprMessages)
-		group = mapr.NewGroupSet()
+		group.InitSet()
 	}
 	for {
 		select {
@@ -301,16 +300,7 @@ func (a *Aggregate) aggregateAndSerialize(ctx context.Context,
 }
 
 func (a *Aggregate) aggregate(group *mapr.GroupSet, fields map[string]string) {
-	var sb strings.Builder
-	for i, field := range a.query.GroupBy {
-		if i > 0 {
-			sb.WriteString(protocol.AggregateGroupKeyCombinator)
-		}
-		if val, ok := fields[field]; ok {
-			sb.WriteString(val)
-		}
-	}
-	groupKey := sb.String()
+	groupKey := buildGroupKey(a.query.GroupBy, fields)
 	set := group.GetSet(groupKey)
 
 	var addedSample bool

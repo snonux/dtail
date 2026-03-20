@@ -1,10 +1,6 @@
 package logformat
 
-import (
-	"strings"
-
-	"github.com/mimecast/dtail/internal/protocol"
-)
+import "github.com/mimecast/dtail/internal/protocol"
 
 type genericKVParser struct {
 	defaultParser
@@ -21,24 +17,20 @@ func newGenericKVParser(hostname, timeZoneName string, timeZoneOffset int) (*gen
 }
 
 func (p *genericKVParser) MakeFields(maprLine string) (map[string]string, error) {
-	splitted := strings.Split(maprLine, protocol.FieldDelimiter)
-	fields := make(map[string]string, len(splitted))
+	fields := make(map[string]string, p.fieldsCapacity)
+	p.addDefaultFields(fields, maprLine)
+	start := 0
+	delimiter := protocol.FieldDelimiter[0]
 
-	fields["*"] = "*"
-	fields["$line"] = maprLine
-	fields["$empty"] = ""
-	fields["$hostname"] = p.hostname
-	fields["$server"] = p.hostname
-	fields["$timezone"] = p.timeZoneName
-	fields["$timeoffset"] = p.timeZoneOffset
-
-	for _, kv := range splitted[0:] {
-		keyAndValue := strings.SplitN(kv, "=", 2)
-		if len(keyAndValue) != 2 {
-			//dlog.Common.Debug("Unable to parse key-value token, ignoring it", kv)
+	for {
+		token, next, done := scanDelimitedField(maprLine, start, delimiter)
+		if err := p.addKeyValueField(fields, token); err != nil {
 			continue
 		}
-		fields[keyAndValue[0]] = keyAndValue[1]
+		if done {
+			break
+		}
+		start = next
 	}
 
 	return fields, nil

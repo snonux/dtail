@@ -163,8 +163,8 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 	h.turboAggregate = turboAggregate
 	maprMessages, closeMaprMessages := h.newGeneratedMaprMessagesChannel(ctx, sessionGenerationFromContext(ctx))
 	go func() {
-		defer closeMaprMessages()
 		command.Start(ctx, maprMessages)
+		closeMaprMessages()
 		commandFinished()
 	}()
 }

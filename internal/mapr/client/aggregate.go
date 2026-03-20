@@ -92,15 +92,40 @@ func (a *Aggregate) Aggregate(message string) error {
 	return nil
 }
 
+// Flush merges any pending per-server aggregate state into the shared global group.
+// The normal hot path uses MergeNoblock to avoid stalling on the global merge lock.
+// During shutdown we need a blocking flush so the last local batch is not lost.
+func (a *Aggregate) Flush() error {
+	if a.session == nil {
+		return fmt.Errorf("missing client mapreduce session state")
+	}
+
+	snapshot := a.session.Snapshot()
+	if snapshot.Query == nil || snapshot.GlobalGroup == nil {
+		return nil
+	}
+	if snapshot.Generation != a.generation {
+		a.group.InitSet()
+		a.generation = snapshot.Generation
+		return nil
+	}
+
+	if err := snapshot.GlobalGroup.Merge(snapshot.Query, a.group); err != nil {
+		return fmt.Errorf("unable to flush aggregate data for server %s: %w", a.server, err)
+	}
+	a.group.InitSet()
+	return nil
+}
+
 // Create a map of key-value pairs from a part list such as ["foo=bar",  "bar=baz"].
 func (a *Aggregate) makeFields(parts []string) map[string]string {
 	fields := make(map[string]string, len(parts))
 	for _, part := range parts {
-		kv := strings.SplitN(part, protocol.AggregateKVDelimiter, 2)
-		if len(kv) != 2 {
+		key, value, ok := strings.Cut(part, protocol.AggregateKVDelimiter)
+		if !ok {
 			continue
 		}
-		fields[kv[0]] = kv[1]
+		fields[key] = value
 	}
 	return fields
 }

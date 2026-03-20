@@ -57,6 +57,32 @@ func TestAggregateRejectsMalformedMessage(t *testing.T) {
 	}
 }
 
+func TestAggregateFlushMergesPendingLocalState(t *testing.T) {
+	query := mustSessionStateQuery(t, "select status,count(status) from stats group by status")
+	state := NewSessionState(query)
+	aggregate := NewAggregate("srv1", state)
+	countStorage := aggregateCountStorage(t, query)
+
+	set := aggregate.group.GetSet("ERROR")
+	set.Samples = 3
+	set.FValues[countStorage] = 3
+
+	if err := aggregate.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	result, numRows, err := state.Snapshot().GlobalGroup.Result(query, 10, nil)
+	if err != nil {
+		t.Fatalf("Result() error = %v", err)
+	}
+	if numRows != 1 {
+		t.Fatalf("numRows = %d, want 1", numRows)
+	}
+	if !strings.Contains(result, "3") {
+		t.Fatalf("expected flushed aggregate row, got %q", result)
+	}
+}
+
 func aggregateCountStorage(t *testing.T, query *mapr.Query) string {
 	t.Helper()
 

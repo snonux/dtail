@@ -2,7 +2,6 @@ package logformat
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -29,27 +28,38 @@ func (p *csvParser) MakeFields(maprLine string) (map[string]string, error) {
 		return nil, ErrIgnoreFields
 	}
 
-	fields := make(map[string]string, 7+len(p.header))
-	fields["*"] = "*"
-	fields["$hostname"] = p.hostname
-	fields["$server"] = p.hostname
-	fields["$line"] = maprLine
-	fields["$empty"] = ""
-	fields["$timezone"] = p.timeZoneName
-	fields["$timeoffset"] = p.timeZoneOffset
+	fields := make(map[string]string, p.fieldsCapacity)
+	p.addDefaultFields(fields, maprLine)
+	start := 0
+	column := 0
+	delimiter := protocol.CSVDelimiter[0]
 
-	splitted := strings.Split(maprLine, protocol.CSVDelimiter)
-	for i, value := range splitted {
-		if i >= len(p.header) {
+	for {
+		value, next, done := scanDelimitedField(maprLine, start, delimiter)
+		if column >= len(p.header) {
 			return fields, fmt.Errorf("CSV file seems corrupted, more fields than header values?")
 		}
-		fields[p.header[i]] = value
+		p.addDynamicField(fields, p.header[column], value)
+		column++
+		if done {
+			break
+		}
+		start = next
 	}
 
 	return fields, nil
 }
 
 func (p *csvParser) parseHeader(maprLine string) {
-	p.header = strings.Split(maprLine, protocol.CSVDelimiter)
+	start := 0
+	delimiter := protocol.CSVDelimiter[0]
+	for {
+		header, next, done := scanDelimitedField(maprLine, start, delimiter)
+		p.header = append(p.header, header)
+		if done {
+			break
+		}
+		start = next
+	}
 	p.hasHeader = true
 }

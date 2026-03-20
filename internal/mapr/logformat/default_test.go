@@ -3,6 +3,8 @@ package logformat
 import (
 	"fmt"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/mapr"
 )
 
 func TestDefaultLogFormat(t *testing.T) {
@@ -93,5 +95,38 @@ func TestDefaultLogFormat(t *testing.T) {
 
 	if _, ok := fields["foo"]; ok {
 		t.Errorf("Expected fiending field 'foo', but found it\n")
+	}
+}
+
+func TestDefaultLogFormatQuerySpecificFields(t *testing.T) {
+	q, err := mapr.NewQuery(`select count(foo) from STATS where $hostname eq "testhost"`)
+	if err != nil {
+		t.Fatalf("Unable to create query: %s", err.Error())
+	}
+
+	parser, err := NewParser("default", q)
+	if err != nil {
+		t.Fatalf("Unable to create parser: %s", err.Error())
+	}
+
+	fields, err := parser.MakeFields(
+		"INFO|20211002-072342|1|default_test.go:0|8|14|7|0.21|471h0m21s|MAPREDUCE:STATS|foo=bar|bar=baz",
+	)
+	if err != nil {
+		t.Fatalf("Parser unable to make fields: %s", err.Error())
+	}
+
+	requiredFields := []string{"foo", "$hostname"}
+	for _, field := range requiredFields {
+		if _, ok := fields[field]; !ok {
+			t.Errorf("Expected query-specific field '%s' to be present", field)
+		}
+	}
+
+	omittedFields := []string{"bar", "$time", "$pid", "$line"}
+	for _, field := range omittedFields {
+		if _, ok := fields[field]; ok {
+			t.Errorf("Expected query-specific field '%s' to be omitted", field)
+		}
 	}
 }
