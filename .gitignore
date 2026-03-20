@@ -35,3 +35,5 @@ id_rsa.pub
 ssh_host_key
 pgo-profiles/
 pgo-build/
+.amp
+.claude

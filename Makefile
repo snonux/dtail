@@ -67,7 +67,7 @@ test:
 		sort -u | while read dir; do ${GO} test -tags '${GO_TAGS}' --race -v -failfast $$dir || exit 2; done
 test-integration: clean build
 	${GO} clean -testcache
-	DTAIL_INTEGRATION_TEST_RUN_MODE=yes ${GO} test -tags '${GO_TAGS}' --race -count=1 ./integrationtests
+	DTAIL_INTEGRATION_TEST_RUN_MODE=yes ${GO} test -v -tags '${GO_TAGS}' --race -count=1 ./integrationtests
 benchmark: build dtail-tools
 	./dtail-tools benchmark -mode run
 benchmark-quick: build dtail-tools
