@@ -28,7 +28,8 @@ current run open and listen for control commands on the controlling TTY.
 
 Available control commands:
 
-* `:reload <flags>` apply a new workload without restarting the client
+* `:reload <flags>` apply a new workload by reusing the current session when the
+  active servers support it
 * `:show` print the current interactive state, including capability counts
 * `:help` print the interactive command help text
 * `:quit` stop the interactive session
