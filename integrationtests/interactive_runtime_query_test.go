@@ -150,6 +150,7 @@ func TestDTailInteractiveReloadReusesSessionOnImmediateBoundaryAndDropsLateOldMa
 			return
 		}
 		writerDone <- appendLinesOnSchedule(ctx, followFile, []interactiveStep{
+			{Delay: 250 * time.Millisecond, Input: "ERROR boundary"},
 			{Delay: 1500 * time.Millisecond, Input: "ERROR late"},
 			{Delay: 1700 * time.Millisecond, Input: "WARN live"},
 		})
@@ -181,11 +182,17 @@ func TestDTailInteractiveReloadReusesSessionOnImmediateBoundaryAndDropsLateOldMa
 	if !strings.Contains(clientOutput, "WARN live") {
 		t.Fatalf("expected WARN line after reload in output:\n%s", clientOutput)
 	}
+	if !strings.Contains(clientOutput, "ERROR boundary") {
+		t.Fatalf("expected first-generation ERROR line before reload in output:\n%s", clientOutput)
+	}
 	if strings.Contains(clientOutput, "ERROR late") {
 		t.Fatalf("unexpected stale ERROR line after reload:\n%s", clientOutput)
 	}
 	if !strings.Contains(clientOutput, "reload applied successfully") {
 		t.Fatalf("expected reload success message in output:\n%s", clientOutput)
+	}
+	if boundaryIdx := strings.Index(clientOutput, "ERROR boundary"); boundaryIdx == -1 || boundaryIdx > strings.Index(clientOutput, "reload applied successfully") {
+		t.Fatalf("expected first-generation ERROR output to precede reload success:\n%s", clientOutput)
 	}
 	if countSubstring(serverLogs.snapshot(), "Creating new server handler") != 1 {
 		t.Fatalf("expected one SSH session on the server, logs:\n%s", strings.Join(serverLogs.snapshot(), "\n"))

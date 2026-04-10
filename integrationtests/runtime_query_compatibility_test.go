@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,14 +45,51 @@ func TestDServerProtocolVersionMismatchReportsCompatibilityError(t *testing.T) {
 		t.Fatalf("wait for dserver: %v", err)
 	}
 
-	client, session, stdin, lines, err := openSSHSession(ctx, t, fmt.Sprintf("localhost:%d", port))
+	tests := []struct {
+		name            string
+		protocolVersion string
+		expectedUpdate  string
+	}{
+		{
+			name:            "older-client-guidance",
+			protocolVersion: "0",
+			expectedUpdate:  "client",
+		},
+		{
+			name:            "newer-client-guidance",
+			protocolVersion: "5",
+			expectedUpdate:  "server",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output := runProtocolMismatchSession(ctx, t, fmt.Sprintf("localhost:%d", port), test.protocolVersion)
+			if !strings.Contains(output, "the DTail server protocol version '"+protocol.ProtocolCompat+"' does not match") {
+				t.Fatalf("expected protocol mismatch error in SSH output:\n%s", output)
+			}
+			if !strings.Contains(output, "please update DTail "+test.expectedUpdate) {
+				t.Fatalf("expected mixed-version compatibility guidance in output:\n%s", output)
+			}
+		})
+	}
+}
+
+// This wire-level probe is the strongest compatibility coverage available here:
+// ProtocolCompat is compiled into both client and server binaries, and the repo
+// does not ship historical release artifacts that would let us launch a real
+// old/new binary pair in integration tests.
+func runProtocolMismatchSession(ctx context.Context, t *testing.T, address string, protocolVersion string) string {
+	t.Helper()
+
+	client, session, stdin, lines, err := openSSHSession(ctx, t, address)
 	if err != nil {
 		t.Fatalf("open ssh session: %v", err)
 	}
 	defer client.Close()
 	defer session.Close()
 
-	rawCommand := "protocol 3 base64 " + base64.StdEncoding.EncodeToString([]byte("tail: . /tmp/ignored .")) + ";"
+	rawCommand := "protocol " + protocolVersion + " base64 " + base64.StdEncoding.EncodeToString([]byte("tail: . /tmp/ignored .")) + ";"
 	if _, err := io.WriteString(stdin, rawCommand); err != nil {
 		t.Fatalf("write protocol mismatch command: %v", err)
 	}
@@ -61,9 +99,7 @@ func TestDServerProtocolVersionMismatchReportsCompatibilityError(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected protocol mismatch error in SSH output:\n%s", output)
 	}
-	if !strings.Contains(output, "please update DTail server") {
-		t.Fatalf("expected mixed-version compatibility guidance in output:\n%s", output)
-	}
+	return output
 }
 
 func openSSHSession(ctx context.Context, t *testing.T, address string) (*gossh.Client, *gossh.Session, io.WriteCloser, <-chan string, error) {
@@ -117,8 +153,11 @@ func openSSHSession(ctx context.Context, t *testing.T, address string) (*gossh.C
 	}
 
 	lines := make(chan string, 32)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
 	go func() {
-		defer close(lines)
+		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			select {
@@ -129,6 +168,7 @@ func openSSHSession(ctx context.Context, t *testing.T, address string) (*gossh.C
 		}
 	}()
 	go func() {
+		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			select {
@@ -137,6 +177,10 @@ func openSSHSession(ctx context.Context, t *testing.T, address string) (*gossh.C
 				return
 			}
 		}
+	}()
+	go func() {
+		wg.Wait()
+		close(lines)
 	}()
 
 	return conn, session, stdin, lines, nil
@@ -162,6 +206,27 @@ func waitForSSHOutputContains(ctx context.Context, session *gossh.Session, lines
 	var output strings.Builder
 	timeout := time.NewTimer(5 * time.Second)
 	defer timeout.Stop()
+	drainRemaining := func() {
+		drainTimeout := time.NewTimer(2 * time.Second)
+		defer drainTimeout.Stop()
+
+		for {
+			select {
+			case line, ok := <-lines:
+				if !ok {
+					return
+				}
+				if output.Len() > 0 {
+					output.WriteByte('\n')
+				}
+				output.WriteString(line)
+			case <-drainTimeout.C:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
 
 	for {
 		select {
@@ -179,10 +244,12 @@ func waitForSSHOutputContains(ctx context.Context, session *gossh.Session, lines
 			}
 		case <-timeout.C:
 			_ = session.Close()
-			return output.String(), false
+			drainRemaining()
+			return output.String(), strings.Contains(output.String(), needle)
 		case <-ctx.Done():
 			_ = session.Close()
-			return output.String(), false
+			drainRemaining()
+			return output.String(), strings.Contains(output.String(), needle)
 		}
 	}
 }
