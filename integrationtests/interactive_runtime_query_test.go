@@ -13,7 +13,7 @@ import (
 )
 
 type interactiveStep struct {
-	Delay time.Duration
+	At    time.Duration
 	Input string
 }
 
@@ -63,9 +63,9 @@ func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T)
 			return
 		}
 		writerDone <- appendLinesOnSchedule(ctx, followFile, []interactiveStep{
-			{Delay: 100 * time.Millisecond, Input: "ERROR initial"},
-			{Delay: 3000 * time.Millisecond, Input: "ERROR late"},
-			{Delay: 3200 * time.Millisecond, Input: "WARN live"},
+			{At: 100 * time.Millisecond, Input: "ERROR initial"},
+			{At: 3000 * time.Millisecond, Input: "ERROR late"},
+			{At: 3200 * time.Millisecond, Input: "WARN live"},
 		})
 	}()
 
@@ -81,8 +81,8 @@ func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T)
 		"--trustAllHosts",
 		"--interactive-query",
 	}, []interactiveStep{
-		{Delay: 3 * time.Second, Input: ":reload --grep WARN"},
-		{Delay: 6 * time.Second, Input: ":quit"},
+		{At: 3 * time.Second, Input: ":reload --grep WARN"},
+		{At: 6 * time.Second, Input: ":quit"},
 	})
 	if err != nil {
 		t.Fatalf("run interactive dtail: %v\noutput:\n%s", err, clientOutput)
@@ -150,9 +150,9 @@ func TestDTailInteractiveReloadReusesSessionOnImmediateBoundaryAndDropsLateOldMa
 			return
 		}
 		writerDone <- appendLinesOnSchedule(ctx, followFile, []interactiveStep{
-			{Delay: 250 * time.Millisecond, Input: "ERROR boundary"},
-			{Delay: 1500 * time.Millisecond, Input: "ERROR late"},
-			{Delay: 1700 * time.Millisecond, Input: "WARN live"},
+			{At: 250 * time.Millisecond, Input: "ERROR boundary"},
+			{At: 1500 * time.Millisecond, Input: "ERROR late"},
+			{At: 1700 * time.Millisecond, Input: "WARN live"},
 		})
 	}()
 
@@ -168,8 +168,8 @@ func TestDTailInteractiveReloadReusesSessionOnImmediateBoundaryAndDropsLateOldMa
 		"--trustAllHosts",
 		"--interactive-query",
 	}, []interactiveStep{
-		{Delay: 1200 * time.Millisecond, Input: ":reload --grep WARN"},
-		{Delay: 4 * time.Second, Input: ":quit"},
+		{At: 1200 * time.Millisecond, Input: ":reload --grep WARN"},
+		{At: 4 * time.Second, Input: ":quit"},
 	})
 	if err != nil {
 		t.Fatalf("run interactive dtail: %v\noutput:\n%s", err, clientOutput)
@@ -245,8 +245,8 @@ func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 		"--trustAllHosts",
 		"--interactive-query",
 	}, []interactiveStep{
-		{Delay: 3500 * time.Millisecond, Input: ":reload --grep WARN"},
-		{Delay: 5500 * time.Millisecond, Input: ":quit"},
+		{At: 3500 * time.Millisecond, Input: ":reload --grep WARN"},
+		{At: 5500 * time.Millisecond, Input: ":quit"},
 	})
 	if err != nil {
 		t.Fatalf("run interactive dgrep: %v\noutput:\n%s", err, clientOutput)
@@ -316,7 +316,7 @@ func appendLinesOnSchedule(ctx context.Context, path string, steps []interactive
 
 	start := time.Now()
 	for _, step := range steps {
-		wait := time.Until(start.Add(step.Delay))
+		wait := time.Until(start.Add(step.At))
 		if wait > 0 {
 			timer := time.NewTimer(wait)
 			select {
@@ -355,8 +355,11 @@ if pid == 0:
     os.execv(argv[0], argv)
 
 def writer():
+    start = time.monotonic()
     for step in steps:
-        time.sleep(step["delay_ms"] / 1000.0)
+        wait = (step["at_ms"] / 1000.0) - (time.monotonic() - start)
+        if wait > 0:
+            time.sleep(wait)
         data = step["input"]
         if not data.endswith("\n"):
             data += "\n"
@@ -386,8 +389,8 @@ sys.exit(1)
 	encodedSteps := make([]map[string]any, 0, len(steps))
 	for _, step := range steps {
 		encodedSteps = append(encodedSteps, map[string]any{
-			"delay_ms": step.Delay.Milliseconds(),
-			"input":    step.Input,
+			"at_ms": step.At.Milliseconds(),
+			"input": step.Input,
 		})
 	}
 
