@@ -18,7 +18,7 @@ var (
 
 // InitSSHAuthMethods initialises all known SSH auth methods on the client side.
 func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
-	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool, throttleCh chan struct{},
+	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool,
 	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback) {
 
 	if len(sshAuthMethods) > 0 {
@@ -28,10 +28,10 @@ func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 		}
 		return sshAuthMethods, simpleCallback
 	}
-	return initKnownHostsAuthMethods(trustAllHosts, throttleCh, privateKeyPath, agentKeyIndex)
+	return initKnownHostsAuthMethods(trustAllHosts, privateKeyPath, agentKeyIndex)
 }
 
-func initKnownHostsAuthMethods(trustAllHosts bool, throttleCh chan struct{},
+func initKnownHostsAuthMethods(trustAllHosts bool,
 	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback) {
 
 	knownHostsFile := fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME"))
@@ -40,7 +40,7 @@ func initKnownHostsAuthMethods(trustAllHosts bool, throttleCh chan struct{},
 		knownHostsFile = "./known_hosts"
 	}
 
-	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts, throttleCh)
+	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts)
 	if err != nil {
 		dlog.Client.FatalPanic(knownHostsFile, err)
 	}

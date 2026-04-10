@@ -41,7 +41,6 @@ type KnownHostsCallback struct {
 	knownHostsPath  string
 	knownHostsFile  fs.RootedPath
 	unknownCh       chan unknownHost
-	throttleCh      chan struct{}
 	trustAllHostsCh chan struct{}
 	untrustedHosts  map[string]bool
 	mutex           *sync.Mutex
@@ -50,8 +49,7 @@ type KnownHostsCallback struct {
 var _ HostKeyCallback = (*KnownHostsCallback)(nil)
 
 // NewKnownHostsCallback returns a new wrapper.
-func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
-	throttleCh chan struct{}) (HostKeyCallback, error) {
+func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool) (HostKeyCallback, error) {
 
 	knownHostsFile, err := fs.NewRootedPath(knownHostsPath)
 	if err != nil {
@@ -65,7 +63,6 @@ func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
 		knownHostsFile:  knownHostsFile,
 		unknownCh:       make(chan unknownHost),
 		trustAllHostsCh: make(chan struct{}),
-		throttleCh:      throttleCh,
 		untrustedHosts:  untrustedHosts,
 		mutex:           &sync.Mutex{},
 	}
@@ -103,10 +100,6 @@ func (c *KnownHostsCallback) Wrap() ssh.HostKeyCallback {
 			// OK
 			return nil
 		}
-		// Make sure that interactive user callback does not interfere with
-		// SSH connection throttler.
-		<-c.throttleCh
-		defer func() { c.throttleCh <- struct{}{} }()
 
 		unknown := unknownHost{
 			server:     server,

@@ -1,7 +1,9 @@
 package server
 
 import (
+	"errors"
 	"fmt"
+	iofs "io/fs"
 	"os"
 	goUser "os/user"
 	"path/filepath"
@@ -142,7 +144,7 @@ func findAuthorizedKeysPath(user *user.User, cacheDir, cwd string,
 	if _, err = rootedAuthorizedKeysPath.Stat(); err == nil {
 		return rootedAuthorizedKeysPath, nil
 	}
-	if !os.IsNotExist(err) {
+	if !errors.Is(err, iofs.ErrNotExist) {
 		return fs.RootedPath{}, err
 	}
 

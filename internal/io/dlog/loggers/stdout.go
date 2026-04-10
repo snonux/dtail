@@ -44,14 +44,17 @@ func (s *stdout) RawWithColors(now time.Time, message, coloredMessage string) {
 
 func (s *stdout) log(message string, nl bool) {
 	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	select {
 	case <-s.pauseCh:
-		// Pause until resumed.
+		// Wait for Resume without holding the mutex: the prompt path calls
+		// dlog after the user answers while Pause is still active; holding the
+		// mutex here would deadlock (Info blocks on Lock, Resume never runs).
+		s.mutex.Unlock()
 		<-s.resumeCh
+		s.mutex.Lock()
 	default:
 	}
+	defer s.mutex.Unlock()
 
 	if nl {
 		fmt.Println(message)

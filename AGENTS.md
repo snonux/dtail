@@ -26,6 +26,9 @@ make clean
 # Enable ACL support (requires libacl-devel)
 DTAIL_USE_ACL=yes make build
 
+# Build without zstd (CGO-free cross-compiles; .zst logs unsupported)
+DTAIL_NO_ZSTD=yes make build
+
 # Enable proprietary features
 DTAIL_USE_PROPRIETARY=yes make build
 

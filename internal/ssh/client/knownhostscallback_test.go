@@ -112,10 +112,7 @@ func TestTrustHostsRejectsEscapingKnownHostsSymlink(t *testing.T) {
 func testKnownHostsCallback(t *testing.T, knownHostsPath string) *KnownHostsCallback {
 	t.Helper()
 
-	throttleCh := make(chan struct{}, 1)
-	throttleCh <- struct{}{}
-
-	callback, err := NewKnownHostsCallback(knownHostsPath, false, throttleCh)
+	callback, err := NewKnownHostsCallback(knownHostsPath, false)
 	if err != nil {
 		t.Fatalf("NewKnownHostsCallback failed: %v", err)
 	}

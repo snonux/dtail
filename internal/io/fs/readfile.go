@@ -19,8 +19,6 @@ import (
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
-
-	"github.com/DataDog/zstd"
 )
 
 type readStatus int
@@ -193,10 +191,7 @@ func (f *readFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, 
 		decompressor = gzipReader
 		reader = bufio.NewReader(gzipReader)
 	case strings.HasSuffix(f.FilePath(), ".zst"):
-		dlog.Common.Info(f.FilePath(), "Detected zstd compression format")
-		zstdReader := zstd.NewReader(fd)
-		decompressor = zstdReader
-		reader = bufio.NewReader(zstdReader)
+		return f.makeZstdReader(fd)
 	default:
 		reader = bufio.NewReader(fd)
 	}

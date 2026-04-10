@@ -5,6 +5,9 @@ endif
 ifdef DTAIL_USE_PROPRIETARY
 GO_TAGS+=proprietary
 endif
+ifdef DTAIL_NO_ZSTD
+GO_TAGS+=nozstd
+endif
 all: build
 build: dserver dcat dgrep dmap dtail dtailhealth dtail-tools
 build-pgo: pgo-build-binaries
