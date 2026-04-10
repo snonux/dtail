@@ -109,6 +109,89 @@ func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T)
 	}
 }
 
+func TestDTailInteractiveReloadReusesSessionOnImmediateBoundaryAndDropsLateOldMatches(t *testing.T) {
+	skipIfNotIntegrationTest(t)
+
+	testLogger := NewTestLogger("TestDTailInteractiveReloadReusesSessionOnImmediateBoundaryAndDropsLateOldMatches")
+	defer testLogger.WriteLogFile()
+	cleanupTmpFiles(t)
+
+	ctx, cancel := createTestContextWithTimeout(t)
+	ctx = WithTestLogger(ctx, testLogger)
+	defer cancel()
+
+	followFile := "interactive_dtail_reload_immediate.tmp"
+	if err := os.WriteFile(followFile, []byte("ERROR initial\n"), 0600); err != nil {
+		t.Fatalf("unable to create follow file: %v", err)
+	}
+	cleanupFiles(t, followFile, "interactive_dtail_reload_immediate.stdout.tmp")
+
+	port := getUniquePortNumber()
+	serverStdout, serverStderr, _, err := startCommand(ctx, t, "", "../dserver",
+		"--cfg", "none",
+		"--logger", "stdout",
+		"--logLevel", "debug",
+		"--bindAddress", "localhost",
+		"--port", fmt.Sprintf("%d", port),
+	)
+	if err != nil {
+		t.Fatalf("start dserver: %v", err)
+	}
+	serverLogs := startProcessOutputCollector(ctx, serverStdout, serverStderr)
+	if err := waitForServerReady(ctx, "localhost", port); err != nil {
+		t.Fatalf("wait for dserver: %v", err)
+	}
+	serverLogs.reset()
+
+	writerDone := make(chan error, 1)
+	go func() {
+		if err := waitForCollectorSubstring(ctx, serverLogs, "Start reading|"+followFile+"|"+followFile); err != nil {
+			writerDone <- err
+			return
+		}
+		writerDone <- appendLinesOnSchedule(ctx, followFile, []interactiveStep{
+			{Delay: 1500 * time.Millisecond, Input: "ERROR late"},
+			{Delay: 1700 * time.Millisecond, Input: "WARN live"},
+		})
+	}()
+
+	clientOutput, err := runInteractivePTYCommand(ctx, []string{
+		"../dtail",
+		"--cfg", "none",
+		"--logger", "stdout",
+		"--logLevel", "info",
+		"--servers", fmt.Sprintf("localhost:%d", port),
+		"--files", followFile,
+		"--grep", "ERROR",
+		"--plain",
+		"--trustAllHosts",
+		"--interactive-query",
+	}, []interactiveStep{
+		{Delay: 1200 * time.Millisecond, Input: ":reload --grep WARN"},
+		{Delay: 4 * time.Second, Input: ":quit"},
+	})
+	if err != nil {
+		t.Fatalf("run interactive dtail: %v\noutput:\n%s", err, clientOutput)
+	}
+
+	if err := <-writerDone; err != nil {
+		t.Fatalf("write follow file: %v", err)
+	}
+
+	if !strings.Contains(clientOutput, "WARN live") {
+		t.Fatalf("expected WARN line after reload in output:\n%s", clientOutput)
+	}
+	if strings.Contains(clientOutput, "ERROR late") {
+		t.Fatalf("unexpected stale ERROR line after reload:\n%s", clientOutput)
+	}
+	if !strings.Contains(clientOutput, "reload applied successfully") {
+		t.Fatalf("expected reload success message in output:\n%s", clientOutput)
+	}
+	if countSubstring(serverLogs.snapshot(), "Creating new server handler") != 1 {
+		t.Fatalf("expected one SSH session on the server, logs:\n%s", strings.Join(serverLogs.snapshot(), "\n"))
+	}
+}
+
 func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 
