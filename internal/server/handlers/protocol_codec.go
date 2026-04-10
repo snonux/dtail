@@ -29,16 +29,16 @@ func (c protocolCodec) handleProtocolVersion(args []string) ([]string, int, stri
 	}
 
 	if args[1] != protocol.ProtocolCompat {
-		clientCompat, _ := strconv.Atoi(args[1])
-		serverCompat, _ := strconv.Atoi(protocol.ProtocolCompat)
-		if clientCompat <= 3 {
+		clientMajor, clientMinor := parseProtocolCompat(args[1])
+		serverMajor, serverMinor := parseProtocolCompat(protocol.ProtocolCompat)
+		if clientMajor <= 3 {
 			// Protocol version 3 or lower expect a newline as message separator
 			// One day (after 2 major versions) this exception may be removed!
 			add = "\n"
 		}
 
 		toUpdate := "client"
-		if clientCompat > serverCompat {
+		if clientMajor > serverMajor || (clientMajor == serverMajor && clientMinor > serverMinor) {
 			toUpdate = "server"
 		}
 		err := fmt.Errorf("the DTail server protocol version '%s' does not match "+
@@ -48,6 +48,21 @@ func (c protocolCodec) handleProtocolVersion(args []string) ([]string, int, stri
 	}
 
 	return args[2:], argc - 2, add, nil
+}
+
+func parseProtocolCompat(version string) (int, int) {
+	major := 0
+	minor := 0
+
+	parts := strings.SplitN(version, ".", 2)
+	if len(parts) > 0 {
+		major, _ = strconv.Atoi(parts[0])
+	}
+	if len(parts) == 2 {
+		minor, _ = strconv.Atoi(parts[1])
+	}
+
+	return major, minor
 }
 
 func (c protocolCodec) handleBase64(args []string, argc int) ([]string, int, error) {

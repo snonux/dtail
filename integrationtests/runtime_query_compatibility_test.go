@@ -51,6 +51,11 @@ func TestDServerProtocolVersionMismatchReportsCompatibilityError(t *testing.T) {
 		expectedUpdate  string
 	}{
 		{
+			name:            "major-only-client-guidance",
+			protocolVersion: "4",
+			expectedUpdate:  "client",
+		},
+		{
 			name:            "older-client-guidance",
 			protocolVersion: "0",
 			expectedUpdate:  "client",
