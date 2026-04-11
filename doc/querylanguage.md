@@ -61,3 +61,5 @@ FUNCTION := md5sum|maskdigits
 * `rorder` stands for reverse order.
 * `lacks` is an alias for `ncontains` (not contains).
 * Available fields (variables and barewords) vary from the log format used. Check out the [log format](./logformats.md) documentation for more information.
+* `percentage(field)` returns the selected group's share of the total for that field across all groups, expressed as a value between 0 and 100.
+* `percentile(field)` returns the percentile rank of the selected group's value among all grouped values for that field, also expressed as a value between 0 and 100. Equal values share the same rank.

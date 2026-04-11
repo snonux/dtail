@@ -29,12 +29,20 @@ func TestGroupSetResultPercentageAndPercentile(t *testing.T) {
 		t.Fatalf("Unable to aggregate percentile for host-b: %v", err)
 	}
 
+	setC := groupSet.GetSet("host-c")
+	if err := setC.Aggregate("percentage(value)", Percentage, "20", false); err != nil {
+		t.Fatalf("Unable to aggregate percentage for host-c: %v", err)
+	}
+	if err := setC.Aggregate("percentile(value)", Percentile, "20", false); err != nil {
+		t.Fatalf("Unable to aggregate percentile for host-c: %v", err)
+	}
+
 	rows, _, err := groupSet.result(query, false)
 	if err != nil {
 		t.Fatalf("Unable to build result rows: %v", err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("Expected 2 result rows, got %d", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("Expected 3 result rows, got %d", len(rows))
 	}
 
 	if rows[0].groupKey != "host-b" {
@@ -54,10 +62,72 @@ func TestGroupSetResultPercentageAndPercentile(t *testing.T) {
 		valuesByGroup[row.groupKey] = parsedValues
 	}
 
-	assertAlmostEqual(t, valuesByGroup["host-a"][0], 25.0, 0.0001, "host-a percentage")
-	assertAlmostEqual(t, valuesByGroup["host-a"][1], 50.0, 0.0001, "host-a percentile")
-	assertAlmostEqual(t, valuesByGroup["host-b"][0], 75.0, 0.0001, "host-b percentage")
+	assertAlmostEqual(t, valuesByGroup["host-a"][0], 16.6666666667, 0.0001, "host-a percentage")
+	assertAlmostEqual(t, valuesByGroup["host-a"][1], 33.3333333333, 0.0001, "host-a percentile")
+	assertAlmostEqual(t, valuesByGroup["host-b"][0], 50.0, 0.0001, "host-b percentage")
 	assertAlmostEqual(t, valuesByGroup["host-b"][1], 100.0, 0.0001, "host-b percentile")
+	assertAlmostEqual(t, valuesByGroup["host-c"][0], 33.3333333333, 0.0001, "host-c percentage")
+	assertAlmostEqual(t, valuesByGroup["host-c"][1], 66.6666666667, 0.0001, "host-c percentile")
+}
+
+func TestGroupSetPercentageReturnsZeroWhenTotalIsZero(t *testing.T) {
+	query, err := NewQuery("select percentage(value) from stats group by host")
+	if err != nil {
+		t.Fatalf("Unable to parse query: %v", err)
+	}
+
+	groupSet := NewGroupSet()
+	for _, host := range []string{"host-a", "host-b"} {
+		set := groupSet.GetSet(host)
+		if err := set.Aggregate("percentage(value)", Percentage, "0", false); err != nil {
+			t.Fatalf("Unable to aggregate percentage for %s: %v", host, err)
+		}
+	}
+
+	rows, _, err := groupSet.result(query, false)
+	if err != nil {
+		t.Fatalf("Unable to build result rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("Expected 2 result rows, got %d", len(rows))
+	}
+	for _, row := range rows {
+		if len(row.values) != 1 {
+			t.Fatalf("Expected one result value, got %d for %s", len(row.values), row.groupKey)
+		}
+		value, err := strconv.ParseFloat(row.values[0], 64)
+		if err != nil {
+			t.Fatalf("Unable to parse percentage result %q: %v", row.values[0], err)
+		}
+		assertAlmostEqual(t, value, 0.0, 0.0001, row.groupKey+" percentage")
+	}
+}
+
+func TestPercentileRank(t *testing.T) {
+	sortedValues := []float64{10, 20, 30}
+
+	tests := []struct {
+		name     string
+		value    float64
+		expected float64
+	}{
+		{name: "below minimum", value: 5, expected: 0},
+		{name: "first bucket", value: 10, expected: 33.3333333333},
+		{name: "middle bucket", value: 20, expected: 66.6666666667},
+		{name: "maximum", value: 30, expected: 100},
+		{name: "above maximum", value: 40, expected: 100},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertAlmostEqual(t, percentileRank(tt.value, sortedValues), tt.expected, 0.0001, tt.name)
+		})
+	}
+
+	assertAlmostEqual(t, percentileRank(10, []float64{10, 10, 30}), 66.6666666667, 0.0001, "duplicate percentile rank")
+	if got := percentileRank(10, nil); got != 0 {
+		t.Fatalf("Expected empty percentile input to return 0, got %f", got)
+	}
 }
 
 func assertAlmostEqual(t *testing.T, got, expected, tolerance float64, label string) {
