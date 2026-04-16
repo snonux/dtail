@@ -7,7 +7,7 @@ import (
 
 type testParser struct{}
 
-func (p *testParser) MakeFields(maprLine string) (map[string]string, error) {
+func (p *testParser) MakeFields(maprLine, _ string) (map[string]string, error) {
 	return map[string]string{"line": maprLine}, nil
 }
 
@@ -35,7 +35,7 @@ func TestNewParserUsesRegistry(t *testing.T) {
 		t.Fatalf("Unable to create parser from registry: %s", err.Error())
 	}
 
-	fields, err := parser.MakeFields("hello")
+	fields, err := parser.MakeFields("hello", "")
 	if err != nil {
 		t.Fatalf("Unable to parse line: %s", err.Error())
 	}
@@ -58,6 +58,7 @@ func TestNewParserFallbackToDefault(t *testing.T) {
 
 	fields, parseErr := parser.MakeFields(
 		"INFO|20211002-072342|1|parser_test.go:0|8|14|7|0.21|471h0m21s|MAPREDUCE:STATS|foo=bar",
+		"",
 	)
 	if parseErr != nil {
 		t.Fatalf("Fallback parser failed to parse line: %s", parseErr.Error())

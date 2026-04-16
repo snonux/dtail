@@ -226,10 +226,11 @@ func (a *Aggregate) fieldFromLine(ctx context.Context, line *line.Line,
 	fieldsCh chan<- map[string]string) error {
 
 	maprLine := strings.TrimSpace(line.Content.String())
+	sourceID := line.SourceID
 
 	// after recycling it, don't use line object anymore!!!
 	line.Recycle()
-	fields, err := a.parser.MakeFields(maprLine)
+	fields, err := a.parser.MakeFields(maprLine, sourceID)
 
 	if err != nil {
 		// Should fields be ignored anyway?

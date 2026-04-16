@@ -218,9 +218,9 @@ func (a *TurboAggregate) processRawBatch(batch []rawLine) {
 }
 
 // processLine processes a single line and aggregates it.
-func (a *TurboAggregate) processLine(lineContent *bytes.Buffer, _ string) error {
+func (a *TurboAggregate) processLine(lineContent *bytes.Buffer, sourceID string) error {
 	maprLine := strings.TrimSpace(lineContent.String())
-	parsedFields, err := a.parser.MakeFields(maprLine)
+	parsedFields, err := a.parser.MakeFields(maprLine, sourceID)
 	if err != nil {
 		if err != logformat.ErrIgnoreFields {
 			return err

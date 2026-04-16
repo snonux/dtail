@@ -14,6 +14,6 @@ func newCustom1Parser(hostname, timeZoneName string, timeZoneOffset int) (*custo
 	return &custom1Parser{}, ErrCustom1NotImplemented
 }
 
-func (p *custom1Parser) MakeFields(maprLine string) (map[string]string, error) {
+func (p *custom1Parser) MakeFields(maprLine, _ string) (map[string]string, error) {
 	return nil, ErrCustom1NotImplemented
 }

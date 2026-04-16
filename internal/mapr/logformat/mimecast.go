@@ -19,6 +19,6 @@ func newMimecastGenericParser(hostname, timeZoneName string, timeZoneOffset int)
 	return &mimecastParser{}, ErrMimecastNotAvailable
 }
 
-func (p *mimecastParser) MakeFields(maprLine string) (map[string]string, error) {
+func (p *mimecastParser) MakeFields(maprLine, _ string) (map[string]string, error) {
 	return nil, ErrMimecastNotAvailable
 }

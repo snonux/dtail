@@ -25,7 +25,7 @@ func TestDefaultLogFormat(t *testing.T) {
 	}
 
 	for _, input := range inputs {
-		fields, err := parser.MakeFields(input)
+		fields, err := parser.MakeFields(input, "")
 
 		if err != nil {
 			t.Errorf("Parser unable to make fields: %s", err.Error())
@@ -88,7 +88,7 @@ func TestDefaultLogFormat(t *testing.T) {
 		}
 	}
 
-	fields, err := parser.MakeFields("foozoo=bar|bazbay")
+	fields, err := parser.MakeFields("foozoo=bar|bazbay", "")
 	if err != nil && err != ErrIgnoreFields {
 		t.Errorf("%s", err.Error())
 	}
@@ -111,6 +111,7 @@ func TestDefaultLogFormatQuerySpecificFields(t *testing.T) {
 
 	fields, err := parser.MakeFields(
 		"INFO|20211002-072342|1|default_test.go:0|8|14|7|0.21|471h0m21s|MAPREDUCE:STATS|foo=bar|bar=baz",
+		"",
 	)
 	if err != nil {
 		t.Fatalf("Parser unable to make fields: %s", err.Error())

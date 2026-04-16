@@ -18,7 +18,7 @@ func BenchmarkDefaultParserMakeFields(b *testing.B) {
 
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			if _, err := parser.MakeFields(input); err != nil {
+			if _, err := parser.MakeFields(input, ""); err != nil {
 				b.Fatalf("Unable to parse input: %s", err.Error())
 			}
 		}
@@ -36,7 +36,7 @@ func BenchmarkDefaultParserMakeFields(b *testing.B) {
 
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			if _, err := parser.MakeFields(input); err != nil {
+			if _, err := parser.MakeFields(input, ""); err != nil {
 				b.Fatalf("Unable to parse input: %s", err.Error())
 			}
 		}

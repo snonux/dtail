@@ -16,7 +16,7 @@ func newGenericKVParser(hostname, timeZoneName string, timeZoneOffset int) (*gen
 	return &genericKVParser{defaultParser: *defaultParser}, nil
 }
 
-func (p *genericKVParser) MakeFields(maprLine string) (map[string]string, error) {
+func (p *genericKVParser) MakeFields(maprLine, _ string) (map[string]string, error) {
 	fields := make(map[string]string, p.fieldsCapacity)
 	p.addDefaultFields(fields, maprLine)
 	start := 0

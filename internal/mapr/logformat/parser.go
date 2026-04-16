@@ -16,8 +16,12 @@ var ErrIgnoreFields error = errors.New("Ignore this field set")
 
 // Parser is used to parse the mapreduce information from the server log files.
 type Parser interface {
-	// MakeFields creates a field map from an input log line.
-	MakeFields(string) (map[string]string, error)
+	// MakeFields creates a field map from an input log line. The sourceID
+	// identifies the log file (or stream) the line belongs to so that
+	// stateful parsers (e.g. CSV with per-file headers) can key their
+	// state per source instead of smearing it across every file in a
+	// session.
+	MakeFields(maprLine, sourceID string) (map[string]string, error)
 }
 
 type queryAwareParser interface {

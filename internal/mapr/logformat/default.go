@@ -54,7 +54,7 @@ func (p *defaultParser) setQuery(query *mapr.Query) {
 	p.configureFieldPlan(query.ParserFieldPlan())
 }
 
-func (p *defaultParser) MakeFields(maprLine string) (map[string]string, error) {
+func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error) {
 	fields := make(map[string]string, p.fieldsCapacity)
 	tokenIndex := 0
 	start := 0

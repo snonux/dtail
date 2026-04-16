@@ -14,7 +14,7 @@ func newGenericParser(hostname, timeZoneName string, timeZoneOffset int) (*gener
 	return &genericParser{defaultParser: *defaultParser}, nil
 }
 
-func (p *genericParser) MakeFields(maprLine string) (map[string]string, error) {
+func (p *genericParser) MakeFields(maprLine, _ string) (map[string]string, error) {
 	fields := make(map[string]string, p.fieldsCapacity)
 	p.addDefaultFields(fields, maprLine)
 
