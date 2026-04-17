@@ -3,6 +3,7 @@ package clients
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -112,6 +113,61 @@ func TestApplyInteractiveReloadRejectsUnsupportedConnections(t *testing.T) {
 	}
 	if client.Args.What != "/var/log/app.log" || client.sessionSpec.Regex != "ERROR" {
 		t.Fatalf("client state changed on unsupported reload: args=%#v spec=%#v", client.Args, client.sessionSpec)
+	}
+}
+
+func TestApplyInteractiveReloadRollsBackPartialFailure(t *testing.T) {
+	oldArgs := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/var/log/app.log",
+		RegexStr: "ERROR",
+	}
+	oldSpec := SessionSpec{
+		Mode:  omode.GrepClient,
+		Files: []string{"/var/log/app.log"},
+		Regex: "ERROR",
+	}
+	rollbackErr := errors.New("boom")
+
+	connA := &interactiveReloadConnector{server: "srv1", supported: true, generation: 4}
+	connB := &interactiveReloadConnector{server: "srv2", supported: true, generation: 4}
+	connC := &interactiveReloadConnector{server: "srv3", supported: true, applyErr: rollbackErr}
+	maker := &interactiveReloadMaker{}
+
+	client := &baseClient{
+		Args:        oldArgs,
+		sessionSpec: oldSpec,
+		connections: []connectors.Connector{connA, connB, connC},
+		maker:       maker,
+	}
+
+	nextArgs := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/tmp/new.log",
+		RegexStr: "WARN",
+	}
+	nextSpec := SessionSpec{
+		Mode:  omode.GrepClient,
+		Files: []string{"/tmp/new.log"},
+		Regex: "WARN",
+	}
+
+	err := client.applyInteractiveReload(nextArgs, nextSpec)
+	if err == nil || !errors.Is(err, rollbackErr) {
+		t.Fatalf("expected reload error from failing connection, got %v", err)
+	}
+
+	if !reflect.DeepEqual(client.Args, oldArgs) || !reflect.DeepEqual(client.sessionSpec, oldSpec) {
+		t.Fatalf("client state changed on partial failure: args=%#v spec=%#v", client.Args, client.sessionSpec)
+	}
+	if len(maker.commits) != 0 {
+		t.Fatalf("expected no committed shared state, got %#v", maker.commits)
+	}
+	if !reflect.DeepEqual(connA.appliedSpec, oldSpec) || !reflect.DeepEqual(connB.appliedSpec, oldSpec) {
+		t.Fatalf("expected successful connections to roll back to old spec: %#v %#v", connA.appliedSpec, connB.appliedSpec)
+	}
+	if !reflect.DeepEqual(connC.appliedSpec, sessionspec.Spec{}) {
+		t.Fatalf("failed connection should not commit new spec: %#v", connC.appliedSpec)
 	}
 }
 

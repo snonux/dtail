@@ -130,6 +130,8 @@ func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec Sessi
 	if len(c.connections) == 0 {
 		return errors.New("no active connections")
 	}
+	prevArgs := c.Args
+	prevSpec := c.sessionSpec
 
 	var unsupported []string
 	for _, conn := range c.connections {
@@ -141,35 +143,65 @@ func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec Sessi
 		return fmt.Errorf("%w: %s", connectors.ErrSessionUnsupported, strings.Join(unsupported, ", "))
 	}
 
+	applied, generation, err := c.applyInteractiveReloadConnections(nextSpec)
+	if err != nil {
+		return c.rollbackInteractiveReload(applied, prevArgs, prevSpec, err)
+	}
+
+	if committer, ok := c.maker.(sessionCommitter); ok {
+		if err := committer.commitSessionSpec(nextSpec, generation); err != nil {
+			return c.rollbackInteractiveReload(applied, prevArgs, prevSpec,
+				fmt.Errorf("commit session state: %w", err))
+		}
+	}
+
+	c.Args = nextArgs
+	c.sessionSpec = nextSpec
+	return nil
+}
+
+func (c *baseClient) applyInteractiveReloadConnections(nextSpec SessionSpec) ([]connectors.Connector, uint64, error) {
 	var generation uint64
+	applied := make([]connectors.Connector, 0, len(c.connections))
 	for _, conn := range c.connections {
+		applied = append(applied, conn)
 		if err := conn.ApplySessionSpec(nextSpec, interactiveControlTimeout); err != nil {
-			return fmt.Errorf("%s: %w", conn.Server(), err)
+			return applied, 0, fmt.Errorf("%s: %w", conn.Server(), err)
 		}
 
 		_, committedGeneration, ok := conn.CommittedSession()
 		if !ok || committedGeneration == 0 {
-			return fmt.Errorf("%s: missing committed session generation", conn.Server())
+			return applied, 0, fmt.Errorf("%s: missing committed session generation", conn.Server())
 		}
 		if generation == 0 {
 			generation = committedGeneration
 			continue
 		}
 		if generation != committedGeneration {
-			return fmt.Errorf("mismatched committed generations: got %d and %d", generation, committedGeneration)
+			return applied, 0, fmt.Errorf("mismatched committed generations: got %d and %d", generation, committedGeneration)
 		}
 	}
+	return applied, generation, nil
+}
 
-	if committer, ok := c.maker.(sessionCommitter); ok {
-		if err := committer.commitSessionSpec(nextSpec, generation); err != nil {
-			return fmt.Errorf("commit session state: %w", err)
+func (c *baseClient) rollbackInteractiveReload(applied []connectors.Connector, prevArgs config.Args, prevSpec SessionSpec, err error) error {
+	rollbackErr := c.rollbackInteractiveReloadConnections(applied, prevSpec)
+	c.Args = prevArgs
+	c.sessionSpec = prevSpec
+	if rollbackErr != nil {
+		return errors.Join(err, rollbackErr)
+	}
+	return err
+}
+
+func (*baseClient) rollbackInteractiveReloadConnections(applied []connectors.Connector, prevSpec SessionSpec) error {
+	var rollbackErr error
+	for i := len(applied) - 1; i >= 0; i-- {
+		if err := applied[i].ApplySessionSpec(prevSpec, interactiveControlTimeout); err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("%s: %w", applied[i].Server(), err))
 		}
 	}
-
-	c.Args = nextArgs
-	c.sessionSpec = nextSpec
-
-	return nil
+	return rollbackErr
 }
 
 func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
