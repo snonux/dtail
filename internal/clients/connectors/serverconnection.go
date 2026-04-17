@@ -85,10 +85,11 @@ func NewServerConnection(server string, userName string,
 		authKeyPath:     resolveAuthKeyPath(authKeyPath),
 		authKeyDisabled: authKeyDisabled,
 		config: &ssh.ClientConfig{
-			User:            userName,
-			Auth:            authMethods,
-			HostKeyCallback: hostKeyCallback.Wrap(),
-			Timeout:         sshConnectTimeout,
+			User:    userName,
+			Auth:    authMethods,
+			Timeout: sshConnectTimeout,
+			// HostKeyCallback is assigned per-handshake in dial() so the
+			// callback can honour the handshake's context (see dial()).
 		},
 	}
 
@@ -205,8 +206,13 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 		return fmt.Errorf("failed to dial TCP connection to %s: %w", address, err)
 	}
 
-	// Perform SSH handshake over the established TCP connection
-	sshConn, chans, reqs, err := ssh.NewClientConn(conn, address, c.config)
+	// Perform SSH handshake over the established TCP connection. Build a
+	// per-handshake ssh.ClientConfig so the host-key callback is bound to
+	// ctx and unblocks cleanly if the handshake is cancelled (e.g. when the
+	// user aborts before responding to the unknown-host prompt).
+	handshakeConfig := *c.config
+	handshakeConfig.HostKeyCallback = c.hostKeyCallback.Wrap(ctx)
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, address, &handshakeConfig)
 	if err != nil {
 		conn.Close()
 		return fmt.Errorf("SSH handshake failed for %s: %w", address, err)

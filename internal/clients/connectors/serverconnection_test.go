@@ -439,7 +439,7 @@ func (s testSSHSettings) SSHConnectTimeout() time.Duration {
 
 type testHostKeyCallback struct{}
 
-func (testHostKeyCallback) Wrap() ssh.HostKeyCallback {
+func (testHostKeyCallback) Wrap(context.Context) ssh.HostKeyCallback {
 	return ssh.InsecureIgnoreHostKey()
 }
 

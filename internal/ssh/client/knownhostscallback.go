@@ -86,8 +86,14 @@ func ensureKnownHostsFile(knownHostsFile fs.RootedPath) {
 	fd.Close()
 }
 
-// Wrap the host key callback.
-func (c *KnownHostsCallback) Wrap() ssh.HostKeyCallback {
+// Wrap the host key callback. The returned ssh.HostKeyCallback is bound to
+// ctx: if ctx is cancelled while we are waiting for the PromptAddHosts
+// goroutine to consume an unknown host or to return a user decision, the
+// callback aborts with ctx.Err() instead of blocking forever. This prevents
+// a stuck SSH handshake (and a leaked goroutine per unknown host) when the
+// client shuts down before the user responds, or when PromptAddHosts has
+// already returned because its ctx was cancelled.
+func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 	return func(server string, remote net.Addr, key ssh.PublicKey) error {
 		// Parse known_hosts file
 		knownHostsCb, err := knownhosts.New(c.knownHostsPath)
@@ -107,15 +113,26 @@ func (c *KnownHostsCallback) Wrap() ssh.HostKeyCallback {
 			key:        key,
 			hostLine:   knownhosts.Line([]string{server}, key),
 			ipLine:     knownhosts.Line([]string{remote.String()}, key),
-			responseCh: make(chan response),
+			responseCh: make(chan response, 1),
 		}
 		// Keep host trust discovery diagnostics out of normal command output.
 		// In trust-all and plain modes this warning can corrupt tool output.
 		dlog.Client.Debug("Encountered unknown host", unknown.server, unknown.remote.String())
-		// Notify user that there is an unknown host
-		c.unknownCh <- unknown
-		// Wait for user input.
-		switch <-unknown.responseCh {
+		// Notify user that there is an unknown host. Honour ctx cancellation
+		// so we do not block forever when PromptAddHosts has already exited.
+		select {
+		case c.unknownCh <- unknown:
+		case <-ctx.Done():
+			return fmt.Errorf("host key callback cancelled for %s: %w", server, ctx.Err())
+		}
+		// Wait for user input. Same contract as above: abort on ctx cancel.
+		var resp response
+		select {
+		case resp = <-unknown.responseCh:
+		case <-ctx.Done():
+			return fmt.Errorf("host key callback cancelled for %s: %w", server, ctx.Err())
+		}
+		switch resp {
 		case trustHost:
 			// End user acknowledged host key
 			return nil
