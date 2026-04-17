@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"reflect"
 	"strings"
 	"time"
 
@@ -27,10 +26,8 @@ type interactiveCommand struct {
 }
 
 type interactiveReloadState struct {
-	conn       connectors.Connector
-	spec       SessionSpec
-	generation uint64
-	committed  bool
+	conn connectors.Connector
+	spec SessionSpec
 }
 
 func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan string) int {
@@ -172,16 +169,14 @@ func (c *baseClient) applyInteractiveReloadConnections(nextSpec SessionSpec) ([]
 	var generation uint64
 	applied := make([]interactiveReloadState, 0, len(c.connections))
 	for _, conn := range c.connections {
-		prevSpec, prevGeneration, prevCommitted := conn.CommittedSession()
-		applied = append(applied, interactiveReloadState{
-			conn:       conn,
-			spec:       prevSpec,
-			generation: prevGeneration,
-			committed:  prevCommitted,
-		})
+		prevSpec, _, _ := conn.CommittedSession()
 		if err := conn.ApplySessionSpec(nextSpec, interactiveControlTimeout); err != nil {
 			return applied, 0, fmt.Errorf("%s: %w", conn.Server(), err)
 		}
+		applied = append(applied, interactiveReloadState{
+			conn: conn,
+			spec: prevSpec,
+		})
 
 		_, committedGeneration, ok := conn.CommittedSession()
 		if !ok || committedGeneration == 0 {
@@ -211,9 +206,8 @@ func (c *baseClient) rollbackInteractiveReload(applied []interactiveReloadState,
 func (*baseClient) rollbackInteractiveReloadConnections(applied []interactiveReloadState) error {
 	var rollbackErr error
 	for i := len(applied) - 1; i >= 0; i-- {
-		applied[i].conn.RestoreCommittedSession(applied[i].spec, applied[i].generation, applied[i].committed)
-		if currentSpec, currentGeneration, currentCommitted := applied[i].conn.CommittedSession(); currentCommitted != applied[i].committed || currentGeneration != applied[i].generation || !reflect.DeepEqual(currentSpec, applied[i].spec) {
-			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("%s: failed to restore committed session state", applied[i].conn.Server()))
+		if err := applied[i].conn.ApplySessionSpec(applied[i].spec, interactiveControlTimeout); err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("%s: rollback session spec: %w", applied[i].conn.Server(), err))
 		}
 	}
 	return rollbackErr

@@ -260,6 +260,53 @@ func TestServerConnectionApplySessionSpecUpdateUsesNextGeneration(t *testing.T) 
 	}
 }
 
+func TestServerConnectionApplySessionSpecReappliesPreviousSpecForRollback(t *testing.T) {
+	resetClientLogger(t)
+
+	mock := &mockHandler{
+		waitForCapabilities: true,
+		capabilities: map[string]bool{
+			protocol.CapabilityQueryUpdateV1: true,
+		},
+		sessionAcks: []handlers.SessionAck{
+			{Action: "start", Generation: 4},
+			{Action: "update", Generation: 5},
+			{Action: "update", Generation: 6},
+		},
+	}
+	conn := &ServerConnection{
+		server:  "srv1",
+		handler: mock,
+	}
+
+	startSpec := sessionspec.Spec{
+		Mode:  omode.TailClient,
+		Files: []string{"/var/log/app.log"},
+		Regex: "ERROR",
+	}
+	updateSpec := sessionspec.Spec{
+		Mode:  omode.TailClient,
+		Files: []string{"/var/log/app.log"},
+		Regex: "WARN",
+	}
+
+	if err := conn.ApplySessionSpec(startSpec, 10*time.Millisecond); err != nil {
+		t.Fatalf("start ApplySessionSpec() error = %v", err)
+	}
+	if err := conn.ApplySessionSpec(updateSpec, 10*time.Millisecond); err != nil {
+		t.Fatalf("update ApplySessionSpec() error = %v", err)
+	}
+	if err := conn.ApplySessionSpec(startSpec, 10*time.Millisecond); err != nil {
+		t.Fatalf("rollback ApplySessionSpec() error = %v", err)
+	}
+	if len(mock.commands) != 3 {
+		t.Fatalf("expected three session commands, got %d", len(mock.commands))
+	}
+	if committedSpec, generation, ok := conn.CommittedSession(); !ok || generation != 6 || committedSpec.Regex != "ERROR" {
+		t.Fatalf("unexpected committed session after rollback: spec=%#v generation=%d ok=%v", committedSpec, generation, ok)
+	}
+}
+
 func TestServerConnectionApplySessionSpecFallsBackForUnsupportedServer(t *testing.T) {
 	resetClientLogger(t)
 
