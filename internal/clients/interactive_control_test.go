@@ -386,9 +386,7 @@ func (c *interactiveReloadConnector) SupportsQueryUpdates(time.Duration) bool { 
 func (c *interactiveReloadConnector) ApplySessionSpec(spec sessionspec.Spec, _ time.Duration) error {
 	c.applyCount++
 	if c.applyErrAfterAdvance != nil && reflect.DeepEqual(spec, c.applyErrAfterAdvanceSpec) {
-		c.generation++
 		c.liveSpec = spec
-		c.committedSpec = spec
 		return c.applyErrAfterAdvance
 	}
 	if c.applyErr != nil {

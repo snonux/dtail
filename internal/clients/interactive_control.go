@@ -26,8 +26,9 @@ type interactiveCommand struct {
 }
 
 type interactiveReloadState struct {
-	conn connectors.Connector
-	spec SessionSpec
+	conn               connectors.Connector
+	spec               SessionSpec
+	rollbackGeneration uint64
 }
 
 func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan string) int {
@@ -169,12 +170,17 @@ func (c *baseClient) applyInteractiveReloadConnections(nextSpec SessionSpec) ([]
 	var generation uint64
 	applied := make([]interactiveReloadState, 0, len(c.connections))
 	for _, conn := range c.connections {
-		prevSpec, _, _ := conn.CommittedSession()
+		prevSpec, prevGeneration, _ := conn.CommittedSession()
 		if err := conn.ApplySessionSpec(nextSpec, interactiveControlTimeout); err != nil {
 			if shouldRollbackFailedReload(err) {
+				rollbackGeneration := generation
+				if rollbackGeneration == 0 {
+					rollbackGeneration = prevGeneration
+				}
 				applied = append(applied, interactiveReloadState{
-					conn: conn,
-					spec: prevSpec,
+					conn:               conn,
+					spec:               prevSpec,
+					rollbackGeneration: rollbackGeneration,
 				})
 			}
 			return applied, 0, fmt.Errorf("%s: %w", conn.Server(), err)
@@ -217,6 +223,9 @@ func (c *baseClient) rollbackInteractiveReload(applied []interactiveReloadState,
 func (*baseClient) rollbackInteractiveReloadConnections(applied []interactiveReloadState) error {
 	var rollbackErr error
 	for i := len(applied) - 1; i >= 0; i-- {
+		if applied[i].rollbackGeneration != 0 {
+			applied[i].conn.RestoreCommittedSession(applied[i].spec, applied[i].rollbackGeneration, true)
+		}
 		if err := applied[i].conn.ApplySessionSpec(applied[i].spec, interactiveControlTimeout); err != nil {
 			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("%s: rollback session spec: %w", applied[i].conn.Server(), err))
 		}
