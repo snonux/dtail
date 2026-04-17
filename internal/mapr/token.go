@@ -53,7 +53,7 @@ func tokensConsume(tokens []token) ([]token, []token) {
 		if length == 0 {
 			continue
 		}
-		if t.str[0] == '`' && t.str[length-1] == '`' {
+		if length >= 2 && t.str[0] == '`' && t.str[length-1] == '`' {
 			stripped := t.str[1 : length-1]
 			//dlog.Common.Trace("stripped", stripped)
 			t := token{
