@@ -171,6 +171,12 @@ func (c *baseClient) applyInteractiveReloadConnections(nextSpec SessionSpec) ([]
 	for _, conn := range c.connections {
 		prevSpec, _, _ := conn.CommittedSession()
 		if err := conn.ApplySessionSpec(nextSpec, interactiveControlTimeout); err != nil {
+			if shouldRollbackFailedReload(err) {
+				applied = append(applied, interactiveReloadState{
+					conn: conn,
+					spec: prevSpec,
+				})
+			}
 			return applied, 0, fmt.Errorf("%s: %w", conn.Server(), err)
 		}
 		applied = append(applied, interactiveReloadState{
@@ -191,6 +197,11 @@ func (c *baseClient) applyInteractiveReloadConnections(nextSpec SessionSpec) ([]
 		}
 	}
 	return applied, generation, nil
+}
+
+func shouldRollbackFailedReload(err error) bool {
+	return errors.Is(err, connectors.ErrSessionAckTimeout) ||
+		errors.Is(err, connectors.ErrUnexpectedSessionAck)
 }
 
 func (c *baseClient) rollbackInteractiveReload(applied []interactiveReloadState, prevArgs config.Args, prevSpec SessionSpec, err error) error {

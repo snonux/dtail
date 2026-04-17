@@ -116,7 +116,7 @@ func TestApplyInteractiveReloadRejectsUnsupportedConnections(t *testing.T) {
 	}
 }
 
-func TestApplyInteractiveReloadRollsBackPartialFailure(t *testing.T) {
+func TestApplyInteractiveReloadRollsBackEarlyFailure(t *testing.T) {
 	oldArgs := config.Args{
 		Mode:     omode.GrepClient,
 		What:     "/var/log/app.log",
@@ -177,6 +177,71 @@ func TestApplyInteractiveReloadRollsBackPartialFailure(t *testing.T) {
 	}
 	if !reflect.DeepEqual(connC.committedSpec, oldSpec) || connC.generation != 4 {
 		t.Fatalf("failed connection should remain on original committed session: %#v generation=%d", connC.committedSpec, connC.generation)
+	}
+}
+
+func TestApplyInteractiveReloadRollsBackLateAckFailure(t *testing.T) {
+	oldArgs := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/var/log/app.log",
+		RegexStr: "ERROR",
+	}
+	oldSpec := SessionSpec{
+		Mode:  omode.GrepClient,
+		Files: []string{"/var/log/app.log"},
+		Regex: "ERROR",
+	}
+	nextSpec := SessionSpec{
+		Mode:  omode.GrepClient,
+		Files: []string{"/tmp/new.log"},
+		Regex: "WARN",
+	}
+
+	connA := &interactiveReloadConnector{server: "srv1", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
+	connB := &interactiveReloadConnector{server: "srv2", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
+	connC := &interactiveReloadConnector{
+		server:                   "srv3",
+		supported:                true,
+		committedSpec:            oldSpec,
+		liveSpec:                 oldSpec,
+		generation:               4,
+		applyErrAfterAdvance:     connectors.ErrSessionAckTimeout,
+		applyErrAfterAdvanceSpec: nextSpec,
+	}
+
+	client := &baseClient{
+		Args:        oldArgs,
+		sessionSpec: oldSpec,
+		connections: []connectors.Connector{connA, connB, connC},
+	}
+
+	nextArgs := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/tmp/new.log",
+		RegexStr: "WARN",
+	}
+	err := client.applyInteractiveReload(nextArgs, nextSpec)
+	if err == nil || !errors.Is(err, connectors.ErrSessionAckTimeout) {
+		t.Fatalf("expected late ack timeout error, got %v", err)
+	}
+
+	if !reflect.DeepEqual(client.Args, oldArgs) || !reflect.DeepEqual(client.sessionSpec, oldSpec) {
+		t.Fatalf("client state changed on late failure: args=%#v spec=%#v", client.Args, client.sessionSpec)
+	}
+	if !reflect.DeepEqual(connA.committedSpec, oldSpec) || !reflect.DeepEqual(connB.committedSpec, oldSpec) {
+		t.Fatalf("expected successful connections to roll back to old spec: %#v %#v", connA.committedSpec, connB.committedSpec)
+	}
+	if connA.generation != 6 || connB.generation != 6 {
+		t.Fatalf("expected rollback to advance generations through the remote update path, got %d and %d", connA.generation, connB.generation)
+	}
+	if connA.applyCount != 2 || connB.applyCount != 2 || connC.applyCount != 2 {
+		t.Fatalf("unexpected apply counts during late rollback: %#v %#v %#v", connA.applyCount, connB.applyCount, connC.applyCount)
+	}
+	if !reflect.DeepEqual(connA.liveSpec, oldSpec) || !reflect.DeepEqual(connB.liveSpec, oldSpec) {
+		t.Fatalf("expected rollback to restore live specs on successful connections: %#v %#v", connA.liveSpec, connB.liveSpec)
+	}
+	if !reflect.DeepEqual(connC.committedSpec, oldSpec) || !reflect.DeepEqual(connC.liveSpec, oldSpec) || connC.generation != 6 {
+		t.Fatalf("late-failing connection should also roll back to original committed session: committed=%#v live=%#v generation=%d", connC.committedSpec, connC.liveSpec, connC.generation)
 	}
 }
 
@@ -298,13 +363,15 @@ func TestApplyInteractiveReloadRejectsMismatchedCommittedGenerations(t *testing.
 }
 
 type interactiveReloadConnector struct {
-	committedSpec sessionspec.Spec
-	liveSpec      sessionspec.Spec
-	applyErr      error
-	applyCount    int
-	generation    uint64
-	server        string
-	supported     bool
+	committedSpec            sessionspec.Spec
+	liveSpec                 sessionspec.Spec
+	applyErr                 error
+	applyErrAfterAdvance     error
+	applyErrAfterAdvanceSpec sessionspec.Spec
+	applyCount               int
+	generation               uint64
+	server                   string
+	supported                bool
 }
 
 func (*interactiveReloadConnector) Start(context.Context, context.CancelFunc, chan struct{}, chan struct{}) {
@@ -318,6 +385,12 @@ func (c *interactiveReloadConnector) SupportsQueryUpdates(time.Duration) bool { 
 
 func (c *interactiveReloadConnector) ApplySessionSpec(spec sessionspec.Spec, _ time.Duration) error {
 	c.applyCount++
+	if c.applyErrAfterAdvance != nil && reflect.DeepEqual(spec, c.applyErrAfterAdvanceSpec) {
+		c.generation++
+		c.liveSpec = spec
+		c.committedSpec = spec
+		return c.applyErrAfterAdvance
+	}
 	if c.applyErr != nil {
 		return c.applyErr
 	}
