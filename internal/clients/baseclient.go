@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"io"
 	"math/rand"
 	"sync"
 	"time"
@@ -32,6 +33,10 @@ type baseClient struct {
 	connections []connectors.Connector
 	// SSH auth methods to use to connect to the remote servers.
 	sshAuthMethods []gossh.AuthMethod
+	// authCloser owns any ssh-agent connection acquired while building the
+	// auth methods; it must be closed once all SSH handshakes that consume
+	// sshAuthMethods have completed.
+	authCloser io.Closer
 	// To deal with SSH host keys
 	hostKeyCallback client.HostKeyCallback
 	// Throttle how fast we initiate SSH connections concurrently
@@ -71,7 +76,7 @@ func (c *baseClient) init() {
 	if c.Args.Serverless {
 		return
 	}
-	c.sshAuthMethods, c.hostKeyCallback = client.InitSSHAuthMethods(
+	c.sshAuthMethods, c.hostKeyCallback, c.authCloser = client.InitSSHAuthMethods(
 		c.Args.SSHAuthMethods, c.Args.SSHHostKeyCallback, c.Args.TrustAllHosts,
 		c.Args.SSHPrivateKeyFilePath, c.Args.SSHAgentKeyIndex)
 }
@@ -104,6 +109,15 @@ func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status i
 
 func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) (status int) {
 	dlog.Client.Trace("Starting base client")
+	// Release the ssh-agent connection (if any) once all handshakes and
+	// reconnect attempts that consume c.sshAuthMethods have finished.
+	if c.authCloser != nil {
+		defer func() {
+			if err := c.authCloser.Close(); err != nil {
+				dlog.Client.Debug("baseClient", "failed to close ssh-agent connection", err)
+			}
+		}()
+	}
 	// Can be nil when serverless.
 	if c.hostKeyCallback != nil {
 		// Periodically check for unknown hosts, and ask the user whether to trust them or not.

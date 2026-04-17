@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"syscall"
@@ -19,6 +20,34 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/term"
 )
+
+// closerFunc adapts a plain func to io.Closer so callers can always
+// unconditionally `defer closer.Close()` regardless of the code path taken.
+type closerFunc func() error
+
+// Close implements io.Closer.
+func (f closerFunc) Close() error {
+	if f == nil {
+		return nil
+	}
+	return f()
+}
+
+// noopCloser is returned when there is no resource to release. Using a single
+// shared value keeps allocations out of the fast error paths.
+var noopCloser io.Closer = closerFunc(func() error { return nil })
+
+// dialAgent dials the local ssh-agent unix socket. It is a package-level
+// variable so unit tests can replace it with a fake for deterministic
+// error-path coverage (see ssh_agent_test.go).
+var dialAgent = func(addr string) (net.Conn, error) {
+	// Use context-aware dialing for SSH agent connection (local Unix socket).
+	// 2-second timeout is reasonable for local socket connections.
+	dialer := &net.Dialer{Timeout: 2 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	return dialer.DialContext(ctx, "unix", addr)
+}
 
 // GeneratePrivateRSAKey is used by the server to generate its key.
 func GeneratePrivateRSAKey(size int) (*rsa.PrivateKey, error) {
@@ -44,31 +73,48 @@ func EncodePrivateKeyToPEM(privateKey *rsa.PrivateKey) []byte {
 	return pem.EncodeToMemory(&block)
 }
 
-// Agent used for SSH auth.
-func Agent() (gossh.AuthMethod, error) {
+// Agent used for SSH auth. The returned io.Closer owns the underlying
+// ssh-agent connection and MUST be closed by the caller once the returned
+// AuthMethod is no longer needed (i.e. after the final SSH handshake that
+// uses it has completed).
+func Agent() (gossh.AuthMethod, io.Closer, error) {
 	return AgentWithKeyIndex(-1)
 }
 
-// AgentSignersWithKeyIndex returns SSH agent signers.
-// If keyIndex is -1, all keys are used. Otherwise, only the specified key is used.
-func AgentSignersWithKeyIndex(keyIndex int) ([]gossh.Signer, error) {
-	// Use context-aware dialing for SSH agent connection (local Unix socket).
-	// 2-second timeout is reasonable for local socket connections.
-	dialer := &net.Dialer{
-		Timeout: 2 * time.Second,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	sshAgent, err := dialer.DialContext(ctx, "unix", os.Getenv("SSH_AUTH_SOCK"))
+// AgentSignersWithKeyIndex returns SSH agent signers together with an
+// io.Closer that owns the underlying ssh-agent connection.
+//
+// The agent signers call back to the agent over the returned connection on
+// every Sign() invocation, so the connection must stay open for as long as
+// the signers are in use (typically until the SSH handshakes that consume
+// them are complete). The caller is responsible for invoking Close() on the
+// returned io.Closer to release file descriptors and the agent goroutine.
+//
+// The returned io.Closer is always non-nil, including on error paths, so
+// callers can unconditionally `defer closer.Close()`.
+//
+// If keyIndex is -1, all keys are used. Otherwise, only the specified key is
+// used.
+func AgentSignersWithKeyIndex(keyIndex int) ([]gossh.Signer, io.Closer, error) {
+	sshAgent, err := dialAgent(os.Getenv("SSH_AUTH_SOCK"))
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to SSH agent: %w", err)
+		return nil, noopCloser, fmt.Errorf("failed to connect to SSH agent: %w", err)
 	}
+
+	// Ensure the connection is released on every error path. The success
+	// path hands ownership to the caller by setting owned to nil right
+	// before the return.
+	owned := sshAgent
+	defer func() {
+		if owned != nil {
+			_ = owned.Close()
+		}
+	}()
+
 	agentClient := agent.NewClient(sshAgent)
 	keys, err := agentClient.List()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list SSH agent keys: %w", err)
+		return nil, noopCloser, fmt.Errorf("failed to list SSH agent keys: %w", err)
 	}
 	for i, key := range keys {
 		dlog.Common.Debug("Public key", i, key)
@@ -76,31 +122,35 @@ func AgentSignersWithKeyIndex(keyIndex int) ([]gossh.Signer, error) {
 
 	signers, err := agentClient.Signers()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load SSH agent signers: %w", err)
+		return nil, noopCloser, fmt.Errorf("failed to load SSH agent signers: %w", err)
 	}
 
 	// If no specific key index requested, use all keys (backwards compatible default)
 	if keyIndex < 0 {
-		return signers, nil
+		owned = nil
+		return signers, sshAgent, nil
 	}
 
 	// Use only the specified key index (0-based)
 	if keyIndex >= len(signers) {
-		return nil, fmt.Errorf("key index %d out of range (agent has %d signers)", keyIndex, len(signers))
+		return nil, noopCloser, fmt.Errorf("key index %d out of range (agent has %d signers)", keyIndex, len(signers))
 	}
 
 	dlog.Common.Debug("Using SSH agent key at index", keyIndex)
-	return []gossh.Signer{signers[keyIndex]}, nil
+	owned = nil
+	return []gossh.Signer{signers[keyIndex]}, sshAgent, nil
 }
 
 // AgentWithKeyIndex used for SSH auth with a specific key index from the agent.
+// The caller owns the returned io.Closer; see AgentSignersWithKeyIndex for
+// lifetime semantics.
 // If keyIndex is -1, all keys are used. Otherwise, only the specified key is used.
-func AgentWithKeyIndex(keyIndex int) (gossh.AuthMethod, error) {
-	signers, err := AgentSignersWithKeyIndex(keyIndex)
+func AgentWithKeyIndex(keyIndex int) (gossh.AuthMethod, io.Closer, error) {
+	signers, closer, err := AgentSignersWithKeyIndex(keyIndex)
 	if err != nil {
-		return nil, err
+		return nil, closer, err
 	}
-	return gossh.PublicKeys(signers...), nil
+	return gossh.PublicKeys(signers...), closer, nil
 }
 
 // EnterKeyPhrase is required to read phrase protected private keys.

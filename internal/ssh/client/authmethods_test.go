@@ -11,6 +11,17 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+// testCloser is a sentinel io.Closer used by tests to assert that callers
+// release ssh-agent connections returned by the mocked agentSigners hook.
+type testCloser struct {
+	closed int
+}
+
+func (c *testCloser) Close() error {
+	c.closed++
+	return nil
+}
+
 type mockPublicKey struct {
 	id string
 }
@@ -77,21 +88,35 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 		}
 		return signer, nil
 	}
-	agentSigners = func(keyIndex int) ([]gossh.Signer, error) {
+	agentCloser := &testCloser{}
+	agentSigners = func(keyIndex int) ([]gossh.Signer, io.Closer, error) {
 		callOrder = append(callOrder, fmt.Sprintf("agent:%d", keyIndex))
-		return []gossh.Signer{newMockSigner("agent")}, nil
+		return []gossh.Signer{newMockSigner("agent")}, agentCloser, nil
 	}
 
-	methods := collectKnownHostsAuthMethods("/custom/id_fast", 7)
+	methods, closer := collectKnownHostsAuthMethods("/custom/id_fast", 7)
 	if len(methods) != 1 {
 		t.Fatalf("Expected 1 auth method, got %d", len(methods))
 	}
+	if closer == nil {
+		t.Fatalf("Expected non-nil agent closer from collectKnownHostsAuthMethods")
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("agent closer returned error: %v", err)
+	}
+	if agentCloser.closed < 1 {
+		t.Fatalf("Expected caller to be able to close agent conn; closed=%d", agentCloser.closed)
+	}
 
 	callOrder = nil
-	signers := collectKnownHostsSigners("/custom/id_fast", 7)
+	signers, sCloser := collectKnownHostsSigners("/custom/id_fast", 7)
 	if len(signers) != 4 {
 		t.Fatalf("Expected 4 signers, got %d", len(signers))
 	}
+	if sCloser == nil {
+		t.Fatalf("Expected non-nil agent closer from collectKnownHostsSigners")
+	}
+	_ = sCloser.Close()
 
 	expectedOrder := []string{
 		"private:/custom/id_fast",
@@ -131,21 +156,30 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 		}
 		return nil, fmt.Errorf("missing private key: %s", path)
 	}
-	agentSigners = func(keyIndex int) ([]gossh.Signer, error) {
+	agentCloser := &testCloser{}
+	agentSigners = func(keyIndex int) ([]gossh.Signer, io.Closer, error) {
 		callOrder = append(callOrder, fmt.Sprintf("agent:%d", keyIndex))
-		return []gossh.Signer{sharedSigner}, nil
+		return []gossh.Signer{sharedSigner}, agentCloser, nil
 	}
 
-	methods := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", 2)
+	methods, closer := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", 2)
 	if len(methods) != 1 {
 		t.Fatalf("Expected 1 auth method, got %d", len(methods))
 	}
+	if closer == nil {
+		t.Fatalf("Expected non-nil agent closer from collectKnownHostsAuthMethods")
+	}
+	_ = closer.Close()
 
 	callOrder = nil
-	signers := collectKnownHostsSigners(homeDir+"/.ssh/id_rsa", 2)
+	signers, sCloser := collectKnownHostsSigners(homeDir+"/.ssh/id_rsa", 2)
 	if len(signers) != 1 {
 		t.Fatalf("Expected duplicate keys to collapse to 1 signer, got %d", len(signers))
 	}
+	if sCloser == nil {
+		t.Fatalf("Expected non-nil agent closer from collectKnownHostsSigners")
+	}
+	_ = sCloser.Close()
 
 	expectedOrder := []string{
 		"private:/tmp/dtail-auth-dedupe/.ssh/id_rsa",
