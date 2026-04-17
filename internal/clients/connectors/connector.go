@@ -25,4 +25,7 @@ type Connector interface {
 	// CommittedSession returns the last session spec and generation that the
 	// server acknowledged for this connection.
 	CommittedSession() (sessionspec.Spec, uint64, bool)
+	// RestoreCommittedSession resets the local committed session snapshot without
+	// advancing the generation.
+	RestoreCommittedSession(spec sessionspec.Spec, generation uint64, committed bool)
 }

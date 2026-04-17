@@ -43,6 +43,22 @@ func (s *committedSessionState) commit(spec sessionspec.Spec, generation uint64)
 	s.spec = spec
 }
 
+func (s *committedSessionState) restore(spec sessionspec.Spec, generation uint64, committed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !committed {
+		s.committed = false
+		s.generation = 0
+		s.spec = sessionspec.Spec{}
+		return
+	}
+
+	s.committed = true
+	s.generation = generation
+	s.spec = spec
+}
+
 func (s *committedSessionState) clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()

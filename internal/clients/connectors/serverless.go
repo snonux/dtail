@@ -72,6 +72,12 @@ func (s *Serverless) CommittedSession() (sessionspec.Spec, uint64, bool) {
 	return s.sessionState.snapshot()
 }
 
+// RestoreCommittedSession resets the local session snapshot without advancing
+// the generation.
+func (s *Serverless) RestoreCommittedSession(spec sessionspec.Spec, generation uint64, committed bool) {
+	s.sessionState.restore(spec, generation, committed)
+}
+
 // Start the serverless connection.
 func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 	throttleCh, statsCh chan struct{}) {

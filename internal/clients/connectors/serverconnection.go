@@ -121,6 +121,12 @@ func (c *ServerConnection) CommittedSession() (sessionspec.Spec, uint64, bool) {
 	return c.sessionState.snapshot()
 }
 
+// RestoreCommittedSession resets the local session snapshot without advancing
+// the generation.
+func (c *ServerConnection) RestoreCommittedSession(spec sessionspec.Spec, generation uint64, committed bool) {
+	c.sessionState.restore(spec, generation, committed)
+}
+
 // Attempt to parse the server port address from the provided server FQDN.
 func (c *ServerConnection) initServerPort(defaultPort int) {
 	parts := strings.Split(c.server, ":")
