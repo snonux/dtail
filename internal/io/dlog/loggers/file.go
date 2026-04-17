@@ -35,12 +35,16 @@ type file struct {
 var _ Logger = (*file)(nil)
 
 func newFile(strategy Strategy) *file {
+	// Control channels are buffered with capacity 1 and used with
+	// non-blocking, coalescing sends so Pause/Resume/Rotate/Flush callers
+	// never block on the logger goroutine (and repeated signals collapse
+	// into a single pending notification).
 	return &file{
 		bufferCh: make(chan *fileMessageBuf, runtime.NumCPU()*100),
-		pauseCh:  make(chan struct{}),
-		resumeCh: make(chan struct{}),
-		rotateCh: make(chan struct{}),
-		flushCh:  make(chan struct{}),
+		pauseCh:  make(chan struct{}, 1),
+		resumeCh: make(chan struct{}, 1),
+		rotateCh: make(chan struct{}, 1),
+		flushCh:  make(chan struct{}, 1),
 		strategy: strategy,
 	}
 }
@@ -77,9 +81,19 @@ func (f *file) Start(ctx context.Context, wg *sync.WaitGroup) {
 				pause(ctx)
 			case <-f.flushCh:
 				f.flush()
+			case <-f.rotateCh:
+				// Force re-opening the outfile on the next write.
+				// Drained here (not only from write()) so that Rotate()
+				// makes progress even when no log messages arrive.
+				f.lastFileName = ""
 			case <-ctx.Done():
 				f.flush()
-				f.fd.Close()
+				// f.fd is only populated after the first getWriter() call;
+				// guard against a nil pointer when the logger is shut down
+				// before anything has been written.
+				if f.fd != nil {
+					f.fd.Close()
+				}
 				return
 			}
 		}
@@ -102,21 +116,24 @@ func (f *file) RawWithColors(now time.Time, message, coloredMessage string) {
 	panic("Colors not supported in file logger")
 }
 
-func (f *file) Pause()  { f.pauseCh <- struct{}{} }
-func (f *file) Resume() { f.resumeCh <- struct{}{} }
-func (f *file) Flush()  { f.flushCh <- struct{}{} }
+// signal performs a non-blocking, coalescing send on a capacity-1 control
+// channel. If a signal is already pending the new one is dropped, which is
+// the desired behaviour for idempotent operations such as Pause/Rotate/Flush.
+func signal(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
 
-func (f *file) Rotate()            { f.rotateCh <- struct{}{} }
+func (f *file) Pause()  { signal(f.pauseCh) }
+func (f *file) Resume() { signal(f.resumeCh) }
+func (f *file) Flush()  { signal(f.flushCh) }
+func (f *file) Rotate() { signal(f.rotateCh) }
+
 func (*file) SupportsColors() bool { return false }
 
 func (f *file) write(m *fileMessageBuf) {
-	select {
-	case <-f.rotateCh:
-		// Force re-opening the outfile next time in getWriter.
-		f.lastFileName = ""
-	default:
-	}
-
 	var writer *bufio.Writer
 	if f.strategy.Rotation == DailyRotation {
 		writer = f.getWriter(m.now.Format("20060102"))
