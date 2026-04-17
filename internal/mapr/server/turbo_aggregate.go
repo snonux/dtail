@@ -336,13 +336,9 @@ func (a *TurboAggregate) doSerialize(ctx context.Context) {
 // cancellation and the next Serialize would not be able to retry the data.
 //
 // Concurrent ProcessLine calls may have already added new samples for the same
-// group keys while the serialize was in flight. In that case we merge the
-// unsent set into the existing one using the query-aware Merge, which is the
-// same operation the mapr package uses for client-side aggregation. If Merge
-// ever returns an error we fall back to preserving the unsent snapshot in
-// place of the live entry, because losing the unsent data is strictly worse
-// than losing a small amount of newly aggregated data that can be re-read
-// from its source.
+// group keys while the serialize was in flight. In that case we must preserve
+// the newer live state for overwrite-style aggregations such as last() and
+// len(), while still adding numeric contributions from the canceled snapshot.
 func (a *TurboAggregate) mergeRemainingLocked(remaining map[string]*mapr.AggregateSet) {
 	a.groupMu.Lock()
 	defer a.groupMu.Unlock()
@@ -352,14 +348,55 @@ func (a *TurboAggregate) mergeRemainingLocked(remaining map[string]*mapr.Aggrega
 			a.groupSets[key] = set
 			continue
 		}
-		if err := existing.Merge(a.query, set); err != nil {
-			dlog.Server.Error("TurboAggregate re-merge after ctx cancel", err,
-				"groupKey", key)
-			a.groupSets[key] = set
-		}
+		mergeCancelledSnapshot(a.query, existing, set)
 	}
 	dlog.Server.Warn("TurboAggregate serialize interrupted; re-merged unsent groups",
 		"remaining", len(remaining))
+}
+
+func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet) {
+	live.Samples += snapshot.Samples
+	for _, sc := range query.Select {
+		storage := sc.FieldStorage
+		switch sc.Operation {
+		case mapr.Count, mapr.Sum, mapr.Avg, mapr.Percentage, mapr.Percentile:
+			live.FValues[storage] += snapshot.FValues[storage]
+		case mapr.Min:
+			liveValue, ok := live.FValues[storage]
+			if !ok {
+				live.FValues[storage] = snapshot.FValues[storage]
+				continue
+			}
+			if snapshotValue := snapshot.FValues[storage]; snapshotValue < liveValue {
+				live.FValues[storage] = snapshotValue
+			}
+		case mapr.Max:
+			liveValue, ok := live.FValues[storage]
+			if !ok {
+				live.FValues[storage] = snapshot.FValues[storage]
+				continue
+			}
+			if snapshotValue := snapshot.FValues[storage]; snapshotValue > liveValue {
+				live.FValues[storage] = snapshotValue
+			}
+		case mapr.Last:
+			if _, ok := live.SValues[storage]; !ok {
+				if snapshotValue, ok := snapshot.SValues[storage]; ok {
+					live.SValues[storage] = snapshotValue
+				}
+			}
+		case mapr.Len:
+			if _, ok := live.SValues[storage]; !ok {
+				if snapshotValue, ok := snapshot.SValues[storage]; ok {
+					live.SValues[storage] = snapshotValue
+					live.FValues[storage] = snapshot.FValues[storage]
+				}
+			}
+		default:
+			dlog.Server.Error("TurboAggregate re-merge encountered unsupported aggregation",
+				"operation", sc.Operation, "storage", storage)
+		}
+	}
 }
 
 func (a *TurboAggregate) swapGroupSets() map[string]*mapr.AggregateSet {
