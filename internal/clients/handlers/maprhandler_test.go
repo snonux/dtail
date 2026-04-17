@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/mapr"
 	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/protocol"
@@ -40,6 +41,39 @@ func TestMaprHandlerShutdownFlushesPendingAggregateState(t *testing.T) {
 	}
 	if !strings.Contains(result, "2") {
 		t.Fatalf("expected flushed aggregate row, got %q", result)
+	}
+}
+
+func TestMaprHandlerWriteEmptyMessageBetweenDelimiters(t *testing.T) {
+	originalLogger := dlog.Client
+	dlog.Client = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Client = originalLogger
+	})
+
+	query, err := mapr.NewQuery("select status,count(status) from stats group by status")
+	if err != nil {
+		t.Fatalf("NewQuery() error = %v", err)
+	}
+
+	session := maprclient.NewSessionState(query)
+	handler := NewMaprHandler("srv1", session)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("MaprHandler.Write panicked on empty protocol message: %v", r)
+		}
+	}()
+
+	// Two consecutive MessageDelimiter bytes produce an empty message
+	// between them. A leading delimiter yields an empty message too.
+	// Both must be tolerated without panicking.
+	input := []byte{
+		protocol.MessageDelimiter,
+		protocol.MessageDelimiter,
+	}
+	if _, err := handler.Write(input); err != nil {
+		t.Fatalf("Write() error = %v", err)
 	}
 }
 

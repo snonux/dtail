@@ -43,6 +43,11 @@ func (h *MaprHandler) Write(p []byte) (n int, err error) {
 			h.removedNl = true
 		case protocol.MessageDelimiter:
 			message := h.baseHandler.receiveBuf.String()
+			if len(message) == 0 {
+				h.baseHandler.receiveBuf.Reset()
+				h.removedNl = false
+				continue
+			}
 			dlog.Client.Debug(message)
 			if message[0] == 'A' {
 				h.handleAggregateMessage(message)
