@@ -71,8 +71,12 @@ func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 	return nil
 }
 
-// Serialize the aggregate set so it can be sent over the wire.
-func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<- string) {
+// Serialize the aggregate set so it can be sent over the wire. Returns true
+// when the serialized message was successfully sent, and false when the
+// context was cancelled before the send completed. Callers that own the
+// source state (e.g. TurboAggregate) must re-merge unsent sets so data is
+// not silently lost.
+func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<- string) bool {
 	dlog.Common.Trace("Serialising mapr.AggregateSet", s)
 	sb := pool.BuilderBuffer.Get().(*strings.Builder)
 	defer pool.RecycleBuilderBuffer(sb)
@@ -98,7 +102,9 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 
 	select {
 	case ch <- sb.String():
+		return true
 	case <-ctx.Done():
+		return false
 	}
 }
 

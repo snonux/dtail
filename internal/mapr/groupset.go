@@ -56,11 +56,42 @@ func (g *GroupSet) GetSet(groupKey string) *AggregateSet {
 	return set
 }
 
-// Serialize the group set (e.g. to send it over the wire).
-func (g *GroupSet) Serialize(ctx context.Context, ch chan<- string) {
+// Serialize the group set (e.g. to send it over the wire). If the context is
+// cancelled mid-iteration, the remaining unsent aggregate sets are returned
+// so callers can retry them (for example, by re-merging them into the live
+// aggregation state). The returned map is nil when every entry was sent.
+func (g *GroupSet) Serialize(ctx context.Context, ch chan<- string) map[string]*AggregateSet {
+	var remaining map[string]*AggregateSet
+	aborted := false
 	for groupKey, set := range g.sets {
-		set.Serialize(ctx, groupKey, ch)
+		if aborted {
+			if remaining == nil {
+				remaining = make(map[string]*AggregateSet, len(g.sets))
+			}
+			remaining[groupKey] = set
+			continue
+		}
+		if !set.Serialize(ctx, groupKey, ch) {
+			aborted = true
+			if remaining == nil {
+				remaining = make(map[string]*AggregateSet, len(g.sets))
+			}
+			remaining[groupKey] = set
+		}
 	}
+	return remaining
+}
+
+// ResetWith replaces the underlying sets map. A nil argument is equivalent
+// to InitSet. This is the supported way for callers in the same package to
+// restore unsent data returned from Serialize without reaching into the
+// unexported sets field.
+func (g *GroupSet) ResetWith(sets map[string]*AggregateSet) {
+	if sets == nil {
+		g.InitSet()
+		return
+	}
+	g.sets = sets
 }
 
 // Return a sorted result slice of the query from the group set.

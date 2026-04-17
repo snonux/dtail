@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -12,8 +13,114 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
+	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/source"
 )
+
+// ensureTestServerConfig initialises the minimum globals required by turbo
+// aggregate tests. Safe to call from multiple tests; it is idempotent.
+func ensureTestServerConfig(t *testing.T) {
+	t.Helper()
+	if config.Common == nil {
+		config.Common = &config.CommonConfig{
+			Logger:   "none",
+			LogLevel: "error",
+		}
+	}
+	if config.Server == nil {
+		config.Server = &config.ServerConfig{
+			MapreduceLogFormat: "default",
+			TurboBoostDisable:  false,
+		}
+	}
+	if dlog.Server == nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		t.Cleanup(cancel)
+		var wg sync.WaitGroup
+		wg.Add(1)
+		dlog.Start(ctx, &wg, source.Server)
+	}
+}
+
+// TestTurboAggregateDoSerializeReMergesOnCtxCancel verifies that when the
+// serialize context is cancelled after at least one send succeeded, the
+// remaining aggregate sets are re-merged back into a.groupSets instead of
+// being silently dropped. This is a regression test for the data-loss bug
+// where swapGroupSets removed state from the live map and a cancelled ctx
+// caused the snapshot to be discarded.
+func TestTurboAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
+	ensureTestServerConfig(t)
+
+	queryStr := `from STATS select count($time),$time from - group by $time`
+	turboAgg, err := NewTurboAggregate(queryStr, config.Server.MapreduceLogFormat)
+	if err != nil {
+		t.Fatalf("NewTurboAggregate failed: %v", err)
+	}
+
+	// Pre-populate the aggregate state directly with several groups so the
+	// serialize loop must emit multiple messages.
+	const numGroups = 5
+	turboAgg.groupMu.Lock()
+	for i := 0; i < numGroups; i++ {
+		key := fmt.Sprintf("g%d", i)
+		set := mapr.NewAggregateSet()
+		if err := set.Aggregate("count($time)", mapr.Count, "1", false); err != nil {
+			turboAgg.groupMu.Unlock()
+			t.Fatalf("seed aggregate failed: %v", err)
+		}
+		set.Samples = 1
+		turboAgg.groupSets[key] = set
+	}
+	turboAgg.groupMu.Unlock()
+
+	if got := turboAgg.countGroups(); got != numGroups {
+		t.Fatalf("precondition: expected %d groups, got %d", numGroups, got)
+	}
+
+	// Wire maprMessages with a consumer that only receives the first message.
+	// This forces doSerialize to make progress, then block on the second send
+	// until the context is cancelled.
+	messages := make(chan string)
+	turboAgg.maprMessages = messages
+
+	ctx, cancel := context.WithCancel(context.Background())
+	firstSent := make(chan struct{})
+	go func() {
+		<-messages
+		close(firstSent)
+	}()
+	done := make(chan struct{})
+	go func() {
+		turboAgg.doSerialize(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-firstSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the first serialized message")
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("doSerialize did not return after ctx cancel")
+	}
+
+	if got := turboAgg.countGroups(); got != numGroups-1 {
+		t.Fatalf("expected %d groups re-merged after ctx cancel, got %d", numGroups-1, got)
+	}
+
+	// Collect whatever might have drained beyond the first message (should be
+	// none) to make sure we do not leak the goroutine.
+	select {
+	case msg := <-messages:
+		t.Fatalf("unexpected additional message drained: %q", msg)
+	default:
+	}
+}
 
 func TestTurboAggregateVsRegular(t *testing.T) {
 	// Initialize minimal config and logging

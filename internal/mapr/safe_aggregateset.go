@@ -38,13 +38,13 @@ func (s *SafeAggregateSet) IncrementSamples() {
 func (s *SafeAggregateSet) Clone() *AggregateSet {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	clone := &AggregateSet{
 		Samples: s.set.Samples,
 		FValues: make(map[string]float64, len(s.set.FValues)),
 		SValues: make(map[string]string, len(s.set.SValues)),
 	}
-	
+
 	// Deep copy the maps
 	for k, v := range s.set.FValues {
 		clone.FValues[k] = v
@@ -52,15 +52,16 @@ func (s *SafeAggregateSet) Clone() *AggregateSet {
 	for k, v := range s.set.SValues {
 		clone.SValues[k] = v
 	}
-	
+
 	return clone
 }
 
-// Serialize the aggregate set safely.
-func (s *SafeAggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<- string) {
+// Serialize the aggregate set safely. Returns whether the message was sent
+// before the context was cancelled; mirrors AggregateSet.Serialize.
+func (s *SafeAggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<- string) bool {
 	// Clone the set to avoid holding the lock during serialization
 	clone := s.Clone()
-	clone.Serialize(ctx, groupKey, ch)
+	return clone.Serialize(ctx, groupKey, ch)
 }
 
 // GetSamples returns the current sample count safely.

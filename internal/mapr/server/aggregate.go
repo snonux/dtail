@@ -281,8 +281,15 @@ func (a *Aggregate) aggregateAndSerialize(ctx context.Context,
 	group := mapr.NewGroupSet()
 	serialize := func() {
 		dlog.Server.Info("Serializing mapreduce result")
-		group.Serialize(ctx, maprMessages)
-		group.InitSet()
+		remaining := group.Serialize(ctx, maprMessages)
+		// Preserve unsent entries so the next tick (or the caller driving the
+		// loop) can retry them. Dropping them here would silently lose data
+		// whenever the serialize context fires mid-send.
+		if len(remaining) > 0 {
+			dlog.Server.Warn("Aggregate serialize interrupted; preserving unsent groups",
+				"remaining", len(remaining))
+		}
+		group.ResetWith(remaining)
 	}
 	for {
 		select {

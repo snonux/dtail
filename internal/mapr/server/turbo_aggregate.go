@@ -324,7 +324,42 @@ func (a *TurboAggregate) doSerialize(ctx context.Context) {
 		serializeCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 	}
-	group.Serialize(serializeCtx, a.maprMessages)
+	remaining := group.Serialize(serializeCtx, a.maprMessages)
+	if len(remaining) > 0 {
+		a.mergeRemainingLocked(remaining)
+	}
+}
+
+// mergeRemainingLocked re-inserts aggregate sets that could not be sent during
+// serialization back into the live groupSets map. Without this path the
+// snapshot taken by swapGroupSets would be silently discarded on ctx
+// cancellation and the next Serialize would not be able to retry the data.
+//
+// Concurrent ProcessLine calls may have already added new samples for the same
+// group keys while the serialize was in flight. In that case we merge the
+// unsent set into the existing one using the query-aware Merge, which is the
+// same operation the mapr package uses for client-side aggregation. If Merge
+// ever returns an error we fall back to preserving the unsent snapshot in
+// place of the live entry, because losing the unsent data is strictly worse
+// than losing a small amount of newly aggregated data that can be re-read
+// from its source.
+func (a *TurboAggregate) mergeRemainingLocked(remaining map[string]*mapr.AggregateSet) {
+	a.groupMu.Lock()
+	defer a.groupMu.Unlock()
+	for key, set := range remaining {
+		existing, ok := a.groupSets[key]
+		if !ok {
+			a.groupSets[key] = set
+			continue
+		}
+		if err := existing.Merge(a.query, set); err != nil {
+			dlog.Server.Error("TurboAggregate re-merge after ctx cancel", err,
+				"groupKey", key)
+			a.groupSets[key] = set
+		}
+	}
+	dlog.Server.Warn("TurboAggregate serialize interrupted; re-merged unsent groups",
+		"remaining", len(remaining))
 }
 
 func (a *TurboAggregate) swapGroupSets() map[string]*mapr.AggregateSet {
