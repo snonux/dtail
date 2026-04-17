@@ -3,6 +3,8 @@ package integrationtests
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/config"
@@ -230,5 +232,64 @@ func testDTailHealthCheck3WithServer(t *testing.T, logger *TestLogger) {
 	if err := fileContainsStrWithContext(ctx, t, outFile, expectedOut); err != nil {
 		t.Error(err)
 		return
+	}
+}
+
+// TestDTailHealthNoPanicOnClientConstruction is a regression test for task a5.
+// dtailhealth previously discarded the error returned by clients.NewHealthClient
+// and then dereferenced the (potentially nil) client, which would panic. The
+// fix checks the error and exits 2 (Nagios CRITICAL). This test ensures that
+// no invocation of dtailhealth leaks a Go panic/runtime-error trace to stderr
+// and that the exit code stays in the expected Nagios range (1 WARNING or
+// 2 CRITICAL) rather than becoming 2 from a runtime panic accident.
+func TestDTailHealthNoPanicOnClientConstruction(t *testing.T) {
+	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+		t.Log("Skipping")
+		return
+	}
+
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDTailHealthNoPanicOnClientConstruction")
+	defer testLogger.WriteLogFile()
+	ctx := WithTestLogger(context.Background(), testLogger)
+
+	cases := []struct {
+		name         string
+		args         []string
+		wantExitCode int
+	}{
+		{
+			name:         "Serverless",
+			args:         nil,
+			wantExitCode: 1,
+		},
+		{
+			name:         "UnreachableServer",
+			args:         []string{"--server", "example:1"},
+			wantExitCode: 2,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			outFile := fmt.Sprintf("dtailhealth_nopanic_%s.stdout.tmp", tc.name)
+			exitCode, _ := runCommand(ctx, t, outFile, "../dtailhealth", tc.args...)
+			if exitCode != tc.wantExitCode {
+				t.Errorf("Expected exit code %d but got %d", tc.wantExitCode, exitCode)
+			}
+
+			data, err := os.ReadFile(outFile)
+			if err != nil {
+				t.Fatalf("failed to read %s: %v", outFile, err)
+			}
+			combined := string(data)
+			for _, needle := range []string{"panic:", "runtime error:"} {
+				if strings.Contains(combined, needle) {
+					t.Errorf("combined output contained %q (regression, dtailhealth should not panic):\n%s",
+						needle, combined)
+				}
+			}
+		})
 	}
 }

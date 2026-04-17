@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"sync"
 
@@ -53,6 +54,10 @@ func main() {
 		}()
 	}
 
-	healthClient, _ := clients.NewHealthClient(args)
+	healthClient, err := clients.NewHealthClient(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "CRITICAL: unable to create dtailhealth client: %v\n", err)
+		os.Exit(2)
+	}
 	os.Exit(healthClient.Start(ctx, signal.NoCh(ctx)))
 }
