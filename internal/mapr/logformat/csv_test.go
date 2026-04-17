@@ -119,6 +119,63 @@ func TestCSVLogFormatMultiFileHeaders(t *testing.T) {
 	}
 }
 
+// TestCSVLogFormatConcurrentSameSourceInstall reproduces a TOCTOU bug in
+// csvParser.MakeFields: the original code first called headerFor under
+// RLock, and only if the header was missing did it call parseHeader under
+// Lock. Two goroutines racing on the same sourceID could both observe
+// "missing" and both return ErrIgnoreFields, silently dropping the loser's
+// data row (the installer wrote the header; the non-installer still
+// signalled "this line was a header" to the caller).
+//
+// With the fix, the check-and-install is a single critical section and
+// exactly one of the two concurrent calls reports ErrIgnoreFields; the
+// other maps its line against the installed header.
+func TestCSVLogFormatConcurrentSameSourceInstall(t *testing.T) {
+	header := strings.Join([]string{"name", "value"}, protocol.CSVDelimiter)
+	data := strings.Join([]string{"alpha", "1"}, protocol.CSVDelimiter)
+
+	const attempts = 500
+	const sourceID = "file-race"
+
+	for attempt := 0; attempt < attempts; attempt++ {
+		parser, err := NewParser("csv", nil)
+		if err != nil {
+			t.Fatalf("attempt %d: unable to create parser: %s", attempt, err.Error())
+		}
+
+		lines := [2]string{header, data}
+		var results [2]struct {
+			fields map[string]string
+			err    error
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		for i := 0; i < 2; i++ {
+			i := i
+			go func() {
+				defer wg.Done()
+				<-start
+				results[i].fields, results[i].err = parser.MakeFields(lines[i], sourceID)
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		ignored := 0
+		for _, r := range results {
+			if r.err == ErrIgnoreFields {
+				ignored++
+			}
+		}
+		if ignored != 1 {
+			t.Fatalf("attempt %d: expected exactly one ErrIgnoreFields across two racing calls on the same sourceID, got %d; results=%+v",
+				attempt, ignored, results)
+		}
+	}
+}
+
 // TestCSVLogFormatConcurrentSources ensures the per-source header store is
 // safe for concurrent access across multiple sourceIDs, matching how the
 // turbo aggregator drives the parser from batched lines across files.

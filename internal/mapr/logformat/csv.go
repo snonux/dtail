@@ -34,9 +34,8 @@ func newCSVParser(hostname, timeZoneName string, timeZoneOffset int) (*csvParser
 }
 
 func (p *csvParser) MakeFields(maprLine, sourceID string) (map[string]string, error) {
-	header, ok := p.headerFor(sourceID)
-	if !ok {
-		p.parseHeader(sourceID, maprLine)
+	header, installed := p.ensureHeader(sourceID, maprLine)
+	if installed {
 		return nil, ErrIgnoreFields
 	}
 
@@ -62,14 +61,34 @@ func (p *csvParser) MakeFields(maprLine, sourceID string) (map[string]string, er
 	return fields, nil
 }
 
-func (p *csvParser) headerFor(sourceID string) ([]string, bool) {
+// ensureHeader atomically checks for, and if necessary installs, the header
+// for sourceID. It returns the effective header for the source and whether
+// this call was the one that installed it. Only the goroutine that actually
+// installs the header should tell its caller to ignore the current line
+// (i.e. return ErrIgnoreFields); any racing goroutine on the same sourceID
+// sees installed=false and proceeds to map its line against the installed
+// header. The previous implementation split the check (RLock) from the
+// install (Lock), so two goroutines could both observe "missing" and both
+// report ErrIgnoreFields, silently dropping the loser's data row.
+func (p *csvParser) ensureHeader(sourceID, maprLine string) ([]string, bool) {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	header, ok := p.headers[sourceID]
-	return header, ok
+	if header, ok := p.headers[sourceID]; ok {
+		p.mu.RUnlock()
+		return header, false
+	}
+	p.mu.RUnlock()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if header, ok := p.headers[sourceID]; ok {
+		return header, false
+	}
+	header := parseHeaderLine(maprLine)
+	p.headers[sourceID] = header
+	return header, true
 }
 
-func (p *csvParser) parseHeader(sourceID, maprLine string) {
+func parseHeaderLine(maprLine string) []string {
 	var header []string
 	start := 0
 	delimiter := protocol.CSVDelimiter[0]
@@ -81,10 +100,5 @@ func (p *csvParser) parseHeader(sourceID, maprLine string) {
 		}
 		start = next
 	}
-
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if _, exists := p.headers[sourceID]; !exists {
-		p.headers[sourceID] = header
-	}
+	return header
 }
