@@ -138,6 +138,58 @@ func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
 	}
 }
 
+// TestReadWithProcessorNoDoubleRecycle verifies that readWithProcessor does not
+// Put the same *bytes.Buffer back into the pool twice. The bug: a stale
+// `defer pool.RecycleBytesBuffer(message)` captured the initial buffer pointer
+// at defer-registration time; after that buffer was handed off downstream (and
+// recycled there) and `message` was reassigned on continueReading, the deferred
+// call recycled the already-recycled original buffer. A trailing partial line
+// (no final newline) makes the bug deterministic because handleReadErrorProcessor
+// also hands the current buffer to ProcessFilteredLine (which recycles it).
+func TestReadWithProcessorNoDoubleRecycle(t *testing.T) {
+	resetCommonLogger(t)
+	drainBytesBufferPool()
+
+	filePath := writeProcessorTestFile(t, "alpha\nbeta")
+	re := regex.NewNoop()
+
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	processor := &captureProcessor{}
+
+	if err := cat.readFile.StartWithProcessor(
+		context.Background(),
+		lcontext.LContext{},
+		processor,
+		re,
+	); err != nil {
+		t.Fatalf("reader start failed: %v", err)
+	}
+
+	want := []string{"alpha\n", "beta"}
+	if !reflect.DeepEqual(processor.lines, want) {
+		t.Fatalf("unexpected processed lines: got=%v want=%v", processor.lines, want)
+	}
+
+	seen := make(map[*bytes.Buffer]int)
+	for i := 0; i < 512; i++ {
+		b := pool.BytesBuffer.Get().(*bytes.Buffer)
+		seen[b]++
+		if seen[b] > 1 {
+			t.Fatalf("buffer %p observed in pool more than once: "+
+				"double-recycle detected (Put twice into sync.Pool)", b)
+		}
+	}
+}
+
+// drainBytesBufferPool empties the global buffer pool of any previously-Put
+// entries so that pool inspection in a subsequent test is not polluted by
+// artifacts from earlier test runs.
+func drainBytesBufferPool() {
+	for i := 0; i < 1024; i++ {
+		_ = pool.BytesBuffer.Get()
+	}
+}
+
 func writeProcessorTestFile(t *testing.T, content string) string {
 	t.Helper()
 

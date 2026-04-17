@@ -60,7 +60,15 @@ func (f *readFile) readWithProcessor(ctx context.Context, fd *os.File, reader *b
 
 	var offset uint64
 	message := pool.BytesBuffer.Get().(*bytes.Buffer)
-	defer pool.RecycleBytesBuffer(message)
+	// Use a closure so that the CURRENT value of `message` is recycled on
+	// return, not the pointer captured at defer-registration time. Downstream
+	// code paths that take ownership of the buffer set `message = nil` before
+	// reassigning or returning, preventing a double-recycle.
+	defer func() {
+		if message != nil {
+			pool.RecycleBytesBuffer(message)
+		}
+	}()
 
 	// Create a line filter processor that wraps the given processor
 	filterProcessor := &filteringProcessor{
@@ -74,7 +82,10 @@ func (f *readFile) readWithProcessor(ctx context.Context, fd *os.File, reader *b
 	for {
 		b, err := reader.ReadByte()
 		if err != nil {
-			status, err := f.handleReadErrorProcessor(ctx, err, fd, truncate, message, filterProcessor)
+			// handleReadErrorProcessor may hand `message` to ProcessFilteredLine
+			// (which takes ownership); in that case it sets *messagePtr = nil so
+			// the caller's defer does not recycle an already-recycled buffer.
+			status, err := f.handleReadErrorProcessor(ctx, err, fd, truncate, &message, filterProcessor)
 			if abortReading == status {
 				return err
 			}
@@ -89,10 +100,12 @@ func (f *readFile) readWithProcessor(ctx context.Context, fd *os.File, reader *b
 
 		status := f.handleReadByteProcessor(ctx, b, message, filterProcessor)
 		if status == abortReading {
+			// ProcessFilteredLine took ownership; avoid defer double-recycle.
+			message = nil
 			return nil
 		}
 		if status == continueReading {
-			// Get a new buffer for the next line
+			// Previous buffer was consumed by ProcessFilteredLine; acquire a fresh one.
 			message = pool.BytesBuffer.Get().(*bytes.Buffer)
 		}
 	}
@@ -135,9 +148,11 @@ func (f *readFile) handleReadByteProcessor(ctx context.Context, b byte,
 	return nothing
 }
 
-// handleReadErrorProcessor handles read errors in processor mode
+// handleReadErrorProcessor handles read errors in processor mode. When it hands
+// the buffer to ProcessFilteredLine it nils out *messagePtr, signalling to the
+// caller that ownership has been transferred downstream.
 func (f *readFile) handleReadErrorProcessor(ctx context.Context, err error, fd *os.File,
-	truncate <-chan struct{}, message *bytes.Buffer, processor *filteringProcessor) (readStatus, error) {
+	truncate <-chan struct{}, messagePtr **bytes.Buffer, processor *filteringProcessor) (readStatus, error) {
 
 	if err != io.EOF {
 		return abortReading, err
@@ -155,9 +170,11 @@ func (f *readFile) handleReadErrorProcessor(ctx context.Context, err error, fd *
 
 	if !f.seekEOF {
 		dlog.Common.Info(f.FilePath(), "End of file reached")
+		message := *messagePtr
 		if len(message.Bytes()) > 0 {
-			// Process the last line if it doesn't end with newline
+			// Process the last line if it doesn't end with newline.
 			f.updatePosition()
+			*messagePtr = nil
 			if processErr := processor.ProcessFilteredLine(message); processErr != nil {
 				return abortReading, processErr
 			}
