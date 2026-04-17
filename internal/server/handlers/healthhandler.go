@@ -55,5 +55,9 @@ func (h *HealthHandler) handleHealthCommand(ctx context.Context,
 		h.send(h.serverMessages, dlog.Server.Error(h.user,
 			"Received unknown health command", commandName, argc, args))
 	}
+	// Release the per-command cancel before shutdown so the watcher
+	// goroutine spawned by newCommandContext exits via <-ctx.Done() and
+	// not only via the <-h.done.Done() safety net.
+	cancelCommandContext(ctx)
 	h.shutdown()
 }

@@ -23,6 +23,35 @@ import (
 
 type handleCommandCb func(context.Context, lcontext.LContext, int, []string, string)
 
+// commandCancelKeyType is a private key type for stashing a per-command
+// context.CancelFunc inside a context.Context. It is used to hand the cancel
+// ownership from handleCommand (which creates the context) to the command
+// completion callback (handleUserCommand.commandFinished), which is the only
+// place that knows when the asynchronous command is actually done.
+type commandCancelKeyType struct{}
+
+var commandCancelKey commandCancelKeyType
+
+// withCommandCancel returns a derived context that carries the per-command
+// cancel func. See cancelCommandContext for the matching consumer.
+func withCommandCancel(ctx context.Context, cancel context.CancelFunc) context.Context {
+	if cancel == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, commandCancelKey, cancel)
+}
+
+// cancelCommandContext invokes the per-command cancel func stashed on ctx (if
+// any) exactly once. It is a no-op when ctx carries no cancel (for example in
+// the session-command path where the session state owns the cancel).
+func cancelCommandContext(ctx context.Context) {
+	cancel, ok := ctx.Value(commandCancelKey).(context.CancelFunc)
+	if !ok || cancel == nil {
+		return
+	}
+	cancel()
+}
+
 type baseHandler struct {
 	done             *internal.Done
 	handleCommandCb  handleCommandCb
@@ -207,9 +236,16 @@ func (h *baseHandler) handleCommand(commandStr string) {
 		h.sendln(h.serverMessages, dlog.Server.Error(h.user, err))
 		return
 	}
-	ctx, _ := h.newCommandContext(context.Background())
+	ctx, cancel := h.newCommandContext(context.Background())
+	// Cancel ownership is transferred to the command completion callback
+	// (see cancelCommandContext + handleUserCommand.commandFinished) so the
+	// per-command context and its watcher goroutine are released once the
+	// (possibly asynchronous) command has finished. If dispatch fails before
+	// the callback is ever invoked we must cancel here to avoid a leak.
+	ctx = withCommandCancel(ctx, cancel)
 
 	if err := h.dispatchCommand(ctx, args, argc); err != nil {
+		cancel()
 		h.sendln(h.serverMessages, dlog.Server.Error(h.user, err))
 	}
 }
@@ -249,6 +285,18 @@ func (h *baseHandler) handleRawCommand(ctx context.Context, command string) erro
 	return h.dispatchCommand(ctx, args, len(args))
 }
 
+// newCommandContext creates a cancellable context for a single command
+// invocation. The caller owns the returned cancel func and MUST invoke it
+// exactly once (typically via defer or through the per-command cancel
+// stashed on the context, see withCommandCancel/cancelCommandContext).
+// Failing to cancel leaks both the context and the watcher goroutine
+// spawned below, because the watcher only returns when the handler is shut
+// down; on long-lived sessions (:reload, continuous/scheduled workloads)
+// those leaks accumulate per command.
+//
+// The watcher goroutine doubles as a defensive safety net: even if a
+// caller forgets to cancel, handler shutdown still drains it by cancelling
+// the context via <-h.done.Done().
 func (h *baseHandler) newCommandContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()

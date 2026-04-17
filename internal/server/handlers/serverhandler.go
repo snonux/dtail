@@ -96,6 +96,12 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		pendingFiles := atomic.LoadInt32(&h.pendingFiles)
 		dlog.Server.Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
 
+		// Release the per-command context + watcher goroutine created for
+		// this invocation (see baseHandler.handleCommand). In the session
+		// dispatch path ctx carries no command cancel and this is a no-op;
+		// the session state owns cancellation there.
+		cancelCommandContext(ctx)
+
 		// Only shutdown if no active commands AND no pending files.
 		// AUTHKEY is a session-side effect command and should not terminate the shell
 		// because user commands may still follow in the same session.
