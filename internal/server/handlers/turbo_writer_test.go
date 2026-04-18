@@ -439,15 +439,13 @@ func TestTurboNetworkWriterWriteLineDataStopsOnCancellation(t *testing.T) {
 		},
 	}
 
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		cancel()
-	}()
-
 	done := make(chan error, 1)
 	go func() {
 		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
 	}()
+
+	waitForTurboNetworkWriterSending(t, writer, true)
+	cancel()
 
 	select {
 	case err := <-done:
@@ -456,6 +454,63 @@ func TestTurboNetworkWriterWriteLineDataStopsOnCancellation(t *testing.T) {
 		}
 	case <-time.After(150 * time.Millisecond):
 		t.Fatal("WriteLineData did not stop after cancellation")
+	}
+}
+
+func TestTurboNetworkWriterStopsBlockedSendAfterGenerationAdvance(t *testing.T) {
+	originalLogger := dlog.Server
+	dlog.Server = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Server = originalLogger
+	})
+
+	turboLines := make(chan []byte, 1)
+	turboLines <- []byte("occupied")
+
+	var activeGeneration atomic.Uint64
+	activeGeneration.Store(1)
+
+	writer := &TurboNetworkWriter{
+		turboLines:  turboLines,
+		plain:       true,
+		generation:  1,
+		ctx:         context.Background(),
+		sendStateCh: make(chan struct{}),
+		activeGeneration: func() uint64 {
+			return activeGeneration.Load()
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
+	}()
+
+	waitForTurboNetworkWriterSending(t, writer, true)
+	activeGeneration.Store(2)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("WriteLineData returned unexpected error: %v", err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("WriteLineData did not stop after generation advanced")
+	}
+
+	select {
+	case got := <-turboLines:
+		if string(got) != "occupied" {
+			t.Fatalf("expected to drain occupied buffer first, got %q", string(got))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out draining occupied turbo channel entry")
+	}
+
+	select {
+	case got := <-turboLines:
+		t.Fatalf("unexpected stale output after generation advanced: %q", string(got))
+	default:
 	}
 }
 
@@ -645,6 +700,94 @@ func TestTurboNetworkWriterStopsWaitingWhenContextIsCancelled(t *testing.T) {
 	select {
 	case got := <-turboLines:
 		t.Fatalf("unexpected stale output after cancellation: %q", string(got))
+	default:
+	}
+}
+
+func TestTurboNetworkWriterFlushCancelsWhileWaitingOnInFlightSend(t *testing.T) {
+	originalLogger := dlog.Server
+	dlog.Server = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Server = originalLogger
+	})
+
+	turboLines := make(chan []byte, 1)
+	turboLines <- []byte("occupied")
+
+	var activeGeneration atomic.Uint64
+	activeGeneration.Store(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	writer := &TurboNetworkWriter{
+		turboLines:  turboLines,
+		plain:       true,
+		generation:  1,
+		ctx:         ctx,
+		bufSize:     8,
+		sendStateCh: make(chan struct{}),
+		activeGeneration: func() uint64 {
+			return activeGeneration.Load()
+		},
+	}
+
+	if err := writer.WriteLineData([]byte("first"), 1, "app.log"); err != nil {
+		t.Fatalf("first WriteLineData failed: %v", err)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- writer.WriteLineData([]byte("second"), 2, "app.log")
+	}()
+
+	waitForTurboNetworkWriterSending(t, writer, true)
+
+	flushDone := make(chan error, 1)
+	flushStarted := make(chan struct{})
+	go func() {
+		close(flushStarted)
+		flushDone <- writer.Flush()
+	}()
+
+	select {
+	case <-flushStarted:
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("Flush goroutine did not start")
+	}
+
+	cancel()
+
+	select {
+	case err := <-flushDone:
+		if err != context.Canceled {
+			t.Fatalf("Flush returned unexpected error: %v", err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("Flush did not stop after cancellation")
+	}
+
+	select {
+	case err := <-writeDone:
+		if err != context.Canceled {
+			t.Fatalf("WriteLineData returned unexpected error: %v", err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("WriteLineData did not stop after cancellation")
+	}
+
+	select {
+	case got := <-turboLines:
+		if string(got) != "occupied" {
+			t.Fatalf("expected to drain occupied buffer first, got %q", string(got))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out draining occupied turbo channel entry")
+	}
+
+	select {
+	case got := <-turboLines:
+		t.Fatalf("unexpected stale output after flush cancellation: %q", string(got))
 	default:
 	}
 }

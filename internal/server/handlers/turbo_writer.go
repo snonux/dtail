@@ -487,6 +487,7 @@ func (w *TurboNetworkWriter) sendToTurboChannel(data []byte) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	retryDelay := defaultTurboReadRetryInterval
 
 	turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "sending to turboLines channel", "dataLen", len(data))
 
@@ -502,6 +503,28 @@ func (w *TurboNetworkWriter) sendToTurboChannel(data []byte) error {
 	case <-ctx.Done():
 		turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "context cancelled while waiting to send")
 		return ctx.Err()
+	default:
+	}
+
+	for {
+		if !waitForGenerationRetry(ctx, w.generation, w.activeGeneration, retryDelay) {
+			if err := ctx.Err(); err != nil {
+				turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "context cancelled while waiting to retry send", "err", err)
+				return err
+			}
+			turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "generation became stale while waiting to retry send")
+			return nil
+		}
+
+		select {
+		case w.turboLines <- encoded:
+			turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "sent to channel successfully")
+			return nil
+		case <-ctx.Done():
+			turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "context cancelled while waiting to send")
+			return ctx.Err()
+		default:
+		}
 	}
 }
 
@@ -585,7 +608,7 @@ func shouldWriteGeneration(generation uint64, activeGeneration func() uint64) bo
 	return currentGeneration == generation
 }
 
-func waitForGenerationRetry(generation uint64, activeGeneration func() uint64, delay time.Duration) bool {
+func waitForGenerationRetry(ctx context.Context, generation uint64, activeGeneration func() uint64, delay time.Duration) bool {
 	if !shouldWriteGeneration(generation, activeGeneration) {
 		return false
 	}
@@ -595,7 +618,11 @@ func waitForGenerationRetry(generation uint64, activeGeneration func() uint64, d
 
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
-	<-timer.C
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+	}
 
 	return shouldWriteGeneration(generation, activeGeneration)
 }
