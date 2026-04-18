@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
-	"net/http"
-	_ "net/http"
-	_ "net/http/pprof"
-
+	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
@@ -45,19 +43,35 @@ func main() {
 	wg.Add(1)
 	dlog.Start(ctx, &wg, source.HealthCheck)
 
+	var pprofServer *cli.PProfServer
 	if pprof != "" {
-		dlog.Client.Info("Starting PProf", pprof)
-		go func() {
-			if err := http.ListenAndServe(pprof, nil); err != nil {
-				dlog.Client.Error("PProf server exited", err)
-			}
-		}()
+		pprofServer, pprofErr := cli.NewPProfServer(pprof)
+		if pprofErr != nil {
+			dlog.Client.Error("Unable to start PProf", pprofErr)
+		} else {
+			dlog.Client.Info("Starting PProf", pprofServer.Address())
+			pprofServer.Start(nil)
+		}
 	}
 
 	healthClient, err := clients.NewHealthClient(args)
+	status := 0
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to create dtailhealth client: %v\n", err)
-		os.Exit(2)
+		status = 2
+	} else {
+		status = healthClient.Start(ctx, signal.NoCh(ctx))
 	}
-	os.Exit(healthClient.Start(ctx, signal.NoCh(ctx)))
+
+	if pprofServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+			dlog.Client.Error("Unable to stop PProf", err)
+		}
+		shutdownCancel()
+	}
+
+	cancel()
+	wg.Wait()
+	os.Exit(status)
 }

@@ -3,15 +3,13 @@ package main
 import (
 	"context"
 	"flag"
-	"net/http"
-	_ "net/http"
-	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/server"
@@ -71,18 +69,27 @@ func main() {
 	wg.Add(1)
 	dlog.Start(ctx, &wg, source.Server)
 
+	var pprofServer *cli.PProfServer
 	if pprof != "" {
-		dlog.Client.Info("Starting PProf", pprof)
-		go func() {
-			if err := http.ListenAndServe(pprof, nil); err != nil {
-				dlog.Client.Error("PProf server exited", err)
-			}
-		}()
+		pprofServer, pprofErr := cli.NewPProfServer(pprof)
+		if pprofErr != nil {
+			dlog.Client.Error("Unable to start PProf", pprofErr)
+		} else {
+			dlog.Client.Info("Starting PProf", pprofServer.Address())
+			pprofServer.Start(nil)
+		}
 	}
 
 	serv := server.New(config.CurrentRuntime())
 	status := serv.Start(ctx)
 	cancel()
+	if pprofServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+			dlog.Client.Error("Unable to stop PProf", err)
+		}
+		shutdownCancel()
+	}
 
 	wg.Wait()
 	os.Exit(status)

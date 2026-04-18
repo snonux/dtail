@@ -2,9 +2,8 @@ package cli
 
 import (
 	"context"
-	"net/http"
-	_ "net/http/pprof" // Register pprof handlers when runtime pprof endpoint is enabled.
 	"sync"
+	"time"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/profiling"
@@ -16,6 +15,7 @@ type ClientRuntime struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
+	pprofServer    *PProfServer
 	profiler       *profiling.Profiler
 	profileEnabled bool
 }
@@ -54,12 +54,17 @@ func (r *ClientRuntime) StartPProf(address string) {
 		return
 	}
 
-	dlog.Client.Info("Starting PProf", address)
-	go func() {
-		if err := http.ListenAndServe(address, nil); err != nil {
-			dlog.Client.Error("PProf server exited", err)
-		}
-	}()
+	r.stopPProf()
+
+	server, err := NewPProfServer(address)
+	if err != nil {
+		dlog.Client.Error("Unable to start PProf", err)
+		return
+	}
+
+	r.pprofServer = server
+	dlog.Client.Info("Starting PProf", server.Address())
+	server.Start(&r.wg)
 }
 
 // LogStartupMetrics logs startup profiling metrics when enabled.
@@ -79,6 +84,21 @@ func (r *ClientRuntime) LogShutdownMetrics() {
 // Stop stops profiling and logging runtime goroutines.
 func (r *ClientRuntime) Stop() {
 	r.profiler.Stop()
+	r.stopPProf()
 	r.cancel()
 	r.wg.Wait()
+}
+
+func (r *ClientRuntime) stopPProf() {
+	if r.pprofServer == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := r.pprofServer.Shutdown(ctx); err != nil {
+		dlog.Client.Error("Unable to stop PProf", err)
+	}
+	r.pprofServer = nil
 }
