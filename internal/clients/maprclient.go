@@ -64,7 +64,9 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 
 	c.setRegexForQuery(query)
 	c.baseClient.init()
-	c.baseClient.makeConnections(&c)
+	if err := c.baseClient.makeConnections(&c); err != nil {
+		return nil, err
+	}
 
 	return &c, nil
 }

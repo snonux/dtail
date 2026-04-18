@@ -33,7 +33,9 @@ func NewGrepClient(args config.Args) (*GrepClient, error) {
 	}
 
 	c.init()
-	c.makeConnections(c)
+	if err := c.makeConnections(c); err != nil {
+		return nil, err
+	}
 	return &c, nil
 }
 

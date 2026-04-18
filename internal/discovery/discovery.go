@@ -35,14 +35,14 @@ type Discovery struct {
 }
 
 // New returns a new discovery method.
-func New(method, server string, order ServerOrder) *Discovery {
+func New(method, server string, order ServerOrder) (*Discovery, error) {
 	module := method
 	options := ""
 
 	if strings.Contains(module, ":") {
-		s := strings.Split(module, ":")
-		if len(s) != 2 {
-			dlog.Common.FatalPanic("Unable to parse discovery module", module)
+		s := strings.SplitN(module, ":", 2)
+		if len(s) != 2 || s[0] == "" || s[1] == "" {
+			return nil, fmt.Errorf("unable to parse discovery module %q", module)
 		}
 		module = s[0]
 		options = s[1]
@@ -59,7 +59,7 @@ func New(method, server string, order ServerOrder) *Discovery {
 		d.initRegex()
 	}
 
-	return &d
+	return &d, nil
 }
 
 func (d *Discovery) initRegex() {

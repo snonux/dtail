@@ -81,7 +81,7 @@ func (c *baseClient) init() {
 		c.Args.SSHPrivateKeyFilePath, c.Args.SSHAgentKeyIndex)
 }
 
-func (c *baseClient) makeConnections(maker maker) {
+func (c *baseClient) makeConnections(maker maker) error {
 	c.maker = maker
 	if builder, ok := maker.(sessionSpecMaker); ok {
 		sessionSpec, err := builder.makeSessionSpec()
@@ -91,13 +91,17 @@ func (c *baseClient) makeConnections(maker maker) {
 		c.sessionSpec = sessionSpec
 	}
 
-	discoveryService := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle)
+	discoveryService, err := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle)
+	if err != nil {
+		return err
+	}
 	for _, server := range discoveryService.ServerList() {
 		c.connections = append(c.connections, c.makeConnection(server,
 			c.sshAuthMethods, c.hostKeyCallback))
 	}
 
 	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause())
+	return nil
 }
 
 func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
