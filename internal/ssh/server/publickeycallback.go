@@ -16,6 +16,8 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+type authorizedKeyParser func([]byte) (gossh.PublicKey, string, []string, []byte, error)
+
 // NewPublicKeyCallback creates an instance-scoped SSH public key callback.
 // It avoids relying on package-level mutable configuration/state.
 func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
@@ -62,21 +64,36 @@ func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
 
 func verifyAuthorizedKeys(user *user.User, authorizedKeysBytes []byte,
 	offeredPubKey gossh.PublicKey) (*gossh.Permissions, error) {
+	return verifyAuthorizedKeysWithParser(user, authorizedKeysBytes, offeredPubKey, gossh.ParseAuthorizedKey)
+}
+
+func verifyAuthorizedKeysWithParser(user *user.User, authorizedKeysBytes []byte,
+	offeredPubKey gossh.PublicKey, parseAuthorizedKey authorizedKeyParser) (*gossh.Permissions, error) {
 
 	authorizedKeysMap := map[string]bool{}
 	for len(authorizedKeysBytes) > 0 {
-		authorizedPubKey, _, _, restBytes, err := gossh.ParseAuthorizedKey(authorizedKeysBytes)
+		authorizedPubKey, _, _, restBytes, err := parseAuthorizedKey(authorizedKeysBytes)
 		if err != nil {
-			return nil, fmt.Errorf("unable to parse authorized keys bytes|%s|%s",
-				user, err.Error())
+			if dlog.Server != nil {
+				dlog.Server.Warn(user, "Skipping unparseable authorized_keys line", err)
+			}
+			if len(restBytes) == len(authorizedKeysBytes) {
+				break
+			}
+			authorizedKeysBytes = restBytes
+			continue
 		}
 		authorizedKeysMap[string(authorizedPubKey.Marshal())] = true
 		authorizedKeysBytes = restBytes
-		dlog.Server.Debug(user, "Authorized public key fingerprint",
-			gossh.FingerprintSHA256(authorizedPubKey))
+		if dlog.Server != nil {
+			dlog.Server.Debug(user, "Authorized public key fingerprint",
+				gossh.FingerprintSHA256(authorizedPubKey))
+		}
 	}
 
-	dlog.Server.Debug(user, "Offered public key fingerprint", gossh.FingerprintSHA256(offeredPubKey))
+	if dlog.Server != nil {
+		dlog.Server.Debug(user, "Offered public key fingerprint", gossh.FingerprintSHA256(offeredPubKey))
+	}
 	if authorizedKeysMap[string(offeredPubKey.Marshal())] {
 		return permissionsFromPublicKey(offeredPubKey), nil
 	}

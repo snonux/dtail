@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	goUser "os/user"
 	"path/filepath"
@@ -43,6 +44,41 @@ func TestAuthKeyStorePermissions(t *testing.T) {
 	unknownKey := testPublicKey(t, 22)
 	if permissions := authKeyStorePermissions(authKeyStore, "alice", unknownKey); permissions != nil {
 		t.Fatalf("Expected nil permissions for unknown key")
+	}
+}
+
+func TestVerifyAuthorizedKeysSkipsMalformedLine(t *testing.T) {
+	user := testServerUser(t, "alice")
+	firstKey := testPublicKey(t, 41)
+	secondKey := testPublicKey(t, 42)
+
+	firstLine := gossh.MarshalAuthorizedKey(firstKey)
+	badLine := []byte("this is not an authorized key\n")
+	secondLine := gossh.MarshalAuthorizedKey(secondKey)
+	authorizedKeys := append(append(append([]byte{}, firstLine...), badLine...), secondLine...)
+
+	parser := func(in []byte) (gossh.PublicKey, string, []string, []byte, error) {
+		switch {
+		case bytes.HasPrefix(in, firstLine):
+			return firstKey, "", nil, in[len(firstLine):], nil
+		case bytes.HasPrefix(in, badLine):
+			return nil, "", nil, in[len(badLine):], errors.New("parse error")
+		case bytes.HasPrefix(in, secondLine):
+			return secondKey, "", nil, in[len(secondLine):], nil
+		default:
+			return nil, "", nil, nil, errors.New("unexpected authorized_keys input")
+		}
+	}
+
+	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey, parser)
+	if err != nil {
+		t.Fatalf("verifyAuthorizedKeysWithParser failed: %v", err)
+	}
+	if permissions == nil {
+		t.Fatalf("Expected permissions for key after malformed line")
+	}
+	if got := permissions.Extensions["pubkey-fp"]; got != gossh.FingerprintSHA256(secondKey) {
+		t.Fatalf("Unexpected fingerprint: %s", got)
 	}
 }
 
