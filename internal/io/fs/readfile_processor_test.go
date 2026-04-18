@@ -7,8 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
@@ -135,6 +138,110 @@ func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
 	want := []string{"abc", "def\n"}
 	if !reflect.DeepEqual(processor.lines, want) {
 		t.Fatalf("unexpected processed lines: got=%v want=%v", processor.lines, want)
+	}
+}
+
+func TestStartVariantsExitWhenContextCanceledDuringLongLineWarning(t *testing.T) {
+	resetCommonLogger(t)
+
+	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
+	re := regex.NewNoop()
+
+	tests := []struct {
+		name  string
+		start func(*readFile, context.Context, lcontext.LContext, *captureProcessor, regex.Regex) error
+	}{
+		{
+			name: "standard reader",
+			start: func(rf *readFile, ctx context.Context, ltx lcontext.LContext, p *captureProcessor, re regex.Regex) error {
+				return rf.Start(ctx, ltx, make(chan *line.Line, 1), re)
+			},
+		},
+		{
+			name: "processor reader",
+			start: func(rf *readFile, ctx context.Context, ltx lcontext.LContext, p *captureProcessor, re regex.Regex) error {
+				return rf.StartWithProcessor(ctx, ltx, p, re)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cat := NewCatFile(filePath, "glob-id", make(chan string), 1)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- tt.start(&cat.readFile, ctx, lcontext.LContext{}, &captureProcessor{}, re)
+			}()
+
+			select {
+			case err := <-errCh:
+				if err != nil {
+					t.Fatalf("expected canceled start to exit cleanly, got %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("start did not return after context cancellation")
+			}
+		})
+	}
+}
+
+func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning(t *testing.T) {
+	resetCommonLogger(t)
+
+	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
+	re := regex.NewNoop()
+
+	rf := readFile{
+		filePath:       filePath,
+		globID:         "glob-id",
+		serverMessages: make(chan string),
+		retry:          true,
+		canSkipLines:   true,
+		seekEOF:        false,
+		maxLineLength:  1,
+	}
+
+	reader, fd, decompressor, err := rf.makeReader()
+	if fd != nil {
+		defer fd.Close()
+	}
+	if decompressor != nil {
+		defer func() {
+			if closeErr := decompressor.Close(); closeErr != nil {
+				t.Fatalf("unable to close decompressor: %v", closeErr)
+			}
+		}()
+	}
+	if err != nil {
+		t.Fatalf("make reader: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- rf.tailWithProcessorOptimized(
+			ctx,
+			fd,
+			reader,
+			make(chan struct{}),
+			lcontext.LContext{},
+			&captureProcessor{},
+			re,
+		)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected canceled optimized tail to exit cleanly, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("optimized tail did not return after context cancellation")
 	}
 }
 

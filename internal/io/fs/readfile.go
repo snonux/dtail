@@ -82,6 +82,26 @@ func (f *readFile) lineLimit() int {
 	return f.maxLineLength
 }
 
+func (f *readFile) warnAboutLongLine(ctx context.Context) bool {
+	if f.warnedAboutLongLine {
+		return true
+	}
+
+	if f.serverMessages == nil {
+		f.warnedAboutLongLine = true
+		return true
+	}
+
+	select {
+	case f.serverMessages <- dlog.Common.Warn(f.filePath,
+		"Long log line, splitting into multiple lines") + "\n":
+		f.warnedAboutLongLine = true
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // Start tailing a log file.
 func (f readFile) Start(ctx context.Context, ltx lcontext.LContext,
 	lines chan<- *line.Line, re regex.Regex) error {
@@ -345,10 +365,8 @@ func (f *readFile) handleReadByte(ctx context.Context, b byte,
 		}
 	default:
 		if message.Len() >= f.lineLimit() {
-			if !f.warnedAboutLongLine {
-				f.serverMessages <- dlog.Common.Warn(f.filePath,
-					"Long log line, splitting into multiple lines") + "\n"
-				f.warnedAboutLongLine = true
+			if !f.warnAboutLongLine(ctx) {
+				return abortReading, message
 			}
 			message.WriteByte('\n')
 			select {

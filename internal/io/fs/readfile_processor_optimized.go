@@ -148,8 +148,9 @@ func (f *readFile) scanLinesPreserveEndings(data []byte, atEOF bool) (advance in
 	return 0, nil, nil
 }
 
-// scanLinesWithMaxLength is a custom split function for bufio.Scanner that respects MaxLineLength
-func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int, token []byte, err error) {
+// scanLinesWithMaxLength is a custom split function for bufio.Scanner that respects MaxLineLength.
+// It is kept context-aware so long-line warnings can still be dropped when the reader is canceled.
+func (f *readFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil
 	}
@@ -161,12 +162,8 @@ func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int,
 		// Check if the line before the newline exceeds max length
 		if i > maxLineLen {
 			// Line is too long, split it at maxLineLen
-			if !f.warnedAboutLongLine {
-				if f.serverMessages != nil {
-					f.serverMessages <- dlog.Common.Warn(f.filePath,
-						"Long log line, splitting into multiple lines") + "\n"
-				}
-				f.warnedAboutLongLine = true
+			if !f.warnAboutLongLine(ctx) {
+				return 0, nil, ctx.Err()
 			}
 			return maxLineLen, data[0:maxLineLen], nil
 		}
@@ -179,12 +176,8 @@ func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int,
 	if atEOF {
 		if len(data) > maxLineLen {
 			// Even at EOF, respect max line length
-			if !f.warnedAboutLongLine {
-				if f.serverMessages != nil {
-					f.serverMessages <- dlog.Common.Warn(f.filePath,
-						"Long log line, splitting into multiple lines") + "\n"
-				}
-				f.warnedAboutLongLine = true
+			if !f.warnAboutLongLine(ctx) {
+				return 0, nil, ctx.Err()
 			}
 			return maxLineLen, data[0:maxLineLen], nil
 		}
@@ -194,10 +187,8 @@ func (f *readFile) scanLinesWithMaxLength(data []byte, atEOF bool) (advance int,
 	// If the line is too long, split it
 	if len(data) >= maxLineLen {
 		// Warn about long line (only once)
-		if !f.warnedAboutLongLine {
-			f.serverMessages <- dlog.Common.Warn(f.filePath,
-				"Long log line, splitting into multiple lines") + "\n"
-			f.warnedAboutLongLine = true
+		if !f.warnAboutLongLine(ctx) {
+			return 0, nil, ctx.Err()
 		}
 
 		// Return a chunk up to MaxLineLength
@@ -313,10 +304,8 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 
 					// Check if line is too long
 					if partialLine.Len() >= f.lineLimit() {
-						if !f.warnedAboutLongLine {
-							f.serverMessages <- dlog.Common.Warn(f.filePath,
-								"Long log line, splitting into multiple lines") + "\n"
-							f.warnedAboutLongLine = true
+						if !f.warnAboutLongLine(ctx) {
+							return nil
 						}
 
 						// Process the partial line

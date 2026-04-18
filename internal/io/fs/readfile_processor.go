@@ -128,10 +128,8 @@ func (f *readFile) handleReadByteProcessor(ctx context.Context, b byte,
 
 	default:
 		if message.Len() >= f.lineLimit() {
-			if !f.warnedAboutLongLine {
-				f.serverMessages <- dlog.Common.Warn(f.filePath,
-					"Long log line, splitting into multiple lines") + "\n"
-				f.warnedAboutLongLine = true
+			if !f.warnAboutLongLine(ctx) {
+				return abortReading
 			}
 			// Force a line break
 			message.WriteByte('\n')
