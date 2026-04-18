@@ -119,11 +119,17 @@ func (c *continuous) waitForDayChange(ctx context.Context) bool {
 	for {
 		select {
 		case <-checkTicker.C:
-			if time.Now().Day() != startTime.Day() {
+			if !sameCalendarDay(time.Now(), startTime) {
 				return true
 			}
 		case <-ctx.Done():
 			return false
 		}
 	}
+}
+
+func sameCalendarDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
 }
