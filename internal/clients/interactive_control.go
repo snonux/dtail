@@ -194,6 +194,7 @@ func (c *baseClient) applyInteractiveReloadConnections(nextSpec SessionSpec) ([]
 		if !ok || committedGeneration == 0 {
 			return applied, 0, fmt.Errorf("%s: missing committed session generation", conn.Server())
 		}
+		applied[len(applied)-1].rollbackGeneration = committedGeneration
 		if generation == 0 {
 			generation = committedGeneration
 			continue
@@ -223,10 +224,7 @@ func (c *baseClient) rollbackInteractiveReload(applied []interactiveReloadState,
 func (*baseClient) rollbackInteractiveReloadConnections(applied []interactiveReloadState) error {
 	var rollbackErr error
 	for i := len(applied) - 1; i >= 0; i-- {
-		if applied[i].rollbackGeneration != 0 {
-			applied[i].conn.RestoreCommittedSession(applied[i].spec, applied[i].rollbackGeneration, true)
-		}
-		if err := applied[i].conn.ApplySessionSpec(applied[i].spec, interactiveControlTimeout); err != nil {
+		if err := applied[i].conn.ApplySessionSpecWithGeneration(applied[i].spec, applied[i].rollbackGeneration, interactiveControlTimeout); err != nil {
 			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("%s: rollback session spec: %w", applied[i].conn.Server(), err))
 		}
 	}

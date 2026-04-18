@@ -95,11 +95,20 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 
 func applySessionSpec(server string, handler handlers.Handler,
 	state *committedSessionState, spec sessionspec.Spec, timeout time.Duration) error {
+	return applySessionSpecWithGeneration(server, handler, state, spec, 0, true, timeout)
+}
+
+func applySessionSpecWithGeneration(server string, handler handlers.Handler,
+	state *committedSessionState, spec sessionspec.Spec, generation uint64, useCurrentGeneration bool, timeout time.Duration) error {
 
 	// Serialize session transitions so an interactive reload cannot race the
 	// initial SESSION START bootstrap on the same connection.
 	state.applyMu.Lock()
 	defer state.applyMu.Unlock()
+
+	if useCurrentGeneration {
+		_, generation, _ = state.snapshot()
+	}
 
 	if handler == nil {
 		return ErrSessionUnsupported
@@ -115,7 +124,7 @@ func applySessionSpec(server string, handler handlers.Handler,
 		return err
 	}
 
-	if _, generation, ok := state.snapshot(); ok {
+	if generation != 0 {
 		action = "update"
 		nextGeneration = generation + 1
 		command, err = spec.UpdateCommand(nextGeneration)

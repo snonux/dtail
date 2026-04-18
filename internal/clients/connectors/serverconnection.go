@@ -116,6 +116,12 @@ func (c *ServerConnection) ApplySessionSpec(spec sessionspec.Spec, timeout time.
 	return applySessionSpec(c.server, c.handler, &c.sessionState, spec, timeout)
 }
 
+// ApplySessionSpecWithGeneration starts or updates the interactive session
+// state using an explicit committed generation as the base for the update.
+func (c *ServerConnection) ApplySessionSpecWithGeneration(spec sessionspec.Spec, generation uint64, timeout time.Duration) error {
+	return applySessionSpecWithGeneration(c.server, c.handler, &c.sessionState, spec, generation, false, timeout)
+}
+
 // CommittedSession returns the last server-acknowledged session state.
 func (c *ServerConnection) CommittedSession() (sessionspec.Spec, uint64, bool) {
 	return c.sessionState.snapshot()

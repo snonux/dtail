@@ -10,8 +10,12 @@ import (
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 	sessionspec "github.com/mimecast/dtail/internal/session"
+
+	"golang.org/x/crypto/ssh"
 )
 
 func TestParseInteractiveCommandForGrepReload(t *testing.T) {
@@ -245,6 +249,77 @@ func TestApplyInteractiveReloadRollsBackLateAckFailure(t *testing.T) {
 	}
 }
 
+func TestApplyInteractiveReloadRollsBackLateAckFailureWithRealServerConnection(t *testing.T) {
+	resetClientLogger(t)
+
+	oldArgs := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/var/log/app.log",
+		RegexStr: "ERROR",
+	}
+	oldSpec := SessionSpec{
+		Mode:  omode.GrepClient,
+		Files: []string{"/var/log/app.log"},
+		Regex: "ERROR",
+	}
+	nextSpec := SessionSpec{
+		Mode:  omode.GrepClient,
+		Files: []string{"/tmp/new.log"},
+		Regex: "WARN",
+	}
+
+	handlerA := newInteractiveReloadSessionHandler(
+		handlers.SessionAck{Action: "update", Generation: 5},
+		handlers.SessionAck{Action: "update", Generation: 6},
+	)
+	handlerB := newInteractiveReloadSessionHandler(
+		handlers.SessionAck{Action: "update", Generation: 5},
+		handlers.SessionAck{Action: "update", Generation: 6},
+	)
+	handlerC := newInteractiveReloadSessionHandler()
+	connA := newInteractiveReloadServerConnection(t, "srv1", handlerA, oldSpec)
+	connB := newInteractiveReloadServerConnection(t, "srv2", handlerB, oldSpec)
+	connC := newInteractiveReloadServerConnection(t, "srv3", handlerC, oldSpec)
+
+	for _, conn := range []*connectors.ServerConnection{connA, connB, connC} {
+		conn.RestoreCommittedSession(oldSpec, 4, true)
+	}
+
+	client := &baseClient{
+		Args:        oldArgs,
+		sessionSpec: oldSpec,
+		connections: []connectors.Connector{connA, connB, connC},
+	}
+
+	nextArgs := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/tmp/new.log",
+		RegexStr: "WARN",
+	}
+	err := client.applyInteractiveReload(nextArgs, nextSpec)
+	if err == nil || !errors.Is(err, connectors.ErrSessionAckTimeout) {
+		t.Fatalf("expected late ack timeout error, got %v", err)
+	}
+
+	if !reflect.DeepEqual(client.Args, oldArgs) || !reflect.DeepEqual(client.sessionSpec, oldSpec) {
+		t.Fatalf("client state changed on late failure: args=%#v spec=%#v", client.Args, client.sessionSpec)
+	}
+
+	for _, conn := range []*connectors.ServerConnection{connA, connB} {
+		committedSpec, generation, ok := conn.CommittedSession()
+		if !ok || generation != 6 || !reflect.DeepEqual(committedSpec, oldSpec) {
+			t.Fatalf("successful connection did not roll back cleanly: spec=%#v generation=%d ok=%v", committedSpec, generation, ok)
+		}
+	}
+
+	if committedSpec, generation, ok := connC.CommittedSession(); !ok || generation != 4 || !reflect.DeepEqual(committedSpec, oldSpec) {
+		t.Fatalf("timed-out rollback should leave failed connection at its original committed session: spec=%#v generation=%d ok=%v", committedSpec, generation, ok)
+	}
+	if len(handlerC.commands) != 2 {
+		t.Fatalf("expected the failed connection to receive both the reload and rollback commands, got %#v", handlerC.commands)
+	}
+}
+
 func TestApplyInteractiveReloadCommitsSharedState(t *testing.T) {
 	oldSpec := SessionSpec{
 		Mode:  omode.MapClient,
@@ -374,6 +449,119 @@ type interactiveReloadConnector struct {
 	supported                bool
 }
 
+type interactiveReloadSessionHandler struct {
+	commands            []string
+	capabilities        map[string]bool
+	sessionAcks         []handlers.SessionAck
+	waitForCapabilities bool
+}
+
+var _ handlers.Handler = (*interactiveReloadSessionHandler)(nil)
+
+func newInteractiveReloadSessionHandler(acks ...handlers.SessionAck) *interactiveReloadSessionHandler {
+	return &interactiveReloadSessionHandler{
+		capabilities: map[string]bool{
+			protocol.CapabilityQueryUpdateV1: true,
+		},
+		sessionAcks:         append([]handlers.SessionAck(nil), acks...),
+		waitForCapabilities: true,
+	}
+}
+
+func (h *interactiveReloadSessionHandler) SendMessage(command string) error {
+	h.commands = append(h.commands, command)
+	return nil
+}
+
+func (h *interactiveReloadSessionHandler) Capabilities() []string {
+	capabilities := make([]string, 0, len(h.capabilities))
+	for capability := range h.capabilities {
+		capabilities = append(capabilities, capability)
+	}
+	return capabilities
+}
+
+func (h *interactiveReloadSessionHandler) HasCapability(name string) bool {
+	return h.capabilities[name]
+}
+
+func (*interactiveReloadSessionHandler) Server() string { return "mock" }
+
+func (*interactiveReloadSessionHandler) Status() int { return 0 }
+
+func (*interactiveReloadSessionHandler) Shutdown() {}
+
+func (*interactiveReloadSessionHandler) Done() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+func (h *interactiveReloadSessionHandler) WaitForCapabilities(time.Duration) bool {
+	return h.waitForCapabilities
+}
+
+func (h *interactiveReloadSessionHandler) WaitForSessionAck(timeout time.Duration) (handlers.SessionAck, bool) {
+	if timeout <= 0 {
+		return handlers.SessionAck{}, false
+	}
+	if len(h.sessionAcks) == 0 {
+		return handlers.SessionAck{}, false
+	}
+
+	ack := h.sessionAcks[0]
+	h.sessionAcks = h.sessionAcks[1:]
+	return ack, true
+}
+
+func (*interactiveReloadSessionHandler) Read(_ []byte) (int, error) {
+	return 0, nil
+}
+
+func (*interactiveReloadSessionHandler) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+type interactiveReloadHostKeyCallback struct{}
+
+func (interactiveReloadHostKeyCallback) Wrap(context.Context) ssh.HostKeyCallback {
+	return ssh.InsecureIgnoreHostKey()
+}
+
+func (interactiveReloadHostKeyCallback) Untrusted(string) bool { return false }
+
+func (interactiveReloadHostKeyCallback) PromptAddHosts(context.Context) {}
+
+func newInteractiveReloadServerConnection(t *testing.T, server string, handler handlers.Handler, spec SessionSpec) *connectors.ServerConnection {
+	t.Helper()
+
+	conn := connectors.NewServerConnection(
+		server,
+		"user",
+		nil,
+		interactiveReloadHostKeyCallback{},
+		handler,
+		nil,
+		spec,
+		true,
+		"",
+		false,
+		nil,
+	)
+	conn.RestoreCommittedSession(spec, 4, true)
+	return conn
+}
+
+func resetClientLogger(t *testing.T) {
+	t.Helper()
+
+	originalLogger := dlog.Client
+	dlog.Client = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Client = originalLogger
+	})
+}
+
 func (*interactiveReloadConnector) Start(context.Context, context.CancelFunc, chan struct{}, chan struct{}) {
 }
 
@@ -384,6 +572,14 @@ func (*interactiveReloadConnector) Handler() handlers.Handler { return nil }
 func (c *interactiveReloadConnector) SupportsQueryUpdates(time.Duration) bool { return c.supported }
 
 func (c *interactiveReloadConnector) ApplySessionSpec(spec sessionspec.Spec, _ time.Duration) error {
+	_, generation, ok := c.CommittedSession()
+	if !ok {
+		generation = 0
+	}
+	return c.ApplySessionSpecWithGeneration(spec, generation, 0)
+}
+
+func (c *interactiveReloadConnector) ApplySessionSpecWithGeneration(spec sessionspec.Spec, generation uint64, _ time.Duration) error {
 	c.applyCount++
 	if c.applyErrAfterAdvance != nil && reflect.DeepEqual(spec, c.applyErrAfterAdvanceSpec) {
 		c.liveSpec = spec
@@ -392,7 +588,11 @@ func (c *interactiveReloadConnector) ApplySessionSpec(spec sessionspec.Spec, _ t
 	if c.applyErr != nil {
 		return c.applyErr
 	}
-	c.generation++
+	if generation == 0 {
+		c.generation = 1
+	} else {
+		c.generation = generation + 1
+	}
 	c.liveSpec = spec
 	c.committedSpec = spec
 	return nil

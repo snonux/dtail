@@ -147,6 +147,10 @@ func (*retryTestConnector) SupportsQueryUpdates(time.Duration) bool { return fal
 
 func (*retryTestConnector) ApplySessionSpec(SessionSpec, time.Duration) error { return nil }
 
+func (*retryTestConnector) ApplySessionSpecWithGeneration(SessionSpec, uint64, time.Duration) error {
+	return nil
+}
+
 func (*retryTestConnector) CommittedSession() (SessionSpec, uint64, bool) {
 	return SessionSpec{}, 0, false
 }

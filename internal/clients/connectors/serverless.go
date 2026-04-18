@@ -67,6 +67,12 @@ func (s *Serverless) ApplySessionSpec(spec sessionspec.Spec, timeout time.Durati
 	return applySessionSpec(s.Server(), s.handler, &s.sessionState, spec, timeout)
 }
 
+// ApplySessionSpecWithGeneration starts or updates the in-process interactive
+// session state using an explicit committed generation as the update base.
+func (s *Serverless) ApplySessionSpecWithGeneration(spec sessionspec.Spec, generation uint64, timeout time.Duration) error {
+	return applySessionSpecWithGeneration(s.Server(), s.handler, &s.sessionState, spec, generation, false, timeout)
+}
+
 // CommittedSession returns the last server-acknowledged session state.
 func (s *Serverless) CommittedSession() (sessionspec.Spec, uint64, bool) {
 	return s.sessionState.snapshot()
