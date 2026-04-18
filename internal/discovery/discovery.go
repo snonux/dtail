@@ -102,6 +102,9 @@ func (d *Discovery) serverListFromModule() []string {
 	if d.module != "" {
 		return d.serverListFromReflectedModule()
 	}
+	if d.server == "" && d.regex != nil {
+		return []string{}
+	}
 	if _, err := os.Stat(d.server); err == nil {
 		// Appears to be a file name, now try to read from that file.
 		return d.ServerListFromFILE()
