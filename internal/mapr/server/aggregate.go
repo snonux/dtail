@@ -116,65 +116,30 @@ func (a *Aggregate) aggregateTimer(ctx context.Context) {
 func (a *Aggregate) nextLine() (l *line.Line, ok bool, noMoreChannels bool) {
 	dlog.Server.Trace("nextLine.enter", l, ok, noMoreChannels)
 
-	// Protect channel operations with mutex to prevent race conditions
+	// Protect channel operations with mutex to prevent races while switching
+	// between per-file line channels.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
 	select {
 	case l, ok = <-a.linesCh:
 		if !ok {
-			// Channel is closed, go to next channel.
+			// Channel is closed, go to next channel. The next reader goroutine
+			// may still be registering its channel, so wait briefly before
+			// concluding that the aggregate is finished.
 			select {
 			case a.linesCh = <-a.NextLinesCh:
-			default:
-				noMoreChannels = true
+			case <-time.After(100 * time.Millisecond):
+				select {
+				case a.linesCh = <-a.NextLinesCh:
+				default:
+					noMoreChannels = true
+				}
 			}
 		}
 	default:
-		// No new line from current lines channel. Try next one.
-		select {
-		case newLinesCh := <-a.NextLinesCh:
-			oldLinesCh := a.linesCh
-			a.linesCh = newLinesCh
-
-			// Ensure the old channel is fully drained before recycling to prevent data mixing
-			go func(oldCh chan *line.Line) {
-				// First, drain any remaining lines from the old channel
-				drained := 0
-			drainLoop:
-				for {
-					select {
-					case l, ok := <-oldCh:
-						if !ok {
-							// Channel is closed, safe to recycle
-							break drainLoop
-						}
-						if l != nil {
-							l.Recycle()
-							drained++
-						}
-					default:
-						// No more lines to drain immediately
-						break drainLoop
-					}
-				}
-
-				if drained > 0 {
-					dlog.Server.Debug("Drained", drained, "lines from recycled channel")
-				}
-
-				// Now safely recycle the drained channel
-				timer := time.NewTimer(5 * time.Second)
-				defer timer.Stop()
-				select {
-				case a.NextLinesCh <- oldCh:
-				case <-timer.C:
-					dlog.Server.Warn("Timeout: failed to put channel back, NextLinesCh might be full")
-				}
-			}(oldLinesCh)
-		default:
-			// No new lines channel found.
-		}
+		// Keep reading the current file until its channel is closed. Switching
+		// away from a merely idle channel can drop unread lines from that file.
 	}
 	dlog.Server.Trace("nextLine.exit", l, ok, noMoreChannels)
 	return
