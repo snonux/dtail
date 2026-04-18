@@ -86,7 +86,8 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 			continue
 		}
 
-		command, err := parseInteractiveCommand(c.Args, line)
+		currentArgs, _ := c.snapshotConnectionState()
+		command, err := parseInteractiveCommand(currentArgs, line)
 		if err != nil {
 			if writeErr := writeControlLine(tty, "interactive query error: "+err.Error()); writeErr != nil {
 				return writeErr
@@ -133,14 +134,13 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 }
 
 func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec SessionSpec) error {
-	if len(c.connections) == 0 {
+	prevArgs, prevSpec, connections := c.snapshotMutableState()
+	if len(connections) == 0 {
 		return errors.New("no active connections")
 	}
-	prevArgs := c.Args
-	prevSpec := c.sessionSpec
 
 	var unsupported []string
-	for _, conn := range c.connections {
+	for _, conn := range connections {
 		if !conn.SupportsQueryUpdates(interactiveControlTimeout) {
 			unsupported = append(unsupported, conn.Server())
 		}
@@ -149,7 +149,7 @@ func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec Sessi
 		return fmt.Errorf("%w: %s", connectors.ErrSessionUnsupported, strings.Join(unsupported, ", "))
 	}
 
-	applied, generation, err := c.applyInteractiveReloadConnections(nextSpec)
+	applied, generation, err := c.applyInteractiveReloadConnections(connections, nextSpec)
 	if err != nil {
 		return c.rollbackInteractiveReload(applied, prevArgs, prevSpec, err)
 	}
@@ -161,15 +161,14 @@ func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec Sessi
 		}
 	}
 
-	c.Args = nextArgs
-	c.sessionSpec = nextSpec
+	c.storeReloadState(nextArgs, nextSpec)
 	return nil
 }
 
-func (c *baseClient) applyInteractiveReloadConnections(nextSpec SessionSpec) ([]interactiveReloadState, uint64, error) {
+func (c *baseClient) applyInteractiveReloadConnections(connections []connectors.Connector, nextSpec SessionSpec) ([]interactiveReloadState, uint64, error) {
 	var generation uint64
-	applied := make([]interactiveReloadState, 0, len(c.connections))
-	for _, conn := range c.connections {
+	applied := make([]interactiveReloadState, 0, len(connections))
+	for _, conn := range connections {
 		prevSpec, prevGeneration, _ := conn.CommittedSession()
 		if err := conn.ApplySessionSpec(nextSpec, interactiveControlTimeout); err != nil {
 			if shouldRollbackFailedReload(err) {
@@ -213,8 +212,7 @@ func shouldRollbackFailedReload(err error) bool {
 
 func (c *baseClient) rollbackInteractiveReload(applied []interactiveReloadState, prevArgs config.Args, prevSpec SessionSpec, err error) error {
 	rollbackErr := c.rollbackInteractiveReloadConnections(applied)
-	c.Args = prevArgs
-	c.sessionSpec = prevSpec
+	c.storeReloadState(prevArgs, prevSpec)
 	if rollbackErr != nil {
 		return errors.Join(err, rollbackErr)
 	}
@@ -237,9 +235,9 @@ func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
 }
 
 func (c *baseClient) writeInteractiveState(writer io.Writer) error {
-	spec := c.sessionSpec
+	args, spec, connections := c.snapshotMutableState()
 	ready := 0
-	for _, conn := range c.connections {
+	for _, conn := range connections {
 		if conn.SupportsQueryUpdates(0) {
 			ready++
 		}
@@ -247,14 +245,14 @@ func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 
 	line := fmt.Sprintf(
 		"mode=%s files=%s query=%q regex=%q options=%q timeout=%d capable=%d/%d",
-		c.Args.Mode,
+		args.Mode,
 		strings.Join(spec.Files, ","),
 		spec.Query,
 		spec.Regex,
 		spec.Options,
 		spec.Timeout,
 		ready,
-		len(c.connections),
+		len(connections),
 	)
 	return writeControlLine(writer, line)
 }

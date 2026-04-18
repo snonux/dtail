@@ -3,11 +3,13 @@ package clients
 import (
 	"context"
 	"math/rand"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 	sshclient "github.com/mimecast/dtail/internal/ssh/client"
@@ -95,6 +97,7 @@ func TestStartConnectionReconnectsWithLatestSessionSpec(t *testing.T) {
 	sleepCalls := 0
 	var capturedSpec SessionSpec
 	client := &baseClient{
+		mu:          newBaseClientMu(),
 		retry:       true,
 		sessionSpec: originalSpec,
 		stats: &stats{
@@ -130,6 +133,93 @@ func TestStartConnectionReconnectsWithLatestSessionSpec(t *testing.T) {
 		t.Fatalf("expected retried connector to replace the original connection")
 	}
 }
+
+func TestApplyInteractiveReloadConcurrentWithReconnect(t *testing.T) {
+	resetClientLogger(t)
+
+	originalSpec := SessionSpec{
+		Mode:  omode.GrepClient,
+		Files: []string{"/var/log/app.log"},
+		Regex: "ERROR",
+	}
+	nextSpec := SessionSpec{
+		Mode:  omode.GrepClient,
+		Files: []string{"/var/log/next.log"},
+		Regex: "WARN",
+	}
+	originalArgs := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/var/log/app.log",
+		RegexStr: "ERROR",
+	}
+	nextArgs := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/var/log/next.log",
+		RegexStr: "WARN",
+	}
+
+	var reconnects atomic.Int32
+	client := &baseClient{
+		mu:          newBaseClientMu(),
+		Args:        originalArgs,
+		retry:       true,
+		sessionSpec: originalSpec,
+		stats: &stats{
+			connectionsEstCh: make(chan struct{}, 1),
+		},
+		connections: []connectors.Connector{
+			newReloadRetryConnector("srv1", originalSpec),
+		},
+		maker: &interactiveReloadMaker{},
+		connectionFactory: func(server string, _ []gossh.AuthMethod,
+			_ sshclient.HostKeyCallback, sessionSpec SessionSpec, _ bool) connectors.Connector {
+			reconnects.Add(1)
+			return newReloadRetryConnector(server, sessionSpec)
+		},
+	}
+
+	client.sleepFn = func(context.Context, time.Duration) bool {
+		return reconnects.Load() < 200
+	}
+
+	done := make(chan int, 1)
+	go func() {
+		done <- client.startConnection(context.Background(), 0, client.connections[0])
+	}()
+
+	for i := 0; i < 200; i++ {
+		if err := client.applyInteractiveReload(nextArgs, nextSpec); err != nil {
+			t.Fatalf("applyInteractiveReload() error = %v", err)
+		}
+		if err := client.applyInteractiveReload(originalArgs, originalSpec); err != nil {
+			t.Fatalf("applyInteractiveReload() error = %v", err)
+		}
+	}
+
+	if status := <-done; status != 0 {
+		t.Fatalf("startConnection() status = %d, want 0", status)
+	}
+}
+
+func newReloadRetryConnector(server string, spec SessionSpec) *reloadRetryConnector {
+	return &reloadRetryConnector{
+		interactiveReloadConnector: interactiveReloadConnector{
+			server:        server,
+			supported:     true,
+			committedSpec: spec,
+			liveSpec:      spec,
+			generation:    1,
+		},
+		handler: &retryTestHandler{},
+	}
+}
+
+type reloadRetryConnector struct {
+	interactiveReloadConnector
+	handler handlers.Handler
+}
+
+func (c *reloadRetryConnector) Handler() handlers.Handler { return c.handler }
 
 type retryTestConnector struct {
 	handler handlers.Handler

@@ -14,6 +14,7 @@ func TestMaprClientCommitSessionSpecResetsSharedState(t *testing.T) {
 	query := mustMaprClientQuery(t, "select count(status) from stats group by status")
 	client := &MaprClient{
 		baseClient: baseClient{
+			mu:   newBaseClientMu(),
 			Args: config.Args{Mode: omode.MapClient},
 		},
 		session: maprclient.NewSessionState(query),
@@ -70,6 +71,7 @@ func TestMaprClientCommitSessionSpecRejectsMissingQuery(t *testing.T) {
 	query := mustMaprClientQuery(t, "select count(status) from stats group by status")
 	client := &MaprClient{
 		baseClient: baseClient{
+			mu:   newBaseClientMu(),
 			Args: config.Args{Mode: omode.MapClient},
 		},
 		session: maprclient.NewSessionState(query),

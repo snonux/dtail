@@ -25,6 +25,7 @@ const (
 
 // This is the main client data structure.
 type baseClient struct {
+	mu *sync.RWMutex
 	config.Args
 	runtime *clientRuntimeBoundary
 	// To display client side stats
@@ -131,10 +132,11 @@ func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) 
 	go c.stats.Start(ctx, c.throttleCh, statsCh, c.Args.Quiet)
 
 	var wg sync.WaitGroup
-	wg.Add(len(c.connections))
+	connections := c.snapshotConnections()
+	wg.Add(len(connections))
 	var mutex sync.Mutex
 
-	for i, conn := range c.connections {
+	for i, conn := range connections {
 		go func(i int, conn connectors.Connector) {
 			defer wg.Done()
 			connStatus := c.startConnection(ctx, i, conn)
@@ -185,7 +187,7 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 
 		retryDelay = nextRetryDelay(retryDelay)
 		conn = c.makeConnection(conn.Server(), c.sshAuthMethods, c.hostKeyCallback)
-		c.connections[i] = conn
+		c.replaceConnection(i, conn)
 	}
 }
 
@@ -242,18 +244,24 @@ func newRetryRandom(seedOffset int) *rand.Rand {
 
 func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMethod,
 	hostKeyCallback client.HostKeyCallback) connectors.Connector {
+	args, sessionSpec := c.snapshotConnectionState()
+	return c.makeConnectionWithState(server, sshAuthMethods, hostKeyCallback, args, sessionSpec)
+}
+
+func (c *baseClient) makeConnectionWithState(server string, sshAuthMethods []gossh.AuthMethod,
+	hostKeyCallback client.HostKeyCallback, args config.Args, sessionSpec SessionSpec) connectors.Connector {
 	if c.connectionFactory != nil {
 		return c.connectionFactory(server, sshAuthMethods, hostKeyCallback,
-			c.sessionSpec, c.Args.InteractiveQuery)
+			sessionSpec, args.InteractiveQuery)
 	}
-	if c.Args.Serverless {
+	if args.Serverless {
 		return connectors.NewServerless(c.UserName, c.maker.makeHandler(server),
-			c.maker.makeCommands(), c.sessionSpec, c.Args.InteractiveQuery, c.runtime)
+			c.maker.makeCommands(), sessionSpec, args.InteractiveQuery, c.runtime)
 	}
 	return connectors.NewServerConnection(server, c.UserName, sshAuthMethods,
 		hostKeyCallback, c.maker.makeHandler(server), c.maker.makeCommands(),
-		c.sessionSpec, c.Args.InteractiveQuery, c.Args.SSHPrivateKeyFilePath,
-		c.Args.NoAuthKey, c.runtime)
+		sessionSpec, args.InteractiveQuery, args.SSHPrivateKeyFilePath,
+		args.NoAuthKey, c.runtime)
 }
 
 func (c *baseClient) sleepRetry(ctx context.Context, delay time.Duration) bool {
@@ -261,4 +269,56 @@ func (c *baseClient) sleepRetry(ctx context.Context, delay time.Duration) bool {
 		return c.sleepFn(ctx, delay)
 	}
 	return sleepWithContext(ctx, delay)
+}
+
+func (c *baseClient) snapshotConnectionState() (config.Args, SessionSpec) {
+	mu := c.stateMu()
+	mu.RLock()
+	defer mu.RUnlock()
+
+	return c.Args, c.sessionSpec
+}
+
+func (c *baseClient) snapshotMutableState() (config.Args, SessionSpec, []connectors.Connector) {
+	mu := c.stateMu()
+	mu.RLock()
+	defer mu.RUnlock()
+
+	return c.Args, c.sessionSpec, append([]connectors.Connector(nil), c.connections...)
+}
+
+func (c *baseClient) snapshotConnections() []connectors.Connector {
+	mu := c.stateMu()
+	mu.RLock()
+	defer mu.RUnlock()
+
+	return append([]connectors.Connector(nil), c.connections...)
+}
+
+func (c *baseClient) storeReloadState(args config.Args, spec SessionSpec) {
+	mu := c.stateMu()
+	mu.Lock()
+	defer mu.Unlock()
+
+	c.Args = args
+	c.sessionSpec = spec
+}
+
+func (c *baseClient) replaceConnection(i int, conn connectors.Connector) {
+	mu := c.stateMu()
+	mu.Lock()
+	defer mu.Unlock()
+
+	c.connections[i] = conn
+}
+
+func (c *baseClient) stateMu() *sync.RWMutex {
+	if c.mu == nil {
+		c.mu = newBaseClientMu()
+	}
+	return c.mu
+}
+
+func newBaseClientMu() *sync.RWMutex {
+	return &sync.RWMutex{}
 }

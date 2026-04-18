@@ -25,6 +25,7 @@ func NewGrepClient(args config.Args) (*GrepClient, error) {
 
 	c := GrepClient{
 		baseClient: baseClient{
+			mu:         newBaseClientMu(),
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      false,

@@ -24,6 +24,7 @@ func NewCatClient(args config.Args) (*CatClient, error) {
 
 	c := CatClient{
 		baseClient: baseClient{
+			mu:         newBaseClientMu(),
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      false,

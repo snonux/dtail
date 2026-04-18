@@ -19,6 +19,7 @@ func NewTailClient(args config.Args) (*TailClient, error) {
 	args.Mode = omode.TailClient
 	c := TailClient{
 		baseClient: baseClient{
+			mu:         newBaseClientMu(),
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      true,

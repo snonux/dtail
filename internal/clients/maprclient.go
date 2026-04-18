@@ -52,6 +52,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 
 	c := MaprClient{
 		baseClient: baseClient{
+			mu:         newBaseClientMu(),
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      retry,

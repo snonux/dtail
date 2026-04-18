@@ -88,6 +88,7 @@ func TestParseInteractiveCommandRejectsUnterminatedQuotes(t *testing.T) {
 
 func TestApplyInteractiveReloadRejectsUnsupportedConnections(t *testing.T) {
 	client := &baseClient{
+		mu: newBaseClientMu(),
 		Args: config.Args{
 			Mode:     omode.GrepClient,
 			What:     "/var/log/app.log",
@@ -139,6 +140,7 @@ func TestApplyInteractiveReloadRollsBackEarlyFailure(t *testing.T) {
 	maker := &interactiveReloadMaker{}
 
 	client := &baseClient{
+		mu:          newBaseClientMu(),
 		Args:        oldArgs,
 		sessionSpec: oldSpec,
 		connections: []connectors.Connector{connA, connB, connC},
@@ -214,6 +216,7 @@ func TestApplyInteractiveReloadRollsBackLateAckFailure(t *testing.T) {
 	}
 
 	client := &baseClient{
+		mu:          newBaseClientMu(),
 		Args:        oldArgs,
 		sessionSpec: oldSpec,
 		connections: []connectors.Connector{connA, connB, connC},
@@ -286,6 +289,7 @@ func TestApplyInteractiveReloadRollsBackLateAckFailureWithRealServerConnection(t
 	}
 
 	client := &baseClient{
+		mu:          newBaseClientMu(),
 		Args:        oldArgs,
 		sessionSpec: oldSpec,
 		connections: []connectors.Connector{connA, connB, connC},
@@ -332,6 +336,7 @@ func TestApplyInteractiveReloadCommitsSharedState(t *testing.T) {
 	maker := &interactiveReloadMaker{}
 
 	client := &baseClient{
+		mu: newBaseClientMu(),
 		Args: config.Args{
 			Mode:     omode.MapClient,
 			What:     "/var/log/app.log",
@@ -391,6 +396,7 @@ func TestApplyInteractiveReloadRejectsMismatchedCommittedGenerations(t *testing.
 	maker := &interactiveReloadMaker{}
 
 	client := &baseClient{
+		mu: newBaseClientMu(),
 		Args: config.Args{
 			Mode:     omode.GrepClient,
 			What:     "/var/log/app.log",
