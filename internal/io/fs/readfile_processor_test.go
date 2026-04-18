@@ -120,6 +120,8 @@ func TestStartWithProcessorOptimizedPropagatesProcessError(t *testing.T) {
 }
 
 func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
+	resetCommonLogger(t)
+
 	filePath := writeProcessorTestFile(t, "abcdef\n")
 	re := regex.NewNoop()
 
@@ -138,6 +140,44 @@ func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
 	want := []string{"abc", "def\n"}
 	if !reflect.DeepEqual(processor.lines, want) {
 		t.Fatalf("unexpected processed lines: got=%v want=%v", processor.lines, want)
+	}
+}
+
+func TestStartWithProcessorOptimizedWaitsOnLiveLongLineWarningUntilCanceled(t *testing.T) {
+	resetCommonLogger(t)
+
+	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
+	re := regex.NewNoop()
+
+	cat := NewCatFile(filePath, "glob-id", make(chan string), 1)
+	processor := &captureProcessor{}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cat.readFile.StartWithProcessorOptimized(
+			ctx,
+			lcontext.LContext{},
+			processor,
+			re,
+		)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("optimized reader returned before cancellation: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected canceled optimized reader to stop with nil or context.Canceled, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("optimized reader did not return after cancellation")
 	}
 }
 

@@ -42,8 +42,11 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	// Ensure we return the buffer to the pool when done
 	defer pool.PutScannerBuffer(bufPtr)
 
-	// Use custom split function that preserves line endings
-	scanner.Split(f.scanLinesPreserveEndings)
+	// Use the cancellation-aware split function so long-line warnings can be
+	// abandoned if the caller cancels while the reader is blocked.
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		return f.scanLinesWithMaxLength(ctx, data, atEOF)
+	})
 
 	// Track truncation checks
 	lastTruncateCheck := time.Now()
@@ -169,7 +172,7 @@ func (f *readFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEO
 		}
 		// We have a full line within the limit
 		f.warnedAboutLongLine = false // Reset warning for next long line sequence
-		return i + 1, data[0:i], nil
+		return i + 1, data[0 : i+1], nil
 	}
 
 	// If we're at EOF, we have a final, non-terminated line
