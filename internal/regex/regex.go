@@ -216,7 +216,7 @@ func Deserialize(str string) (Regex, error) {
 			}
 			flag, err := NewFlag(flagStr)
 			if err != nil {
-				continue
+				return Regex{}, fmt.Errorf("unknown regex flag %q: %w", flagStr, err)
 			}
 			flags = append(flags, flag)
 		}
