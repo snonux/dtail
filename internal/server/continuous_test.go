@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
-func TestContinuousRunJobReleasesDayChangeWatcherAfterEachRun(t *testing.T) {
+func TestContinuousRunJobsReleasesDayChangeWatcherAcrossRetries(t *testing.T) {
 	dlog.Server = &dlog.DLog{}
 
 	c := newContinuous(config.RuntimeConfig{
@@ -19,45 +20,70 @@ func TestContinuousRunJobReleasesDayChangeWatcherAfterEachRun(t *testing.T) {
 			SSHBindAddress: "127.0.0.1",
 		},
 	})
+	c.retryInterval = 10 * time.Millisecond
 
 	var started int32
-	var active int32
 	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (continuousClient, error) {
-		return fakeContinuousClient{}, nil
-	}
-	c.dayChangeWatcher = func(ctx context.Context) bool {
-		atomic.AddInt32(&started, 1)
-		atomic.AddInt32(&active, 1)
-		defer atomic.AddInt32(&active, -1)
-
-		<-ctx.Done()
-		return true
+		return fakeContinuousClient{started: &started}, nil
 	}
 
-	job := &config.Continuous{}
+	job := config.Continuous{}
 	job.Enable = true
 	job.RestartOnDayChange = true
+	c.cfg.Server.Continuous = []config.Continuous{job}
 
-	for i := 0; i < 10; i++ {
-		c.runJob(context.Background(), job)
+	time.Sleep(20 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		c.runJobs(ctx)
+		close(done)
+	}()
+
+	waitForCounterAtLeast(t, func() int32 {
+		return atomic.LoadInt32(&started)
+	}, 5)
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("continuous job runner did not stop after cancellation")
 	}
 
-	waitForCounter(t, func() int32 {
-		return atomic.LoadInt32(&started)
-	}, 10)
-	waitForCounter(t, func() int32 {
-		return atomic.LoadInt32(&active)
-	}, 0)
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if delta := runtime.NumGoroutine() - baseline; delta <= 4 {
+			return
+		}
+
+		select {
+		case <-deadline.C:
+			t.Fatalf("watcher goroutines leaked: delta=%d", runtime.NumGoroutine()-baseline)
+		case <-ticker.C:
+		}
+	}
 }
 
-type fakeContinuousClient struct{}
+type fakeContinuousClient struct {
+	started *int32
+}
 
-func (fakeContinuousClient) Start(context.Context, <-chan string) int {
+func (f fakeContinuousClient) Start(context.Context, <-chan string) int {
+	atomic.AddInt32(f.started, 1)
 	time.Sleep(5 * time.Millisecond)
 	return 0
 }
 
-func waitForCounter(t *testing.T, current func() int32, want int32) {
+func waitForCounterAtLeast(t *testing.T, current func() int32, min int32) {
 	t.Helper()
 
 	deadline := time.NewTimer(2 * time.Second)
@@ -67,13 +93,13 @@ func waitForCounter(t *testing.T, current func() int32, want int32) {
 	defer ticker.Stop()
 
 	for {
-		if current() == want {
+		if current() >= min {
 			return
 		}
 
 		select {
 		case <-deadline.C:
-			t.Fatalf("timed out waiting for counter to reach %d, got %d", want, current())
+			t.Fatalf("timed out waiting for counter to reach %d, got %d", min, current())
 		case <-ticker.C:
 		}
 	}

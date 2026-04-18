@@ -21,10 +21,12 @@ type continuous struct {
 	cfg              config.RuntimeConfig
 	newMaprClient    func(config.Args, clients.MaprClientMode) (continuousClient, error)
 	dayChangeWatcher func(context.Context) bool
+	retryInterval    time.Duration
 }
 
 func newContinuous(cfg config.RuntimeConfig) *continuous {
 	c := &continuous{cfg: cfg}
+	c.retryInterval = time.Minute
 	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (continuousClient, error) {
 		return clients.NewMaprClient(args, mode)
 	}
@@ -47,11 +49,11 @@ func (c *continuous) runJobs(ctx context.Context) {
 		}
 		go func(job *config.Continuous) {
 			c.runJob(ctx, job)
-			retryTicker := time.NewTicker(time.Minute)
+			retryTicker := time.NewTicker(c.retryInterval)
 			defer retryTicker.Stop()
 			for {
 				select {
-				// Retry after a minute.
+				// Retry after the configured interval.
 				case <-retryTicker.C:
 					c.runJob(ctx, job)
 				case <-ctx.Done():
