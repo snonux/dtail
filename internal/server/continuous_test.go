@@ -116,6 +116,58 @@ func TestContinuousRunJobsReleasesDayChangeWatcherAcrossRetries(t *testing.T) {
 	}
 }
 
+func TestContinuousWaitForDayChangeDetectsMonthBoundary(t *testing.T) {
+	dlog.Server = &dlog.DLog{}
+
+	c := newContinuous(config.RuntimeConfig{})
+
+	start := time.Date(2026, time.January, 31, 23, 59, 59, 0, time.UTC)
+	sameDay := time.Date(2026, time.January, 31, 23, 59, 59, 500_000_000, time.UTC)
+	nextDay := time.Date(2026, time.February, 1, 0, 0, 0, 0, time.UTC)
+
+	var nowCalls int32
+	c.now = func() time.Time {
+		switch atomic.AddInt32(&nowCalls, 1) {
+		case 1:
+			return start
+		case 2:
+			return sameDay
+		default:
+			return nextDay
+		}
+	}
+
+	tickCh := make(chan time.Time, 2)
+	c.newTicker = func(time.Duration) (<-chan time.Time, func()) {
+		return tickCh, func() {}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	result := make(chan bool, 1)
+	go func() {
+		result <- c.waitForDayChange(ctx)
+	}()
+
+	tickCh <- start
+	select {
+	case got := <-result:
+		t.Fatalf("waitForDayChange returned after same-day tick: %v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	tickCh <- nextDay
+	select {
+	case got := <-result:
+		if !got {
+			t.Fatal("waitForDayChange returned false after the month boundary tick")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for waitForDayChange to detect the month boundary")
+	}
+}
+
 type blockingContinuousClient struct {
 	started chan<- struct{}
 	release <-chan struct{}

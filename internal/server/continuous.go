@@ -22,11 +22,18 @@ type continuous struct {
 	newMaprClient    func(config.Args, clients.MaprClientMode) (continuousClient, error)
 	dayChangeWatcher func(context.Context) bool
 	retryInterval    time.Duration
+	now              func() time.Time
+	newTicker        func(time.Duration) (<-chan time.Time, func())
 }
 
 func newContinuous(cfg config.RuntimeConfig) *continuous {
 	c := &continuous{cfg: cfg}
 	c.retryInterval = time.Minute
+	c.now = time.Now
+	c.newTicker = func(d time.Duration) (<-chan time.Time, func()) {
+		ticker := time.NewTicker(d)
+		return ticker.C, ticker.Stop
+	}
 	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (continuousClient, error) {
 		return clients.NewMaprClient(args, mode)
 	}
@@ -113,13 +120,13 @@ func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 }
 
 func (c *continuous) waitForDayChange(ctx context.Context) bool {
-	startTime := time.Now()
-	checkTicker := time.NewTicker(time.Second)
-	defer checkTicker.Stop()
+	startTime := c.now()
+	tickCh, stop := c.newTicker(time.Second)
+	defer stop()
 	for {
 		select {
-		case <-checkTicker.C:
-			if !sameCalendarDay(time.Now(), startTime) {
+		case <-tickCh:
+			if !sameCalendarDay(c.now(), startTime) {
 				return true
 			}
 		case <-ctx.Done():
