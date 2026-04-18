@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -108,18 +109,38 @@ func (a *Args) SerializeOptions() string {
 		options["after"] = fmt.Sprintf("%d", a.LContext.AfterContext)
 	}
 
+	return serializeOptions(options)
+}
+
+func serializeOptions(options map[string]string) string {
+	if len(options) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(options))
+	for k := range options {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	var sb strings.Builder
-	var i int
-	for k, v := range options {
+	for i, k := range keys {
 		if i > 0 {
 			sb.WriteString(":")
 		}
 		sb.WriteString(k)
 		sb.WriteString("=")
-		sb.WriteString(v)
-		i++
+		sb.WriteString(serializeOptionValue(options[k]))
 	}
 	return sb.String()
+}
+
+func serializeOptionValue(value string) string {
+	if strings.ContainsAny(value, ":=|") || strings.HasPrefix(value, "base64%") {
+		return "base64%" + base64.StdEncoding.EncodeToString([]byte(value))
+	}
+
+	return value
 }
 
 // DeserializeOptions deserializes the options, but into a map.
