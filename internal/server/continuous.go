@@ -13,12 +13,23 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
+type continuousClient interface {
+	Start(context.Context, <-chan string) int
+}
+
 type continuous struct {
-	cfg config.RuntimeConfig
+	cfg              config.RuntimeConfig
+	newMaprClient    func(config.Args, clients.MaprClientMode) (continuousClient, error)
+	dayChangeWatcher func(context.Context) bool
 }
 
 func newContinuous(cfg config.RuntimeConfig) *continuous {
-	return &continuous{cfg: cfg}
+	c := &continuous{cfg: cfg}
+	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (continuousClient, error) {
+		return clients.NewMaprClient(args, mode)
+	}
+	c.dayChangeWatcher = c.waitForDayChange
+	return c
 }
 
 func (c *continuous) start(ctx context.Context) {
@@ -72,7 +83,7 @@ func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(job.Name))
 	args.QueryStr = fmt.Sprintf("%s outfile %s", job.Query, outfile)
-	client, err := clients.NewMaprClient(args, clients.NonCumulativeMode)
+	client, err := c.newMaprClient(args, clients.NonCumulativeMode)
 	if err != nil {
 		dlog.Server.Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
 		return
@@ -82,7 +93,7 @@ func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 	defer cancel()
 	if job.RestartOnDayChange {
 		go func() {
-			if c.waitForDayChange(ctx) {
+			if c.dayChangeWatcher(jobCtx) {
 				dlog.Server.Info(fmt.Sprintf("Canceling job %s due to day change", job.Name))
 				cancel()
 			}
