@@ -60,6 +60,32 @@ func TestSerializeOptionsRoundTripsReservedValues(t *testing.T) {
 	}
 }
 
+func TestDeserializeOptionsAcceptsRawSerializedBlob(t *testing.T) {
+	unsafeValue := "a:b=c|d"
+	serialized := serializeOptions(map[string]string{
+		"note":  unsafeValue,
+		"plain": "true",
+		"quiet": "false",
+	})
+
+	options, ltx, err := DeserializeOptions([]string{serialized})
+	if err != nil {
+		t.Fatalf("DeserializeOptions failed: %v", err)
+	}
+	if ltx != (lcontext.LContext{}) {
+		t.Fatalf("unexpected lcontext: %#v", ltx)
+	}
+	if options["note"] != unsafeValue {
+		t.Fatalf("expected note to round-trip, got %q", options["note"])
+	}
+	if options["plain"] != "true" {
+		t.Fatalf("expected plain to round-trip, got %q", options["plain"])
+	}
+	if options["quiet"] != "false" {
+		t.Fatalf("expected quiet to round-trip, got %q", options["quiet"])
+	}
+}
+
 func lcontextForTest(max, before, after int) lcontext.LContext {
 	return lcontext.LContext{
 		MaxCount:      max,

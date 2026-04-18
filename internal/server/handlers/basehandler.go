@@ -252,7 +252,7 @@ func (h *baseHandler) handleCommand(commandStr string) {
 }
 
 func (h *baseHandler) dispatchCommand(ctx context.Context, args []string, argc int) error {
-	parts := strings.Split(args[0], ":")
+	parts := strings.SplitN(args[0], ":", 2)
 	commandName := parts[0]
 
 	// Either no options or empty options provided.
@@ -261,7 +261,7 @@ func (h *baseHandler) dispatchCommand(ctx context.Context, args []string, argc i
 		return nil
 	}
 
-	options, ltx, err := config.DeserializeOptions(parts[1:])
+	options, ltx, err := config.DeserializeOptions([]string{parts[1]})
 	if err != nil {
 		return err
 	}

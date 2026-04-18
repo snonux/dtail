@@ -148,6 +148,14 @@ func DeserializeOptions(opts []string) (map[string]string, lcontext.LContext, er
 	options := make(map[string]string, len(opts))
 	var ltx lcontext.LContext
 
+	if len(opts) == 1 {
+		raw := strings.TrimSpace(opts[0])
+		if raw == "" {
+			return options, ltx, nil
+		}
+		opts = strings.Split(raw, ":")
+	}
+
 	for _, o := range opts {
 		kv := strings.SplitN(o, "=", 2)
 		if len(kv) != 2 {
