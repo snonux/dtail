@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 
 	"github.com/mimecast/dtail/internal/cli"
@@ -20,6 +21,7 @@ import (
 // The evil begins here.
 func main() {
 	var displayVersion bool
+	var legacyAuthKeyPath string
 	var pprof string
 	var profileFlags profiling.Flags
 
@@ -47,8 +49,7 @@ func main() {
 	flag.StringVar(&args.LogDir, "logDir", "~/log", "Log dir")
 	flag.StringVar(&args.Logger, "logger", config.DefaultClientLogger, "Logger name")
 	flag.StringVar(&args.LogLevel, "logLevel", config.DefaultLogLevel, "Log level")
-	flag.StringVar(&args.SSHPrivateKeyFilePath, "key", "", "Path to private key")
-	flag.StringVar(&args.SSHPrivateKeyFilePath, "auth-key-path", "", "Path to auth key/private key (default ~/.ssh/id_rsa)")
+	cli.BindAuthKeyFlags(flag.CommandLine, &legacyAuthKeyPath, &args)
 	flag.StringVar(&args.QueryStr, "query", "", "Map reduce query")
 	flag.StringVar(&args.ServersStr, "servers", "", "Remote servers to connect")
 	flag.StringVar(&args.UserName, "user", userName, "Your system user name")
@@ -59,6 +60,9 @@ func main() {
 	profiling.AddFlags(&profileFlags)
 
 	flag.Parse()
+	if warning := cli.ApplyAuthKeyPathCompatibility(&args, legacyAuthKeyPath, cli.FlagWasSet("auth-key-path")); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
+	}
 	config.Setup(source.Client, &args, flag.Args())
 
 	if displayVersion {
