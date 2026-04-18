@@ -412,48 +412,7 @@ func TestTurboChannelWriter_Stats(t *testing.T) {
 	}
 }
 
-func TestTurboNetworkWriterStopsWaitingWhenGenerationBecomesStale(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
-
-	turboLines := make(chan []byte, 1)
-	turboLines <- []byte("occupied")
-
-	var activeGeneration atomic.Uint64
-	activeGeneration.Store(1)
-
-	writer := &TurboNetworkWriter{
-		turboLines: turboLines,
-		generation: 1,
-		activeGeneration: func() uint64 {
-			return activeGeneration.Load()
-		},
-	}
-
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		activeGeneration.Store(2)
-	}()
-
-	done := make(chan error, 1)
-	go func() {
-		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("WriteLineData returned unexpected error: %v", err)
-		}
-	case <-time.After(150 * time.Millisecond):
-		t.Fatal("WriteLineData did not stop after the generation became stale")
-	}
-}
-
-func TestTurboNetworkWriterFlushDoesNotBlockWhenSendWaitsOnFullChannel(t *testing.T) {
+func TestTurboNetworkWriterWriteLineDataStopsOnCancellation(t *testing.T) {
 	originalLogger := dlog.Server
 	dlog.Server = &dlog.DLog{}
 	t.Cleanup(func() {
@@ -467,21 +426,102 @@ func TestTurboNetworkWriterFlushDoesNotBlockWhenSendWaitsOnFullChannel(t *testin
 	activeGeneration.Store(1)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
 	writer := &TurboNetworkWriter{
-		turboLines: turboLines,
-		generation: 1,
-		ctx:        ctx,
+		turboLines:  turboLines,
+		plain:       true,
+		generation:  1,
+		ctx:         ctx,
+		sendStateCh: make(chan struct{}),
 		activeGeneration: func() uint64 {
 			return activeGeneration.Load()
 		},
 	}
 
-	writeDone := make(chan error, 1)
 	go func() {
-		writeDone <- writer.WriteLineData([]byte("blocked line"), 1, "app.log")
+		time.Sleep(10 * time.Millisecond)
+		cancel()
 	}()
 
-	time.Sleep(10 * time.Millisecond)
+	done := make(chan error, 1)
+	go func() {
+		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
+	}()
+
+	select {
+	case err := <-done:
+		if err != context.Canceled {
+			t.Fatalf("WriteLineData returned unexpected error: %v", err)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("WriteLineData did not stop after cancellation")
+	}
+}
+
+func waitForTurboNetworkWriterSending(t *testing.T, writer *TurboNetworkWriter, want bool) {
+	t.Helper()
+
+	deadline := time.After(250 * time.Millisecond)
+	for {
+		writer.mutex.Lock()
+		got := writer.sending
+		writer.mutex.Unlock()
+
+		if got == want {
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for sending=%v", want)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+func TestTurboNetworkWriterFlushWaitsForBufferedDataAndInFlightSend(t *testing.T) {
+	originalLogger := dlog.Server
+	dlog.Server = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Server = originalLogger
+	})
+
+	turboLines := make(chan []byte, 1)
+	turboLines <- []byte("occupied")
+
+	var activeGeneration atomic.Uint64
+	activeGeneration.Store(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	writer := &TurboNetworkWriter{
+		turboLines:  turboLines,
+		plain:       true,
+		generation:  1,
+		ctx:         ctx,
+		bufSize:     8,
+		sendStateCh: make(chan struct{}),
+		activeGeneration: func() uint64 {
+			return activeGeneration.Load()
+		},
+	}
+
+	if err := writer.WriteLineData([]byte("first"), 1, "app.log"); err != nil {
+		t.Fatalf("first WriteLineData failed: %v", err)
+	}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		writeDone <- writer.WriteLineData([]byte("second"), 2, "app.log")
+	}()
+
+	waitForTurboNetworkWriterSending(t, writer, true)
+
+	if err := writer.WriteLineData([]byte("third"), 3, "app.log"); err != nil {
+		t.Fatalf("third WriteLineData failed: %v", err)
+	}
 
 	flushDone := make(chan error, 1)
 	go func() {
@@ -490,22 +530,122 @@ func TestTurboNetworkWriterFlushDoesNotBlockWhenSendWaitsOnFullChannel(t *testin
 
 	select {
 	case err := <-flushDone:
+		t.Fatalf("Flush returned early while buffered data was still blocked: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	select {
+	case got := <-turboLines:
+		if string(got) != "occupied" {
+			t.Fatalf("expected to drain occupied buffer first, got %q", string(got))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out draining occupied turbo channel entry")
+	}
+
+	select {
+	case got := <-turboLines:
+		generation, payload := decodeGeneratedBytes(got)
+		if generation != 1 {
+			t.Fatalf("expected generation 1, got %d", generation)
+		}
+		expected := []byte{'f', 'i', 'r', 's', 't', protocol.MessageDelimiter, 's', 'e', 'c', 'o', 'n', 'd', protocol.MessageDelimiter}
+		if !bytes.Equal(payload, expected) {
+			t.Fatalf("expected buffered send to contain first and second lines, got %q", string(payload))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for buffered send to reach turbo channel")
+	}
+
+	select {
+	case err := <-writeDone:
+		if err != nil {
+			t.Fatalf("WriteLineData returned unexpected error: %v", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("second WriteLineData did not finish after the channel drained")
+	}
+
+	select {
+	case got := <-turboLines:
+		generation, payload := decodeGeneratedBytes(got)
+		if generation != 1 {
+			t.Fatalf("expected generation 1, got %d", generation)
+		}
+		expected := []byte{'t', 'h', 'i', 'r', 'd', protocol.MessageDelimiter}
+		if !bytes.Equal(payload, expected) {
+			t.Fatalf("expected buffered flush to send third line, got %q", string(payload))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out waiting for buffered Flush output")
+	}
+
+	select {
+	case err := <-flushDone:
 		if err != nil {
 			t.Fatalf("Flush returned unexpected error: %v", err)
 		}
 	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Flush blocked behind the waiting turbo send")
+		t.Fatal("Flush did not return after buffered data was drained")
+	}
+}
+
+func TestTurboNetworkWriterStopsWaitingWhenContextIsCancelled(t *testing.T) {
+	originalLogger := dlog.Server
+	dlog.Server = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Server = originalLogger
+	})
+
+	turboLines := make(chan []byte, 1)
+	turboLines <- []byte("occupied")
+
+	var activeGeneration atomic.Uint64
+	activeGeneration.Store(1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	writer := &TurboNetworkWriter{
+		turboLines:  turboLines,
+		plain:       true,
+		generation:  1,
+		ctx:         ctx,
+		sendStateCh: make(chan struct{}),
+		activeGeneration: func() uint64 {
+			return activeGeneration.Load()
+		},
 	}
 
+	done := make(chan error, 1)
+	go func() {
+		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
+	}()
+
+	waitForTurboNetworkWriterSending(t, writer, true)
 	cancel()
 
 	select {
-	case err := <-writeDone:
+	case err := <-done:
 		if err != context.Canceled {
 			t.Fatalf("WriteLineData returned unexpected error: %v", err)
 		}
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(150 * time.Millisecond):
 		t.Fatal("WriteLineData did not stop after cancellation")
+	}
+
+	select {
+	case got := <-turboLines:
+		if string(got) != "occupied" {
+			t.Fatalf("expected to drain occupied buffer first, got %q", string(got))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("timed out draining occupied turbo channel entry")
+	}
+
+	select {
+	case got := <-turboLines:
+		t.Fatalf("unexpected stale output after cancellation: %q", string(got))
+	default:
 	}
 }
 

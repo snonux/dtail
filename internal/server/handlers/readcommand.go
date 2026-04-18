@@ -425,6 +425,7 @@ func (r *readCommand) makeTurboWriter(ctx context.Context) TurboWriter {
 		serverless:       r.server.Serverless(),
 		generation:       r.generation,
 		ctx:              ctx,
+		sendStateCh:      make(chan struct{}),
 		activeGeneration: r.server.ActiveSessionGeneration,
 	}
 }

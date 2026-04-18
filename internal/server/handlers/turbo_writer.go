@@ -365,9 +365,11 @@ type TurboNetworkWriter struct {
 	ctx            context.Context
 
 	// Internal buffer for batching writes
-	writeBuf bytes.Buffer
-	bufSize  int
-	mutex    sync.Mutex
+	writeBuf    bytes.Buffer
+	bufSize     int
+	mutex       sync.Mutex
+	sendStateCh chan struct{}
+	sending     bool
 
 	// Stats
 	linesWritten uint64
@@ -384,7 +386,7 @@ func (w *TurboNetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, s
 	}
 	w.mutex.Lock()
 
-	dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "lineNum", lineNum, "sourceID", sourceID, "contentLen", len(lineContent))
+	turboWriterTrace("TurboNetworkWriter.WriteLineData", "lineNum", lineNum, "sourceID", sourceID, "contentLen", len(lineContent))
 
 	if !w.plain && !w.serverless {
 		formatRemoteLine(&w.writeBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID, lineContent)
@@ -397,21 +399,86 @@ func (w *TurboNetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, s
 	w.linesWritten++
 	w.bytesWritten += uint64(w.writeBuf.Len())
 
-	dlog.Server.Trace("TurboNetworkWriter.WriteLineData", "linesWritten", w.linesWritten, "bytesWritten", w.bytesWritten, "bufSize", w.writeBuf.Len())
+	turboWriterTrace("TurboNetworkWriter.WriteLineData", "linesWritten", w.linesWritten, "bytesWritten", w.bytesWritten, "bufSize", w.writeBuf.Len())
+
+	if w.writeBuf.Len() < w.bufSize || w.sending {
+		w.mutex.Unlock()
+		return nil
+	}
 
 	data := append([]byte(nil), w.writeBuf.Bytes()...)
 	w.writeBuf.Reset()
+	w.markSendingLocked()
 	w.mutex.Unlock()
 
+	return w.sendBufferedData(data)
+}
+
+// sendBufferedData sends buffered data to the turbo channel while tracking the
+// in-flight send state so Flush can wait for completion without holding the mutex.
+func (w *TurboNetworkWriter) sendBufferedData(data []byte) error {
+	defer w.finishSending()
 	return w.sendToTurboChannel(data)
 }
 
+func (w *TurboNetworkWriter) ensureSendStateChLocked() {
+	if w.sendStateCh == nil {
+		w.sendStateCh = make(chan struct{})
+	}
+}
+
+func (w *TurboNetworkWriter) markSendingLocked() {
+	w.ensureSendStateChLocked()
+	w.sending = true
+}
+
+func (w *TurboNetworkWriter) finishSending() {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+
+	if !w.sending {
+		return
+	}
+
+	oldCh := w.sendStateCh
+	w.sendStateCh = make(chan struct{})
+	w.sending = false
+
+	if oldCh != nil {
+		close(oldCh)
+	}
+}
+
+func (w *TurboNetworkWriter) waitForSendAvailability(ctx context.Context) error {
+	for {
+		w.mutex.Lock()
+		if !w.sending {
+			w.mutex.Unlock()
+			return nil
+		}
+
+		stateCh := w.sendStateCh
+		w.mutex.Unlock()
+
+		select {
+		case <-stateCh:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
 // sendToTurboChannel sends buffered data to the turbo channel.
-// The mutex is released before blocking on the channel so Flush and other writers
-// can continue making progress while this writer waits for capacity.
+// It blocks only on the channel send itself and exits promptly when the
+// request context is canceled.
 func (w *TurboNetworkWriter) sendToTurboChannel(data []byte) error {
 	if w.turboLines == nil {
-		dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "turboLines channel is nil")
+		turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "turboLines channel is nil")
+		return nil
+	}
+
+	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
+		turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "generation became stale before send")
 		return nil
 	}
 
@@ -421,23 +488,20 @@ func (w *TurboNetworkWriter) sendToTurboChannel(data []byte) error {
 		ctx = context.Background()
 	}
 
-	dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sending to turboLines channel", "dataLen", len(data))
+	turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "sending to turboLines channel", "dataLen", len(data))
 
-	for {
-		if !shouldWriteGeneration(w.generation, w.activeGeneration) {
-			dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "generation became stale while waiting to send")
-			return nil
-		}
+	if err := ctx.Err(); err != nil {
+		turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "context already cancelled before send", "err", err)
+		return err
+	}
 
-		select {
-		case w.turboLines <- encoded:
-			dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "sent to channel successfully")
-			return nil
-		case <-ctx.Done():
-			dlog.Server.Trace("TurboNetworkWriter.sendToTurboChannel", "context cancelled while waiting to send")
-			return ctx.Err()
-		case <-time.After(time.Millisecond):
-		}
+	select {
+	case w.turboLines <- encoded:
+		turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "sent to channel successfully")
+		return nil
+	case <-ctx.Done():
+		turboWriterTrace("TurboNetworkWriter.sendToTurboChannel", "context cancelled while waiting to send")
+		return ctx.Err()
 	}
 }
 
@@ -461,51 +525,51 @@ func (w *TurboNetworkWriter) WriteServerMessage(message string) error {
 
 // Flush ensures all data is written
 func (w *TurboNetworkWriter) Flush() error {
-	dlog.Server.Trace("TurboNetworkWriter.Flush", "called")
+	turboWriterTrace("TurboNetworkWriter.Flush", "called")
 
-	w.mutex.Lock()
-	var data []byte
-
-	// If we have any buffered data, send it now
-	if w.writeBuf.Len() > 0 {
-		dlog.Server.Trace("TurboNetworkWriter.Flush", "flushing buffered data", "bufSize", w.writeBuf.Len())
-
-		data = append([]byte(nil), w.writeBuf.Bytes()...)
-		w.writeBuf.Reset()
+	ctx := w.ctx
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	w.mutex.Unlock()
 
-	if len(data) > 0 && w.turboLines != nil {
-		if err := w.sendToTurboChannel(data); err != nil {
+	for {
+		if err := w.waitForSendAvailability(ctx); err != nil {
 			return err
 		}
-		dlog.Server.Trace("TurboNetworkWriter.Flush", "flushed data to channel")
-	}
 
-	// Wait for the channel to have some space to ensure data is being processed
-	// Don't close the EOF channel here as it may be used for multiple files
-	if w.turboLines != nil {
-		// Wait until channel has been drained somewhat
-		for i := 0; i < 100 && len(w.turboLines) > 900; i++ {
-			if !shouldWriteGeneration(w.generation, w.activeGeneration) {
-				return nil
-			}
-			dlog.Server.Trace("TurboNetworkWriter.Flush", "waiting for channel to drain", "channelLen", len(w.turboLines))
-			if !waitForGenerationRetry(w.generation, w.activeGeneration, 10*time.Millisecond) {
-				return nil
-			}
+		w.mutex.Lock()
+		if w.sending {
+			w.mutex.Unlock()
+			continue
 		}
-		dlog.Server.Trace("TurboNetworkWriter.Flush", "channel status", "channelLen", len(w.turboLines))
+		if w.writeBuf.Len() == 0 {
+			w.mutex.Unlock()
+			break
+		}
+
+		turboWriterTrace("TurboNetworkWriter.Flush", "flushing buffered data", "bufSize", w.writeBuf.Len())
+
+		data := append([]byte(nil), w.writeBuf.Bytes()...)
+		w.writeBuf.Reset()
+		w.markSendingLocked()
+		w.mutex.Unlock()
+
+		if err := w.sendBufferedData(data); err != nil {
+			return err
+		}
+		turboWriterTrace("TurboNetworkWriter.Flush", "flushed data to channel")
 	}
 
-	// Wait a bit to ensure data is processed
-	// This is crucial for integration tests
-	if !waitForGenerationRetry(w.generation, w.activeGeneration, 10*time.Millisecond) {
-		return nil
-	}
-	dlog.Server.Trace("TurboNetworkWriter.Flush", "completed")
+	turboWriterTrace("TurboNetworkWriter.Flush", "completed")
 
 	return nil
+}
+
+func turboWriterTrace(args ...interface{}) {
+	if dlog.Server == nil {
+		return
+	}
+	dlog.Server.Trace(args...)
 }
 
 func shouldWriteGeneration(generation uint64, activeGeneration func() uint64) bool {
@@ -555,7 +619,7 @@ func NewDirectLineProcessor(writer TurboWriter, globID string) *DirectLineProces
 func (p *DirectLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uint64, sourceID string) error {
 	p.lineCount++
 
-	dlog.Server.Trace("DirectLineProcessor.ProcessLine", "lineCount", p.lineCount, "lineNum", lineNum, "sourceID", sourceID)
+	turboWriterTrace("DirectLineProcessor.ProcessLine", "lineCount", p.lineCount, "lineNum", lineNum, "sourceID", sourceID)
 
 	// Write directly to output
 	err := p.writer.WriteLineData(lineContent.Bytes(), lineNum, sourceID)
@@ -568,12 +632,12 @@ func (p *DirectLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uin
 
 // Flush ensures all data is written
 func (p *DirectLineProcessor) Flush() error {
-	dlog.Server.Trace("DirectLineProcessor.Flush", "lineCount", p.lineCount)
+	turboWriterTrace("DirectLineProcessor.Flush", "lineCount", p.lineCount)
 	return p.writer.Flush()
 }
 
 // Close flushes any remaining data
 func (p *DirectLineProcessor) Close() error {
-	dlog.Server.Trace("DirectLineProcessor.Close", "lineCount", p.lineCount)
+	turboWriterTrace("DirectLineProcessor.Close", "lineCount", p.lineCount)
 	return p.writer.Flush()
 }
