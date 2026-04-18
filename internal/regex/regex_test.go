@@ -4,6 +4,18 @@ import (
 	"testing"
 )
 
+func TestZeroValueRegexDoesNotPanic(t *testing.T) {
+	var r Regex
+
+	if got := r.Match([]byte("anything")); !got {
+		t.Fatalf("zero-value Regex should behave like a no-op match, got %v", got)
+	}
+
+	if got := r.MatchString("anything"); !got {
+		t.Fatalf("zero-value Regex should behave like a no-op match, got %v", got)
+	}
+}
+
 func TestRegex(t *testing.T) {
 	input := "hello"
 

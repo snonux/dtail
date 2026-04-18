@@ -98,6 +98,10 @@ func new(regexStr string, flags []Flag) (Regex, error) {
 
 // Match a byte string.
 func (r Regex) Match(b []byte) bool {
+	if len(r.flags) == 0 {
+		return true
+	}
+
 	// Use optimized literal matching if possible
 	if r.isLiteral {
 		switch r.flags[0] {
@@ -127,6 +131,10 @@ func (r Regex) Match(b []byte) bool {
 
 // MatchString matches a string.
 func (r Regex) MatchString(str string) bool {
+	if len(r.flags) == 0 {
+		return true
+	}
+
 	// Use optimized literal matching if possible
 	if r.isLiteral {
 		switch r.flags[0] {
@@ -213,13 +221,13 @@ func Deserialize(str string) (Regex, error) {
 			flags = append(flags, flag)
 		}
 	}
-	
+
 	// Create the regex with proper literal detection
 	r, err := new(regexStr, flags)
 	if err != nil {
 		return r, err
 	}
-	
+
 	// If the serialized form indicated it was literal, ensure we treat it as such
 	// This maintains consistency across client-server communication
 	if forceLiteral && !r.isLiteral {
@@ -230,6 +238,6 @@ func Deserialize(str string) (Regex, error) {
 		r.literalStr = regexStr
 		r.literalBytes = []byte(regexStr)
 	}
-	
+
 	return r, nil
 }
