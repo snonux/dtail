@@ -47,7 +47,7 @@ func TestAuthKeyStorePermissions(t *testing.T) {
 	}
 }
 
-func TestVerifyAuthorizedKeysSkipsMalformedLine(t *testing.T) {
+func TestVerifyAuthorizedKeysSkipsMalformedLineWithoutParserProgress(t *testing.T) {
 	user := testServerUser(t, "alice")
 	firstKey := testPublicKey(t, 41)
 	secondKey := testPublicKey(t, 42)
@@ -62,7 +62,7 @@ func TestVerifyAuthorizedKeysSkipsMalformedLine(t *testing.T) {
 		case bytes.HasPrefix(in, firstLine):
 			return firstKey, "", nil, in[len(firstLine):], nil
 		case bytes.HasPrefix(in, badLine):
-			return nil, "", nil, in[len(badLine):], errors.New("parse error")
+			return nil, "", nil, in, errors.New("parse error")
 		case bytes.HasPrefix(in, secondLine):
 			return secondKey, "", nil, in[len(secondLine):], nil
 		default:
@@ -71,6 +71,26 @@ func TestVerifyAuthorizedKeysSkipsMalformedLine(t *testing.T) {
 	}
 
 	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey, parser)
+	if err != nil {
+		t.Fatalf("verifyAuthorizedKeysWithParser failed: %v", err)
+	}
+	if permissions == nil {
+		t.Fatalf("Expected permissions for key after malformed line")
+	}
+	if got := permissions.Extensions["pubkey-fp"]; got != gossh.FingerprintSHA256(secondKey) {
+		t.Fatalf("Unexpected fingerprint: %s", got)
+	}
+}
+
+func TestVerifyAuthorizedKeysSkipsMalformedLineWithRealParser(t *testing.T) {
+	user := testServerUser(t, "alice")
+	firstKey := testPublicKey(t, 43)
+	secondKey := testPublicKey(t, 44)
+
+	authorizedKeys := append(append(append([]byte{}, gossh.MarshalAuthorizedKey(firstKey)...),
+		[]byte("ssh-rsa\n")...), gossh.MarshalAuthorizedKey(secondKey)...)
+
+	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey, gossh.ParseAuthorizedKey)
 	if err != nil {
 		t.Fatalf("verifyAuthorizedKeysWithParser failed: %v", err)
 	}

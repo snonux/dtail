@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	iofs "io/fs"
@@ -77,10 +78,11 @@ func verifyAuthorizedKeysWithParser(user *user.User, authorizedKeysBytes []byte,
 			if dlog.Server != nil {
 				dlog.Server.Warn(user, "Skipping unparseable authorized_keys line", err)
 			}
-			if len(restBytes) == len(authorizedKeysBytes) {
+			nextAuthorizedKeysBytes, ok := advanceToNextAuthorizedKeysLine(authorizedKeysBytes)
+			if !ok {
 				break
 			}
-			authorizedKeysBytes = restBytes
+			authorizedKeysBytes = nextAuthorizedKeysBytes
 			continue
 		}
 		authorizedKeysMap[string(authorizedPubKey.Marshal())] = true
@@ -99,6 +101,16 @@ func verifyAuthorizedKeysWithParser(user *user.User, authorizedKeysBytes []byte,
 	}
 
 	return nil, fmt.Errorf("%s|public key of user not authorized", user)
+}
+
+func advanceToNextAuthorizedKeysLine(authorizedKeysBytes []byte) ([]byte, bool) {
+	lineEnd := bytes.IndexByte(authorizedKeysBytes, '\n')
+	if lineEnd == -1 {
+		return nil, false
+	}
+
+	nextBytes := authorizedKeysBytes[lineEnd+1:]
+	return nextBytes, true
 }
 
 func authKeyStorePermissions(keyStore *AuthKeyStore, userName string,
