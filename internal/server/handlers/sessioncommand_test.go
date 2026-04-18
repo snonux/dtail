@@ -92,7 +92,7 @@ func TestHandleSessionCommandUpdateCancelsPreviousGenerationImmediately(t *testi
 		t.Fatalf("unexpected session update ack: %q", message)
 	}
 
-	waitForContextDone(t, first.ctx)
+	waitForContextDone(first.ctx, t)
 
 	second := recorder.waitForStart(t)
 	if !strings.Contains(second.command, "/var/log/app-b.log") {
@@ -425,7 +425,7 @@ func TestSessionStateStoreUpdateAutoIncrementsGeneration(t *testing.T) {
 	}
 }
 
-func waitForContextDone(t *testing.T, ctx context.Context) {
+func waitForContextDone(ctx context.Context, t *testing.T) {
 	t.Helper()
 
 	select {

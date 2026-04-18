@@ -51,7 +51,7 @@ func createTestData() string {
 	for i := 0; i < 1000000; i++ {
 		timestamp := time.Now().Format("2006-01-02 15:04:05.000")
 		level := []string{"INFO", "WARN", "ERROR", "DEBUG"}[i%4]
-		fmt.Fprintf(f, "[%s] %s - Processing request %d from user%d\n", 
+		fmt.Fprintf(f, "[%s] %s - Processing request %d from user%d\n",
 			timestamp, level, i, i%1000)
 	}
 
@@ -76,7 +76,7 @@ func createCSVData() string {
 		action := []string{"login", "query", "update", "logout"}[i%4]
 		duration := 100 + i%900
 		status := []string{"success", "failure"}[i%2]
-		
+
 		fmt.Fprintf(f, "%s,%s,%s,%d,%s\n", timestamp, user, action, duration, status)
 	}
 
@@ -85,7 +85,7 @@ func createCSVData() string {
 
 func profileDCat(testFile string) {
 	// Run dcat with profiling
-	cmd := exec.Command("../dcat", 
+	cmd := exec.Command("../dcat",
 		"-profile",
 		"-profiledir", "profiles",
 		"-plain",
@@ -103,7 +103,7 @@ func profileDCat(testFile string) {
 	}
 
 	fmt.Printf("  Completed in %v\n", duration)
-	
+
 	// Find generated profiles
 	profiles, _ := filepath.Glob("profiles/dcat_*.prof")
 	for _, p := range profiles {
@@ -135,7 +135,7 @@ func profileDGrep(testFile string) {
 	}
 
 	fmt.Printf("  Completed in %v\n", duration)
-	
+
 	// Count matches
 	matches := strings.Count(string(output), "ERROR") + strings.Count(string(output), "WARN")
 	fmt.Printf("  Found %d matches\n", matches)
@@ -148,7 +148,7 @@ func profileDMap(csvFile string) {
 		fmt.Printf("Error getting absolute path: %v\n", err)
 		return
 	}
-	
+
 	// Run dmap with profiling - correct syntax with -files flag
 	queries := []string{
 		"select count(*)",
@@ -158,7 +158,7 @@ func profileDMap(csvFile string) {
 
 	for i, query := range queries {
 		fmt.Printf("  Query %d: %s\n", i+1, query)
-		
+
 		cmd := exec.Command("../dmap",
 			"-profile",
 			"-profiledir", "profiles",
@@ -218,12 +218,12 @@ func analyzeProfiles() {
 		}
 
 		fmt.Printf("\nAnalyzing %s CPU profile:\n", tool)
-		
+
 		// Run dtail-tools profile analyze
 		cmd := exec.Command("../dtail-tools",
 			"profile", "-mode", "analyze",
 			latestProfile)
-		
+
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			fmt.Printf("  Error analyzing: %v\n", err)
@@ -244,7 +244,7 @@ func analyzeProfiles() {
 				break
 			}
 		}
-		
+
 		// Suggest optimizations based on findings
 		suggestOptimizations(tool, string(output))
 	}
@@ -252,10 +252,10 @@ func analyzeProfiles() {
 
 func suggestOptimizations(tool string, analysis string) {
 	fmt.Printf("\n  Optimization suggestions for %s:\n", tool)
-	
+
 	// Common patterns to look for
 	suggestions := []struct {
-		pattern string
+		pattern    string
 		suggestion string
 	}{
 		{"regexp.Compile", "  - Pre-compile regex patterns instead of compiling in loops"},
@@ -264,7 +264,7 @@ func suggestOptimizations(tool string, analysis string) {
 		{"syscall", "  - I/O bottleneck; consider buffering or async I/O"},
 		{"runtime.gcBgMarkWorker", "  - High GC pressure; reduce allocations"},
 	}
-	
+
 	foundAny := false
 	for _, s := range suggestions {
 		if strings.Contains(analysis, s.pattern) {
@@ -272,13 +272,13 @@ func suggestOptimizations(tool string, analysis string) {
 			foundAny = true
 		}
 	}
-	
+
 	if !foundAny {
 		fmt.Println("  - Profile looks good; no obvious bottlenecks found")
 	}
 }
 
-// Helper function to demonstrate how to use profiling in tests
+// ExampleBenchmarkWithProfiling demonstrates how to use profiling in tests.
 func ExampleBenchmarkWithProfiling() {
 	// This would typically be in a _test.go file
 	fmt.Print(`

@@ -307,7 +307,7 @@ func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.L
 	r.logRegexMode(re)
 
 	r.ensureTurboModeEnabled()
-	writer := r.makeTurboWriter()
+	writer := r.makeTurboWriter(ctx)
 
 	r.executeReadLoop(ctx, ltx, path, globID, re, reader, r.readViaTurboProcessor(path, globID, writer))
 }
@@ -411,7 +411,7 @@ func (r *readCommand) ensureTurboModeEnabled() {
 	r.sendServerMessage(".turbo wake")
 }
 
-func (r *readCommand) makeTurboWriter() TurboWriter {
+func (r *readCommand) makeTurboWriter(ctx context.Context) TurboWriter {
 	// Create a writer instance per file to keep concurrent processing isolated.
 	if r.server.Serverless() {
 		return NewGeneratedDirectTurboWriter(os.Stdout, r.server.Hostname(), r.server.PlainOutput(), r.server.Serverless(), r.generation, r.server.ActiveSessionGeneration)
@@ -424,6 +424,7 @@ func (r *readCommand) makeTurboWriter() TurboWriter {
 		plain:            r.server.PlainOutput(),
 		serverless:       r.server.Serverless(),
 		generation:       r.generation,
+		ctx:              ctx,
 		activeGeneration: r.server.ActiveSessionGeneration,
 	}
 }

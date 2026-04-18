@@ -77,11 +77,11 @@ func runCommandUntilValid(ctx context.Context, t *testing.T, attempts int, delay
 	for i := 0; i < attempts; i++ {
 		exitCode, err := runCommand(ctx, t, stdoutFile, cmd, args...)
 		if err == nil {
-			if validateErr := validate(); validateErr == nil {
+			validateErr := validate()
+			if validateErr == nil {
 				return nil
-			} else {
-				lastErr = validateErr
 			}
+			lastErr = validateErr
 		} else {
 			lastErr = fmt.Errorf("command %s failed with exit code %d: %w", cmd, exitCode, err)
 		}
