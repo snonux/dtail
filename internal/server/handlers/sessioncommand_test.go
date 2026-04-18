@@ -204,6 +204,43 @@ func TestHandleSessionCommandRejectsInvalidQuerySession(t *testing.T) {
 	}
 }
 
+func TestHandleAckCommandCloseConnectionConcurrentDoesNotPanic(t *testing.T) {
+	handler := newSessionTestHandler("ack-close-user")
+
+	const workers = 16
+	start := make(chan struct{})
+	panicCh := make(chan any, workers)
+	var wg sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					panicCh <- recovered
+				}
+			}()
+			<-start
+			handler.handleAckCommand(3, []string{"ACK", "close", "connection"})
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(panicCh)
+
+	for recovered := range panicCh {
+		t.Fatalf("unexpected panic while closing ack channel: %v", recovered)
+	}
+
+	select {
+	case <-handler.ackCloseReceived:
+	default:
+		t.Fatalf("expected ackCloseReceived to be closed")
+	}
+}
+
 func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testing.T) {
 	resetServerLogger(t)
 

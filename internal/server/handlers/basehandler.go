@@ -63,6 +63,7 @@ type baseHandler struct {
 	hostname         string
 	user             *user.User
 	ackCloseReceived chan struct{}
+	ackCloseOnce     sync.Once
 	activeCommands   int32
 	codec            protocolCodec
 	readBuf          bytes.Buffer
@@ -322,11 +323,9 @@ func (h *baseHandler) handleAckCommand(argc int, args []string) {
 		return
 	}
 	if args[1] == "close" && args[2] == "connection" {
-		select {
-		case <-h.ackCloseReceived:
-		default:
+		h.ackCloseOnce.Do(func() {
 			close(h.ackCloseReceived)
-		}
+		})
 	}
 }
 
