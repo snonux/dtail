@@ -155,7 +155,12 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	// Increment once per TCP connection and decrement via defer so the
+	// counter is always balanced regardless of how many SSH channels or
+	// shell requests are multiplexed over this connection.
 	s.stats.incrementConnections()
+	defer s.stats.decrementConnections()
+
 	go gossh.DiscardRequests(reqs)
 	for newChannel := range chans {
 		go s.handleChannel(ctx, sshConn, newChannel)
@@ -270,12 +275,14 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 		terminate()
 	}()
 
-	// Start goroutine to handle connection lifecycle and cleanup
+	// Start goroutine to handle connection lifecycle and cleanup.
+	// Note: connection-counter management (increment/decrement) is done in
+	// handleConnection via defer, not here, so that the counter is balanced
+	// 1:1 per TCP connection regardless of how many shell requests are opened.
 	go func() {
 		if err := sshConn.Wait(); err != nil && err != io.EOF {
 			dlog.Server.Error(user, err)
 		}
-		s.stats.decrementConnections()
 		dlog.Server.Info(user, "Good bye Mister!")
 		terminate()
 	}()
