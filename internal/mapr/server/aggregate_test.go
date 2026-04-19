@@ -11,6 +11,7 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
+	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/source"
 )
 
@@ -164,5 +165,50 @@ func TestAggregateStartFlushesOnCtxCancel(t *testing.T) {
 	if !foundCount {
 		t.Errorf("expected last-interval aggregate data to be flushed on ctx cancel, got %d messages: %v",
 			len(results), results)
+	}
+}
+
+// TestAggregateDoesNotCreateEmptySetOnNoMatch is a negative test that verifies
+// the server-side aggregate() method does not insert an empty AggregateSet into
+// the GroupSet when no select field of the query matches the incoming log-line
+// fields. Before the fix, GetSet was called eagerly, which silently inserted an
+// entry with Samples==0. When serialised to the client, that empty set caused
+// Avg to compute 0/0 = NaN.
+func TestAggregateDoesNotCreateEmptySetOnNoMatch(t *testing.T) {
+	ensureAggregateTestConfig(t)
+
+	// Query selects a field named "latency" but the incoming fields map does not
+	// contain "latency", so no sample should be recorded and no set should be
+	// created.
+	queryStr := `from STATS select avg(latency) from - group by host`
+	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+	if err != nil {
+		t.Fatalf("NewAggregate: %v", err)
+	}
+
+	group := mapr.NewGroupSet()
+	// Fields map intentionally omits the "latency" field used by the query.
+	fields := map[string]string{"host": "server1", "status": "ok"}
+	agg.aggregate(group, fields)
+
+	// Serialize the group set into a channel to count how many entries were emitted.
+	ch := make(chan string, 64)
+	remaining := group.Serialize(context.Background(), ch)
+	close(ch)
+
+	if len(remaining) != 0 {
+		t.Errorf("expected no remaining sets, got %d", len(remaining))
+	}
+
+	var messages []string
+	for msg := range ch {
+		messages = append(messages, msg)
+	}
+
+	// The group set must be empty — no messages should have been serialised.
+	// If the bug is present, an empty set with Samples==0 is serialised, which
+	// later causes NaN on the client when computing Avg.
+	if len(messages) != 0 {
+		t.Errorf("expected no serialised messages for unmatched line, got %d: %v", len(messages), messages)
 	}
 }

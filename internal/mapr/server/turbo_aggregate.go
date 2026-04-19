@@ -245,24 +245,35 @@ func (a *TurboAggregate) processLine(lineContent *bytes.Buffer, sourceID string)
 	return nil
 }
 
-// aggregate adds fields to the appropriate group.
+// aggregate adds fields to the appropriate group. The set is only created (or
+// looked up) after at least one select field matches, preventing empty sets with
+// Samples==0 from entering the map and causing 0/0 = NaN on the client for Avg.
 func (a *TurboAggregate) aggregate(fields map[string]string) {
 	groupKey := buildGroupKey(a.query.GroupBy, fields)
 	a.groupMu.Lock()
-	set, ok := a.groupSets[groupKey]
-	if !ok {
-		set = mapr.NewAggregateSet()
-		a.groupSets[groupKey] = set
-	}
+
+	var set *mapr.AggregateSet
 	var addedSample bool
+
 	for _, sc := range a.query.Select {
-		if val, ok := fields[sc.Field]; ok {
-			if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
-				dlog.Server.Error("TurboAggregate aggregation error", err, "field", sc.Field, "operation", sc.Operation)
-				continue
-			}
-			addedSample = true
+		val, ok := fields[sc.Field]
+		if !ok {
+			continue
 		}
+		// Lazily look up or allocate the aggregate set on the first matching
+		// field so that lines with no matching fields never create empty entries.
+		if set == nil {
+			set, ok = a.groupSets[groupKey]
+			if !ok {
+				set = mapr.NewAggregateSet()
+				a.groupSets[groupKey] = set
+			}
+		}
+		if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
+			dlog.Server.Error("TurboAggregate aggregation error", err, "field", sc.Field, "operation", sc.Operation)
+			continue
+		}
+		addedSample = true
 	}
 	if addedSample {
 		set.Samples++

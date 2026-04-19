@@ -155,7 +155,14 @@ func (*GroupSet) resultSelect(query *Query, sc *selectCondition, set *AggregateS
 		valueStr = set.SValues[sc.FieldStorage]
 		value, _ = strconv.ParseFloat(valueStr, 64)
 	case Avg:
-		value = set.FValues[sc.FieldStorage] / float64(set.Samples)
+		// Guard against division by zero when an empty aggregate set (Samples==0)
+		// is received from the server. Without this guard, 0/0 yields NaN, which
+		// propagates as the string "NaN" into CSV/terminal output.
+		if set.Samples == 0 {
+			value = 0
+		} else {
+			value = set.FValues[sc.FieldStorage] / float64(set.Samples)
+		}
 		valueStr = fmt.Sprintf("%f", value)
 	case Percentage:
 		value = set.FValues[sc.FieldStorage]

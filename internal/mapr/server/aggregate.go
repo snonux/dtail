@@ -289,17 +289,29 @@ func (a *Aggregate) aggregateAndSerialize(ctx context.Context,
 
 func (a *Aggregate) aggregate(group *mapr.GroupSet, fields map[string]string) {
 	groupKey := buildGroupKey(a.query.GroupBy, fields)
-	set := group.GetSet(groupKey)
 
+	// Build the field values first; only call GetSet (which allocates a new entry)
+	// after we know at least one select field matched. Calling GetSet eagerly would
+	// insert an empty set with Samples==0 into the group map, causing a 0/0 = NaN
+	// when the client computes Avg on the serialised set.
+	var set *mapr.AggregateSet
 	var addedSample bool
+
 	for _, sc := range a.query.Select {
-		if val, ok := fields[sc.Field]; ok {
-			if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
-				dlog.Server.Error(err)
-				continue
-			}
-			addedSample = true
+		val, ok := fields[sc.Field]
+		if !ok {
+			continue
 		}
+		// Lazily obtain (or create) the set on first match so that lines with no
+		// matching fields do not produce empty aggregate entries.
+		if set == nil {
+			set = group.GetSet(groupKey)
+		}
+		if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
+			dlog.Server.Error(err)
+			continue
+		}
+		addedSample = true
 	}
 
 	if addedSample {
