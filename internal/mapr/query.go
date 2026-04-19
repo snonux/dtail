@@ -76,13 +76,20 @@ func NewQuery(queryStr string) (*Query, error) {
 		Limit:    -1,
 	}
 
-	// If log format is CSV, then use "." as the table. It means, that
-	// we don't do any file filtering, we process all lines of the CSV.
-	if q.LogFormat == "csv" {
+	// Parse the query tokens to populate all fields including LogFormat and Table.
+	if err := q.parse(tokens); err != nil {
+		return nil, err
+	}
+
+	// If the log format is CSV and no explicit FROM table was provided, default
+	// the table to "." so that all lines are processed without file filtering.
+	// This check must run after parse() because LogFormat is only populated
+	// once parseTokens() has processed the "logformat" keyword.
+	if q.LogFormat == "csv" && q.Table == "" {
 		q.Table = "."
 	}
 
-	return &q, q.parse(tokens)
+	return &q, nil
 }
 
 // HasOutfile returns true if query result will be written to a CVS output file.
