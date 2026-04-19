@@ -112,14 +112,24 @@ func (u *User) hasFilePermission(cleanPath, permissionType string) (bool, error)
 	return hasPermission, nil
 }
 
+// iteratePaths evaluates the user's permission list against cleanPath for the
+// given permissionType and returns whether access is granted.
+//
+// Semantics — "deny wins":
+//   - The list is scanned in order.  A rule prefixed with '!' is a deny rule;
+//     any other rule is an allow rule.
+//   - As soon as a deny rule matches, the function returns false immediately.
+//     No later allow rule can override a deny — this prevents misconfigured
+//     ACL lists from accidentally granting access to sensitive paths.
+//   - If no deny rule matches but at least one allow rule does, access is granted.
+//   - If no rule matches at all, access is denied (deny-by-default).
 func (u *User) iteratePaths(cleanPath, permissionType string) (bool, error) {
-	// By default assume no permissions
+	// Default: no permission until a matching allow rule is found.
 	hasPermission := false
-	for _, permission := range u.permissions {
-		typeStr := "readfiles" // Assume ReadFiles by default.
-		var regexStr string
-		var negate bool
 
+	for _, permission := range u.permissions {
+		// Determine the permission type prefix; default is "readfiles".
+		typeStr := "readfiles"
 		splitted := strings.Split(permission, ":")
 		if len(splitted) > 1 {
 			typeStr = splitted[0]
@@ -131,10 +141,12 @@ func (u *User) iteratePaths(cleanPath, permissionType string) (bool, error) {
 			continue
 		}
 
-		regexStr = permission
-		if strings.HasPrefix(permission, "!") {
+		// Detect deny rules (prefixed with '!') and strip the prefix before
+		// compiling the regex.
+		negate := strings.HasPrefix(permission, "!")
+		regexStr := permission
+		if negate {
 			regexStr = permission[1:]
-			negate = true
 		}
 
 		re, err := regexp.Compile(regexStr)
@@ -142,11 +154,14 @@ func (u *User) iteratePaths(cleanPath, permissionType string) (bool, error) {
 			return false, fmt.Errorf("Permission test failed, can't compile regex "+
 				"'%s': %w", regexStr, err)
 		}
+
 		if negate && re.MatchString(cleanPath) {
-			dlog.Server.Info(u, cleanPath, "Permission test failed partially, "+
-				"matching negative pattern '%s'", permission)
-			hasPermission = false
+			// Deny rule matched: return false immediately (deny wins).
+			// A subsequent allow rule must never override an explicit deny.
+			dlog.Server.Info(u, cleanPath, "Permission denied: matching deny pattern", permission)
+			return false, nil
 		}
+
 		if !negate && re.MatchString(cleanPath) {
 			dlog.Server.Info(u, cleanPath, "Permission test passed partially, "+
 				"matching positive pattern", permission)
