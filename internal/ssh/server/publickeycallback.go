@@ -20,12 +20,13 @@ import (
 type authorizedKeyParser func([]byte) (gossh.PublicKey, string, []string, []byte, error)
 
 // NewPublicKeyCallback creates an instance-scoped SSH public key callback.
-// It avoids relying on package-level mutable configuration/state.
+// keyStore must be non-nil; callers are responsible for constructing and
+// wiring the store. There is no shared package-level fallback.
 func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
 	keyStore *AuthKeyStore) func(gossh.ConnMetadata, gossh.PublicKey) (*gossh.Permissions, error) {
 
 	if keyStore == nil {
-		keyStore = authKeyStore
+		panic("NewPublicKeyCallback: keyStore must not be nil")
 	}
 	return func(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey) (*gossh.Permissions, error) {
 		return publicKeyCallback(c, offeredPubKey, authKeyEnabled, cacheDir, keyStore)

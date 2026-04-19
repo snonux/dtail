@@ -75,12 +75,19 @@ func (r *clientRuntimeBoundary) NewServerlessHandler(userName string) (serverHan
 		if r.serverCfg == nil {
 			return nil, fmt.Errorf("missing serverless server config")
 		}
+		// Serverless mode does not share an SSH server's auth-key store, so
+		// create a dedicated store using the server config's TTL and max-key
+		// limits. This avoids any package-level mutable state.
+		keyStore := sshserver.NewAuthKeyStore(
+			time.Duration(r.serverCfg.AuthKeyTTLSeconds)*time.Second,
+			r.serverCfg.AuthKeyMaxPerUser,
+		)
 		return serverHandlers.NewServerHandler(
 			serverUser,
 			make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentCats, 2)),
 			make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentTails, 50)),
 			r.serverCfg,
-			sshserver.AuthKeys(),
+			keyStore,
 		), nil
 	}
 }

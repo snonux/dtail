@@ -17,25 +17,16 @@ type authKeyEntry struct {
 	registeredAt time.Time
 }
 
-var authKeyStore = NewAuthKeyStore(0, 0)
-
 // AuthKeyStore is an in-memory, per-user cache of SSH public keys.
+// Each Server instance owns exactly one AuthKeyStore, constructed via
+// NewAuthKeyStore. There is no shared package-level instance; callers
+// must always supply a non-nil store.
 type AuthKeyStore struct {
 	mu             sync.RWMutex
 	keysByUser     map[string][]authKeyEntry
 	ttl            time.Duration
 	maxKeysPerUser int
 	now            func() time.Time
-}
-
-// AuthKeys returns the process-wide auth key cache used by the SSH server.
-func AuthKeys() *AuthKeyStore {
-	return authKeyStore
-}
-
-// ConfigureAuthKeyStore reinitializes the process-wide auth key cache using config values.
-func ConfigureAuthKeyStore(authKeyTTLSeconds, authKeyMaxPerUser int) {
-	authKeyStore = NewAuthKeyStore(time.Duration(authKeyTTLSeconds)*time.Second, authKeyMaxPerUser)
 }
 
 // NewAuthKeyStore builds a thread-safe auth key store.

@@ -49,6 +49,10 @@ func NewServerHandler(user *user.User, catLimiter,
 		dlog.Server.FatalPanic("Missing server config in NewServerHandler")
 	}
 
+	if authKeyStore == nil {
+		dlog.Server.FatalPanic("NewServerHandler: authKeyStore must not be nil")
+	}
+
 	h := ServerHandler{
 		baseHandler: baseHandler{
 			done:             internal.NewDone(),
@@ -64,9 +68,6 @@ func NewServerHandler(user *user.User, catLimiter,
 		serverCfg:    serverCfg,
 		authKeyStore: authKeyStore,
 		regex:        ".",
-	}
-	if h.authKeyStore == nil {
-		h.authKeyStore = sshserver.AuthKeys()
 	}
 	h.handleCommandCb = h.handleUserCommand
 	h.commands = h.newCommandRegistry()

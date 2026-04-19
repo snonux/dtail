@@ -15,21 +15,18 @@ import (
 )
 
 func TestAuthKeyStorePermissions(t *testing.T) {
-	previousStore := authKeyStore
-	authKeyStore = NewAuthKeyStore(time.Hour, 5)
-	t.Cleanup(func() {
-		authKeyStore = previousStore
-	})
+	// Create an isolated store for this test — there is no package-level global.
+	store := NewAuthKeyStore(time.Hour, 5)
 
 	key := testPublicKey(t, 21)
 
-	if permissions := authKeyStorePermissions(authKeyStore, "alice", key); permissions != nil {
+	if permissions := authKeyStorePermissions(store, "alice", key); permissions != nil {
 		t.Fatalf("Expected nil permissions when no key is cached")
 	}
 
-	authKeyStore.Add("alice", key)
+	store.Add("alice", key)
 
-	permissions := authKeyStorePermissions(authKeyStore, "alice", key)
+	permissions := authKeyStorePermissions(store, "alice", key)
 	if permissions == nil {
 		t.Fatalf("Expected permissions when key is cached")
 	}
@@ -37,12 +34,12 @@ func TestAuthKeyStorePermissions(t *testing.T) {
 		t.Fatalf("Unexpected fingerprint: %s", fingerprint)
 	}
 
-	if permissions := authKeyStorePermissions(authKeyStore, "bob", key); permissions != nil {
+	if permissions := authKeyStorePermissions(store, "bob", key); permissions != nil {
 		t.Fatalf("Expected nil permissions for different user")
 	}
 
 	unknownKey := testPublicKey(t, 22)
-	if permissions := authKeyStorePermissions(authKeyStore, "alice", unknownKey); permissions != nil {
+	if permissions := authKeyStorePermissions(store, "alice", unknownKey); permissions != nil {
 		t.Fatalf("Expected nil permissions for unknown key")
 	}
 }
