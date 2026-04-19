@@ -204,3 +204,47 @@ func TestHandleCloseConnectionAcknowledgesBeforeShutdown(t *testing.T) {
 		t.Fatal("expected handler to be shut down after close acknowledgement")
 	}
 }
+
+// TestReadDrainsAckBeforeEOF verifies that Read() always delivers the
+// '.ack close connection' command before returning io.EOF when Done() fires
+// concurrently. Without the priority-select fix, Go's non-deterministic select
+// would randomly pick the Done() case and drop the queued ack ~50% of the time.
+func TestReadDrainsAckBeforeEOF(t *testing.T) {
+	originalLogger := dlog.Client
+	dlog.Client = &dlog.DLog{}
+	t.Cleanup(func() {
+		dlog.Client = originalLogger
+	})
+
+	// Run many iterations to catch the race reliably even with -race.
+	const iterations = 500
+	for i := 0; i < iterations; i++ {
+		// Use an unbuffered commands channel so the ack write and Done() close
+		// are truly concurrent, exposing the original non-deterministic select.
+		handler := baseHandler{
+			done:     internal.NewDone(),
+			server:   "server-under-test",
+			commands: make(chan string, 1),
+		}
+
+		// handleHiddenMessage calls SendMessage (queues ack) then Shutdown (closes Done).
+		// After this call both handler.commands and handler.Done() are ready.
+		handler.handleHiddenMessage(".syn close connection")
+
+		buf := make([]byte, 4096)
+		n, err := handler.Read(buf)
+		if err != nil {
+			// Done() won the select — the ack was dropped. This is the bug.
+			t.Fatalf("iteration %d: Read returned io.EOF before draining the ack", i)
+		}
+		if n == 0 {
+			t.Fatalf("iteration %d: Read returned 0 bytes without an error", i)
+		}
+
+		// Second Read must now return EOF since Done() is closed and commands is empty.
+		_, err = handler.Read(buf)
+		if err == nil {
+			t.Fatalf("iteration %d: second Read should return io.EOF", i)
+		}
+	}
+}

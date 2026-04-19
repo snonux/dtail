@@ -112,7 +112,22 @@ func (h *baseHandler) Write(p []byte) (n int, err error) {
 }
 
 // Send data to the dtail server via Reader interface.
+//
+// Priority select: when Done() is closed we must still drain any pending
+// commands before returning io.EOF, because closing the connection requires
+// the '.ack close connection' message to be flushed to the server first.
+// Without this drain the server waits up to 5 seconds for the ack.
 func (h *baseHandler) Read(p []byte) (n int, err error) {
+	// Check for a pending command first (non-blocking), giving it priority
+	// over the Done signal so that queued acks are always delivered.
+	select {
+	case command := <-h.commands:
+		n = copy(p, []byte(command))
+		return
+	default:
+	}
+
+	// No command is immediately ready; block on whichever arrives first.
 	select {
 	case command := <-h.commands:
 		n = copy(p, []byte(command))
