@@ -471,6 +471,53 @@ func TestApplySessionSpecSerializesConcurrentBootstrapAndReload(t *testing.T) {
 	}
 }
 
+// TestThrottleReleasedIsIdempotent verifies that calling the throttle-release
+// logic from two concurrent goroutines drains throttleCh exactly once and does
+// not panic or block.  This is a regression test for the data race that existed
+// when the old bool guard (throttlingDone) was read and written without
+// synchronization: under -race two goroutines could both observe the bool as
+// false and both attempt to drain the channel, stealing an extra slot.
+func TestThrottleReleasedIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	// throttleCh is buffered with 1 slot, as in the real Start() path.
+	throttleCh := make(chan struct{}, 1)
+	throttleCh <- struct{}{} // occupy the one slot
+
+	conn := &ServerConnection{}
+
+	const workers = 64
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	// Simulate workers racing to release the throttle slot (e.g. handle()
+	// early-release and the defer cleanup in Start() firing around the same
+	// time).  Only one drain must succeed; the rest must be no-ops.
+	for range workers {
+		go func() {
+			defer wg.Done()
+			conn.throttleReleased.Do(func() {
+				<-throttleCh
+			})
+		}()
+	}
+
+	wg.Wait()
+
+	// throttleCh must be empty: exactly one goroutine drained it.
+	if len(throttleCh) != 0 {
+		t.Fatalf("throttleCh length = %d, want 0 (slot was not released)", len(throttleCh))
+	}
+
+	// Confirm a second occupant can now be added, proving the slot is free.
+	select {
+	case throttleCh <- struct{}{}:
+		// expected: slot was freed exactly once
+	default:
+		t.Fatal("throttleCh full after release, expected one free slot")
+	}
+}
+
 type testSSHSettings struct {
 	port    int
 	timeout time.Duration

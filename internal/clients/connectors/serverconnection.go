@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
@@ -50,7 +51,12 @@ type ServerConnection struct {
 	authKeyPath     string
 	authKeyDisabled bool
 	hostKeyCallback client.HostKeyCallback
-	throttlingDone  bool
+	// throttleReleased ensures the throttle slot is returned to throttleCh
+	// exactly once, even if both the early-release path in handle() and the
+	// deferred cleanup in Start() execute concurrently or the same goroutine
+	// hits both paths.  sync.Once is safe for concurrent callers whereas the
+	// previous bool guard was not synchronized.
+	throttleReleased sync.Once
 }
 
 var _ Connector = (*ServerConnection)(nil)
@@ -171,12 +177,15 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 
 	go func() {
 		defer func() {
-			if !c.throttlingDone {
-				dlog.Client.Debug(c.server, "Unthrottling connection (1)",
+			// Release the throttle slot on the way out regardless of which
+			// code path already attempted it.  throttleReleased.Do guarantees
+			// the drain happens exactly once even if handle() already released
+			// the slot early (the fast path when the session is fully up).
+			c.throttleReleased.Do(func() {
+				dlog.Client.Debug(c.server, "Unthrottling connection (cleanup)",
 					len(throttleCh), cap(throttleCh))
-				c.throttlingDone = true
 				<-throttleCh
-			}
+			})
 			cancel()
 		}()
 
@@ -296,12 +305,16 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 		return err
 	}
 
-	if !c.throttlingDone {
-		dlog.Client.Debug(c.server, "Unthrottling connection (2)",
+	// Release the throttle slot as soon as the session is fully established so
+	// the next pending connection can proceed without waiting for this session
+	// to finish.  throttleReleased.Do is idempotent: if the deferred cleanup
+	// in Start() fires first (e.g. on a dial error path that never reaches
+	// here), the slot is still returned exactly once.
+	c.throttleReleased.Do(func() {
+		dlog.Client.Debug(c.server, "Unthrottling connection (session up)",
 			len(throttleCh), cap(throttleCh))
-		c.throttlingDone = true
 		<-throttleCh
-	}
+	})
 
 	<-ctx.Done()
 	c.handler.Shutdown()
