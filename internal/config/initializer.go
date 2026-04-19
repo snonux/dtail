@@ -31,6 +31,10 @@ func (in *initializer) parseConfig(args *Args) error {
 
 	homeDir, err := os.UserHomeDir()
 	if err == nil && homeDir != "" {
+		// Search candidate paths in priority order. The first existing file
+		// wins: ~/.config/dtail/dtail.conf takes precedence over ~/.dtail.conf.
+		// Loading both would silently merge scalar fields (later-file wins),
+		// which is surprising and hard to debug.
 		paths := []string{
 			fmt.Sprintf("%s/.config/dtail/dtail.conf", homeDir),
 			fmt.Sprintf("%s/.dtail.conf", homeDir),
@@ -42,9 +46,8 @@ func (in *initializer) parseConfig(args *Args) error {
 				}
 				return err
 			}
-			if err := in.parseSpecificConfig(configPath); err != nil {
-				return err
-			}
+			// Stop after loading the first file that exists.
+			return in.parseSpecificConfig(configPath)
 		}
 	}
 
