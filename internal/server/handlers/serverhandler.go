@@ -165,8 +165,10 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 		return
 	}
 
-	h.aggregate = aggregate
-	h.turboAggregate = turboAggregate
+	// Use atomic setters so concurrent reads from Shutdown, HasRegularAggregate,
+	// TurboAggregate, and resetSessionAggregates are race-free.
+	h.setAggregate(aggregate)
+	h.setTurboAggregate(turboAggregate)
 	maprMessages, closeMaprMessages := h.newGeneratedMaprMessagesChannel(ctx, sessionGenerationFromContext(ctx))
 	go func() {
 		command.Start(ctx, maprMessages)

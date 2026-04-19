@@ -256,13 +256,17 @@ func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testi
 			if err != nil {
 				t.Fatalf("new aggregate: %v", err)
 			}
-			handler.aggregate = aggregate
+			// Use the atomic setter so this test exercises the same code path
+			// as the real handleMapCommand and avoids a direct field access race.
+			handler.setAggregate(aggregate)
 			commandFinished()
 		},
 		"tail": func(_ context.Context, _ lcontext.LContext, _ int, _ []string, commandFinished func()) {
 			tailCalls++
 			if tailCalls > 1 {
-				sawResetState <- handler.aggregate == nil && handler.turboAggregate == nil
+				// Use atomic getters; direct field access would race with
+				// concurrent reads in Shutdown/resetSessionAggregates.
+				sawResetState <- handler.getAggregate() == nil && handler.getTurboAggregate() == nil
 			}
 			commandFinished()
 		},
@@ -284,7 +288,9 @@ func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testi
 	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected session start ack: %q", message)
 	}
-	if handler.aggregate == nil {
+	// Use the atomic getter; direct field access would race with concurrent
+	// writes in handleMapCommand on another goroutine.
+	if handler.getAggregate() == nil {
 		t.Fatalf("expected query session to install aggregate state")
 	}
 

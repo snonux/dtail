@@ -247,13 +247,16 @@ func (h *ServerHandler) dispatchSessionCommands(ctx context.Context, commands []
 	return nil
 }
 
+// resetSessionAggregates shuts down any active aggregates and clears the
+// atomic pointers. This is called on session reload to ensure stale aggregates
+// from the previous generation are not reused.
 func (h *ServerHandler) resetSessionAggregates() {
-	if h.aggregate != nil {
-		h.aggregate.Shutdown()
-		h.aggregate = nil
+	if agg := h.getAggregate(); agg != nil {
+		agg.Shutdown()
+		h.setAggregate(nil)
 	}
-	if h.turboAggregate != nil {
-		h.turboAggregate.Abort()
-		h.turboAggregate = nil
+	if ta := h.getTurboAggregate(); ta != nil {
+		ta.Abort()
+		h.setTurboAggregate(nil)
 	}
 }

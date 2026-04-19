@@ -16,7 +16,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
-	"github.com/mimecast/dtail/internal/mapr/server"
+	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/protocol"
 	user "github.com/mimecast/dtail/internal/user/server"
 )
@@ -53,11 +53,18 @@ func cancelCommandContext(ctx context.Context) {
 }
 
 type baseHandler struct {
-	done             *internal.Done
-	handleCommandCb  handleCommandCb
-	lines            chan *line.Line
-	aggregate        *server.Aggregate
-	turboAggregate   *server.TurboAggregate // Turbo mode aggregate
+	done            *internal.Done
+	handleCommandCb handleCommandCb
+	lines           chan *line.Line
+
+	// aggregate and turboAggregate are written by handleMapCommand on the
+	// command-dispatch goroutine and read concurrently by Shutdown,
+	// HasRegularAggregate, TurboAggregate, and resetSessionAggregates. Using
+	// atomic.Pointer eliminates the data race without requiring h.mutex to be
+	// held around every access site.
+	aggregate      atomic.Pointer[maprserver.Aggregate]
+	turboAggregate atomic.Pointer[maprserver.TurboAggregate]
+
 	maprMessages     chan string
 	serverMessages   chan string
 	hostname         string
@@ -81,17 +88,38 @@ type baseHandler struct {
 	activeGeneration func() uint64
 }
 
-// Shutdown the handler.
+// getAggregate returns the current regular MapReduce aggregate atomically.
+func (h *baseHandler) getAggregate() *maprserver.Aggregate {
+	return h.aggregate.Load()
+}
+
+// setAggregate stores a regular MapReduce aggregate atomically.
+func (h *baseHandler) setAggregate(agg *maprserver.Aggregate) {
+	h.aggregate.Store(agg)
+}
+
+// getTurboAggregate returns the current turbo MapReduce aggregate atomically.
+func (h *baseHandler) getTurboAggregate() *maprserver.TurboAggregate {
+	return h.turboAggregate.Load()
+}
+
+// setTurboAggregate stores a turbo MapReduce aggregate atomically.
+func (h *baseHandler) setTurboAggregate(ta *maprserver.TurboAggregate) {
+	h.turboAggregate.Store(ta)
+}
+
+// Shutdown the handler. Uses atomic accessors to read aggregate pointers so
+// the reads are race-free with concurrent writes from handleMapCommand.
 func (h *baseHandler) Shutdown() {
-	// Shutdown turbo aggregate if present
-	if h.turboAggregate != nil {
+	// Shutdown turbo aggregate if present.
+	if ta := h.getTurboAggregate(); ta != nil {
 		dlog.Server.Info(h.user, "Shutting down turbo aggregate")
-		h.turboAggregate.Shutdown()
+		ta.Shutdown()
 	}
-	// Shutdown regular aggregate if present
-	if h.aggregate != nil {
+	// Shutdown regular aggregate if present.
+	if agg := h.getAggregate(); agg != nil {
 		dlog.Server.Info(h.user, "Shutting down regular aggregate")
-		h.aggregate.Shutdown()
+		agg.Shutdown()
 	}
 	h.done.Shutdown()
 }
@@ -386,8 +414,10 @@ func (h *baseHandler) flush() {
 		return lineCount + serverCount + maprCount + turboCount
 	}
 
+	// Use atomic accessors to avoid a data race with handleMapCommand, which
+	// may be concurrently writing aggregate pointers on another goroutine.
 	maxWait := time.Second
-	if h.turbo.enabled() || h.turboAggregate != nil || h.aggregate != nil {
+	if h.turbo.enabled() || h.getTurboAggregate() != nil || h.getAggregate() != nil {
 		maxWait = 3 * time.Second
 	}
 	if h.serverless && maxWait < 5*time.Second {
@@ -420,17 +450,19 @@ func (h *baseHandler) shutdown() {
 		h.flushTurboData()
 	}
 
-	// Shutdown aggregates BEFORE flush to ensure MapReduce data is available
-	if h.turboAggregate != nil {
+	// Shutdown aggregates BEFORE flush to ensure MapReduce data is available.
+	// Use atomic accessors to avoid a data race with handleMapCommand which
+	// may be concurrently storing the aggregate pointers on another goroutine.
+	if ta := h.getTurboAggregate(); ta != nil {
 		dlog.Server.Info(h.user, "Shutting down turbo aggregate in shutdown()")
-		h.turboAggregate.Shutdown()
-		// Give time for serialization to complete
+		ta.Shutdown()
+		// Give time for serialization to complete.
 		time.Sleep(100 * time.Millisecond)
 	}
-	if h.aggregate != nil {
+	if agg := h.getAggregate(); agg != nil {
 		dlog.Server.Info(h.user, "Shutting down regular aggregate in shutdown()")
-		h.aggregate.Shutdown()
-		// Give time for serialization to complete
+		agg.Shutdown()
+		// Give time for serialization to complete.
 		time.Sleep(100 * time.Millisecond)
 	}
 

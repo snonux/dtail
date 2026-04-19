@@ -129,14 +129,16 @@ func (h *ServerHandler) TurboBoostDisabled() bool {
 }
 
 // HasRegularAggregate reports whether the regular map-reduce aggregate is active.
+// Uses the atomic accessor to avoid a race with concurrent handleMapCommand writes.
 func (h *ServerHandler) HasRegularAggregate() bool {
-	return h.aggregate != nil
+	return h.getAggregate() != nil
 }
 
 // RegisterAggregateLines attaches a file line channel to the active aggregate.
+// Uses the atomic accessor to safely retrieve the aggregate pointer.
 func (h *ServerHandler) RegisterAggregateLines(lines chan *line.Line) {
-	if h.aggregate != nil {
-		h.aggregate.NextLinesCh <- lines
+	if agg := h.getAggregate(); agg != nil {
+		agg.NextLinesCh <- lines
 	}
 }
 
@@ -146,8 +148,9 @@ func (h *ServerHandler) SharedLinesChannel() chan *line.Line {
 }
 
 // TurboAggregate returns the turbo aggregate if enabled for the session.
+// Uses the atomic accessor to avoid a race with concurrent handleMapCommand writes.
 func (h *ServerHandler) TurboAggregate() *server.TurboAggregate {
-	return h.turboAggregate
+	return h.getTurboAggregate()
 }
 
 // AddPendingFiles increments or decrements the pending file counter.
