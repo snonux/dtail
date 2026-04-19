@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -42,6 +43,14 @@ type Server struct {
 }
 
 type authStrategy func(*user.User, string, string) bool
+
+// secretsEqual compares two secret strings in constant time to prevent
+// timing side-channel attacks. Unlike plain ==, this function takes the same
+// amount of time regardless of where the first differing byte is, so an
+// attacker who can measure response latency cannot recover the secret.
+func secretsEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
 
 // New returns a new server.
 func New(cfg config.RuntimeConfig) *Server {
@@ -327,7 +336,10 @@ func (s *Server) newAuthStrategies() map[string]authStrategy {
 }
 
 func (s *Server) authorizeHealthUser(user *user.User, authInfo, _ string) bool {
-	if authInfo != config.HealthUser {
+	// Use constant-time comparison to avoid timing side-channel attacks.
+	// An attacker who can measure response latency must not be able to infer
+	// how many bytes of the secret matched.
+	if !secretsEqual(authInfo, config.HealthUser) {
 		return false
 	}
 	dlog.Server.Debug(user, "Granting permissions to health user")
@@ -356,26 +368,43 @@ func (s *Server) authorizeContinuousUser(user *user.User, authInfo, remoteIP str
 	return false
 }
 
-func (s *Server) backgroundCanSSH(user *user.User, jobName, remoteIP,
+// backgroundCanSSH checks whether a background SSH connection is authorised.
+// The caller passes authInfo (the client-presented password/secret) and
+// allowedJobName (the operator-configured value from the server config).
+//
+// Security notes:
+//   - The secret comparison MUST use secretsEqual (crypto/subtle) to prevent
+//     timing side-channel attacks; do NOT revert to plain ==.
+//   - authInfo/jobName MUST NOT appear in any log line — if debug logging is
+//     ever enabled in production the shared secret would leak. Log only the
+//     operator-visible allowedJobName or a fixed placeholder.
+func (s *Server) backgroundCanSSH(user *user.User, authInfo, remoteIP,
 	allowedJobName string, allowFrom []string) bool {
 
-	dlog.Server.Debug("backgroundCanSSH", user, jobName, remoteIP, allowedJobName, allowFrom)
-	if jobName != allowedJobName {
-		dlog.Server.Debug(user, jobName, "backgroundCanSSH",
-			"Job name does not match, skipping to next one...", allowedJobName)
+	// Do not log authInfo (the client-presented secret) — only log the
+	// operator-configured job name so the shared secret cannot leak into
+	// debug logs.
+	dlog.Server.Debug("backgroundCanSSH", user, remoteIP, "allowedJobName", allowedJobName, allowFrom)
+
+	// Constant-time comparison prevents a remote attacker from recovering the
+	// secret by measuring how long the server takes to reject wrong values.
+	if !secretsEqual(authInfo, allowedJobName) {
+		dlog.Server.Debug(user, "backgroundCanSSH",
+			"Job name does not match, skipping to next one...", "allowedJobName", allowedJobName)
 		return false
 	}
 
 	for _, myAddr := range allowFrom {
 		ips, err := net.LookupIP(myAddr)
 		if err != nil {
-			dlog.Server.Debug(user, jobName, "backgroundCanSSH", "Unable to lookup IP "+
-				"address for allowed hosts lookup, skipping to next one...", myAddr, err)
+			dlog.Server.Debug(user, "backgroundCanSSH", "Unable to lookup IP "+
+				"address for allowed hosts lookup, skipping to next one...",
+				"allowedJobName", allowedJobName, "addr", myAddr, "error", err)
 			continue
 		}
 		for _, ip := range ips {
-			dlog.Server.Debug(user, jobName, "backgroundCanSSH", "Comparing IP addresses",
-				remoteIP, ip.String())
+			dlog.Server.Debug(user, "backgroundCanSSH", "Comparing IP addresses",
+				"allowedJobName", allowedJobName, "remoteIP", remoteIP, "candidateIP", ip.String())
 			if remoteIP == ip.String() {
 				return true
 			}
