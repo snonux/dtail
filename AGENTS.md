@@ -200,7 +200,9 @@ Auth-key fast reconnect is enabled by default. The client can register a public 
 **Config and Flags:**
 - Client flag: `--auth-key-path` (default `~/.ssh/id_rsa`)
 - Client flag: `--no-auth-key` (disable feature)
-- Client env: `DTAIL_AUTH_KEY_PATH` (alias for auth key path)
+- Client env: `DTAIL_AUTH_KEY_PATH` (primary env alias for auth key path; takes precedence over `DTAIL_SSH_PRIVATE_KEYFILE_PATH`)
+- Client env: `DTAIL_SSH_PRIVATE_KEYFILE_PATH` (legacy alias; used only when `DTAIL_AUTH_KEY_PATH` is not set)
+- Env var precedence (highest to lowest): CLI flag → `DTAIL_AUTH_KEY_PATH` → `DTAIL_SSH_PRIVATE_KEYFILE_PATH`
 - Server config: `AuthKeyEnabled` (default `true`)
 - Server config: `AuthKeyTTLSeconds` (default `86400`)
 - Server config: `AuthKeyMaxPerUser` (default `5`)
@@ -335,7 +337,8 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 
 - Client: `--auth-key-path`, `--no-auth-key`
 - Client config: `Client.AuthKeyPath`, `Client.AuthKeyDisable`
-- Client env: `DTAIL_AUTH_KEY_PATH`
+- Client env: `DTAIL_AUTH_KEY_PATH` (takes precedence over `DTAIL_SSH_PRIVATE_KEYFILE_PATH`)
+- Client env: `DTAIL_SSH_PRIVATE_KEYFILE_PATH` (legacy; used only when `DTAIL_AUTH_KEY_PATH` is unset)
 - Server config: `Server.AuthKeyEnabled`, `Server.AuthKeyTTLSeconds`, `Server.AuthKeyMaxPerUser`
 
 ## Common Development Tasks

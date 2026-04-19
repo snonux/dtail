@@ -97,19 +97,38 @@ func (in *initializer) processEnvVars(args *Args) {
 		in.Server.MaxLineLength = 1024
 		in.Server.TurboBoostDisable = true
 	}
-	sshPrivateKeyPathFile := os.Getenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH")
-	if len(sshPrivateKeyPathFile) > 0 && args.SSHPrivateKeyFilePath == "" {
-		args.SSHPrivateKeyFilePath = sshPrivateKeyPathFile
-	}
-	authKeyPath := os.Getenv("DTAIL_AUTH_KEY_PATH")
-	if len(authKeyPath) > 0 && args.SSHPrivateKeyFilePath == "" {
-		args.SSHPrivateKeyFilePath = authKeyPath
-	}
-	// Check if turbo boost should be disabled from environment variable
-	// Turbo boost is enabled by default, can be explicitly disabled
+
+	// Resolve SSH private key path from environment variables.
+	// DTAIL_AUTH_KEY_PATH is the documented alias and takes precedence.
+	// DTAIL_SSH_PRIVATE_KEYFILE_PATH is the legacy name and is only used when
+	// DTAIL_AUTH_KEY_PATH is not set, so that the documented env var always wins.
+	// Neither env var overrides an explicitly supplied CLI flag value.
+	args.SSHPrivateKeyFilePath = resolveSSHKeyPath(
+		args.SSHPrivateKeyFilePath,
+		os.Getenv("DTAIL_AUTH_KEY_PATH"),
+		os.Getenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH"),
+	)
+
+	// Check if turbo boost should be disabled from environment variable.
+	// Turbo boost is enabled by default, can be explicitly disabled.
 	if Env("DTAIL_TURBOBOOST_DISABLE") {
 		in.Server.TurboBoostDisable = true
 	}
+}
+
+// resolveSSHKeyPath returns the effective SSH private key file path, applying
+// the following precedence (highest to lowest):
+//  1. cliValue  — an explicit flag value supplied by the user
+//  2. authKeyEnv — DTAIL_AUTH_KEY_PATH (the documented alias)
+//  3. legacyEnv  — DTAIL_SSH_PRIVATE_KEYFILE_PATH (the legacy name)
+func resolveSSHKeyPath(cliValue, authKeyEnv, legacyEnv string) string {
+	if cliValue != "" {
+		return cliValue
+	}
+	if authKeyEnv != "" {
+		return authKeyEnv
+	}
+	return legacyEnv
 }
 
 func (in *initializer) setupConfig(sourceCb transformCb, args *Args,

@@ -105,6 +105,123 @@ func TestParseConfigNoConfigFile(t *testing.T) {
 	}
 }
 
+// TestResolveSSHKeyPath verifies the three-level precedence used when
+// resolving the effective SSH private key path.
+func TestResolveSSHKeyPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		cli      string
+		authKey  string
+		legacy   string
+		expected string
+	}{
+		{
+			name:     "cli flag wins over both env vars",
+			cli:      "/cli/key",
+			authKey:  "/auth/key",
+			legacy:   "/legacy/key",
+			expected: "/cli/key",
+		},
+		{
+			name:     "DTAIL_AUTH_KEY_PATH wins over legacy when cli is empty",
+			cli:      "",
+			authKey:  "/auth/key",
+			legacy:   "/legacy/key",
+			expected: "/auth/key",
+		},
+		{
+			name:     "DTAIL_SSH_PRIVATE_KEYFILE_PATH used when auth key env is also empty",
+			cli:      "",
+			authKey:  "",
+			legacy:   "/legacy/key",
+			expected: "/legacy/key",
+		},
+		{
+			name:     "all empty returns empty string",
+			cli:      "",
+			authKey:  "",
+			legacy:   "",
+			expected: "",
+		},
+		{
+			name:     "cli wins when only cli is set",
+			cli:      "/cli/key",
+			authKey:  "",
+			legacy:   "",
+			expected: "/cli/key",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveSSHKeyPath(tc.cli, tc.authKey, tc.legacy)
+			if got != tc.expected {
+				t.Fatalf("resolveSSHKeyPath(%q, %q, %q) = %q; want %q",
+					tc.cli, tc.authKey, tc.legacy, got, tc.expected)
+			}
+		})
+	}
+}
+
+// TestProcessEnvVarsAuthKeyPathTakesPrecedence is a negative/regression test
+// that confirms the bug described in task k6 is fixed: when both
+// DTAIL_AUTH_KEY_PATH and DTAIL_SSH_PRIVATE_KEYFILE_PATH are set,
+// DTAIL_AUTH_KEY_PATH must win.
+func TestProcessEnvVarsAuthKeyPathTakesPrecedence(t *testing.T) {
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/env/auth/key")
+	t.Setenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH", "/env/legacy/key")
+
+	in := initializer{
+		Common: newDefaultCommonConfig(),
+		Server: newDefaultServerConfig(),
+		Client: newDefaultClientConfig(),
+	}
+	args := &Args{}
+	in.processEnvVars(args)
+
+	if args.SSHPrivateKeyFilePath != "/env/auth/key" {
+		t.Fatalf("expected DTAIL_AUTH_KEY_PATH to win, got %q", args.SSHPrivateKeyFilePath)
+	}
+}
+
+// TestProcessEnvVarsLegacyFallback verifies that DTAIL_SSH_PRIVATE_KEYFILE_PATH
+// is still applied when DTAIL_AUTH_KEY_PATH is not set.
+func TestProcessEnvVarsLegacyFallback(t *testing.T) {
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "")
+	t.Setenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH", "/env/legacy/key")
+
+	in := initializer{
+		Common: newDefaultCommonConfig(),
+		Server: newDefaultServerConfig(),
+		Client: newDefaultClientConfig(),
+	}
+	args := &Args{}
+	in.processEnvVars(args)
+
+	if args.SSHPrivateKeyFilePath != "/env/legacy/key" {
+		t.Fatalf("expected legacy env var to be used, got %q", args.SSHPrivateKeyFilePath)
+	}
+}
+
+// TestProcessEnvVarsCLIFlagNotOverridden verifies that an explicit CLI flag
+// value is not overridden by either environment variable.
+func TestProcessEnvVarsCLIFlagNotOverridden(t *testing.T) {
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/env/auth/key")
+	t.Setenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH", "/env/legacy/key")
+
+	in := initializer{
+		Common: newDefaultCommonConfig(),
+		Server: newDefaultServerConfig(),
+		Client: newDefaultClientConfig(),
+	}
+	args := &Args{SSHPrivateKeyFilePath: "/cli/explicit/key"}
+	in.processEnvVars(args)
+
+	if args.SSHPrivateKeyFilePath != "/cli/explicit/key" {
+		t.Fatalf("expected CLI flag to be preserved, got %q", args.SSHPrivateKeyFilePath)
+	}
+}
+
 func writeTestConfig(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
