@@ -11,14 +11,12 @@ import (
 	"io"
 	"net"
 	"os"
-	"syscall"
 	"time"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
 
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
-	"golang.org/x/term"
 )
 
 // closerFunc adapts a plain func to io.Closer so callers can always
@@ -151,17 +149,6 @@ func AgentWithKeyIndex(keyIndex int) (gossh.AuthMethod, io.Closer, error) {
 		return nil, closer, err
 	}
 	return gossh.PublicKeys(signers...), closer, nil
-}
-
-// EnterKeyPhrase is required to read phrase protected private keys.
-func EnterKeyPhrase(keyFile string) []byte {
-	fmt.Printf("Enter phrase for key %s: ", keyFile)
-	phrase, err := term.ReadPassword(int(syscall.Stdin))
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("%s\n", string(phrase))
-	return phrase
 }
 
 // PrivateKeySigner returns an SSH signer from the provided private key file.
