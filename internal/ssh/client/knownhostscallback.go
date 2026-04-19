@@ -42,8 +42,14 @@ type KnownHostsCallback struct {
 	knownHostsFile  fs.RootedPath
 	unknownCh       chan unknownHost
 	trustAllHostsCh chan struct{}
-	untrustedHosts  map[string]bool
-	mutex           *sync.Mutex
+	// trustAllOnce guards the single close of trustAllHostsCh. The old
+	// select/default/close pattern was not atomic: two concurrent callers
+	// could both observe the channel open, both fall through to the default
+	// branch, and both call close() — causing a panic. sync.Once makes the
+	// close idempotent and race-free without any additional locking.
+	trustAllOnce   sync.Once
+	untrustedHosts map[string]bool
+	mutex          *sync.Mutex
 }
 
 var _ HostKeyCallback = (*KnownHostsCallback)(nil)
@@ -67,9 +73,20 @@ func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool) (HostKeyCa
 		mutex:           &sync.Mutex{},
 	}
 	if trustAllHosts {
-		close(c.trustAllHostsCh)
+		// Use the same sync.Once path so both the constructor and the
+		// interactive "all" prompt are idempotent and race-free.
+		c.closeTrustAllHostsCh()
 	}
 	return &c, nil
+}
+
+// closeTrustAllHostsCh closes trustAllHostsCh exactly once via sync.Once,
+// regardless of how many goroutines call it concurrently. This replaces the
+// former select/default/close pattern which was not atomic: two concurrent
+// callers could both observe the channel open, both take the default branch,
+// and both call close() — causing a panic.
+func (c *KnownHostsCallback) closeTrustAllHostsCh() {
+	c.trustAllOnce.Do(func() { close(c.trustAllHostsCh) })
 }
 
 func ensureKnownHostsFile(knownHostsFile fs.RootedPath) {
@@ -221,11 +238,9 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 				c.dontTrustHosts(hosts)
 				return
 			}
-			select {
-			case <-c.trustAllHostsCh:
-			default:
-				close(c.trustAllHostsCh)
-			}
+			// Mark trust-all atomically so that concurrent "all" callbacks
+			// from other batches do not double-close the channel.
+			c.closeTrustAllHostsCh()
 			dlog.Client.Info("Added hosts to known hosts file", c.knownHostsPath)
 		},
 	}

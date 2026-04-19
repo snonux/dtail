@@ -212,6 +212,54 @@ func TestWrapReturnsWhenCtxCancelledBeforeResponse(t *testing.T) {
 	}
 }
 
+// TestCloseTrustAllHostsChConcurrentNoPanic verifies that concurrent calls to
+// closeTrustAllHostsCh — the method that replaces the racy select/default/close
+// pattern — never panic and leave the channel durably closed. With -race this
+// also detects any data race on the underlying sync.Once / trustAllHostsCh.
+//
+// Pre-fix, the equivalent inline select/default/close code in the "all" answer
+// callback was not atomic: two goroutines could both observe the channel open,
+// both take the default branch, and both call close() — causing a panic.
+func TestCloseTrustAllHostsChConcurrentNoPanic(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	callback := testKnownHostsCallback(t, knownHostsPath)
+
+	// Run many goroutines concurrently to maximise the chance of hitting the
+	// race window that existed before the sync.Once fix.
+	const concurrency = 50
+	ready := make(chan struct{})
+	done := make(chan struct{}, concurrency)
+
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			<-ready
+			// closeTrustAllHostsCh is the idempotent replacement for the racy
+			// select/default/close sequence. All calls must be safe.
+			callback.closeTrustAllHostsCh()
+			done <- struct{}{}
+		}()
+	}
+
+	// Release all goroutines simultaneously to maximise contention.
+	close(ready)
+	for i := 0; i < concurrency; i++ {
+		<-done
+	}
+
+	// The channel must be closed exactly once: a receive on a closed channel
+	// returns immediately with the zero value.
+	select {
+	case <-callback.trustAllHostsCh:
+		// OK – closed by exactly one goroutine via sync.Once.
+	default:
+		t.Fatalf("trustAllHostsCh is still open after concurrent closeTrustAllHostsCh calls")
+	}
+}
+
 func testKnownHostsCallback(t *testing.T, knownHostsPath string) *KnownHostsCallback {
 	t.Helper()
 
