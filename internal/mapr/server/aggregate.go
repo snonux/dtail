@@ -244,18 +244,26 @@ func (a *Aggregate) aggregateAndSerialize(ctx context.Context,
 	fieldsCh <-chan map[string]string, maprMessages chan<- string) {
 
 	group := mapr.NewGroupSet()
-	serialize := func() {
+
+	// serializeWith flushes accumulated group data using the supplied context.
+	// Any entries that could not be sent before the context expires are
+	// preserved in group so they can be retried on the next tick.
+	serializeWith := func(sendCtx context.Context) {
 		dlog.Server.Info("Serializing mapreduce result")
-		remaining := group.Serialize(ctx, maprMessages)
-		// Preserve unsent entries so the next tick (or the caller driving the
-		// loop) can retry them. Dropping them here would silently lose data
-		// whenever the serialize context fires mid-send.
+		remaining := group.Serialize(sendCtx, maprMessages)
+		// Preserve unsent entries so the next tick can retry them. Dropping
+		// them here would silently lose data whenever the context fires
+		// mid-send.
 		if len(remaining) > 0 {
 			dlog.Server.Warn("Aggregate serialize interrupted; preserving unsent groups",
 				"remaining", len(remaining))
 		}
 		group.ResetWith(remaining)
 	}
+
+	// serialize flushes using the live context (normal periodic tick path).
+	serialize := func() { serializeWith(ctx) }
+
 	for {
 		select {
 		case fields, ok := <-fieldsCh:
@@ -267,6 +275,13 @@ func (a *Aggregate) aggregateAndSerialize(ctx context.Context,
 		case <-a.serialize:
 			serialize()
 		case <-ctx.Done():
+			// Best-effort final flush: use a fresh short-timeout context so
+			// that accumulated data from the last interval is not silently
+			// discarded when the parent context is cancelled (e.g. on normal
+			// shutdown). 500 ms matches the TurboAggregate.Shutdown budget.
+			finalCtx, finalCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			defer finalCancel()
+			serializeWith(finalCtx)
 			return
 		}
 	}
