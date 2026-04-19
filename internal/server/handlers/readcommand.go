@@ -244,15 +244,20 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		limiter = r.server.TailLimiter()
 	}
 
+	// acquired tracks whether this goroutine successfully sent to the limiter.
+	// The defer must only release a slot when this goroutine actually holds one;
+	// an unconditional release would steal a slot from another goroutine that
+	// is still holding it, permanently reducing the effective semaphore capacity.
+	var acquired bool
 	defer func() {
-		select {
-		case <-limiter:
-		default:
+		if acquired {
+			<-limiter
 		}
 	}()
 
 	select {
 	case limiter <- struct{}{}:
+		acquired = true
 		dlog.Server.Debug(r.server.LogContext(), "Got limiter slot immediately", "path", path)
 	case <-ctx.Done():
 		dlog.Server.Debug(r.server.LogContext(), "Context cancelled while waiting for limiter", "path", path)
@@ -261,6 +266,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		dlog.Server.Info(r.server.LogContext(), "Server limit hit, queueing file", "limiterLen", len(limiter), "path", path, "maxConcurrent", cap(limiter))
 		select {
 		case limiter <- struct{}{}:
+			acquired = true
 			dlog.Server.Info(r.server.LogContext(), "Server limit OK now, processing file", "limiterLen", len(limiter), "path", path)
 		case <-ctx.Done():
 			dlog.Server.Debug(r.server.LogContext(), "Context cancelled while queued for limiter", "path", path)
