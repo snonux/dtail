@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -321,11 +322,20 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	return nil
 }
 
+// resolveAuthKeyPath returns the effective auth-key path. When the provided
+// path is non-empty it is used as-is. Otherwise the function falls back to
+// $HOME/.ssh/id_rsa. If HOME is also empty it returns "" so that the AUTHKEY
+// registration step (sendAuthKeyRegistrationCommand) will skip gracefully
+// instead of trying to open a path that the SSH library cannot expand.
 func resolveAuthKeyPath(authKeyPath string) string {
 	if strings.TrimSpace(authKeyPath) != "" {
 		return authKeyPath
 	}
-	return os.Getenv("HOME") + "/.ssh/id_rsa"
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		return ""
+	}
+	return filepath.Join(homeDir, ".ssh", "id_rsa")
 }
 
 func (c *ServerConnection) sendAuthKeyRegistrationCommand() {

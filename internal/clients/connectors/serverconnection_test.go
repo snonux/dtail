@@ -19,6 +19,41 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// TestResolveAuthKeyPathNoLiteralPath is a regression test for the bug
+// described in task l6: when authKeyPath is empty and HOME is also unset,
+// resolveAuthKeyPath must return "" instead of a mangled path like
+// "/.ssh/id_rsa" or the literal "~/.ssh/id_rsa" that the SSH stack cannot use.
+func TestResolveAuthKeyPathNoLiteralPath(t *testing.T) {
+	// Unset HOME so the environment fallback is also empty.
+	t.Setenv("HOME", "")
+
+	got := resolveAuthKeyPath("")
+	if got != "" {
+		t.Fatalf("resolveAuthKeyPath(\"\") with empty HOME = %q; want \"\"", got)
+	}
+}
+
+// TestResolveAuthKeyPathExplicitPathPassedThrough verifies that a non-empty
+// explicit auth key path is returned unchanged.
+func TestResolveAuthKeyPathExplicitPathPassedThrough(t *testing.T) {
+	got := resolveAuthKeyPath("/custom/key")
+	if got != "/custom/key" {
+		t.Fatalf("resolveAuthKeyPath(\"/custom/key\") = %q; want \"/custom/key\"", got)
+	}
+}
+
+// TestResolveAuthKeyPathFallsBackToHome verifies that when authKeyPath is empty
+// but HOME is set, the function returns the expected default path.
+func TestResolveAuthKeyPathFallsBackToHome(t *testing.T) {
+	t.Setenv("HOME", "/home/testuser")
+
+	got := resolveAuthKeyPath("")
+	want := "/home/testuser/.ssh/id_rsa"
+	if got != want {
+		t.Fatalf("resolveAuthKeyPath(\"\") = %q; want %q", got, want)
+	}
+}
+
 func TestExtractAuthKeyBase64(t *testing.T) {
 	originalLogger := dlog.Client
 	dlog.Client = &dlog.DLog{}

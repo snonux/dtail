@@ -157,6 +157,16 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 	if args.SSHPrivateKeyFilePath != "" {
 		in.Client.AuthKeyPath = args.SSHPrivateKeyFilePath
 	}
+	// Warn early when the auth-key path cannot be determined and auth-key is
+	// still enabled. The SSH stack does not expand '~', so a literal path
+	// would silently fail later; warning here points the operator at the fix.
+	if !in.Client.AuthKeyDisable && in.Client.AuthKeyPath == "" {
+		fmt.Fprintf(os.Stderr,
+			"WARN: cannot determine home directory; auth-key fast reconnect disabled. "+
+				"Set DTAIL_AUTH_KEY_PATH explicitly to re-enable it.\n")
+		in.Client.AuthKeyDisable = true
+		args.NoAuthKey = true
+	}
 	if args.LogDir != "" {
 		in.Common.LogDir = args.LogDir
 	}

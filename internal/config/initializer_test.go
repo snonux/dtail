@@ -222,6 +222,36 @@ func TestProcessEnvVarsCLIFlagNotOverridden(t *testing.T) {
 	}
 }
 
+// TestDefaultAuthKeyPathNoLiteralTilde is a regression test for the bug
+// described in task l6: when neither os.UserHomeDir() nor the HOME environment
+// variable can be resolved, defaultAuthKeyPath must return "" rather than the
+// literal string "~/.ssh/id_rsa" which the SSH library cannot expand.
+func TestDefaultAuthKeyPathNoLiteralTilde(t *testing.T) {
+	// Unset HOME so that os.UserHomeDir() fails and the fallback env var is
+	// also empty. t.Setenv restores the original value after the test.
+	t.Setenv("HOME", "")
+
+	got := defaultAuthKeyPath()
+	if got == "~/.ssh/id_rsa" {
+		t.Fatal("defaultAuthKeyPath returned literal '~/.ssh/id_rsa' when HOME is empty; expected \"\"")
+	}
+	if got != "" {
+		t.Fatalf("defaultAuthKeyPath returned %q when HOME is empty; expected \"\"", got)
+	}
+}
+
+// TestDefaultAuthKeyPathWithHome verifies that when HOME is set, the returned
+// path is an absolute path constructed with filepath.Join (no literal '~').
+func TestDefaultAuthKeyPathWithHome(t *testing.T) {
+	t.Setenv("HOME", "/home/testuser")
+
+	got := defaultAuthKeyPath()
+	want := "/home/testuser/.ssh/id_rsa"
+	if got != want {
+		t.Fatalf("defaultAuthKeyPath() = %q; want %q", got, want)
+	}
+}
+
 func writeTestConfig(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

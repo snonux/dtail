@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 
 	"github.com/mimecast/dtail/internal/color"
 )
@@ -207,14 +208,22 @@ func newDefaultClientConfig() *ClientConfig {
 	}
 }
 
+// defaultAuthKeyPath returns the default path for the SSH auth key based on
+// the user's home directory. It tries os.UserHomeDir() first, then falls back
+// to the HOME environment variable. If neither resolves to a non-empty path,
+// it returns "" so that callers can surface a clear error rather than silently
+// using a literal "~/.ssh/id_rsa" that the SSH stack cannot expand.
 func defaultAuthKeyPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil || homeDir == "" {
 		homeDir = os.Getenv("HOME")
 	}
 	if homeDir == "" {
-		return "~/.ssh/id_rsa"
+		// Return empty string; callers must check and emit a diagnostic
+		// (e.g. "set DTAIL_AUTH_KEY_PATH explicitly") rather than using a
+		// path that the SSH library will never find.
+		return ""
 	}
 
-	return homeDir + "/.ssh/id_rsa"
+	return filepath.Join(homeDir, ".ssh", "id_rsa")
 }
