@@ -49,9 +49,26 @@ func main() {
 	}
 	version.Print(false)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// rootCtx is always cancelled on exit to ensure the internal goroutine
+	// spawned by context.WithCancel is released. When -shutdownAfter is set,
+	// ctx is replaced by a child WithTimeout context whose own cancel is also
+	// deferred, preventing the lostcancel leak flagged by go vet.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
+	ctx := rootCtx
+	cancel := context.CancelFunc(rootCancel)
+
 	if shutdownAfter > 0 {
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(shutdownAfter)*time.Second)
+		// Override ctx with a timeout-bounded child; defer its cancel so the
+		// timeout goroutine is always cleaned up regardless of code path.
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(rootCtx, time.Duration(shutdownAfter)*time.Second)
+		defer timeoutCancel()
+		// Callers that invoke cancel() (e.g. the signal handler and post-serve
+		// cleanup) should trigger the timeout cancel so the server shuts down
+		// promptly even before the deadline fires.
+		cancel = timeoutCancel
 	}
 
 	sigCh := make(chan os.Signal, 10)
