@@ -95,6 +95,14 @@ func (g *GroupSet) ResetWith(sets map[string]*AggregateSet) {
 }
 
 // Return a sorted result slice of the query from the group set.
+//
+// Rows are built in lexicographic groupKey order first. This guarantees a
+// stable, deterministic base ordering before any OrderBy sort is applied.
+// Without the pre-sort, Go's intentionally randomised map iteration would
+// make output order non-deterministic when OrderBy is empty, and would
+// produce non-deterministic tie-breaks when multiple rows share the same
+// OrderBy value (SortStable preserves incoming order, so random map order
+// propagated directly into tied rows).
 func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []int, error) {
 	var err error
 	var rows []result
@@ -105,7 +113,13 @@ func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []in
 	var valueStrLen int
 	stats := g.makeResultStats(query)
 
-	for groupKey, set := range g.sets {
+	// Collect and sort group keys lexicographically so that the row slice is
+	// built in a deterministic order. SortStable in resultOrderBy then
+	// preserves this order for tied OrderBy values.
+	keys := sortedGroupKeys(g.sets)
+
+	for _, groupKey := range keys {
+		set := g.sets[groupKey]
 		result := result{groupKey: groupKey}
 
 		for i, sc := range query.Select {
@@ -130,6 +144,19 @@ func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []in
 
 	g.resultOrderBy(query, rows)
 	return rows, columnWidths, nil
+}
+
+// sortedGroupKeys returns the keys of the given sets map sorted
+// lexicographically. This helper centralises the deterministic key extraction
+// used by result() and makeResultStats() to guarantee consistent iteration
+// order regardless of Go's runtime map randomisation.
+func sortedGroupKeys(sets map[string]*AggregateSet) []string {
+	keys := make([]string, 0, len(sets))
+	for k := range sets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (*GroupSet) resultSelect(query *Query, sc *selectCondition, set *AggregateSet,
