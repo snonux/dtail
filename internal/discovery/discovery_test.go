@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
@@ -9,6 +10,55 @@ import (
 func TestMain(m *testing.M) {
 	dlog.Common = &dlog.DLog{}
 	m.Run()
+}
+
+// TestShuffleListDoesNotMutateInput verifies that shuffleList never writes
+// back into the caller's backing array, and that repeated calls within the
+// same sub-second window produce different orderings (the chance of a false
+// failure with 20 elements is 1/20! ≈ 4×10⁻¹⁹).
+func TestShuffleListDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	d := &Discovery{}
+
+	// Build a stable reference slice.
+	original := make([]string, 20)
+	for i := range original {
+		original[i] = string(rune('a' + i))
+	}
+
+	snapshot := append([]string(nil), original...)
+
+	// First shuffle — must not touch original.
+	first := d.shuffleList(original)
+	if !reflect.DeepEqual(original, snapshot) {
+		t.Fatalf("shuffleList mutated caller's slice: got %v, want %v", original, snapshot)
+	}
+	if len(first) != len(original) {
+		t.Fatalf("shuffleList returned wrong length: got %d, want %d", len(first), len(original))
+	}
+
+	// Second shuffle — different seed path; overwhelmingly likely to differ.
+	second := d.shuffleList(original)
+	if reflect.DeepEqual(first, second) {
+		t.Fatal("shuffleList returned identical order on two consecutive calls; seed resolution may be too coarse")
+	}
+
+	// Both results must contain exactly the same elements as the input.
+	countFirst := make(map[string]int, len(original))
+	countSecond := make(map[string]int, len(original))
+	for i := range original {
+		countFirst[first[i]]++
+		countSecond[second[i]]++
+	}
+	for _, s := range original {
+		if countFirst[s] != 1 {
+			t.Errorf("element %q appears %d times in first shuffle, want 1", s, countFirst[s])
+		}
+		if countSecond[s] != 1 {
+			t.Errorf("element %q appears %d times in second shuffle, want 1", s, countSecond[s])
+		}
+	}
 }
 
 func TestNewParsesModuleOptionsWithAdditionalColons(t *testing.T) {

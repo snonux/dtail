@@ -156,19 +156,22 @@ func (d *Discovery) dedupList(servers []string) (deduped []string) {
 	return
 }
 
-// Randomly shuffle the server list.
+// Randomly shuffle the server list. A copy of the input slice is made so the
+// caller's backing array is never modified. The seed uses UnixNano so that
+// two callers started within the same wall-clock second still get different
+// shuffle orders, which is important for client-side load spreading.
 func (d *Discovery) shuffleList(servers []string) []string {
 	dlog.Common.Debug("Shuffling server list")
 
-	r := rand.New(rand.NewSource(time.Now().Unix()))
-	shuffled := make([]string, len(servers))
-	n := len(servers)
+	// Copy to avoid mutating the caller's backing array.
+	shuffled := append([]string(nil), servers...)
 
-	for i := 0; i < n; i++ {
-		randIndex := r.Intn(len(servers))
-		shuffled[i] = servers[randIndex]
-		servers = append(servers[:randIndex], servers[randIndex+1:]...)
-	}
+	// Seed with nanosecond resolution to avoid identical orderings when
+	// multiple clients start within the same second.
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r.Shuffle(len(shuffled), func(i, j int) {
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	})
 
 	return shuffled
 }
