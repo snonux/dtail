@@ -33,12 +33,13 @@ func (g *GlobalGroupSet) Merge(query *Query, group *GroupSet) error {
 }
 
 // MergeNoblock merges (non-blocking) a group set into the global group set.
+// The semaphore is released via defer so it is always returned even if
+// g.merge panics, mirroring the guarantee provided by the blocking Merge.
 func (g *GlobalGroupSet) MergeNoblock(query *Query, group *GroupSet) (bool, error) {
 	select {
 	case g.semaphore <- struct{}{}:
-		err := g.merge(query, group)
-		<-g.semaphore
-		return true, err
+		defer func() { <-g.semaphore }()
+		return true, g.merge(query, group)
 	default:
 		return false, nil
 	}
