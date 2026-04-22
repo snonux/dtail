@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	journaltest "github.com/mimecast/dtail/internal/io/journal/testhelper"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -66,12 +66,11 @@ func TestNewReaderFailsWhenJournalctlIsMissing(t *testing.T) {
 }
 
 func TestStartReadsJournalctlOutputWithoutFollowFlags(t *testing.T) {
-	argsFile := filepath.Join(t.TempDir(), "args")
-	t.Setenv("FAKE_JOURNAL_ARGS", argsFile)
-	installFakeJournalctl(t, `
-printf '%s\n' "$*" > "$FAKE_JOURNAL_ARGS"
-printf 'alpha\nbeta\n'
-`)
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines: []string{"alpha", "beta"},
+		},
+	})
 
 	reader, err := NewReader([]string{"-u", "ssh.service"}, "journal-id", false, make(chan string, 1))
 	if err != nil {
@@ -89,7 +88,7 @@ printf 'alpha\nbeta\n'
 		t.Fatalf("unexpected lines: got=%v want=%v", got, want)
 	}
 
-	args := readFileString(t, argsFile)
+	args := mock.Args(t)
 	if strings.Contains(args, "-f") || strings.Contains(args, "-n 0") {
 		t.Fatalf("non-follow reader passed follow flags: %q", args)
 	}
@@ -102,17 +101,11 @@ printf 'alpha\nbeta\n'
 }
 
 func TestStartFollowPassesFollowFlagsAndTerminatesOnCancel(t *testing.T) {
-	tempDir := t.TempDir()
-	argsFile := filepath.Join(tempDir, "args")
-	termFile := filepath.Join(tempDir, "term")
-	t.Setenv("FAKE_JOURNAL_ARGS", argsFile)
-	t.Setenv("FAKE_JOURNAL_TERM", termFile)
-	installFakeJournalctl(t, `
-printf '%s\n' "$*" > "$FAKE_JOURNAL_ARGS"
-trap 'printf term > "$FAKE_JOURNAL_TERM"; exit 0' TERM
-printf 'ready\n'
-while :; do sleep 0.05; done
-`)
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines: []string{"ready"},
+		},
+	})
 
 	reader, err := NewReader([]string{"-u", "ssh.service"}, "journal-id", true, make(chan string, 1))
 	if err != nil {
@@ -143,12 +136,12 @@ while :; do sleep 0.05; done
 		t.Fatal("follow reader did not stop after cancellation")
 	}
 
-	args := readFileString(t, argsFile)
+	args := mock.Args(t)
 	if !strings.Contains(args, "-f -n 0") {
 		t.Fatalf("follow reader did not pass follow flags: %q", args)
 	}
-	if got := readFileString(t, termFile); got != "term" {
-		t.Fatalf("journalctl did not observe SIGTERM: %q", got)
+	if !mock.Terminated(t) {
+		t.Fatal("journalctl did not observe SIGTERM")
 	}
 	if !reader.Retry() {
 		t.Fatal("follow reader should retry")
@@ -156,10 +149,12 @@ while :; do sleep 0.05; done
 }
 
 func TestStartSurfacesStderrAsServerMessages(t *testing.T) {
-	installFakeJournalctl(t, `
-printf 'journal warning\n' >&2
-printf 'alpha\n'
-`)
+	journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines:  []string{"alpha"},
+			Stderr: []string{"journal warning"},
+		},
+	})
 
 	serverMessages := make(chan string, 1)
 	reader, err := NewReader(nil, "journal-id", false, serverMessages)
@@ -184,9 +179,11 @@ printf 'alpha\n'
 }
 
 func TestStartWithProcessorOptimizedAppliesRegexAndLocalContext(t *testing.T) {
-	installFakeJournalctl(t, `
-printf 'before\nmatch\ncontext\nskip\n'
-`)
+	journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines: []string{"before", "match", "context", "skip"},
+		},
+	})
 
 	reader, err := NewReader(nil, "journal-id", false, nil)
 	if err != nil {
@@ -215,14 +212,12 @@ printf 'before\nmatch\ncontext\nskip\n'
 }
 
 func TestStartWithProcessorErrorTerminatesJournalctl(t *testing.T) {
-	tempDir := t.TempDir()
-	termFile := filepath.Join(tempDir, "term")
-	t.Setenv("FAKE_JOURNAL_TERM", termFile)
-	installFakeJournalctl(t, `
-trap 'printf term > "$FAKE_JOURNAL_TERM"; exit 0' TERM
-printf 'ready\n'
-while :; do printf 'after\n'; done
-`)
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines:    []string{"ready"},
+			HoldOpen: true,
+		},
+	})
 
 	reader, err := NewReader(nil, "journal-id", false, nil)
 	if err != nil {
@@ -249,23 +244,19 @@ while :; do printf 'after\n'; done
 		t.Fatal("reader hung after processor error")
 	}
 
-	if got := readFileString(t, termFile); got != "term" {
-		t.Fatalf("journalctl did not observe SIGTERM: %q", got)
+	if !mock.Terminated(t) {
+		t.Fatal("journalctl did not observe SIGTERM")
 	}
 }
 
 func TestStartWithProcessorErrorKillsTermIgnoringJournalctl(t *testing.T) {
-	tempDir := t.TempDir()
-	pidFile := filepath.Join(tempDir, "pid")
-	termFile := filepath.Join(tempDir, "term")
-	t.Setenv("FAKE_JOURNAL_PID", pidFile)
-	t.Setenv("FAKE_JOURNAL_TERM", termFile)
-	installFakeJournalctl(t, `
-printf '%s\n' "$$" > "$FAKE_JOURNAL_PID"
-trap 'printf term > "$FAKE_JOURNAL_TERM"' TERM
-printf 'ready\n'
-while :; do printf 'after\n'; done
-`)
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines:         []string{"ready"},
+			HoldOpen:      true,
+			IgnoreSIGTERM: true,
+		},
+	})
 
 	reader, err := NewReader(nil, "journal-id", false, nil)
 	if err != nil {
@@ -296,28 +287,16 @@ while :; do printf 'after\n'; done
 	if elapsed := time.Since(started); elapsed < processTerminateGrace {
 		t.Fatalf("reader returned before kill grace elapsed: %s", elapsed)
 	}
-	if got := readFileString(t, termFile); got != "term" {
-		t.Fatalf("journalctl did not observe SIGTERM before kill: %q", got)
+	if !mock.Terminated(t) {
+		t.Fatal("journalctl did not observe SIGTERM before kill")
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(readFileString(t, pidFile)))
+	pid, err := strconv.Atoi(strings.TrimSpace(readFileString(t, mock.PIDFile)))
 	if err != nil {
 		t.Fatalf("parse fake journalctl pid: %v", err)
 	}
 	if processExists(pid) {
 		t.Fatalf("fake journalctl process %d still exists after reader returned", pid)
 	}
-}
-
-func installFakeJournalctl(t *testing.T, body string) {
-	t.Helper()
-
-	binDir := t.TempDir()
-	scriptPath := filepath.Join(binDir, journalctlCommand)
-	script := "#!/bin/sh\n" + body
-	if err := os.WriteFile(scriptPath, []byte(script), 0700); err != nil {
-		t.Fatalf("write fake journalctl: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func drainLines(t *testing.T, lines chan *line.Line) []string {

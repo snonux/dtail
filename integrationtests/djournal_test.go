@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	journaltest "github.com/mimecast/dtail/internal/io/journal/testhelper"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -80,7 +81,7 @@ func testDJournalDTailFollow(t *testing.T, logger *TestLogger) {
 
 	clientCtx, clientCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer clientCancel()
-	cmd, stdoutCh, stderrCh, cmdErrCh := startDJournalCommand(t, clientCtx, nil, "../dtail",
+	cmd, stdoutCh, stderrCh, cmdErrCh := startDJournalCommand(clientCtx, t, nil, "../dtail",
 		"--plain",
 		"--cfg", "none",
 		"--logLevel", "error",
@@ -90,7 +91,7 @@ func testDJournalDTailFollow(t *testing.T, logger *TestLogger) {
 		"--noColor",
 	)
 
-	got := readJournalFollowLines(t, clientCtx, stdoutCh, stderrCh, 3)
+	got := readJournalFollowLines(clientCtx, t, stdoutCh, stderrCh, 3)
 	for i, line := range got {
 		want := fmt.Sprintf("journal follow %d", i+1)
 		if line != want {
@@ -188,17 +189,21 @@ func newJournalTestEnv(t *testing.T) journalTestEnv {
 	t.Helper()
 
 	tmpDir := t.TempDir()
-	binDir := filepath.Join(tmpDir, "bin")
-	if err := os.Mkdir(binDir, 0700); err != nil {
-		t.Fatalf("create fake journalctl bin dir: %v", err)
-	}
-
-	argsFile := filepath.Join(tmpDir, "journalctl.args")
-	termFile := filepath.Join(tmpDir, "journalctl.term")
-	scriptPath := filepath.Join(binDir, "journalctl")
-	if err := os.WriteFile(scriptPath, []byte(fakeJournalctlScript()), 0700); err != nil {
-		t.Fatalf("write fake journalctl: %v", err)
-	}
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines: []string{
+				"journal alpha",
+				"journal beta match-123",
+				"journal gamma match-456",
+			},
+			FollowLines: []string{
+				"journal follow 1",
+				"journal follow 2",
+				"journal follow 3",
+			},
+			InterLineDelay: 50 * time.Millisecond,
+		},
+	})
 
 	configFile := filepath.Join(tmpDir, "dtail.json")
 	configContent := fmt.Sprintf(`{
@@ -217,39 +222,17 @@ func newJournalTestEnv(t *testing.T) journalTestEnv {
 	}
 
 	return journalTestEnv{
-		argsFile:   argsFile,
+		argsFile:   mock.ArgsFile,
 		configFile: configFile,
-		path:       binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		termFile:   termFile,
+		path:       mock.Path,
+		termFile:   mock.TermFile,
 	}
 }
 
 func (e journalTestEnv) ServerEnv() map[string]string {
 	return map[string]string{
-		"FAKE_JOURNAL_ARGS": e.argsFile,
-		"FAKE_JOURNAL_TERM": e.termFile,
-		"PATH":              e.path,
+		"PATH": e.path,
 	}
-}
-
-func fakeJournalctlScript() string {
-	return `#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_JOURNAL_ARGS"
-case " $* " in
-  *" -f "*)
-    trap 'printf term > "$FAKE_JOURNAL_TERM"; exit 0' TERM
-    i=1
-    while :; do
-      printf 'journal follow %s\n' "$i"
-      i=$((i + 1))
-      sleep 0.05
-    done
-    ;;
-esac
-printf 'journal alpha\n'
-printf 'journal beta match-123\n'
-printf 'journal gamma match-456\n'
-`
 }
 
 func journalBoundedOutput() string {
@@ -284,7 +267,7 @@ func startDJournalServer(t *testing.T, logger *TestLogger, configFile string, en
 	return ctx, cancel, fmt.Sprintf("%s:%d", bindAddress, port)
 }
 
-func startDJournalCommand(t *testing.T, ctx context.Context, env map[string]string,
+func startDJournalCommand(ctx context.Context, t *testing.T, env map[string]string,
 	cmdStr string, args ...string) (*exec.Cmd, <-chan string, <-chan string, <-chan error) {
 
 	t.Helper()
@@ -333,7 +316,7 @@ func scanLines(r io.Reader) <-chan string {
 	return ch
 }
 
-func readJournalFollowLines(t *testing.T, ctx context.Context, stdoutCh, stderrCh <-chan string, count int) []string {
+func readJournalFollowLines(ctx context.Context, t *testing.T, stdoutCh, stderrCh <-chan string, count int) []string {
 	t.Helper()
 
 	lines := make([]string, 0, count)

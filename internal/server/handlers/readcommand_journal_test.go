@@ -4,14 +4,13 @@ package handlers
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/io/fs"
+	journaltest "github.com/mimecast/dtail/internal/io/journal/testhelper"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
@@ -180,8 +179,11 @@ var _ readCommandServer = (*journalReadTestServer)(nil)
 func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {
 	resetServerLogger(t)
 
-	argsFile := filepath.Join(t.TempDir(), "args")
-	installHandlerFakeJournalctl(t, argsFile, "alpha\n")
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines: []string{"alpha"},
+		},
+	})
 
 	server := newJournalReadTestServer()
 	command := newReadCommand(server, omode.CatClient)
@@ -196,7 +198,7 @@ func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {
 	if got, want := server.prepared, []string{"journal:ssh.service"}; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("prepared targets = %q, want %q", got, want)
 	}
-	if got := strings.TrimSpace(readHandlerTestFile(t, argsFile)); got != "-u ssh.service" {
+	if got := strings.TrimSpace(mock.Args(t)); got != "-u ssh.service" {
 		t.Fatalf("journalctl args = %q, want %q", got, "-u ssh.service")
 	}
 
@@ -216,29 +218,4 @@ func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {
 
 func emptyLContext() lcontext.LContext {
 	return lcontext.LContext{}
-}
-
-func installHandlerFakeJournalctl(t *testing.T, argsFile, output string) {
-	t.Helper()
-
-	binDir := t.TempDir()
-	scriptPath := filepath.Join(binDir, "journalctl")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$FAKE_JOURNAL_ARGS\"\nprintf '%s' \"$FAKE_JOURNAL_OUTPUT\"\n"
-	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake journalctl: %v", err)
-	}
-
-	t.Setenv("FAKE_JOURNAL_ARGS", argsFile)
-	t.Setenv("FAKE_JOURNAL_OUTPUT", output)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
-
-func readHandlerTestFile(t *testing.T, path string) string {
-	t.Helper()
-
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(content)
 }
