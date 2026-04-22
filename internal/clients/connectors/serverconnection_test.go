@@ -457,6 +457,32 @@ func TestDispatchInitialCommandsRejectsJournalWithoutCapability(t *testing.T) {
 	}
 }
 
+func TestDispatchInitialCommandsRejectsInteractiveJournalWithoutCapability(t *testing.T) {
+	resetClientLogger(t)
+
+	handler := &mockHandler{
+		waitForCapabilities: true,
+		capabilities: map[string]bool{
+			protocol.CapabilityQueryUpdateV1: true,
+		},
+	}
+	spec := sessionspec.Spec{
+		Mode:  omode.TailClient,
+		Files: []string{"journal:ssh.service"},
+	}
+
+	err := dispatchInitialCommands("srv1", handler, []string{"tail: journal:ssh.service ."}, true, spec, &committedSessionState{})
+	if !errors.Is(err, ErrJournalUnsupported) {
+		t.Fatalf("expected ErrJournalUnsupported, got %v", err)
+	}
+	if len(handler.commands) != 0 {
+		t.Fatalf("expected no commands to be sent, got %#v", handler.commands)
+	}
+	if handler.Status() != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.Status())
+	}
+}
+
 func TestServerConnectionApplySessionSpecPreservesCommittedStateOnRejectedUpdate(t *testing.T) {
 	resetClientLogger(t)
 

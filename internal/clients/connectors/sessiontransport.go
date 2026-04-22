@@ -90,8 +90,11 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 
 	if err := applySessionSpec(server, handler, state, initialSpec, defaultSessionAckTimeout); err != nil {
 		if !errors.Is(err, ErrSessionUnsupported) {
-			dlog.Client.Warn(server, "Interactive session bootstrap failed, falling back to legacy commands", err)
+			state.clear()
+			return err
 		}
+
+		dlog.Client.Warn(server, "Interactive session bootstrap unsupported, falling back to legacy commands", err)
 		state.clear()
 		return sendLegacyCommands(handler, commands)
 	}
