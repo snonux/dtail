@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -20,26 +19,44 @@ import (
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/session"
+	sshserver "github.com/mimecast/dtail/internal/ssh/server"
 	userserver "github.com/mimecast/dtail/internal/user/server"
 )
 
-func TestNewServerHandlerAdvertisesQueryUpdateCapability(t *testing.T) {
-	handler := newSessionTestHandler("session-capability-user")
+func TestNewServerHandlerSendsAdvertisedServerCapabilities(t *testing.T) {
+	resetServerLogger(t)
+
+	originalCapabilities := advertisedServerCapabilities
+	advertisedServerCapabilities = strings.Join([]string{
+		protocol.CapabilityQueryUpdateV1,
+		protocol.CapabilityJournalV1,
+	}, " ")
+	t.Cleanup(func() {
+		advertisedServerCapabilities = originalCapabilities
+	})
+
+	handler := NewServerHandler(
+		&userserver.User{Name: "session-capability-user"},
+		make(chan struct{}, 1),
+		make(chan struct{}, 1),
+		&config.ServerConfig{AuthKeyEnabled: true},
+		sshserver.NewAuthKeyStore(time.Hour, 5),
+	)
 
 	message := readServerMessage(t, handler.serverMessages)
 	if !strings.HasPrefix(message, protocol.HiddenCapabilitiesPrefix) {
 		t.Fatalf("unexpected capability advertisement: %q", message)
+	}
+	if want := protocol.HiddenCapabilitiesPrefix + advertisedServerCapabilities; message != want {
+		t.Fatalf("capability advertisement = %q, want %q", message, want)
 	}
 
 	capabilities := strings.Fields(strings.TrimPrefix(message, protocol.HiddenCapabilitiesPrefix))
 	if !slices.Contains(capabilities, protocol.CapabilityQueryUpdateV1) {
 		t.Fatalf("expected %q capability in %q", protocol.CapabilityQueryUpdateV1, message)
 	}
-	if slices.Contains(capabilities, protocol.CapabilityJournalV1) && runtime.GOOS != "linux" {
-		t.Fatalf("unexpected %q capability on %s", protocol.CapabilityJournalV1, runtime.GOOS)
-	}
-	if slices.Contains(capabilities, protocol.CapabilityJournalV1) && !serverJournalCapabilityAvailable {
-		t.Fatalf("unexpected %q capability when journalctl is unavailable", protocol.CapabilityJournalV1)
+	if !slices.Contains(capabilities, protocol.CapabilityJournalV1) {
+		t.Fatalf("expected %q capability in %q", protocol.CapabilityJournalV1, message)
 	}
 }
 
