@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -34,6 +36,23 @@ func (p *captureProcessor) Flush() error {
 }
 
 func (p *captureProcessor) Close() error {
+	return nil
+}
+
+type errorProcessor struct {
+	err error
+}
+
+func (p errorProcessor) ProcessLine(lineContent *bytes.Buffer, _ uint64, _ string) error {
+	pool.RecycleBytesBuffer(lineContent)
+	return p.err
+}
+
+func (p errorProcessor) Flush() error {
+	return nil
+}
+
+func (p errorProcessor) Close() error {
 	return nil
 }
 
@@ -195,6 +214,100 @@ printf 'before\nmatch\ncontext\nskip\n'
 	}
 }
 
+func TestStartWithProcessorErrorTerminatesJournalctl(t *testing.T) {
+	tempDir := t.TempDir()
+	termFile := filepath.Join(tempDir, "term")
+	t.Setenv("FAKE_JOURNAL_TERM", termFile)
+	installFakeJournalctl(t, `
+trap 'printf term > "$FAKE_JOURNAL_TERM"; exit 0' TERM
+printf 'ready\n'
+while :; do printf 'after\n'; done
+`)
+
+	reader, err := NewReader(nil, "journal-id", false, nil)
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+
+	processorErr := errors.New("processor stopped")
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.StartWithProcessor(
+			context.Background(),
+			lcontext.LContext{},
+			errorProcessor{err: processorErr},
+			regex.NewNoop(),
+		)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, processorErr) {
+			t.Fatalf("unexpected reader error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader hung after processor error")
+	}
+
+	if got := readFileString(t, termFile); got != "term" {
+		t.Fatalf("journalctl did not observe SIGTERM: %q", got)
+	}
+}
+
+func TestStartWithProcessorErrorKillsTermIgnoringJournalctl(t *testing.T) {
+	tempDir := t.TempDir()
+	pidFile := filepath.Join(tempDir, "pid")
+	termFile := filepath.Join(tempDir, "term")
+	t.Setenv("FAKE_JOURNAL_PID", pidFile)
+	t.Setenv("FAKE_JOURNAL_TERM", termFile)
+	installFakeJournalctl(t, `
+printf '%s\n' "$$" > "$FAKE_JOURNAL_PID"
+trap 'printf term > "$FAKE_JOURNAL_TERM"' TERM
+printf 'ready\n'
+while :; do printf 'after\n'; done
+`)
+
+	reader, err := NewReader(nil, "journal-id", false, nil)
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+
+	processorErr := errors.New("processor stopped")
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.StartWithProcessor(
+			context.Background(),
+			lcontext.LContext{},
+			errorProcessor{err: processorErr},
+			regex.NewNoop(),
+		)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, processorErr) {
+			t.Fatalf("unexpected reader error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader hung after TERM-ignoring journalctl")
+	}
+
+	if elapsed := time.Since(started); elapsed < processTerminateGrace {
+		t.Fatalf("reader returned before kill grace elapsed: %s", elapsed)
+	}
+	if got := readFileString(t, termFile); got != "term" {
+		t.Fatalf("journalctl did not observe SIGTERM before kill: %q", got)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(readFileString(t, pidFile)))
+	if err != nil {
+		t.Fatalf("parse fake journalctl pid: %v", err)
+	}
+	if processExists(pid) {
+		t.Fatalf("fake journalctl process %d still exists after reader returned", pid)
+	}
+}
+
 func installFakeJournalctl(t *testing.T, body string) {
 	t.Helper()
 
@@ -250,4 +363,9 @@ func readFileString(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(content)
+}
+
+func processExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

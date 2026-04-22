@@ -136,11 +136,7 @@ func (r *Reader) run(ctx context.Context, ltx lcontext.LContext, sink journalSin
 
 	filter := newJournalFilter(ltx, sink, re, r.sourceID)
 	scanErr := r.scanStdout(ctx, stdout, filter)
-	if errors.Is(scanErr, errStopReading) {
-		terminateProcess(cmd.Process)
-	}
-
-	waitErr := cmd.Wait()
+	waitErr := waitForJournalctl(cmd, scanErr != nil)
 	stderrErr := <-stderrDone
 	filter.Close()
 
@@ -185,6 +181,37 @@ func terminateProcess(process *os.Process) {
 	_ = process.Signal(syscall.SIGTERM)
 }
 
+func killProcess(process *os.Process) {
+	if process == nil {
+		return
+	}
+	_ = process.Kill()
+}
+
+func waitForJournalctl(cmd *exec.Cmd, earlyStop bool) error {
+	if !earlyStop {
+		return cmd.Wait()
+	}
+
+	terminateProcess(cmd.Process)
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+
+	timer := time.NewTimer(processTerminateGrace)
+	defer timer.Stop()
+
+	select {
+	case err := <-waitDone:
+		return err
+	case <-timer.C:
+		killProcess(cmd.Process)
+		return <-waitDone
+	}
+}
+
 func (r *Reader) scanStdout(ctx context.Context, stdout io.Reader, filter *journalFilter) error {
 	scanner := bufio.NewScanner(stdout)
 	bufPtr := pool.GetScannerBuffer()
@@ -224,6 +251,9 @@ func (r *Reader) forwardStderr(ctx context.Context, stderr io.Reader) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, os.ErrClosed) {
+			return nil
+		}
 		return fmt.Errorf("scan journalctl stderr: %w", err)
 	}
 	return nil
