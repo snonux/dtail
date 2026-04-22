@@ -64,6 +64,50 @@ func TestSpecUpdateCommandIncludesGeneration(t *testing.T) {
 	}
 }
 
+func TestSpecHasJournalFiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		files []string
+		want  bool
+	}{
+		{
+			name:  "journal file",
+			files: []string{"journal:ssh.service"},
+			want:  true,
+		},
+		{
+			name:  "journal file with surrounding spaces",
+			files: []string{" /var/log/app.log ", " journal:nginx.service "},
+			want:  true,
+		},
+		{
+			name:  "regular file",
+			files: []string{"/var/log/app.log"},
+			want:  false,
+		},
+		{
+			name:  "journal substring is not prefix",
+			files: []string{"/var/log/journal:ssh.service.log"},
+			want:  false,
+		},
+		{
+			name: "empty files",
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := Spec{Files: tc.files}
+			if got := spec.HasJournalFiles(); got != tc.want {
+				t.Fatalf("HasJournalFiles() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func decodeSpecPayload(payload string, out *Spec) error {
 	raw, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {

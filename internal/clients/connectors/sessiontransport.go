@@ -9,6 +9,7 @@ import (
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 	sessionspec "github.com/mimecast/dtail/internal/session"
 )
 
@@ -22,6 +23,8 @@ var (
 	ErrSessionRejected = errors.New("session request rejected")
 	// ErrUnexpectedSessionAck indicates that the client received a malformed or mismatched acknowledgement.
 	ErrUnexpectedSessionAck = errors.New("unexpected session acknowledgement")
+	// ErrJournalUnsupported indicates that the remote side did not advertise journal support.
+	ErrJournalUnsupported = errors.New("journal file targets unsupported by server")
 )
 
 const defaultSessionAckTimeout = 2 * time.Second
@@ -79,6 +82,9 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 	interactiveQuery bool, initialSpec sessionspec.Spec, state *committedSessionState) error {
 
 	if !interactiveQuery || initialSpec.Mode == omode.Unknown {
+		if err := requireJournalCapability(server, handler, initialSpec, defaultCapabilityWait); err != nil {
+			return err
+		}
 		return sendLegacyCommands(handler, commands)
 	}
 
@@ -110,8 +116,8 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 		_, generation, _ = state.snapshot()
 	}
 
-	if handler == nil {
-		return ErrSessionUnsupported
+	if err := requireJournalCapability(server, handler, spec, defaultCapabilityWait); err != nil {
+		return err
 	}
 	if !supportsQueryUpdates(handler, defaultCapabilityWait) {
 		return ErrSessionUnsupported
@@ -158,6 +164,25 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 	state.commit(spec, ack.Generation)
 	dlog.Client.Debug(server, "Committed session spec", "action", action, "generation", ack.Generation)
 	return nil
+}
+
+func requireJournalCapability(server string, handler handlers.Handler, spec sessionspec.Spec, timeout time.Duration) error {
+	if !spec.HasJournalFiles() {
+		return nil
+	}
+	if handler == nil {
+		return ErrJournalUnsupported
+	}
+	if timeout <= 0 {
+		timeout = defaultCapabilityWait
+	}
+	if handler.WaitForCapabilities(timeout) && handler.HasCapability(protocol.CapabilityJournalV1) {
+		return nil
+	}
+
+	message := fmt.Sprintf("journal file targets require server capability %s", protocol.CapabilityJournalV1)
+	handler.ReportServerError(message)
+	return fmt.Errorf("%w: %s", ErrJournalUnsupported, server)
 }
 
 func sendLegacyCommands(handler handlers.Handler, commands []string) error {

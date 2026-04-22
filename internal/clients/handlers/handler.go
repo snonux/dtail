@@ -10,6 +10,7 @@ type Handler interface {
 	io.ReadWriter
 	Capabilities() []string
 	HasCapability(name string) bool
+	ReportServerError(message string)
 	SendMessage(command string) error
 	Server() string
 	Status() int

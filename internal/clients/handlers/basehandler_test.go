@@ -100,6 +100,14 @@ func TestWaitForCapabilitiesTimeout(t *testing.T) {
 	}
 }
 
+func TestFormatServerErrorMessage(t *testing.T) {
+	got := formatServerErrorMessage("srv1", "journal file targets require server capability journal-v1")
+	want := "SERVER|srv1|ERROR|journal file targets require server capability journal-v1\n"
+	if got != want {
+		t.Fatalf("formatServerErrorMessage() = %q, want %q", got, want)
+	}
+}
+
 func TestParseSessionAckMessage(t *testing.T) {
 	tests := []struct {
 		name    string

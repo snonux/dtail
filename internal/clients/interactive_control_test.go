@@ -491,6 +491,8 @@ func (h *interactiveReloadSessionHandler) HasCapability(name string) bool {
 	return h.capabilities[name]
 }
 
+func (*interactiveReloadSessionHandler) ReportServerError(string) {}
+
 func (*interactiveReloadSessionHandler) Server() string { return "mock" }
 
 func (*interactiveReloadSessionHandler) Status() int { return 0 }

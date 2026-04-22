@@ -257,6 +257,8 @@ func (*retryTestHandler) Capabilities() []string { return nil }
 
 func (*retryTestHandler) HasCapability(string) bool { return false }
 
+func (*retryTestHandler) ReportServerError(string) {}
+
 func (*retryTestHandler) SendMessage(string) error { return nil }
 
 func (*retryTestHandler) Server() string { return "srv1" }

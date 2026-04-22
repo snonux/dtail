@@ -355,6 +355,108 @@ func TestServerConnectionApplySessionSpecFallsBackForUnsupportedServer(t *testin
 	}
 }
 
+func TestRequireJournalCapability(t *testing.T) {
+	tests := []struct {
+		name                string
+		spec                sessionspec.Spec
+		waitForCapabilities bool
+		capabilities        map[string]bool
+		wantErr             error
+		wantServerError     bool
+	}{
+		{
+			name: "journal file with journal capability",
+			spec: sessionspec.Spec{
+				Mode:  omode.CatClient,
+				Files: []string{"journal:ssh.service"},
+			},
+			waitForCapabilities: true,
+			capabilities: map[string]bool{
+				protocol.CapabilityJournalV1: true,
+			},
+		},
+		{
+			name: "journal file without journal capability",
+			spec: sessionspec.Spec{
+				Mode:  omode.CatClient,
+				Files: []string{"journal:ssh.service"},
+			},
+			waitForCapabilities: true,
+			capabilities: map[string]bool{
+				protocol.CapabilityQueryUpdateV1: true,
+			},
+			wantErr:         ErrJournalUnsupported,
+			wantServerError: true,
+		},
+		{
+			name: "journal file without capabilities advertisement",
+			spec: sessionspec.Spec{
+				Mode:  omode.CatClient,
+				Files: []string{"journal:ssh.service"},
+			},
+			wantErr:         ErrJournalUnsupported,
+			wantServerError: true,
+		},
+		{
+			name: "regular file without journal capability",
+			spec: sessionspec.Spec{
+				Mode:  omode.CatClient,
+				Files: []string{"/var/log/app.log"},
+			},
+			waitForCapabilities: true,
+			capabilities: map[string]bool{
+				protocol.CapabilityQueryUpdateV1: true,
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := &mockHandler{
+				waitForCapabilities: tc.waitForCapabilities,
+				capabilities:        tc.capabilities,
+			}
+
+			err := requireJournalCapability("srv1", handler, tc.spec, 10*time.Millisecond)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("requireJournalCapability() error = %v, want %v", err, tc.wantErr)
+			}
+			if got := handler.serverError != ""; got != tc.wantServerError {
+				t.Fatalf("server error recorded = %v, want %v", got, tc.wantServerError)
+			}
+			if tc.wantServerError && !strings.Contains(handler.serverError, protocol.CapabilityJournalV1) {
+				t.Fatalf("server error %q does not mention %s", handler.serverError, protocol.CapabilityJournalV1)
+			}
+		})
+	}
+}
+
+func TestDispatchInitialCommandsRejectsJournalWithoutCapability(t *testing.T) {
+	resetClientLogger(t)
+
+	handler := &mockHandler{
+		waitForCapabilities: true,
+		capabilities: map[string]bool{
+			protocol.CapabilityQueryUpdateV1: true,
+		},
+	}
+	spec := sessionspec.Spec{
+		Mode:  omode.CatClient,
+		Files: []string{"journal:ssh.service"},
+	}
+
+	err := dispatchInitialCommands("srv1", handler, []string{"cat: journal:ssh.service ."}, false, spec, &committedSessionState{})
+	if !errors.Is(err, ErrJournalUnsupported) {
+		t.Fatalf("expected ErrJournalUnsupported, got %v", err)
+	}
+	if len(handler.commands) != 0 {
+		t.Fatalf("expected no commands to be sent, got %#v", handler.commands)
+	}
+	if handler.Status() != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.Status())
+	}
+}
+
 func TestServerConnectionApplySessionSpecPreservesCommittedStateOnRejectedUpdate(t *testing.T) {
 	resetClientLogger(t)
 
@@ -593,6 +695,8 @@ type mockHandler struct {
 	capabilities        map[string]bool
 	waitForCapabilities bool
 	sessionAcks         []handlers.SessionAck
+	serverError         string
+	status              int
 }
 
 var _ handlers.Handler = (*mockHandler)(nil)
@@ -614,12 +718,17 @@ func (m *mockHandler) HasCapability(name string) bool {
 	return m.capabilities[name]
 }
 
+func (m *mockHandler) ReportServerError(message string) {
+	m.serverError = message
+	m.status = 1
+}
+
 func (m *mockHandler) Server() string {
 	return "mock"
 }
 
 func (m *mockHandler) Status() int {
-	return 0
+	return m.status
 }
 
 func (m *mockHandler) Shutdown() {}
@@ -694,6 +803,8 @@ func (h *blockingSessionHandler) Capabilities() []string {
 func (h *blockingSessionHandler) HasCapability(name string) bool {
 	return h.capabilities[name]
 }
+
+func (*blockingSessionHandler) ReportServerError(string) {}
 
 func (*blockingSessionHandler) Server() string {
 	return "mock"

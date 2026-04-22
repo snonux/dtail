@@ -77,6 +77,11 @@ func (h *baseHandler) HasCapability(name string) bool {
 	return ok
 }
 
+func (h *baseHandler) ReportServerError(message string) {
+	h.status = 1
+	dlog.Client.Raw(formatServerErrorMessage(h.server, message))
+}
+
 // SendMessage to the server.
 func (h *baseHandler) SendMessage(command string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(command))
@@ -353,4 +358,14 @@ func parseSessionOKAck(payload string, action string) (SessionAck, bool) {
 		Action:     action,
 		Generation: generation,
 	}, true
+}
+
+func formatServerErrorMessage(server string, message string) string {
+	return fmt.Sprintf("SERVER%s%s%sERROR%s%s\n",
+		protocol.FieldDelimiter,
+		server,
+		protocol.FieldDelimiter,
+		protocol.FieldDelimiter,
+		message,
+	)
 }

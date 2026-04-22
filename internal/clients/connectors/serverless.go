@@ -208,6 +208,8 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	}()
 
 	if err := dispatchInitialCommands(s.Server(), s.handler, s.commands, s.interactive, s.sessionSpec, &s.sessionState); err != nil {
+		s.handler.Shutdown()
+		serverHandler.Shutdown()
 		return err
 	}
 

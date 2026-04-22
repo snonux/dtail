@@ -52,6 +52,16 @@ func (s Spec) Commands() ([]string, error) {
 	}
 }
 
+// HasJournalFiles reports whether this session reads any systemd journal target.
+func (s Spec) HasJournalFiles() bool {
+	for _, file := range s.Files {
+		if strings.HasPrefix(strings.TrimSpace(file), "journal:") {
+			return true
+		}
+	}
+	return false
+}
+
 // StartCommand returns the SESSION START command for this specification.
 func (s Spec) StartCommand() (string, error) {
 	payload, err := s.encodedPayload()

@@ -303,6 +303,7 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	}
 
 	if err := dispatchInitialCommands(c.server, c.handler, c.commands, c.interactive, c.sessionSpec, &c.sessionState); err != nil {
+		c.handler.Shutdown()
 		return err
 	}
 
