@@ -341,6 +341,12 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 - Client env: `DTAIL_SSH_PRIVATE_KEYFILE_PATH` (legacy; used only when `DTAIL_AUTH_KEY_PATH` is unset)
 - Server config: `Server.AuthKeyEnabled`, `Server.AuthKeyTTLSeconds`, `Server.AuthKeyMaxPerUser`
 
+### Journal Source Reads
+
+- Read commands can target systemd journal units with `journal:<unit>`, for example `journal:nginx.service`
+- Journal permission checks use the full `journal:` string in `readfiles` regexes, for example `^journal:(nginx|postgresql)\.service$`
+- Journal targets skip filesystem `stat` and ACL checks, then execute `journalctl` via `os/exec`; do not add cgo dependencies for journal support
+
 ## Common Development Tasks
 
 When modifying client behavior:

@@ -4,12 +4,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+)
+
+// JournalSpecPrefix marks a read target as a systemd journal source.
+const JournalSpecPrefix = "journal:"
+
+// ReadTargetKind identifies the backing source for a validated read target.
+type ReadTargetKind int
+
+// Valid read target kinds.
+const (
+	FileKind ReadTargetKind = iota
+	JournalKind
 )
 
 // ValidatedReadTarget stores a resolved regular file path for rooted re-opens.
 type ValidatedReadTarget struct {
+	Kind         ReadTargetKind
 	resolvedPath string
 	rootedPath   RootedPath
+}
+
+// IsJournalSpec reports whether spec names a journal-backed read source.
+func IsJournalSpec(spec string) bool {
+	return strings.HasPrefix(spec, JournalSpecPrefix)
 }
 
 // NewValidatedReadTarget returns a rooted target for a resolved regular file.
@@ -33,13 +52,29 @@ func NewValidatedReadTarget(resolvedPath string) (ValidatedReadTarget, error) {
 	}
 
 	return ValidatedReadTarget{
+		Kind:         FileKind,
 		resolvedPath: cleanedPath,
 		rootedPath:   rootedPath,
 	}, nil
 }
 
+// NewValidatedJournalTarget returns a validated journal-backed read target.
+func NewValidatedJournalTarget(spec string) (ValidatedReadTarget, error) {
+	if !IsJournalSpec(spec) {
+		return ValidatedReadTarget{}, fmt.Errorf("journal read target requires %q prefix: %s", JournalSpecPrefix, spec)
+	}
+	return ValidatedReadTarget{
+		Kind:         JournalKind,
+		resolvedPath: spec,
+	}, nil
+}
+
 // Open re-opens the validated file beneath its resolved parent directory.
 func (t ValidatedReadTarget) Open() (*os.File, error) {
+	if t.Kind != FileKind {
+		return nil, fmt.Errorf("read target kind %d cannot be opened as a file", t.Kind)
+	}
+
 	root, err := t.rootedPath.OpenRoot()
 	if err != nil {
 		return nil, fmt.Errorf("open root for %s: %w", t.resolvedPath, err)

@@ -58,6 +58,10 @@ func (u *User) HasFilePermission(filePath, permissionType string) bool {
 // ValidateReadTarget resolves and authorizes a file path for server-side reads.
 func (u *User) ValidateReadTarget(filePath, permissionType string) (fs.ValidatedReadTarget, bool) {
 	dlog.Server.Debug(u, filePath, permissionType, "Checking config permissions")
+	if fs.IsJournalSpec(filePath) {
+		return u.validateJournalReadTarget(filePath, permissionType)
+	}
+
 	cleanPath, err := filepath.EvalSymlinks(filePath)
 	if err != nil {
 		dlog.Server.Error(u, filePath, permissionType,
@@ -93,6 +97,25 @@ func (u *User) ValidateReadTarget(filePath, permissionType string) (fs.Validated
 		return fs.ValidatedReadTarget{}, false
 	}
 
+	return target, true
+}
+
+func (u *User) validateJournalReadTarget(spec, permissionType string) (fs.ValidatedReadTarget, bool) {
+	if u.Name != config.ScheduleUser && u.Name != config.ContinuousUser {
+		hasPermission, permissionErr := u.iteratePaths(spec, permissionType)
+		if permissionErr != nil {
+			dlog.Server.Warn(u, spec, permissionErr)
+		}
+		if !hasPermission {
+			return fs.ValidatedReadTarget{}, false
+		}
+	}
+
+	target, err := fs.NewValidatedJournalTarget(spec)
+	if err != nil {
+		dlog.Server.Warn(u, spec, permissionType, "Unable to validate journal read target", err)
+		return fs.ValidatedReadTarget{}, false
+	}
 	return target, true
 }
 

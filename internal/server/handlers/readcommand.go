@@ -12,6 +12,7 @@ import (
 	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs"
+	"github.com/mimecast/dtail/internal/io/journal"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -75,8 +76,20 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 
+	if fs.IsJournalSpec(args[1]) {
+		dlog.Server.Debug("Reading data from journal")
+		r.readJournal(ctx, ltx, args[1], re, retries)
+		return
+	}
+
 	dlog.Server.Debug("Reading data from file(s)")
 	r.readGlob(ctx, ltx, args[1], re, retries)
+}
+
+func (r *readCommand) readJournal(ctx context.Context, ltx lcontext.LContext,
+	spec string, re regex.Regex, _ int) {
+
+	r.readFiles(ctx, ltx, []string{spec}, spec, re, r.server.ReadGlobRetryInterval())
 }
 
 func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
@@ -223,7 +236,14 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 
 	switch r.mode {
 	case omode.GrepClient, omode.CatClient:
-		if target != nil {
+		if target != nil && target.Kind == fs.JournalKind {
+			journalReader, err := journal.NewReader(journalArgs(path), path, false, serverMessages)
+			if err != nil {
+				r.sendServerMessage(dlog.Server.Warn(r.server.LogContext(), "Unable to read journal", err))
+				return
+			}
+			reader = journalReader
+		} else if target != nil {
 			catFile := fs.NewValidatedCatFile(path, *target, globID, serverMessages, r.server.MaxLineLength())
 			reader = &catFile
 		} else {
@@ -234,7 +254,14 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	case omode.TailClient:
 		fallthrough
 	default:
-		if target != nil {
+		if target != nil && target.Kind == fs.JournalKind {
+			journalReader, err := journal.NewReader(journalArgs(path), path, true, serverMessages)
+			if err != nil {
+				r.sendServerMessage(dlog.Server.Warn(r.server.LogContext(), "Unable to read journal", err))
+				return
+			}
+			reader = journalReader
+		} else if target != nil {
 			tailFile := fs.NewValidatedTailFile(path, *target, globID, serverMessages, r.server.MaxLineLength())
 			reader = &tailFile
 		} else {
@@ -304,6 +331,14 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	}
 
 	r.executeReadLoop(ctx, ltx, path, globID, re, reader, r.readViaChannels())
+}
+
+func journalArgs(spec string) []string {
+	source := strings.TrimPrefix(spec, fs.JournalSpecPrefix)
+	if source == "" {
+		return nil
+	}
+	return []string{"-u", source}
 }
 
 func (r *readCommand) readWithTurboProcessor(ctx context.Context, ltx lcontext.LContext,

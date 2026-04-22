@@ -7,6 +7,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/source"
 )
 
@@ -159,5 +160,44 @@ func TestIteratePaths_InvalidRegex(t *testing.T) {
 	_, err := u.iteratePaths("/var/log/app.log", "readfiles")
 	if err == nil {
 		t.Error("expected an error for invalid regex, got nil")
+	}
+}
+
+func TestValidateReadTarget_JournalUsesConfigPermissionOnly(t *testing.T) {
+	ensureTestDeps(t)
+	t.Parallel()
+
+	u := newTestUser([]string{`readfiles:^journal:(nginx|postgresql)\.service$`})
+	target, ok := u.ValidateReadTarget("journal:nginx.service", "readfiles")
+	if !ok {
+		t.Fatal("expected journal target to pass config permission")
+	}
+	if target.Kind != fs.JournalKind {
+		t.Fatalf("target.Kind = %v, want %v", target.Kind, fs.JournalKind)
+	}
+}
+
+func TestValidateReadTarget_JournalDeniedByConfigPermission(t *testing.T) {
+	ensureTestDeps(t)
+	t.Parallel()
+
+	u := newTestUser([]string{`readfiles:^journal:(nginx|postgresql)\.service$`})
+	_, ok := u.ValidateReadTarget("journal:ssh.service", "readfiles")
+	if ok {
+		t.Fatal("expected journal target to be denied by config permission")
+	}
+}
+
+func TestValidateReadTarget_JournalDenyRuleWins(t *testing.T) {
+	ensureTestDeps(t)
+	t.Parallel()
+
+	u := newTestUser([]string{
+		`readfiles:!^journal:postgresql\.service$`,
+		`readfiles:^journal:.*\.service$`,
+	})
+	_, ok := u.ValidateReadTarget("journal:postgresql.service", "readfiles")
+	if ok {
+		t.Fatal("expected matching journal deny rule to block target")
 	}
 }
