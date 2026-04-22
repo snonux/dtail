@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +26,66 @@ import (
 func TestNewServerHandlerAdvertisesQueryUpdateCapability(t *testing.T) {
 	handler := newSessionTestHandler("session-capability-user")
 
-	if message := readServerMessage(t, handler.serverMessages); message != protocol.HiddenCapabilitiesPrefix+protocol.CapabilityQueryUpdateV1 {
+	message := readServerMessage(t, handler.serverMessages)
+	if !strings.HasPrefix(message, protocol.HiddenCapabilitiesPrefix) {
 		t.Fatalf("unexpected capability advertisement: %q", message)
+	}
+
+	capabilities := strings.Fields(strings.TrimPrefix(message, protocol.HiddenCapabilitiesPrefix))
+	if !slices.Contains(capabilities, protocol.CapabilityQueryUpdateV1) {
+		t.Fatalf("expected %q capability in %q", protocol.CapabilityQueryUpdateV1, message)
+	}
+	if slices.Contains(capabilities, protocol.CapabilityJournalV1) && runtime.GOOS != "linux" {
+		t.Fatalf("unexpected %q capability on %s", protocol.CapabilityJournalV1, runtime.GOOS)
+	}
+	if slices.Contains(capabilities, protocol.CapabilityJournalV1) && !serverJournalCapabilityAvailable {
+		t.Fatalf("unexpected %q capability when journalctl is unavailable", protocol.CapabilityJournalV1)
+	}
+}
+
+func TestServerCapabilitiesAdvertisesJournalOnlyOnLinuxWithJournalctl(t *testing.T) {
+	tests := []struct {
+		name                string
+		goos                string
+		journalctlAvailable bool
+		want                []string
+	}{
+		{
+			name:                "linux with journalctl",
+			goos:                "linux",
+			journalctlAvailable: true,
+			want: []string{
+				protocol.CapabilityQueryUpdateV1,
+				protocol.CapabilityJournalV1,
+			},
+		},
+		{
+			name:                "linux without journalctl",
+			goos:                "linux",
+			journalctlAvailable: false,
+			want:                []string{protocol.CapabilityQueryUpdateV1},
+		},
+		{
+			name:                "non linux with journalctl",
+			goos:                "freebsd",
+			journalctlAvailable: true,
+			want:                []string{protocol.CapabilityQueryUpdateV1},
+		},
+		{
+			name:                "non linux without journalctl",
+			goos:                "darwin",
+			journalctlAvailable: false,
+			want:                []string{protocol.CapabilityQueryUpdateV1},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := strings.Fields(serverCapabilities(tt.goos, tt.journalctlAvailable))
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("capabilities = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

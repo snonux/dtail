@@ -3,6 +3,8 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
+	"os/exec"
+	"runtime"
 	"strings"
 	"sync/atomic"
 
@@ -38,6 +40,9 @@ type ServerHandler struct {
 type commandHandler func(context.Context, lcontext.LContext, int, []string, func())
 
 var _ Handler = (*ServerHandler)(nil)
+
+var serverJournalCapabilityAvailable = detectJournalCapabilityAvailable()
+var advertisedServerCapabilities = serverCapabilities(runtime.GOOS, serverJournalCapabilityAvailable)
 
 // NewServerHandler returns the server handler.
 func NewServerHandler(user *user.User, catLimiter,
@@ -81,9 +86,25 @@ func NewServerHandler(user *user.User, catLimiter,
 
 	s := strings.Split(fqdn, ".")
 	h.hostname = s[0]
-	h.send(h.serverMessages, protocol.HiddenCapabilitiesPrefix+protocol.CapabilityQueryUpdateV1)
+	h.send(h.serverMessages, protocol.HiddenCapabilitiesPrefix+advertisedServerCapabilities)
 
 	return &h
+}
+
+func detectJournalCapabilityAvailable() bool {
+	if runtime.GOOS != "linux" {
+		return false
+	}
+	_, err := exec.LookPath("journalctl")
+	return err == nil
+}
+
+func serverCapabilities(goos string, journalctlAvailable bool) string {
+	capabilities := []string{protocol.CapabilityQueryUpdateV1}
+	if goos == "linux" && journalctlAvailable {
+		capabilities = append(capabilities, protocol.CapabilityJournalV1)
+	}
+	return strings.Join(capabilities, " ")
 }
 
 func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LContext,
