@@ -283,9 +283,14 @@ case "$unit" in
 
 . "$scenario_dir/config"
 
+sleep_pid=""
+
 on_term() {
   printf '%s\n' "$term_sentinel" >&2
   printf 'term' > "$term_file"
+  if [ -n "$sleep_pid" ]; then
+    kill "$sleep_pid" 2>/dev/null || true
+  fi
   if [ "$ignore_term" != "1" ]; then
     exit 0
   fi
@@ -293,9 +298,16 @@ on_term() {
 
 trap on_term TERM
 
+interruptible_sleep() {
+  sleep "$1" &
+  sleep_pid=$!
+  wait "$sleep_pid" 2>/dev/null || true
+  sleep_pid=""
+}
+
 sleep_delay() {
   if [ -n "$delay" ]; then
-    sleep "$delay"
+    interruptible_sleep "$delay"
   fi
 }
 
@@ -327,7 +339,7 @@ if [ "$follow" = "1" ]; then
       if [ -n "$delay" ]; then
         sleep_delay
       else
-        sleep 0.05
+        interruptible_sleep 0.05
       fi
     fi
   done
@@ -335,7 +347,7 @@ fi
 
 if [ "$hold_open" = "1" ]; then
   while :; do
-    sleep 0.05
+    interruptible_sleep 0.05
   done
 fi
 

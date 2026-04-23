@@ -143,3 +143,78 @@ func TestInstallMockFollowHonorsSIGTERM(t *testing.T) {
 		t.Fatalf("follow flag = %q, want 1", got)
 	}
 }
+
+func TestInstallMockLongDelayHonorsSIGTERMPromptly(t *testing.T) {
+	mock := InstallMock(t, Scenario{
+		Default: Invocation{
+			FollowLines:    []string{"follow"},
+			InterLineDelay: time.Second,
+		},
+	})
+
+	cmd := exec.Command(journalctlCommand, "-f", "-n", "0")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("open stdout: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start journalctl mock: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+
+	buf := make([]byte, len("follow\n"))
+	if _, err := io.ReadFull(stdout, buf); err != nil {
+		t.Fatalf("read follow output: %v", err)
+	}
+	if string(buf) != "follow\n" {
+		t.Fatalf("first follow output = %q, want follow", string(buf))
+	}
+
+	signaledAt := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("signal journalctl mock: %v", err)
+	}
+	waitForTermFile(t, mock, signaledAt, 200*time.Millisecond)
+
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- cmd.Wait()
+	}()
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Fatalf("wait after SIGTERM: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("journalctl mock did not exit after SIGTERM")
+	}
+	if !strings.Contains(stderr.String(), TermSentinel) {
+		t.Fatalf("stderr = %q, want term sentinel", stderr.String())
+	}
+}
+
+func waitForTermFile(t *testing.T, mock *Mock, started time.Time, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if mock.Terminated(t) {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("journalctl mock did not record SIGTERM within %s; elapsed %s", timeout, time.Since(started))
+		case <-ticker.C:
+		}
+	}
+}
