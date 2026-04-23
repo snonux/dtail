@@ -32,6 +32,9 @@ const (
 
 var errStopReading = errors.New("stop journal reading")
 
+// ErrJournalctlNotFound reports that journalctl could not be found on PATH.
+var ErrJournalctlNotFound = errors.New("journalctl not found")
+
 // Reader reads journal entries by executing journalctl.
 type Reader struct {
 	journalctlPath string
@@ -47,7 +50,7 @@ var _ fs.FileReader = (*Reader)(nil)
 func NewReader(args []string, sourceID string, follow bool, serverMessages chan<- string) (*Reader, error) {
 	journalctlPath, err := exec.LookPath(journalctlCommand)
 	if err != nil {
-		return nil, fmt.Errorf("find journalctl: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrJournalctlNotFound, err)
 	}
 	if sourceID == "" {
 		sourceID = defaultSourceID
@@ -279,7 +282,7 @@ func scanLinesPreserveEndings(data []byte, atEOF bool) (int, []byte, error) {
 		return i + 1, data[:i+1], nil
 	}
 	if atEOF {
-		return len(data), data, nil
+		return len(data), nil, nil
 	}
 	return 0, nil, nil
 }
