@@ -22,6 +22,8 @@ type Invocation struct {
 	FollowLines    []string
 	Stderr         []string
 	ExitCode       int
+	FailFirst      int
+	FailExitCode   int
 	NoEntries      bool
 	PartialLine    string
 	LongLineLength int
@@ -166,6 +168,8 @@ func writeInvocation(t testing.TB, dir string, invocation Invocation) {
 
 	config := []string{
 		fmt.Sprintf("exit_code=%d", invocation.ExitCode),
+		fmt.Sprintf("fail_first=%d", invocation.FailFirst),
+		fmt.Sprintf("fail_exit_code=%d", positiveExitCode(invocation.FailExitCode)),
 		fmt.Sprintf("delay=%s", shellDelay(invocation.InterLineDelay)),
 		fmt.Sprintf("hold_open=%d", boolInt(invocation.HoldOpen)),
 		fmt.Sprintf("ignore_term=%d", boolInt(invocation.IgnoreSIGTERM)),
@@ -210,6 +214,13 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func positiveExitCode(value int) int {
+	if value > 0 {
+		return value
+	}
+	return 1
 }
 
 func mockScript(mock *Mock, paths invocationPaths) string {
@@ -283,6 +294,14 @@ case "$unit" in
 
 . "$scenario_dir/config"
 
+invocation_file="$scenario_dir/invocations"
+invocations=0
+if [ -f "$invocation_file" ]; then
+  invocations=$(cat "$invocation_file")
+fi
+invocations=$((invocations + 1))
+printf '%s\n' "$invocations" > "$invocation_file"
+
 sleep_pid=""
 
 on_term() {
@@ -297,6 +316,10 @@ on_term() {
 }
 
 trap on_term TERM
+
+if [ "$fail_first" -gt 0 ] && [ "$invocations" -le "$fail_first" ]; then
+  exit "$fail_exit_code"
+fi
 
 interruptible_sleep() {
   sleep "$1" &

@@ -95,6 +95,33 @@ func TestInstallMockSupportsErrorsPartialLongLinesAndDelay(t *testing.T) {
 	}
 }
 
+func TestInstallMockCanFailFirstInvocations(t *testing.T) {
+	InstallMock(t, Scenario{
+		Default: Invocation{
+			Lines:        []string{"after retry"},
+			FailFirst:    1,
+			FailExitCode: 9,
+		},
+	})
+
+	first := exec.Command(journalctlCommand)
+	if err := first.Run(); err == nil {
+		t.Fatal("first journalctl mock invocation unexpectedly succeeded")
+	}
+	if exitCode := first.ProcessState.ExitCode(); exitCode != 9 {
+		t.Fatalf("first exit code = %d, want 9", exitCode)
+	}
+
+	second := exec.Command(journalctlCommand)
+	output, err := second.Output()
+	if err != nil {
+		t.Fatalf("second journalctl mock invocation failed: %v", err)
+	}
+	if got, want := string(output), "after retry\n"; got != want {
+		t.Fatalf("second stdout = %q, want %q", got, want)
+	}
+}
+
 func TestInstallMockFollowHonorsSIGTERM(t *testing.T) {
 	mock := InstallMock(t, Scenario{
 		Default: Invocation{
