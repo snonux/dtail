@@ -110,6 +110,58 @@ func TestValidatedReadTargetOpenRejectsSameRootSymlinkSwap(t *testing.T) {
 	}
 }
 
+func TestNewValidatedJournalTargetRejectsAmbiguousUnits(t *testing.T) {
+	tests := []struct {
+		name string
+		spec string
+	}{
+		{
+			name: "empty unit",
+			spec: "journal:",
+		},
+		{
+			name: "leading dash",
+			spec: "journal:--output=json",
+		},
+		{
+			name: "space",
+			spec: "journal:ssh.service --output=json",
+		},
+		{
+			name: "newline",
+			spec: "journal:ssh.service\n--output=json",
+		},
+		{
+			name: "tab",
+			spec: "journal:ssh.service\t--output=json",
+		},
+		{
+			name: "control character",
+			spec: "journal:ssh.service\x00",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := NewValidatedJournalTarget(tt.spec); err == nil {
+				t.Fatalf("NewValidatedJournalTarget(%q) succeeded, want error", tt.spec)
+			}
+		})
+	}
+}
+
+func TestNewValidatedJournalTargetAcceptsLiteralShellMetacharacters(t *testing.T) {
+	spec := "journal:ssh.service;touch$HOME`whoami`|cat"
+
+	target, err := NewValidatedJournalTarget(spec)
+	if err != nil {
+		t.Fatalf("NewValidatedJournalTarget(%q) error = %v", spec, err)
+	}
+	if target.Kind != JournalKind {
+		t.Fatalf("target.Kind = %v, want %v", target.Kind, JournalKind)
+	}
+}
+
 func TestValidatedTailFileTruncatedReopenDetectsTruncation(t *testing.T) {
 	resetCommonLogger(t)
 

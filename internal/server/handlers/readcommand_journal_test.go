@@ -4,6 +4,8 @@ package handlers
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -210,6 +212,54 @@ func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {
 		}
 		if got.Content.String() != "alpha\n" {
 			t.Fatalf("line content = %q, want %q", got.Content.String(), "alpha\n")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for journal output")
+	}
+}
+
+func TestReadCommandPassesJournalUnitAsSingleArgWithoutShell(t *testing.T) {
+	resetServerLogger(t)
+
+	marker := filepath.Join(t.TempDir(), "journal-injection-marker")
+	unit := "ssh.service;touch${IFS}" + marker
+	spec := fs.JournalSpecPrefix + unit
+
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Units: map[string]journaltest.Invocation{
+			unit: {
+				Lines: []string{"safe"},
+			},
+		},
+	})
+
+	server := newJournalReadTestServer()
+	command := newReadCommand(server, omode.CatClient)
+	command.Start(
+		context.Background(),
+		emptyLContext(),
+		3,
+		[]string{"cat", spec, ""},
+		1,
+	)
+
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("journal unit was interpreted as shell; marker stat error = %v", err)
+	}
+
+	unitFile, err := os.ReadFile(mock.UnitFile)
+	if err != nil {
+		t.Fatalf("read mock unit file: %v", err)
+	}
+	if got := strings.TrimSpace(string(unitFile)); got != unit {
+		t.Fatalf("journalctl unit arg = %q, want %q", got, unit)
+	}
+
+	select {
+	case got := <-server.lines:
+		defer got.Recycle()
+		if got.Content.String() != "safe\n" {
+			t.Fatalf("line content = %q, want %q", got.Content.String(), "safe\n")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for journal output")
