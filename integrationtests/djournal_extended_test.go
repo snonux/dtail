@@ -25,7 +25,11 @@ import (
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
-const journalExtendedSpec = "journal:extended.service"
+const (
+	journalExtendedSpec          = "journal:extended.service"
+	mixedSourceMinLinesPerSource = 2
+	mixedSourceMinSwitches       = 2
+)
 
 func TestDJournalExtendedWithServer(t *testing.T) {
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
@@ -61,6 +65,17 @@ func TestDJournalExtendedWithServer(t *testing.T) {
 }
 
 func testDJournalExtendedMixedSources(t *testing.T, logger *TestLogger) {
+	for _, mode := range dJournalExtendedServerModes() {
+		mode := mode
+		t.Run(mode.name, func(t *testing.T) {
+			testDJournalExtendedMixedSourcesForMode(t, logger, mode)
+		})
+	}
+}
+
+func testDJournalExtendedMixedSourcesForMode(t *testing.T, logger *TestLogger,
+	mode dJournalExtendedServerMode) {
+
 	tmpDir := t.TempDir()
 	regularFile := filepath.Join(tmpDir, "mixed.log")
 	if err := os.WriteFile(regularFile, nil, 0o600); err != nil {
@@ -81,10 +96,12 @@ func testDJournalExtendedMixedSources(t *testing.T, logger *TestLogger) {
 	}, []string{
 		permissionForPath(regularFile),
 		"readfiles:^journal:extended\\.service$",
-	}, nil)
+	}, map[string]any{
+		"MaxConcurrentTails": 2,
+	})
 
-	server := startDJournalExtendedServer(t, logger, env.configFile, env.mock.Env(), "error", false)
-	clientCtx, clientCancel := context.WithTimeout(server.ctx, 10*time.Second)
+	server := startDJournalExtendedServerForMode(t, logger, env, "debug", mode)
+	clientCtx, clientCancel := context.WithTimeout(server.ctx, 15*time.Second)
 	defer clientCancel()
 	cmd, stdoutCh, stderrCh, cmdErrCh := startDJournalCommand(clientCtx, t, nil, "../dtail",
 		"--plain",
@@ -96,16 +113,17 @@ func testDJournalExtendedMixedSources(t *testing.T, logger *TestLogger) {
 		"--noColor",
 	)
 
+	server.logs.waitContains(t, "Start reading|"+regularFile, 3*time.Second)
 	appendLinesAfterDelay(clientCtx, t, regularFile, []string{
 		"file mixed 1",
 		"file mixed 2",
 		"file mixed 3",
-	}, 60*time.Millisecond)
+		"file mixed 4",
+		"file mixed 5",
+	}, 500*time.Millisecond)
 
-	lines := readMixedSourceLines(clientCtx, t, stdoutCh, stderrCh)
-	assertContainsLinePrefix(t, lines, "file mixed ")
-	assertContainsLinePrefix(t, lines, "journal mixed ")
-	assertHasSourceSwitch(t, lines)
+	lines := readMixedSourceLines(clientCtx, t, stdoutCh, stderrCh, server.logs)
+	assertMixedSourcesInterleaved(t, lines)
 	stopProcessAndWait(t, cmd, cmdErrCh, "dtail mixed sources")
 }
 
@@ -203,6 +221,17 @@ func testDJournalExtendedMissingCapability(t *testing.T, logger *TestLogger) {
 }
 
 func testDJournalExtendedRetry(t *testing.T, logger *TestLogger) {
+	for _, mode := range dJournalExtendedServerModes() {
+		mode := mode
+		t.Run(mode.name, func(t *testing.T) {
+			testDJournalExtendedRetryForMode(t, logger, mode)
+		})
+	}
+}
+
+func testDJournalExtendedRetryForMode(t *testing.T, logger *TestLogger,
+	mode dJournalExtendedServerMode) {
+
 	const retryInterval = 300 * time.Millisecond
 	env := newDJournalExtendedEnv(t, journaltest.Scenario{
 		Units: map[string]journaltest.Invocation{
@@ -216,7 +245,7 @@ func testDJournalExtendedRetry(t *testing.T, logger *TestLogger) {
 	}, map[string]any{
 		"ReadRetryIntervalMs": int(retryInterval / time.Millisecond),
 	})
-	server := startDJournalExtendedServer(t, logger, env.configFile, env.mock.Env(), "error", false)
+	server := startDJournalExtendedServerForMode(t, logger, env, "debug", mode)
 
 	clientCtx, clientCancel := context.WithTimeout(server.ctx, 10*time.Second)
 	defer clientCancel()
@@ -239,10 +268,22 @@ func testDJournalExtendedRetry(t *testing.T, logger *TestLogger) {
 	if got := len(nonEmptyLines(env.mock.Args(t))); got < 2 {
 		t.Fatalf("journalctl invocations = %d, want at least 2; args:\n%s", got, env.mock.Args(t))
 	}
+	assertJournalTurboLogState(t, server.logs, mode)
 	stopProcessAndWait(t, cmd, cmdErrCh, "dtail retry")
 }
 
 func testDJournalExtendedCleanShutdown(t *testing.T, logger *TestLogger) {
+	for _, mode := range dJournalExtendedServerModes() {
+		mode := mode
+		t.Run(mode.name, func(t *testing.T) {
+			testDJournalExtendedCleanShutdownForMode(t, logger, mode)
+		})
+	}
+}
+
+func testDJournalExtendedCleanShutdownForMode(t *testing.T, logger *TestLogger,
+	mode dJournalExtendedServerMode) {
+
 	env := newDJournalExtendedEnv(t, journaltest.Scenario{
 		Units: map[string]journaltest.Invocation{
 			"extended.service": {
@@ -255,7 +296,7 @@ func testDJournalExtendedCleanShutdown(t *testing.T, logger *TestLogger) {
 	}, map[string]any{
 		"MaxConcurrentTails": 1,
 	})
-	server := startDJournalExtendedServer(t, logger, env.configFile, env.mock.Env(), "debug", false)
+	server := startDJournalExtendedServerForMode(t, logger, env, "debug", mode)
 
 	firstCtx, firstCancel := context.WithTimeout(server.ctx, 10*time.Second)
 	defer firstCancel()
@@ -271,6 +312,7 @@ func testDJournalExtendedCleanShutdown(t *testing.T, logger *TestLogger) {
 	readMatchingLines(firstCtx, t, stdoutCh, stderrCh, 1, func(line string) bool {
 		return strings.Contains(line, "journal shutdown stream")
 	})
+	assertJournalTurboLogState(t, server.logs, mode)
 	firstPID := readMockPID(t, env.mock.PIDFile)
 	stopProcessAndWait(t, cmd, cmdErrCh, "dtail shutdown")
 	env.mock.WaitForTerm(t, 2*time.Second)
@@ -352,6 +394,25 @@ func testDJournalExtendedTurboCompatibility(t *testing.T, logger *TestLogger) {
 }
 
 func testDJournalExtendedDMap(t *testing.T, logger *TestLogger) {
+	var expectedCSV string
+	for _, mode := range dJournalExtendedServerModes() {
+		mode := mode
+		t.Run(mode.name, func(t *testing.T) {
+			csv := testDJournalExtendedDMapForMode(t, logger, mode)
+			if expectedCSV == "" {
+				expectedCSV = csv
+				return
+			}
+			if csv != expectedCSV {
+				t.Fatalf("dmap journal output mismatch with prior turbo mode\ngot:\n%swant:\n%s", csv, expectedCSV)
+			}
+		})
+	}
+}
+
+func testDJournalExtendedDMapForMode(t *testing.T, logger *TestLogger,
+	mode dJournalExtendedServerMode) string {
+
 	env := newDJournalExtendedEnv(t, journaltest.Scenario{
 		Units: map[string]journaltest.Invocation{
 			"extended.service": {
@@ -365,15 +426,17 @@ func testDJournalExtendedDMap(t *testing.T, logger *TestLogger) {
 	}, []string{
 		"readfiles:^journal:extended\\.service$",
 	}, nil)
-	server := startDJournalExtendedServer(t, logger, env.configFile, env.mock.Env(), "error", false)
+	server := startDJournalExtendedServerForMode(t, logger, env, "debug", mode)
 
-	csvFile := filepath.Join(t.TempDir(), "djournal_extended_dmap.csv")
+	csvFile := filepath.Join(t.TempDir(), fmt.Sprintf("djournal_extended_dmap_%s.csv", mode.name))
 	queryFile := fmt.Sprintf("%s.query", csvFile)
 	query := fmt.Sprintf("from STATS select count($line),$hostname group by $hostname outfile %s", csvFile)
 	cleanupFiles(t, csvFile, queryFile)
 
-	outFile := "djournal_extended_dmap.stdout.tmp"
-	_, err := runCommand(server.ctx, t, outFile, "../dmap",
+	runCtx, runCancel := context.WithTimeout(server.ctx, 30*time.Second)
+	defer runCancel()
+	outFile := fmt.Sprintf("djournal_extended_dmap_%s.stdout.tmp", mode.name)
+	args := []string{
 		"--cfg", "none",
 		"--logLevel", "error",
 		"--noColor",
@@ -381,9 +444,25 @@ func testDJournalExtendedDMap(t *testing.T, logger *TestLogger) {
 		"--servers", server.address,
 		"--trustAllHosts",
 		"--files", journalExtendedSpec,
-	)
+	}
+	if mode.expectTurbo {
+		cmd, stdoutCh, stderrCh, cmdErrCh := startDJournalCommand(runCtx, t, nil, "../dmap", args...)
+		assertDMapTurboLogState(t, server.logs, mode)
+		got := waitFileContains(runCtx, t, csvFile, "3,integrationtest")
+		drainCommandOutput(t, stdoutCh, stderrCh)
+		stopProcessAndWait(t, cmd, cmdErrCh, "dmap journal turbo")
+		if !strings.Contains(got, "count($line),$hostname") {
+			t.Fatalf("dmap journal csv missing header:\n%s", got)
+		}
+		if err := verifyQueryFile(t, queryFile, query); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	_, err := runCommand(runCtx, t, outFile, "../dmap", args...)
 	if err != nil {
-		t.Fatalf("dmap journal failed: %v", err)
+		t.Fatalf("dmap journal failed: %v\nserver logs:\n%s", err, server.logs.String())
 	}
 
 	got := readTestFile(t, csvFile)
@@ -392,6 +471,36 @@ func testDJournalExtendedDMap(t *testing.T, logger *TestLogger) {
 	}
 	if err := verifyQueryFile(t, queryFile, query); err != nil {
 		t.Fatal(err)
+	}
+	assertDMapTurboLogState(t, server.logs, mode)
+	return got
+}
+
+type dJournalExtendedServerMode struct {
+	name               string
+	env                map[string]string
+	dropIntegrationEnv bool
+	expectTurbo        bool
+}
+
+func dJournalExtendedServerModes() []dJournalExtendedServerMode {
+	return []dJournalExtendedServerMode{
+		{
+			name: "turbo-disabled",
+			env: map[string]string{
+				"DTAIL_HOSTNAME_OVERRIDE":  "integrationtest",
+				"DTAIL_TURBOBOOST_DISABLE": "yes",
+			},
+			dropIntegrationEnv: true,
+		},
+		{
+			name: "turbo-enabled",
+			env: map[string]string{
+				"DTAIL_HOSTNAME_OVERRIDE": "integrationtest",
+			},
+			dropIntegrationEnv: true,
+			expectTurbo:        true,
+		},
 	}
 }
 
@@ -547,6 +656,18 @@ func startDJournalExtendedServer(t *testing.T, logger *TestLogger, configFile st
 	}
 }
 
+func startDJournalExtendedServerForMode(t *testing.T, logger *TestLogger,
+	env dJournalExtendedEnv, logLevel string, mode dJournalExtendedServerMode) dJournalExtendedServer {
+
+	t.Helper()
+
+	serverEnv := env.mock.Env()
+	for key, value := range mode.env {
+		serverEnv[key] = value
+	}
+	return startDJournalExtendedServer(t, logger, env.configFile, serverEnv, logLevel, mode.dropIntegrationEnv)
+}
+
 type safeLineLog struct {
 	mu    sync.Mutex
 	lines []string
@@ -694,15 +815,13 @@ func readMatchingLines(ctx context.Context, t *testing.T, stdoutCh, stderrCh <-c
 }
 
 func readMixedSourceLines(ctx context.Context, t *testing.T,
-	stdoutCh, stderrCh <-chan string) []string {
+	stdoutCh, stderrCh <-chan string, logs *safeLineLog) []string {
 
 	t.Helper()
 
 	var lines []string
 	for {
-		if hasLinePrefix(lines, "file mixed ") &&
-			hasLinePrefix(lines, "journal mixed ") &&
-			hasSourceSwitch(lines) {
+		if mixedSourcesInterleaved(lines) {
 			return lines
 		}
 
@@ -723,40 +842,113 @@ func readMixedSourceLines(ctx context.Context, t *testing.T,
 				t.Log("client stderr:", line)
 			}
 		case <-ctx.Done():
-			t.Fatalf("timed out waiting for mixed source output: %v; got %v", ctx.Err(), lines)
+			t.Fatalf("timed out waiting for mixed source output: %v; got %v\nserver logs:\n%s",
+				ctx.Err(), lines, logs.String())
 		}
 	}
 }
 
-func assertContainsLinePrefix(t *testing.T, lines []string, prefix string) {
+func waitFileContains(ctx context.Context, t *testing.T, path, substr string) string {
 	t.Helper()
 
-	if hasLinePrefix(lines, prefix) {
-		return
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	var last string
+	for {
+		content, err := os.ReadFile(path)
+		if err == nil {
+			last = string(content)
+			if strings.Contains(last, substr) {
+				return last
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("read %s: %v", path, err)
+		}
+
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for %s to contain %q: %v; last content:\n%s",
+				path, substr, ctx.Err(), last)
+		}
 	}
-	t.Fatalf("lines do not contain prefix %q: %v", prefix, lines)
 }
 
-func hasLinePrefix(lines []string, prefix string) bool {
+func drainCommandOutput(t *testing.T, stdoutCh, stderrCh <-chan string) {
+	t.Helper()
+
+	for {
+		select {
+		case line, ok := <-stdoutCh:
+			if ok && line != "" {
+				t.Log("client stdout:", line)
+			}
+		case line, ok := <-stderrCh:
+			if ok && line != "" {
+				t.Log("client stderr:", line)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func assertJournalTurboLogState(t *testing.T, logs *safeLineLog, mode dJournalExtendedServerMode) {
+	t.Helper()
+
+	if mode.expectTurbo {
+		logs.waitContains(t, "Using turbo mode for reading", 3*time.Second)
+		return
+	}
+	if logs.contains("Using turbo mode for reading") {
+		t.Fatalf("%s server unexpectedly used journal turbo read path; logs:\n%s", mode.name, logs.String())
+	}
+}
+
+func assertDMapTurboLogState(t *testing.T, logs *safeLineLog, mode dJournalExtendedServerMode) {
+	t.Helper()
+
+	if mode.expectTurbo {
+		logs.waitContains(t, "Creating turbo aggregate for MapReduce", 3*time.Second)
+		logs.waitContains(t, "Using turbo aggregate processor for MapReduce", 3*time.Second)
+		return
+	}
+	if logs.contains("Creating turbo aggregate for MapReduce") ||
+		logs.contains("Using turbo aggregate processor for MapReduce") {
+		t.Fatalf("%s server unexpectedly used dmap turbo aggregate path; logs:\n%s", mode.name, logs.String())
+	}
+}
+
+func assertMixedSourcesInterleaved(t *testing.T, lines []string) {
+	t.Helper()
+
+	if mixedSourcesInterleaved(lines) {
+		return
+	}
+	t.Fatalf("mixed source output was not sufficiently interleaved: file lines=%d journal lines=%d switches=%d lines=%v",
+		countLinePrefix(lines, "file mixed "), countLinePrefix(lines, "journal mixed "),
+		sourceSwitchCount(lines), lines)
+}
+
+func mixedSourcesInterleaved(lines []string) bool {
+	return countLinePrefix(lines, "file mixed ") >= mixedSourceMinLinesPerSource &&
+		countLinePrefix(lines, "journal mixed ") >= mixedSourceMinLinesPerSource &&
+		sourceSwitchCount(lines) >= mixedSourceMinSwitches
+}
+
+func countLinePrefix(lines []string, prefix string) int {
+	count := 0
 	for _, line := range lines {
 		if strings.HasPrefix(line, prefix) {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
 
-func assertHasSourceSwitch(t *testing.T, lines []string) {
-	t.Helper()
-
-	if hasSourceSwitch(lines) {
-		return
-	}
-	t.Fatalf("mixed source output was not interleaved: %v", lines)
-}
-
-func hasSourceSwitch(lines []string) bool {
+func sourceSwitchCount(lines []string) int {
 	lastSource := ""
+	switches := 0
 	for _, line := range lines {
 		source := ""
 		switch {
@@ -769,11 +961,11 @@ func hasSourceSwitch(lines []string) bool {
 			continue
 		}
 		if lastSource != "" && source != lastSource {
-			return true
+			switches++
 		}
 		lastSource = source
 	}
-	return false
+	return switches
 }
 
 func stopProcessAndWait(t *testing.T, cmd *exec.Cmd, cmdErrCh <-chan error, name string) {
