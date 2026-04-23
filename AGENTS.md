@@ -207,6 +207,15 @@ Auth-key fast reconnect is enabled by default. The client can register a public 
 - Server config: `AuthKeyTTLSeconds` (default `86400`)
 - Server config: `AuthKeyMaxPerUser` (default `5`)
 
+### Journal Source Reads
+Journal targets use `journal:unit.service` syntax. Permission rules should match the full target, for example `Permissions.Users[user].ReadRegex: ^journal:.*\.service$`.
+
+**Technical Details:**
+- Server capability `journal-v1` is required for any journal-backed read target; clients reject journal sources when the server does not advertise it.
+- The capability is advertised only on Linux when `journalctl` is available on `PATH`.
+- Journal reads use `journalctl` via `os/exec` only; there is no cgo or `libsystemd` path, and the feature is Linux-only at runtime.
+- Non-follow reads the current journal snapshot once. Follow mode adds `-f -n 0` and keeps restarting `journalctl` until canceled.
+
 ### Turbo Mode and MapReduce Operations
 Turbo boost mode is enabled by default and provides performance optimizations for both direct output operations (cat, grep, tail) and MapReduce operations when running in server mode. It can be explicitly disabled via DTAIL_TURBOBOOST_DISABLE=yes or TurboBoostDisable in the config file.
 
@@ -340,12 +349,6 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 - Client env: `DTAIL_AUTH_KEY_PATH` (takes precedence over `DTAIL_SSH_PRIVATE_KEYFILE_PATH`)
 - Client env: `DTAIL_SSH_PRIVATE_KEYFILE_PATH` (legacy; used only when `DTAIL_AUTH_KEY_PATH` is unset)
 - Server config: `Server.AuthKeyEnabled`, `Server.AuthKeyTTLSeconds`, `Server.AuthKeyMaxPerUser`
-
-### Journal Source Reads
-
-- Read commands can target systemd journal units with `journal:<unit>`, for example `journal:nginx.service`
-- Journal permission checks use the full `journal:` string in `readfiles` regexes, for example `^journal:(nginx|postgresql)\.service$`
-- Journal targets skip filesystem `stat` and ACL checks, then execute `journalctl` via `os/exec`; do not add cgo dependencies for journal support
 
 ## Common Development Tasks
 
