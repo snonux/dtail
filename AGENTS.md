@@ -208,7 +208,7 @@ Auth-key fast reconnect is enabled by default. The client can register a public 
 - Server config: `AuthKeyMaxPerUser` (default `5`)
 
 ### Journal Source Reads
-Journal targets use `journal:unit.service` syntax. Permission rules should match the full target, for example `Permissions.Users[user].ReadRegex: ^journal:.*\.service$`.
+Journal targets use `journal:unit.service` syntax. Permission rules should match the full target, for example `Server.Permissions.Users[user]: ["readfiles:^journal:.*\\.service$"]`.
 
 **Technical Details:**
 - Server capability `journal-v1` is required for any journal-backed read target; clients reject journal sources when the server does not advertise it.
