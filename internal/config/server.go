@@ -106,6 +106,11 @@ type ServerConfig struct {
 	ShutdownTurboSerializeWaitMs int `json:",omitempty"`
 	// Final idle recheck wait before shutdown in milliseconds.
 	ShutdownIdleRecheckWaitMs int `json:",omitempty"`
+	// Maximum size in bytes of a single command frame (bytes accumulated between
+	// ';' delimiters). Frames that grow beyond this limit are rejected and the
+	// session is closed to prevent unbounded memory exhaustion by a malicious or
+	// misbehaving client. Default is 1 MiB.
+	MaxCommandFrameSize int `json:",omitempty"`
 }
 
 // Create a new default server configuration.
@@ -142,7 +147,15 @@ func newDefaultServerConfig() *ServerConfig {
 		TurboEOFAckTimeoutMs:         2000,
 		ShutdownTurboSerializeWaitMs: 500,
 		ShutdownIdleRecheckWaitMs:    10,
+		MaxCommandFrameSize:          DefaultMaxCommandFrameSize,
 	}
+}
+
+// NewDefaultServerConfigForTest returns a fresh ServerConfig populated with all
+// default values. It is intended for use in unit tests that need to inspect or
+// compare default configuration without running the full config initializer.
+func NewDefaultServerConfigForTest() *ServerConfig {
+	return newDefaultServerConfig()
 }
 
 // UserPermissions retrieves the permission set of a given user.

@@ -76,6 +76,13 @@ type baseHandler struct {
 	readBuf          bytes.Buffer
 	writeBuf         bytes.Buffer
 
+	// maxCommandFrameSize is the maximum number of bytes that may be buffered
+	// between two ';' delimiters. When a frame grows beyond this limit the
+	// Write method closes the session immediately to prevent a malicious or
+	// misbehaving client from exhausting server memory. The value is set at
+	// construction time from ServerConfig.MaxCommandFrameSize.
+	maxCommandFrameSize int
+
 	// Some global options + sync primitives required.
 	once       sync.Once
 	mutex      sync.Mutex
@@ -238,6 +245,13 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 }
 
 // Write is to receive data from the dtail client via Writer interface.
+// Each byte is accumulated in writeBuf until a ';' delimiter arrives, at which
+// point the buffered frame is dispatched as a command and the buffer is reset.
+//
+// To prevent a client from exhausting server memory with an unterminated frame,
+// the buffer length is checked against maxCommandFrameSize on every append. When
+// the limit is exceeded the session is shut down and io.ErrClosedPipe is returned
+// so the SSH layer tears down the connection.
 func (h *baseHandler) Write(p []byte) (n int, err error) {
 	for _, b := range p {
 		switch b {
@@ -246,6 +260,19 @@ func (h *baseHandler) Write(p []byte) (n int, err error) {
 			h.writeBuf.Reset()
 		default:
 			h.writeBuf.WriteByte(b)
+			// Guard against unbounded frame growth: a client could send bytes
+			// without ever emitting a ';' delimiter and grow the buffer
+			// indefinitely. Reject and close when the configurable limit is hit.
+			if h.maxCommandFrameSize > 0 && h.writeBuf.Len() > h.maxCommandFrameSize {
+				dlog.Server.Error(h.user,
+					"command frame exceeds maximum size, closing session",
+					"frameSize", h.writeBuf.Len(),
+					"limit", h.maxCommandFrameSize,
+				)
+				h.writeBuf.Reset()
+				h.done.Shutdown()
+				return len(p), io.ErrClosedPipe
+			}
 		}
 	}
 	n = len(p)
