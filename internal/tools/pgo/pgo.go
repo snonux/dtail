@@ -218,21 +218,22 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 	
 	switch command {
 	case "dtail":
-		// For dtail, we need to simulate a growing log file
-		// First, create an empty file
+		// For dtail, we need to simulate a growing log file.
+		// First, create an empty file that dtail will follow.
 		growingLog := testFiles["growing_log"]
 		if err := os.WriteFile(growingLog, []byte{}, 0644); err != nil {
 			return fmt.Errorf("creating growing log: %w", err)
 		}
-		
-		// Start a background process to write to the file with various log levels
-		writerCmd := exec.Command("bash", "-c", fmt.Sprintf(
-			"for i in {1..200}; do level=$((i %% 4)); case $level in 0) lvl=INFO;; 1) lvl=WARN;; 2) lvl=ERROR;; 3) lvl=DEBUG;; esac; echo \"[2025-07-04 15:00:00] $lvl - Test log line number $i with some additional text to process\" >> %s; sleep 0.015; done",
-			growingLog))
-		if err := writerCmd.Start(); err != nil {
-			return fmt.Errorf("starting log writer: %w", err)
-		}
-		defer writerCmd.Process.Kill()
+
+		// Start a pure-Go goroutine to append log lines to the file.
+		// Using a goroutine instead of bash -c avoids shell injection:
+		// the growingLog path (derived from cfg.ProfileDir) could otherwise
+		// be a maliciously crafted value containing shell metacharacters.
+		writerStop := make(chan struct{})
+		go func() {
+			writeGrowingLog(growingLog, writerStop)
+		}()
+		defer close(writerStop)
 		
 		// Run dtail to follow the growing file with regex filtering
 		cmd = exec.Command(binary,
@@ -305,6 +306,41 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 	
 	// Use the first match
 	return copyFile(matches[0], profilePath)
+}
+
+// writeGrowingLog appends 200 synthetic log lines to growingLog, sleeping
+// 15ms between lines to simulate a live log feed.  It returns when all lines
+// have been written or when the stop channel is closed (whichever comes
+// first).  Using pure Go I/O here avoids the shell-injection risk that would
+// arise if the path were interpolated into a "bash -c" command string.
+func writeGrowingLog(growingLog string, stop <-chan struct{}) {
+	levels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
+	f, err := os.OpenFile(growingLog, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	for i := 1; i <= 200; i++ {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+
+		lvl := levels[(i-1)%len(levels)]
+		line := fmt.Sprintf("[2025-07-04 15:00:00] %s - Test log line number %d with some additional text to process\n",
+			lvl, i)
+		if _, err := f.WriteString(line); err != nil {
+			return
+		}
+
+		select {
+		case <-stop:
+			return
+		case <-time.After(15 * time.Millisecond):
+		}
+	}
 }
 
 // copyFile copies src to dst
