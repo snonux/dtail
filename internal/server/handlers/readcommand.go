@@ -123,6 +123,19 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 			continue
 		}
 
+		// Cap the number of paths to prevent an authenticated user with a broad
+		// read permission from spawning an unbounded number of goroutines and
+		// exhausting server memory. Excess paths are dropped with a warning so
+		// the partial result is still delivered rather than failing entirely.
+		if cap := r.server.MaxGlobTargets(); len(paths) > cap {
+			dlog.Server.Warn(r.server.LogContext(), "Glob expansion exceeded cap, truncating",
+				"glob", glob, "matched", len(paths), "cap", cap)
+			r.sendServerMessage(dlog.Server.Warn(r.server.LogContext(),
+				"Glob expansion exceeded server limit, only first targets served",
+				"limit", cap, "matched", len(paths)))
+			paths = paths[:cap]
+		}
+
 		r.readFiles(ctx, ltx, paths, glob, re, retryInterval)
 		return
 	}

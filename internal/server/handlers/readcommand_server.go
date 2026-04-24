@@ -64,6 +64,10 @@ type readCommandTiming interface {
 	ShutdownTurboSerializeWait() time.Duration
 	ShutdownIdleRecheckWait() time.Duration
 	TurboEOFAckTimeout() time.Duration
+	// MaxGlobTargets returns the maximum number of file paths a single glob
+	// expansion may produce before excess paths are dropped. This caps the
+	// number of goroutines and memory consumed per read command.
+	MaxGlobTargets() int
 }
 
 type readCommandServer interface {
@@ -255,6 +259,13 @@ func (h *ServerHandler) ShutdownTurboSerializeWait() time.Duration {
 // ShutdownIdleRecheckWait returns the wait used for the final idle recheck.
 func (h *ServerHandler) ShutdownIdleRecheckWait() time.Duration {
 	return durationFromMilliseconds(h.serverCfg.ShutdownIdleRecheckWaitMs, 10*time.Millisecond)
+}
+
+// MaxGlobTargets returns the maximum number of paths a glob may expand to.
+// Excess paths beyond the cap are silently dropped (with a warning logged)
+// to prevent goroutine/memory exhaustion from a broad read permission glob.
+func (h *ServerHandler) MaxGlobTargets() int {
+	return positiveIntOrDefault(h.serverCfg.MaxGlobTargets, 1000)
 }
 
 func (h *ServerHandler) turboManagerConfig() turboManagerConfig {

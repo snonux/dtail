@@ -176,6 +176,11 @@ func (s *journalReadTestServer) TurboEOFAckTimeout() time.Duration {
 	return time.Millisecond
 }
 
+// MaxGlobTargets returns a permissive cap suitable for journal test scenarios.
+func (s *journalReadTestServer) MaxGlobTargets() int {
+	return 1000
+}
+
 var _ readCommandServer = (*journalReadTestServer)(nil)
 
 func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {

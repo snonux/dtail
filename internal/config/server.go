@@ -111,6 +111,13 @@ type ServerConfig struct {
 	// session is closed to prevent unbounded memory exhaustion by a malicious or
 	// misbehaving client. Default is 1 MiB.
 	MaxCommandFrameSize int `json:",omitempty"`
+	// Maximum number of glob expansion targets (file paths) that a single read
+	// command is allowed to dispatch. When a glob pattern expands to more paths
+	// than this limit, the excess paths are dropped and a warning is sent to the
+	// client. This prevents an authenticated user with broad read permission from
+	// spawning unbounded goroutines and exhausting server memory/CPU.
+	// Default is 1000. Set to 0 to keep the built-in default.
+	MaxGlobTargets int `json:",omitempty"`
 }
 
 // Create a new default server configuration.
@@ -148,6 +155,7 @@ func newDefaultServerConfig() *ServerConfig {
 		ShutdownTurboSerializeWaitMs: 500,
 		ShutdownIdleRecheckWaitMs:    10,
 		MaxCommandFrameSize:          DefaultMaxCommandFrameSize,
+		MaxGlobTargets:               1000,
 	}
 }
 
