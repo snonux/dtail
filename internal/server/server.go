@@ -137,6 +137,11 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 			conn.Close()
 			continue
 		}
+		// Reserve a pre-auth slot immediately after the limit check so that
+		// in-progress handshakes count against maxConnections. The slot is
+		// released inside handleConnection — either promoted to a full
+		// connection on success, or freed on any failure path.
+		s.stats.reservePreAuth()
 		go s.handleConnection(ctx, conn)
 	}
 }
@@ -144,16 +149,31 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	dlog.Server.Info("Handling connection")
 
+	// The caller (listenerLoop) already reserved a pre-auth slot via
+	// reservePreAuth. We must release it on every early-exit path. On the
+	// happy path we promote it atomically to a full connection instead.
+	preAuthReleased := false
+	releasePreAuth := func() {
+		if !preAuthReleased {
+			s.stats.releasePreAuth()
+			preAuthReleased = true
+		}
+	}
+
 	// Prevent slow clients from holding connections open indefinitely before SSH handshake completes.
 	if err := conn.SetDeadline(time.Now().Add(sshHandshakeTimeout)); err != nil {
 		dlog.Server.Error("Failed to set SSH handshake deadline", err)
 		conn.Close()
+		releasePreAuth()
 		return
 	}
 
 	sshConn, chans, reqs, err := gossh.NewServerConn(conn, s.sshServerConfig)
 	if err != nil {
-		dlog.Server.Error("Something just happened", err)
+		// Handshake failed (auth error, timeout, or connection reset).
+		// Release the pre-auth slot so the limit accurately reflects reality.
+		dlog.Server.Error("SSH handshake failed", err)
+		releasePreAuth()
 		return
 	}
 
@@ -161,13 +181,15 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		dlog.Server.Error("Failed to clear SSH handshake deadline", err)
 		sshConn.Close()
+		releasePreAuth()
 		return
 	}
 
-	// Increment once per TCP connection and decrement via defer so the
-	// counter is always balanced regardless of how many SSH channels or
-	// shell requests are multiplexed over this connection.
-	s.stats.incrementConnections()
+	// Atomically convert the pre-auth reservation into a full authenticated
+	// connection. This ensures no instant where neither counter holds the slot,
+	// keeping the effective connection count consistent with maxConnections.
+	s.stats.promotePreAuthToConnection()
+	preAuthReleased = true // pre-auth slot was consumed by promote; guard is no longer needed
 	defer s.stats.decrementConnections()
 
 	go gossh.DiscardRequests(reqs)
