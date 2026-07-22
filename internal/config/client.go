@@ -1,6 +1,11 @@
 package config
 
-import "github.com/mimecast/dtail/internal/color"
+import (
+	"os"
+	"path/filepath"
+
+	"github.com/mimecast/dtail/internal/color"
+)
 
 type remoteTermColors struct {
 	DelimiterAttr color.Attribute
@@ -104,12 +109,26 @@ type termColors struct {
 type ClientConfig struct {
 	TermColorsEnable bool       `json:",omitempty"`
 	TermColors       termColors `json:",omitempty"`
+	AuthKeyPath      string     `json:",omitempty"`
+	AuthKeyDisable   bool       `json:",omitempty"`
+	// LogPayload opts in to teeing the full retrieved payload (the bulk
+	// dcat/dgrep/dtail output) into the daily client log file. Default false:
+	// the file keeps diagnostics/audit lines only, so a large read no longer
+	// grows the daily log by the full payload size. Payload always still goes
+	// to stdout/terminal regardless of this setting. Only affects the default
+	// "fout" logger (stdout+file); see docs for other loggers.
+	LogPayload bool `json:",omitempty"`
 }
 
 // Create a new default client configuration.
 func newDefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
 		TermColorsEnable: true,
+		AuthKeyPath:      defaultAuthKeyPath(),
+		AuthKeyDisable:   false,
+		// Default: diagnostics-only client log file. Opt in with --log-payload
+		// / Client.LogPayload to restore the legacy full-payload tee.
+		LogPayload: false,
 		TermColors: termColors{
 			Remote: remoteTermColors{
 				DelimiterAttr: color.AttrDim,
@@ -197,4 +216,24 @@ func newDefaultClientConfig() *ClientConfig {
 			},
 		},
 	}
+}
+
+// defaultAuthKeyPath returns the default path for the SSH auth key based on
+// the user's home directory. It tries os.UserHomeDir() first, then falls back
+// to the HOME environment variable. If neither resolves to a non-empty path,
+// it returns "" so that callers can surface a clear error rather than silently
+// using a literal "~/.ssh/id_rsa" that the SSH stack cannot expand.
+func defaultAuthKeyPath() string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		homeDir = os.Getenv("HOME")
+	}
+	if homeDir == "" {
+		// Return empty string; callers must check and emit a diagnostic
+		// (e.g. "set DTAIL_AUTH_KEY_PATH explicitly") rather than using a
+		// path that the SSH library will never find.
+		return ""
+	}
+
+	return filepath.Join(homeDir, ".ssh", "id_rsa")
 }

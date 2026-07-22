@@ -6,7 +6,9 @@ type TailFile struct {
 }
 
 // NewTailFile returns a new file tailer.
-func NewTailFile(filePath string, globID string, serverMessages chan<- string) TailFile {
+func NewTailFile(filePath string, globID string, serverMessages chan<- string,
+	maxLineLength int) TailFile {
+
 	return TailFile{
 		readFile: readFile{
 			filePath:       filePath,
@@ -15,6 +17,16 @@ func NewTailFile(filePath string, globID string, serverMessages chan<- string) T
 			retry:          true,
 			canSkipLines:   true,
 			seekEOF:        true,
+			maxLineLength:  maxLineLength,
 		},
 	}
+}
+
+// NewValidatedTailFile returns a new file tailer backed by a rooted open target.
+func NewValidatedTailFile(filePath string, target ValidatedReadTarget, globID string,
+	serverMessages chan<- string, maxLineLength int) TailFile {
+
+	tail := NewTailFile(filePath, globID, serverMessages, maxLineLength)
+	tail.readFile.validatedTarget = &target
+	return tail
 }

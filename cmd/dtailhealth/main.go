@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"sync"
+	"time"
 
-	"net/http"
-	_ "net/http"
-	_ "net/http/pprof"
-
+	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
@@ -28,11 +27,12 @@ func main() {
 	flag.StringVar(&args.Logger, "logger", config.DefaultHealthCheckLogger, "Logger name")
 	flag.StringVar(&args.LogLevel, "logLevel", "none", "Log level")
 	flag.StringVar(&args.ServersStr, "server", "", "Remote server to connect")
+	flag.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")
 	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
 	flag.Parse()
 
 	if displayVersion {
-		version.PrintAndExit()
+		version.PrintAndExit(false)
 	}
 
 	config.Setup(source.HealthCheck, &args, flag.Args())
@@ -43,13 +43,35 @@ func main() {
 	wg.Add(1)
 	dlog.Start(ctx, &wg, source.HealthCheck)
 
+	var pprofServer *cli.PProfServer
 	if pprof != "" {
-		dlog.Client.Info("Starting PProf", pprof)
-		go func() {
-			panic(http.ListenAndServe(pprof, nil))
-		}()
+		pprofServer, pprofErr := cli.NewPProfServer(pprof)
+		if pprofErr != nil {
+			dlog.Client.Error("Unable to start PProf", pprofErr)
+		} else {
+			dlog.Client.Info("Starting PProf", pprofServer.Address())
+			pprofServer.Start(nil)
+		}
 	}
 
-	healthClient, _ := clients.NewHealthClient(args)
-	os.Exit(healthClient.Start(ctx, signal.NoCh(ctx)))
+	healthClient, err := clients.NewHealthClient(args)
+	status := 0
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "CRITICAL: unable to create dtailhealth client: %v\n", err)
+		status = 2
+	} else {
+		status = healthClient.Start(ctx, signal.NoCh(ctx))
+	}
+
+	if pprofServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+			dlog.Client.Error("Unable to stop PProf", err)
+		}
+		shutdownCancel()
+	}
+
+	cancel()
+	wg.Wait()
+	os.Exit(status)
 }

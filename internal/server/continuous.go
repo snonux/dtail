@@ -13,10 +13,32 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-type continuous struct{}
+type continuousClient interface {
+	Start(context.Context, <-chan string) int
+}
 
-func newContinuous() *continuous {
-	return &continuous{}
+type continuous struct {
+	cfg              config.RuntimeConfig
+	newMaprClient    func(config.Args, clients.MaprClientMode) (continuousClient, error)
+	dayChangeWatcher func(context.Context) bool
+	retryInterval    time.Duration
+	now              func() time.Time
+	newTicker        func(time.Duration) (<-chan time.Time, func())
+}
+
+func newContinuous(cfg config.RuntimeConfig) *continuous {
+	c := &continuous{cfg: cfg}
+	c.retryInterval = time.Minute
+	c.now = time.Now
+	c.newTicker = func(d time.Duration) (<-chan time.Time, func()) {
+		ticker := time.NewTicker(d)
+		return ticker.C, ticker.Stop
+	}
+	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (continuousClient, error) {
+		return clients.NewMaprClient(args, mode)
+	}
+	c.dayChangeWatcher = c.waitForDayChange
+	return c
 }
 
 func (c *continuous) start(ctx context.Context) {
@@ -26,17 +48,20 @@ func (c *continuous) start(ctx context.Context) {
 }
 
 func (c *continuous) runJobs(ctx context.Context) {
-	for _, job := range config.Server.Continuous {
+	for i := range c.cfg.Server.Continuous {
+		job := &c.cfg.Server.Continuous[i]
 		if !job.Enable {
 			dlog.Server.Debug(job.Name, "Not running job as not enabled")
 			continue
 		}
-		go func(job config.Continuous) {
+		go func(job *config.Continuous) {
 			c.runJob(ctx, job)
+			retryTicker := time.NewTicker(c.retryInterval)
+			defer retryTicker.Stop()
 			for {
 				select {
-				// Retry after a minute
-				case <-time.After(time.Minute):
+				// Retry after the configured interval.
+				case <-retryTicker.C:
 					c.runJob(ctx, job)
 				case <-ctx.Done():
 					return
@@ -46,14 +71,14 @@ func (c *continuous) runJobs(ctx context.Context) {
 	}
 }
 
-func (c *continuous) runJob(ctx context.Context, job config.Continuous) {
+func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 	dlog.Server.Debug(job.Name, "Processing job")
 
 	files := fillDates(job.Files)
 	outfile := fillDates(job.Outfile)
 	servers := strings.Join(job.Servers, ",")
 	if servers == "" {
-		servers = config.Server.SSHBindAddress
+		servers = c.cfg.Server.SSHBindAddress
 	}
 
 	args := config.Args{
@@ -67,7 +92,7 @@ func (c *continuous) runJob(ctx context.Context, job config.Continuous) {
 
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(job.Name))
 	args.QueryStr = fmt.Sprintf("%s outfile %s", job.Query, outfile)
-	client, err := clients.NewMaprClient(args, clients.NonCumulativeMode)
+	client, err := c.newMaprClient(args, clients.NonCumulativeMode)
 	if err != nil {
 		dlog.Server.Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
 		return
@@ -77,7 +102,7 @@ func (c *continuous) runJob(ctx context.Context, job config.Continuous) {
 	defer cancel()
 	if job.RestartOnDayChange {
 		go func() {
-			if c.waitForDayChange(ctx) {
+			if c.dayChangeWatcher(jobCtx) {
 				dlog.Server.Info(fmt.Sprintf("Canceling job %s due to day change", job.Name))
 				cancel()
 			}
@@ -95,15 +120,23 @@ func (c *continuous) runJob(ctx context.Context, job config.Continuous) {
 }
 
 func (c *continuous) waitForDayChange(ctx context.Context) bool {
-	startTime := time.Now()
+	startTime := c.now()
+	tickCh, stop := c.newTicker(time.Second)
+	defer stop()
 	for {
 		select {
-		case <-time.After(time.Second):
-			if time.Now().Day() != startTime.Day() {
+		case <-tickCh:
+			if !sameCalendarDay(c.now(), startTime) {
 				return true
 			}
 		case <-ctx.Done():
 			return false
 		}
 	}
+}
+
+func sameCalendarDay(a, b time.Time) bool {
+	ay, am, ad := a.Date()
+	by, bm, bd := b.Date()
+	return ay == by && am == bm && ad == bd
 }

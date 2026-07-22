@@ -3,15 +3,13 @@ package main
 import (
 	"context"
 	"flag"
-	"net/http"
-	_ "net/http"
-	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/server"
@@ -46,13 +44,31 @@ func main() {
 	config.Setup(source.Server, &args, flag.Args())
 
 	if displayVersion {
-		version.PrintAndExit()
+		runtimeCfg := config.CurrentRuntime()
+		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
 	}
-	version.Print()
+	version.Print(false)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// rootCtx is always cancelled on exit to ensure the internal goroutine
+	// spawned by context.WithCancel is released. When -shutdownAfter is set,
+	// ctx is replaced by a child WithTimeout context whose own cancel is also
+	// deferred, preventing the lostcancel leak flagged by go vet.
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+
+	ctx := rootCtx
+	cancel := context.CancelFunc(rootCancel)
+
 	if shutdownAfter > 0 {
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(shutdownAfter)*time.Second)
+		// Override ctx with a timeout-bounded child; defer its cancel so the
+		// timeout goroutine is always cleaned up regardless of code path.
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(rootCtx, time.Duration(shutdownAfter)*time.Second)
+		defer timeoutCancel()
+		// Callers that invoke cancel() (e.g. the signal handler and post-serve
+		// cleanup) should trigger the timeout cancel so the server shuts down
+		// promptly even before the deadline fires.
+		cancel = timeoutCancel
 	}
 
 	sigCh := make(chan os.Signal, 10)
@@ -70,16 +86,36 @@ func main() {
 	wg.Add(1)
 	dlog.Start(ctx, &wg, source.Server)
 
+	var pprofServer *cli.PProfServer
 	if pprof != "" {
-		dlog.Client.Info("Starting PProf", pprof)
-		go func() {
-			panic(http.ListenAndServe(pprof, nil))
-		}()
+		// Enable mutex and block profiling so the /debug/pprof/mutex and
+		// /debug/pprof/block endpoints actually contain samples. These rates
+		// are gated on --pprof so they cost nothing when profiling is off.
+		cli.EnableProfilingRates()
+
+		// Assign to the outer pprofServer with '=' (declaring pprofErr
+		// separately) so it is NOT shadowed: the graceful Shutdown below relies
+		// on the outer var being non-nil to actually stop the pprof server.
+		var pprofErr error
+		pprofServer, pprofErr = cli.NewPProfServer(pprof)
+		if pprofErr != nil {
+			dlog.Client.Error("Unable to start PProf", pprofErr)
+		} else {
+			dlog.Client.Info("Starting PProf", pprofServer.Address())
+			pprofServer.Start(nil)
+		}
 	}
 
-	serv := server.New()
+	serv := server.New(config.CurrentRuntime())
 	status := serv.Start(ctx)
 	cancel()
+	if pprofServer != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+			dlog.Client.Error("Unable to stop PProf", err)
+		}
+		shutdownCancel()
+	}
 
 	wg.Wait()
 	os.Exit(status)
