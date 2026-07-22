@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/base64"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -18,16 +19,21 @@ type Args struct {
 	Arguments             []string
 	ConfigFile            string
 	ConnectionsPerCPU     int
+	ControlTTYPath        string
 	Discovery             string
+	InteractiveQuery      bool
 	LogDir                string
 	Logger                string
 	LogLevel              string
+	LogPayload            bool
 	Mode                  omode.Mode
+	NoAuthKey             bool
 	NoColor               bool
 	QueryStr              string
 	Quiet                 bool
 	RegexInvert           bool
 	RegexStr              string
+	SSHAgentKeyIndex      int
 	SSHAuthMethods        []gossh.AuthMethod
 	SSHBindAddress        string
 	SSHHostKeyCallback    gossh.HostKeyCallback
@@ -50,16 +56,21 @@ func (a *Args) String() string {
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Arguments", a.Arguments))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "ConfigFile", a.ConfigFile))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "ConnectionsPerCPU", a.ConnectionsPerCPU))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "ControlTTYPath", a.ControlTTYPath))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Discovery", a.Discovery))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "InteractiveQuery", a.InteractiveQuery))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "LogDir", a.LogDir))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "LogLevel", a.LogLevel))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "LogPayload", a.LogPayload))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Logger", a.Logger))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Mode", a.Mode))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "NoAuthKey", a.NoAuthKey))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "NoColor", a.NoColor))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "QueryStr", a.QueryStr))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "Quiet", a.Quiet))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "RegexInvert", a.RegexInvert))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "RegexStr", a.RegexStr))
+	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHAgentKeyIndex", a.SSHAgentKeyIndex))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHAuthMethods", a.SSHAuthMethods))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHBindAddress", a.SSHBindAddress))
 	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHHostKeyCallback", a.SSHHostKeyCallback))
@@ -100,24 +111,52 @@ func (a *Args) SerializeOptions() string {
 		options["after"] = fmt.Sprintf("%d", a.LContext.AfterContext)
 	}
 
+	return serializeOptions(options)
+}
+
+func serializeOptions(options map[string]string) string {
+	if len(options) == 0 {
+		return ""
+	}
+
+	keys := make([]string, 0, len(options))
+	for k := range options {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	var sb strings.Builder
-	var i int
-	for k, v := range options {
+	for i, k := range keys {
 		if i > 0 {
 			sb.WriteString(":")
 		}
 		sb.WriteString(k)
 		sb.WriteString("=")
-		sb.WriteString(v)
-		i++
+		sb.WriteString(serializeOptionValue(options[k]))
 	}
 	return sb.String()
+}
+
+func serializeOptionValue(value string) string {
+	if strings.ContainsAny(value, ":=|") || strings.HasPrefix(value, "base64%") {
+		return "base64%" + base64.StdEncoding.EncodeToString([]byte(value))
+	}
+
+	return value
 }
 
 // DeserializeOptions deserializes the options, but into a map.
 func DeserializeOptions(opts []string) (map[string]string, lcontext.LContext, error) {
 	options := make(map[string]string, len(opts))
 	var ltx lcontext.LContext
+
+	if len(opts) == 1 {
+		raw := strings.TrimSpace(opts[0])
+		if raw == "" {
+			return options, ltx, nil
+		}
+		opts = strings.Split(raw, ":")
+	}
 
 	for _, o := range opts {
 		kv := strings.SplitN(o, "=", 2)

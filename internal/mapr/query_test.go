@@ -292,3 +292,86 @@ func TestQuotedSelectCondition(t *testing.T) {
 			"'select' clause but got '%v': %s\n%v", q.Select[3].Operation, queryStr, q)
 	}
 }
+
+// TestCsvLogformatDefaultTable verifies that a query using "logformat csv"
+// without an explicit FROM clause gets the default table "." applied after
+// parsing. This is a regression test for a bug where the CSV check ran
+// before q.parse(), so LogFormat was always empty and Table was never set.
+func TestCsvLogformatDefaultTable(t *testing.T) {
+	// Without an explicit FROM, the CSV logformat should default to table "."
+	// meaning "process all lines without file filtering".
+	queryStr := "select foo logformat csv"
+
+	q, err := NewQuery(queryStr)
+	if err != nil {
+		t.Fatalf("Query parse error: %s\n%v: %v", queryStr, q, err)
+	}
+
+	if q.LogFormat != "csv" {
+		t.Errorf("Expected LogFormat 'csv' but got '%v': %s\n%v", q.LogFormat, queryStr, q)
+	}
+
+	// The CSV default table must be "." when no FROM clause is provided.
+	if q.Table != "." {
+		t.Errorf("Expected Table '.' for CSV logformat without FROM clause but got '%v': %s\n%v",
+			q.Table, queryStr, q)
+	}
+}
+
+// TestCsvLogformatExplicitTableNotOverridden verifies that an explicit FROM
+// clause is preserved when using "logformat csv"; the default "." must not
+// override a user-supplied table name.
+func TestCsvLogformatExplicitTableNotOverridden(t *testing.T) {
+	queryStr := "select foo from myfile logformat csv"
+
+	q, err := NewQuery(queryStr)
+	if err != nil {
+		t.Fatalf("Query parse error: %s\n%v: %v", queryStr, q, err)
+	}
+
+	if q.LogFormat != "csv" {
+		t.Errorf("Expected LogFormat 'csv' but got '%v': %s\n%v", q.LogFormat, queryStr, q)
+	}
+
+	// Explicit FROM value must be preserved and not replaced with ".".
+	if q.Table != "MYFILE" {
+		t.Errorf("Expected Table 'MYFILE' for CSV logformat with explicit FROM but got '%v': %s\n%v",
+			q.Table, queryStr, q)
+	}
+}
+
+func TestParseQueryPercentageAndPercentile(t *testing.T) {
+	queryStr := "select percentage($value),percentile($value) from stats group by $host order by percentile($value)"
+
+	q, err := NewQuery(queryStr)
+	if err != nil {
+		t.Errorf("Query parse error: %s\n%v: %v", queryStr, q, err)
+	}
+	if len(q.Select) != 2 {
+		t.Fatalf("Expected two elements in 'select' clause but got '%v': %s\n%v",
+			q.Select, queryStr, q)
+	}
+
+	if q.Select[0].Operation != Percentage {
+		t.Errorf("Expected 'percentage' as first select aggregation but got '%v': %s\n%v",
+			q.Select[0].Operation, queryStr, q)
+	}
+	if q.Select[0].FieldStorage != "percentage($value)" {
+		t.Errorf("Expected percentage field storage but got '%v': %s\n%v",
+			q.Select[0].FieldStorage, queryStr, q)
+	}
+
+	if q.Select[1].Operation != Percentile {
+		t.Errorf("Expected 'percentile' as second select aggregation but got '%v': %s\n%v",
+			q.Select[1].Operation, queryStr, q)
+	}
+	if q.Select[1].FieldStorage != "percentile($value)" {
+		t.Errorf("Expected percentile field storage but got '%v': %s\n%v",
+			q.Select[1].FieldStorage, queryStr, q)
+	}
+
+	if q.OrderBy != "percentile($value)" {
+		t.Errorf("Expected order by percentile($value) but got '%v': %s\n%v",
+			q.OrderBy, queryStr, q)
+	}
+}

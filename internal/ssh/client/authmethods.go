@@ -2,6 +2,7 @@ package client
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/mimecast/dtail/internal/config"
@@ -11,106 +12,151 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-const addedPathStr string = "Added path to list of auth methods, not adding further methods"
+// noopCloser lets callers unconditionally defer closer.Close() when a code
+// path does not own a real resource (e.g. no agent available).
+type noopCloserFunc struct{}
+
+func (noopCloserFunc) Close() error { return nil }
+
+var noAuthCloser io.Closer = noopCloserFunc{}
+
+var (
+	privateKeySigner = ssh.PrivateKeySigner
+	agentSigners     = ssh.AgentSignersWithKeyIndex
+)
 
 // InitSSHAuthMethods initialises all known SSH auth methods on the client side.
+// The returned io.Closer owns any ssh-agent connection acquired while building
+// the auth methods and must be closed by the caller once all SSH handshakes
+// that consume the returned auth methods have completed. The closer is always
+// non-nil so callers can unconditionally `defer closer.Close()`.
 func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
-	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool, throttleCh chan struct{},
-	privateKeyPath string) ([]gossh.AuthMethod, HostKeyCallback) {
+	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool,
+	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback, io.Closer) {
 
 	if len(sshAuthMethods) > 0 {
 		simpleCallback, err := NewSimpleCallback()
 		if err != nil {
 			dlog.Client.FatalPanic(err)
 		}
-		return sshAuthMethods, simpleCallback
+		return sshAuthMethods, simpleCallback, noAuthCloser
 	}
-	return initKnownHostsAuthMethods(trustAllHosts, throttleCh, privateKeyPath)
+	return initKnownHostsAuthMethods(trustAllHosts, privateKeyPath, agentKeyIndex)
 }
 
-func initIntegrationTestKnownHostsAuthMethods() []gossh.AuthMethod {
-	var sshAuthMethods []gossh.AuthMethod
-	privateKeyPath := "./id_rsa"
+func initKnownHostsAuthMethods(trustAllHosts bool,
+	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback, io.Closer) {
 
-	GeneratePrivatePublicKeyPairIfNotExists(privateKeyPath, 4096)
-	authMethod, err := ssh.PrivateKey(privateKeyPath)
-	if err != nil {
-		dlog.Client.FatalPanic("Unable to use private SSH key", privateKeyPath, err)
-	}
-
-	sshAuthMethods = append(sshAuthMethods, authMethod)
-	dlog.Client.Debug("initKnownHostsAuthMethods", addedPathStr, privateKeyPath)
-	return sshAuthMethods
-}
-
-func initKnownHostsAuthMethods(trustAllHosts bool, throttleCh chan struct{},
-	privateKeyPath string) ([]gossh.AuthMethod, HostKeyCallback) {
-
-	var sshAuthMethods []gossh.AuthMethod
 	knownHostsFile := fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME"))
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		// In case of integration test, override known hosts file path.
 		knownHostsFile = "./known_hosts"
 	}
 
-	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts, throttleCh)
+	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts)
 	if err != nil {
 		dlog.Client.FatalPanic(knownHostsFile, err)
 	}
 	dlog.Client.Debug("initKnownHostsAuthMethods", "Added known hosts file path", knownHostsFile)
 
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		return initIntegrationTestKnownHostsAuthMethods(), knownHostsCallback
-	}
-
-	// Try to read custom private key path.
-	if privateKeyPath != "" {
-		authMethod, err := ssh.PrivateKey(privateKeyPath)
-		if err == nil {
-			sshAuthMethods = append(sshAuthMethods, authMethod)
-			dlog.Client.Debug("initKnownHostsAuthMethods", addedPathStr, privateKeyPath)
-			return sshAuthMethods, knownHostsCallback
+		if privateKeyPath == "" {
+			privateKeyPath = "./id_rsa"
 		}
-		dlog.Client.FatalPanic("Unable to use private SSH key", privateKeyPath, err)
+		GeneratePrivatePublicKeyPairIfNotExists(privateKeyPath, 4096)
 	}
 
-	// Second, try SSH Agent
-	authMethod, err := ssh.Agent()
-	if err == nil {
-		sshAuthMethods = append(sshAuthMethods, authMethod)
-		dlog.Client.Debug("initKnownHostsAuthMethods", "Added SSH Agent (SSH_AUTH_SOCK)"+
-			"to list of auth methods, not adding further methods")
-		return sshAuthMethods, knownHostsCallback
-	}
-	dlog.Client.Debug("initKnownHostsAuthMethods", "Unable to init SSH Agent auth method", err)
-
-	// Third, try Linux/UNIX default key paths
-	privateKeyPath = os.Getenv("HOME") + "/.ssh/id_rsa"
-	authMethod, err = ssh.PrivateKey(privateKeyPath)
-	if err == nil {
-		sshAuthMethods = append(sshAuthMethods, authMethod)
-		dlog.Client.Debug("initKnownHostsAuthmethods", addedPathStr, privateKeyPath)
-		return sshAuthMethods, knownHostsCallback
-	}
-	dlog.Client.Debug("initKnownHostsAuthMethods", "Unable to use private key", privateKeyPath, err)
-
-	privateKeyPath = os.Getenv("HOME") + "/.ssh/id_dsa"
-	authMethod, err = ssh.PrivateKey(privateKeyPath)
-	if err == nil {
-		sshAuthMethods = append(sshAuthMethods, authMethod)
-		dlog.Client.Debug("initKnownHostsAuthmethods", addedPathStr, privateKeyPath)
-		return sshAuthMethods, knownHostsCallback
+	sshAuthMethods, agentCloser := collectKnownHostsAuthMethods(privateKeyPath, agentKeyIndex)
+	if len(sshAuthMethods) == 0 {
+		_ = agentCloser.Close()
+		dlog.Client.FatalPanic("Unable to find private SSH key information")
 	}
 
-	privateKeyPath = os.Getenv("HOME") + "/.ssh/id_ecdsa"
-	authMethod, err = ssh.PrivateKey(privateKeyPath)
-	if err == nil {
-		sshAuthMethods = append(sshAuthMethods, authMethod)
-		dlog.Client.Debug("initKnownHostsAuthmethods", addedPathStr, privateKeyPath)
-		return sshAuthMethods, knownHostsCallback
+	return sshAuthMethods, knownHostsCallback, agentCloser
+}
+
+func collectKnownHostsAuthMethods(privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, io.Closer) {
+	signers, agentCloser := collectKnownHostsSigners(privateKeyPath, agentKeyIndex)
+	if len(signers) == 0 {
+		return nil, agentCloser
+	}
+	return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, agentCloser
+}
+
+func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int) ([]gossh.Signer, io.Closer) {
+	var signers []gossh.Signer
+
+	home := os.Getenv("HOME")
+	defaultPrivateKeyPaths := []string{
+		home + "/.ssh/id_rsa",
+		home + "/.ssh/id_dsa",
+		home + "/.ssh/id_ecdsa",
+		home + "/.ssh/id_ed25519",
+	}
+	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+		defaultPrivateKeyPaths = append([]string{"./id_rsa"}, defaultPrivateKeyPaths...)
 	}
 
-	dlog.Client.FatalPanic("Unable to find private SSH key information", privateKeyPath, err)
-	// Never reach this point.
-	return sshAuthMethods, knownHostsCallback
+	if privateKeyPath == "" {
+		privateKeyPath = defaultPrivateKeyPaths[0]
+	}
+
+	addedPrivateKeyPaths := make(map[string]bool, len(defaultPrivateKeyPaths)+1)
+	addedPublicKeys := make(map[string]bool, len(defaultPrivateKeyPaths)+1)
+	addSigner := func(source string, signer gossh.Signer) {
+		if signer == nil {
+			return
+		}
+
+		pubKey := string(signer.PublicKey().Marshal())
+		if addedPublicKeys[pubKey] {
+			dlog.Client.Debug("initKnownHostsAuthMethods", "Skipping duplicate signer", source)
+			return
+		}
+
+		addedPublicKeys[pubKey] = true
+		signers = append(signers, signer)
+		dlog.Client.Debug("initKnownHostsAuthMethods", "Added signer", source)
+	}
+	addPrivateKeySigner := func(path string) {
+		if path == "" {
+			return
+		}
+		if addedPrivateKeyPaths[path] {
+			return
+		}
+
+		signer, err := privateKeySigner(path)
+		if err != nil {
+			dlog.Client.Debug("initKnownHostsAuthMethods", "Unable to load private key signer", path, err)
+			return
+		}
+
+		addedPrivateKeyPaths[path] = true
+		addSigner(path, signer)
+	}
+
+	// First, the explicit auth key path (or default ~/.ssh/id_rsa).
+	addPrivateKeySigner(privateKeyPath)
+
+	// Second, SSH agent (YubiKey-backed keys are typically exposed here).
+	// The agent signers sign lazily over the agent connection, so its
+	// io.Closer must live until the caller is done with the signers.
+	loadedAgentSigners, agentCloser, err := agentSigners(agentKeyIndex)
+	if err != nil {
+		dlog.Client.Debug("initKnownHostsAuthMethods", "Unable to load SSH agent signers", err)
+	}
+	if agentCloser == nil {
+		agentCloser = noAuthCloser
+	}
+	for i, signer := range loadedAgentSigners {
+		addSigner(fmt.Sprintf("agent:%d:%d", agentKeyIndex, i), signer)
+	}
+
+	// Third, additional default private key paths.
+	for _, path := range defaultPrivateKeyPaths {
+		addPrivateKeySigner(path)
+	}
+
+	return signers, agentCloser
 }

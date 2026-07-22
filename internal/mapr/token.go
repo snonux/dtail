@@ -14,22 +14,7 @@ type token struct {
 	quotesStripped bool
 }
 
-func (t token) isKeyword() bool {
-	if !t.isBareword {
-		return false
-	}
-	for _, keyword := range keywords {
-		if strings.ToLower(t.str) == keyword {
-			return true
-		}
-	}
-	return false
-}
-
-func (t token) String() string {
-	return t.str
-}
-
+// tokenize parses a query string into tokens.
 func tokenize(queryStr string) []token {
 	var tokens []token
 	for i, part := range strings.Split(queryStr, "\"") {
@@ -68,7 +53,7 @@ func tokensConsume(tokens []token) ([]token, []token) {
 		if length == 0 {
 			continue
 		}
-		if t.str[0] == '`' && t.str[length-1] == '`' {
+		if length >= 2 && t.str[0] == '`' && t.str[length-1] == '`' {
 			stripped := t.str[1 : length-1]
 			//dlog.Common.Trace("stripped", stripped)
 			t := token{
@@ -104,4 +89,20 @@ func tokensConsumeOptional(tokens []token, optional string) []token {
 		return tokens[1:]
 	}
 	return tokens
+}
+
+func (t token) isKeyword() bool {
+	if !t.isBareword {
+		return false
+	}
+	for _, keyword := range keywords {
+		if strings.ToLower(t.str) == keyword {
+			return true
+		}
+	}
+	return false
+}
+
+func (t token) String() string {
+	return t.str
 }

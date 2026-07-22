@@ -19,7 +19,8 @@ type Outfile struct {
 	AppendMode bool
 }
 
-func (o Outfile) String() string {
+// String returns the string representation of Outfile.
+func (o *Outfile) String() string {
 	return fmt.Sprintf("Outfile(FilePath:%v,AppendMode:%v)", o.FilePath, o.AppendMode)
 }
 
@@ -41,7 +42,8 @@ type Query struct {
 	LogFormat    string
 }
 
-func (q Query) String() string {
+// String returns the string representation of Query.
+func (q *Query) String() string {
 	return fmt.Sprintf("Query(Select:%v,Table:%s,Where:%v,Set:%vGroupBy:%v,"+
 		"GroupKey:%s,OrderBy:%v,ReverseOrder:%v,Interval:%v,Limit:%d,Outfile:%s,"+
 		"RawQuery:%s,tokens:%v,LogFormat:%s)",
@@ -74,13 +76,20 @@ func NewQuery(queryStr string) (*Query, error) {
 		Limit:    -1,
 	}
 
-	// If log format is CSV, then use "." as the table. It means, that
-	// we don't do any file filtering, we process all lines of the CSV.
-	if q.LogFormat == "csv" {
+	// Parse the query tokens to populate all fields including LogFormat and Table.
+	if err := q.parse(tokens); err != nil {
+		return nil, err
+	}
+
+	// If the log format is CSV and no explicit FROM table was provided, default
+	// the table to "." so that all lines are processed without file filtering.
+	// This check must run after parse() because LogFormat is only populated
+	// once parseTokens() has processed the "logformat" keyword.
+	if q.LogFormat == "csv" && q.Table == "" {
 		q.Table = "."
 	}
 
-	return &q, q.parse(tokens)
+	return &q, nil
 }
 
 // HasOutfile returns true if query result will be written to a CVS output file.
@@ -95,7 +104,7 @@ func (q *Query) Has(what string) bool {
 
 func (q *Query) parse(tokens []token) error {
 	if _, err := q.parseTokens(tokens); err != nil {
-		return err
+		return fmt.Errorf("failed to parse query tokens: %w", err)
 	}
 
 	if len(q.Select) < 1 {
@@ -162,14 +171,14 @@ func (q *Query) parseTokens(tokens []token) ([]token, error) {
 			}
 		case "group":
 			tokens = tokensConsumeOptional(tokens[1:], "by")
-			if tokens == nil || len(tokens) < 1 {
+			if len(tokens) < 1 {
 				return tokens, errors.New(invalidQuery + unexpectedEnd)
 			}
 			tokens, q.GroupBy = tokensConsumeStr(tokens)
 			q.GroupKey = strings.Join(q.GroupBy, ",")
 		case "rorder":
 			tokens = tokensConsumeOptional(tokens[1:], "by")
-			if tokens == nil || len(tokens) < 1 {
+			if len(tokens) < 1 {
 				return tokens, errors.New(invalidQuery + unexpectedEnd)
 			}
 			tokens, found = tokensConsume(tokens)
@@ -180,7 +189,7 @@ func (q *Query) parseTokens(tokens []token) ([]token, error) {
 			q.ReverseOrder = true
 		case "order":
 			tokens = tokensConsumeOptional(tokens[1:], "by")
-			if tokens == nil || len(tokens) < 1 {
+			if len(tokens) < 1 {
 				return tokens, errors.New(invalidQuery + unexpectedEnd)
 			}
 			tokens, found = tokensConsume(tokens)

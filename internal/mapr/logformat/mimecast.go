@@ -1,5 +1,4 @@
 //go:build !proprietary
-// +build !proprietary
 
 package logformat
 
@@ -10,6 +9,8 @@ var ErrMimecastNotAvailable error = errors.New("The mimecast logformat is not av
 
 type mimecastParser struct{}
 
+var _ Parser = (*mimecastParser)(nil)
+
 func newMimecastParser(hostname, timeZoneName string, timeZoneOffset int) (*mimecastParser, error) {
 	return &mimecastParser{}, ErrMimecastNotAvailable
 }
@@ -18,6 +19,6 @@ func newMimecastGenericParser(hostname, timeZoneName string, timeZoneOffset int)
 	return &mimecastParser{}, ErrMimecastNotAvailable
 }
 
-func (p *mimecastParser) MakeFields(maprLine string) (map[string]string, error) {
+func (p *mimecastParser) MakeFields(maprLine, _ string) (map[string]string, error) {
 	return nil, ErrMimecastNotAvailable
 }

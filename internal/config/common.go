@@ -4,6 +4,8 @@ package config
 type CommonConfig struct {
 	// The SSH port number
 	SSHPort int
+	// SSH connection timeout in milliseconds.
+	SSHConnectTimeoutMs int `json:",omitempty"`
 	// Enable experimental features (mainly for dev purposes)
 	ExperimentalFeaturesEnable bool `json:",omitempty"`
 	// LogDir defines the log directory.
@@ -22,6 +24,7 @@ type CommonConfig struct {
 func newDefaultCommonConfig() *CommonConfig {
 	return &CommonConfig{
 		SSHPort:                    DefaultSSHPort,
+		SSHConnectTimeoutMs:        2000,
 		ExperimentalFeaturesEnable: false,
 		LogDir:                     "log",
 		Logger:                     "stdout",

@@ -30,6 +30,8 @@ type Line struct {
 	// directories in case multiple log files with the same basename are
 	// followed.
 	SourceID string
+	// Session generation this line belongs to. Zero means unscoped/legacy output.
+	Generation uint64
 }
 
 // New creaters a new line object. This is a DTail internal helper structure for reading files.
@@ -39,13 +41,7 @@ func New(content *bytes.Buffer, count uint64, transmittedPerc int, sourceID stri
 	l.Count = count
 	l.TransmittedPerc = transmittedPerc
 	l.SourceID = sourceID
-	return l
-}
-
-// Null returns a new line with all members initialized to their null value.
-func Null() *Line {
-	l := lineBuffer.Get().(*Line)
-	l.NullValues()
+	l.Generation = 0
 	return l
 }
 
@@ -64,12 +60,4 @@ func (l *Line) Recycle() {
 	// already takes care of it.
 	//l.Reset()
 	lineBuffer.Put(l)
-}
-
-// NullValues nulls all line struct members to their default state.
-func (l *Line) NullValues() {
-	l.Content = nil
-	l.Count = 0
-	l.TransmittedPerc = 0
-	l.SourceID = ""
 }

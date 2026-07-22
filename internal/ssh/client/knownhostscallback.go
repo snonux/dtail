@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/prompt"
 
 	"golang.org/x/crypto/ssh"
@@ -38,36 +39,78 @@ type unknownHost struct {
 // unknown hosts in a single batch to the known_hosts file.
 type KnownHostsCallback struct {
 	knownHostsPath  string
+	knownHostsFile  fs.RootedPath
 	unknownCh       chan unknownHost
-	throttleCh      chan struct{}
 	trustAllHostsCh chan struct{}
-	untrustedHosts  map[string]bool
-	mutex           *sync.Mutex
+	// trustAllOnce guards the single close of trustAllHostsCh. The old
+	// select/default/close pattern was not atomic: two concurrent callers
+	// could both observe the channel open, both fall through to the default
+	// branch, and both call close() — causing a panic. sync.Once makes the
+	// close idempotent and race-free without any additional locking.
+	trustAllOnce   sync.Once
+	untrustedHosts map[string]bool
+	mutex          *sync.Mutex
 }
 
-// NewKnownHostsCallback returns a new wrapper.
-func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
-	throttleCh chan struct{}) (HostKeyCallback, error) {
+var _ HostKeyCallback = (*KnownHostsCallback)(nil)
 
-	os.OpenFile(knownHostsPath, os.O_RDONLY|os.O_CREATE, 0666)
+// NewKnownHostsCallback returns a new wrapper.
+func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool) (HostKeyCallback, error) {
+
+	knownHostsFile, err := fs.NewRootedPath(knownHostsPath)
+	if err != nil {
+		return nil, err
+	}
+	ensureKnownHostsFile(knownHostsFile)
 	untrustedHosts := make(map[string]bool)
 
 	c := KnownHostsCallback{
 		knownHostsPath:  knownHostsPath,
+		knownHostsFile:  knownHostsFile,
 		unknownCh:       make(chan unknownHost),
 		trustAllHostsCh: make(chan struct{}),
-		throttleCh:      throttleCh,
 		untrustedHosts:  untrustedHosts,
 		mutex:           &sync.Mutex{},
 	}
 	if trustAllHosts {
-		close(c.trustAllHostsCh)
+		// Use the same sync.Once path so both the constructor and the
+		// interactive "all" prompt are idempotent and race-free.
+		c.closeTrustAllHostsCh()
 	}
-	return c, nil
+	return &c, nil
 }
 
-// Wrap the host key callback.
-func (c KnownHostsCallback) Wrap() ssh.HostKeyCallback {
+// closeTrustAllHostsCh closes trustAllHostsCh exactly once via sync.Once,
+// regardless of how many goroutines call it concurrently. This replaces the
+// former select/default/close pattern which was not atomic: two concurrent
+// callers could both observe the channel open, both take the default branch,
+// and both call close() — causing a panic.
+func (c *KnownHostsCallback) closeTrustAllHostsCh() {
+	c.trustAllOnce.Do(func() { close(c.trustAllHostsCh) })
+}
+
+func ensureKnownHostsFile(knownHostsFile fs.RootedPath) {
+	root, err := knownHostsFile.OpenRoot()
+	if err != nil {
+		return
+	}
+	defer root.Close()
+
+	fd, err := root.OpenFile(knownHostsFile.Name(), os.O_RDONLY|os.O_CREATE, 0o666)
+	if err != nil {
+		return
+	}
+	fd.Close()
+}
+
+// Wrap the host key callback. The returned ssh.HostKeyCallback is bound to
+// ctx: if ctx is cancelled while we are waiting for the PromptAddHosts
+// goroutine to consume an unknown host or to return a user decision, the
+// callback aborts with ctx.Err() instead of blocking forever. This prevents
+// a stuck SSH handshake (and a leaked goroutine per unknown host) when the
+// client shuts down before the user responds, or when PromptAddHosts has
+// already returned because its ctx was cancelled.
+func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 	return func(server string, remote net.Addr, key ssh.PublicKey) error {
 		// Parse known_hosts file
 		knownHostsCb, err := knownhosts.New(c.knownHostsPath)
@@ -80,10 +123,6 @@ func (c KnownHostsCallback) Wrap() ssh.HostKeyCallback {
 			// OK
 			return nil
 		}
-		// Make sure that interactive user callback does not interfere with
-		// SSH connection throttler.
-		<-c.throttleCh
-		defer func() { c.throttleCh <- struct{}{} }()
 
 		unknown := unknownHost{
 			server:     server,
@@ -91,13 +130,26 @@ func (c KnownHostsCallback) Wrap() ssh.HostKeyCallback {
 			key:        key,
 			hostLine:   knownhosts.Line([]string{server}, key),
 			ipLine:     knownhosts.Line([]string{remote.String()}, key),
-			responseCh: make(chan response),
+			responseCh: make(chan response, 1),
 		}
-		dlog.Client.Warn("Encountered unknown host", unknown)
-		// Notify user that there is an unknown host
-		c.unknownCh <- unknown
-		// Wait for user input.
-		switch <-unknown.responseCh {
+		// Keep host trust discovery diagnostics out of normal command output.
+		// In trust-all and plain modes this warning can corrupt tool output.
+		dlog.Client.Debug("Encountered unknown host", unknown.server, unknown.remote.String())
+		// Notify user that there is an unknown host. Honour ctx cancellation
+		// so we do not block forever when PromptAddHosts has already exited.
+		select {
+		case c.unknownCh <- unknown:
+		case <-ctx.Done():
+			return fmt.Errorf("host key callback cancelled for %s: %w", server, ctx.Err())
+		}
+		// Wait for user input. Same contract as above: abort on ctx cancel.
+		var resp response
+		select {
+		case resp = <-unknown.responseCh:
+		case <-ctx.Done():
+			return fmt.Errorf("host key callback cancelled for %s: %w", server, ctx.Err())
+		}
+		switch resp {
 		case trustHost:
 			// End user acknowledged host key
 			return nil
@@ -113,7 +165,7 @@ func (c KnownHostsCallback) Wrap() ssh.HostKeyCallback {
 
 // PromptAddHosts prompts a question to the user whether unknown hosts should
 // be added to the known hosts or not.
-func (c KnownHostsCallback) PromptAddHosts(ctx context.Context) {
+func (c *KnownHostsCallback) PromptAddHosts(ctx context.Context) {
 	var hosts []unknownHost
 	for {
 		// Check whether there is a unknown host
@@ -138,7 +190,7 @@ func (c KnownHostsCallback) PromptAddHosts(ctx context.Context) {
 	}
 }
 
-func (c KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
+func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	var servers []string
 	for _, host := range hosts {
 		servers = append(servers, host.server)
@@ -146,8 +198,12 @@ func (c KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 
 	select {
 	case <-c.trustAllHostsCh:
-		dlog.Client.Warn("Trusting host keys of servers", servers)
-		c.trustHosts(hosts)
+		// Trust-all mode is non-interactive; avoid warning-level noise on stdout.
+		dlog.Client.Debug("Trusting host keys of servers", servers)
+		if err := c.trustHosts(hosts); err != nil {
+			dlog.Client.Error("Unable to update known hosts file", c.knownHostsPath, err)
+			c.dontTrustHosts(hosts)
+		}
 		return
 	default:
 	}
@@ -163,9 +219,11 @@ func (c KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 		Long:  "yes",
 		Short: "y",
 		Callback: func() {
-			c.trustHosts(hosts)
-		},
-		EndCallback: func() {
+			if err := c.trustHosts(hosts); err != nil {
+				dlog.Client.Error("Unable to update known hosts file", c.knownHostsPath, err)
+				c.dontTrustHosts(hosts)
+				return
+			}
 			dlog.Client.Info("Added hosts to known hosts file", c.knownHostsPath)
 		},
 	}
@@ -175,10 +233,14 @@ func (c KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 		Long:  "all",
 		Short: "a",
 		Callback: func() {
-			close(c.trustAllHostsCh)
-			c.trustHosts(hosts)
-		},
-		EndCallback: func() {
+			if err := c.trustHosts(hosts); err != nil {
+				dlog.Client.Error("Unable to update known hosts file", c.knownHostsPath, err)
+				c.dontTrustHosts(hosts)
+				return
+			}
+			// Mark trust-all atomically so that concurrent "all" callbacks
+			// from other batches do not double-close the channel.
+			c.closeTrustAllHostsCh()
 			dlog.Client.Info("Added hosts to known hosts file", c.knownHostsPath)
 		},
 	}
@@ -212,41 +274,59 @@ func (c KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	p.Ask()
 }
 
-func (c KnownHostsCallback) trustHosts(hosts []unknownHost) {
-	tmpKnownHostsPath := fmt.Sprintf("%s.tmp", c.knownHostsPath)
-
-	newFd, err := os.OpenFile(tmpKnownHostsPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
+	root, err := c.knownHostsFile.OpenRoot()
 	if err != nil {
-		panic(fmt.Sprintf("%s: %s", tmpKnownHostsPath, err.Error()))
+		return err
 	}
-	defer newFd.Close()
+	defer root.Close()
+
+	tmpKnownHostsName := fmt.Sprintf("%s.tmp", c.knownHostsFile.Name())
+	tmpKnownHostsPath := fmt.Sprintf("%s.tmp", c.knownHostsPath)
+	cleanupTmp := func() {
+		if err := root.Remove(tmpKnownHostsName); err != nil && !os.IsNotExist(err) {
+			dlog.Client.Debug("Unable to remove temporary known hosts file", tmpKnownHostsPath, err)
+		}
+	}
+
+	newFd, err := root.OpenFile(tmpKnownHostsName, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open temp known hosts file %s: %w", tmpKnownHostsPath, err)
+	}
+	if err := newFd.Chmod(0o600); err != nil {
+		newFd.Close()
+		cleanupTmp()
+		return fmt.Errorf("chmod temp known hosts file %s: %w", tmpKnownHostsPath, err)
+	}
 
 	// Newly trusted hosts in normalized form
 	addresses := make(map[string]struct{})
 	// First write to new known hosts file, and keep track of addresses
 	for _, unknown := range hosts {
-		unknown.responseCh <- trustHost
-
 		// Add once as [HOSTNAME]:PORT
 		addresses[knownhosts.Normalize(unknown.server)] = struct{}{}
 		// And once as [IP]:PORT
 		addresses[knownhosts.Normalize(unknown.remote.String())] = struct{}{}
 
 		if _, err := newFd.WriteString(fmt.Sprintf("%s\n", unknown.hostLine)); err != nil {
-			panic(err)
+			newFd.Close()
+			cleanupTmp()
+			return fmt.Errorf("write host known_hosts entry: %w", err)
 		}
 		if _, err := newFd.WriteString(fmt.Sprintf("%s\n", unknown.ipLine)); err != nil {
-			panic(err)
+			newFd.Close()
+			cleanupTmp()
+			return fmt.Errorf("write ip known_hosts entry: %w", err)
 		}
 	}
 
 	// Read old known hosts file, to see which are old and new entries
-	os.OpenFile(c.knownHostsPath, os.O_RDONLY|os.O_CREATE, 0666)
-	oldFd, err := os.Open(c.knownHostsPath)
+	oldFd, err := root.OpenFile(c.knownHostsFile.Name(), os.O_RDONLY|os.O_CREATE, 0o600)
 	if err != nil {
-		panic(err)
+		newFd.Close()
+		cleanupTmp()
+		return fmt.Errorf("open known hosts file %s: %w", c.knownHostsPath, err)
 	}
-	defer oldFd.Close()
 
 	scanner := bufio.NewScanner(oldFd)
 	// Now, append all still valid old entries to the new host file
@@ -255,24 +335,51 @@ func (c KnownHostsCallback) trustHosts(hosts []unknownHost) {
 		address := strings.SplitN(line, " ", 2)[0]
 
 		if _, ok := addresses[address]; !ok {
-			newFd.WriteString(fmt.Sprintf("%s\n", line))
+			if _, err := newFd.WriteString(fmt.Sprintf("%s\n", line)); err != nil {
+				oldFd.Close()
+				newFd.Close()
+				cleanupTmp()
+				return fmt.Errorf("append existing known_hosts entry: %w", err)
+			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		oldFd.Close()
+		newFd.Close()
+		cleanupTmp()
+		return fmt.Errorf("scan existing known_hosts entries: %w", err)
+	}
+
+	if err := oldFd.Close(); err != nil {
+		newFd.Close()
+		cleanupTmp()
+		return fmt.Errorf("close known hosts file %s: %w", c.knownHostsPath, err)
+	}
+	if err := newFd.Close(); err != nil {
+		cleanupTmp()
+		return fmt.Errorf("close temp known hosts file %s: %w", tmpKnownHostsPath, err)
 	}
 
 	// Now, replace old known hosts file
-	if err := os.Rename(tmpKnownHostsPath, c.knownHostsPath); err != nil {
-		panic(err)
+	if err := root.Rename(tmpKnownHostsName, c.knownHostsFile.Name()); err != nil {
+		cleanupTmp()
+		return fmt.Errorf("replace known_hosts file %s: %w", c.knownHostsPath, err)
 	}
+
+	for _, unknown := range hosts {
+		unknown.responseCh <- trustHost
+	}
+	return nil
 }
 
-func (c KnownHostsCallback) dontTrustHosts(hosts []unknownHost) {
+func (c *KnownHostsCallback) dontTrustHosts(hosts []unknownHost) {
 	for _, unknown := range hosts {
 		unknown.responseCh <- dontTrustHost
 	}
 }
 
 // Untrusted returns true if the host is not trusted. False otherwise.
-func (c KnownHostsCallback) Untrusted(server string) bool {
+func (c *KnownHostsCallback) Untrusted(server string) bool {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	_, ok := c.untrustedHosts[server]

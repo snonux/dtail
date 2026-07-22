@@ -24,6 +24,11 @@ type result struct {
 	orderBy      float64
 }
 
+type resultStats struct {
+	percentageTotals map[string]float64
+	percentileValues map[string][]float64
+}
+
 // NewGroupSet returns a new empty group set.
 func NewGroupSet() *GroupSet {
 	g := GroupSet{}
@@ -51,14 +56,53 @@ func (g *GroupSet) GetSet(groupKey string) *AggregateSet {
 	return set
 }
 
-// Serialize the group set (e.g. to send it over the wire).
-func (g *GroupSet) Serialize(ctx context.Context, ch chan<- string) {
+// Serialize the group set (e.g. to send it over the wire). If the context is
+// cancelled mid-iteration, the remaining unsent aggregate sets are returned
+// so callers can retry them (for example, by re-merging them into the live
+// aggregation state). The returned map is nil when every entry was sent.
+func (g *GroupSet) Serialize(ctx context.Context, ch chan<- string) map[string]*AggregateSet {
+	var remaining map[string]*AggregateSet
+	aborted := false
 	for groupKey, set := range g.sets {
-		set.Serialize(ctx, groupKey, ch)
+		if aborted {
+			if remaining == nil {
+				remaining = make(map[string]*AggregateSet, len(g.sets))
+			}
+			remaining[groupKey] = set
+			continue
+		}
+		if !set.Serialize(ctx, groupKey, ch) {
+			aborted = true
+			if remaining == nil {
+				remaining = make(map[string]*AggregateSet, len(g.sets))
+			}
+			remaining[groupKey] = set
+		}
 	}
+	return remaining
+}
+
+// ResetWith replaces the underlying sets map. A nil argument is equivalent
+// to InitSet. This is the supported way for callers in the same package to
+// restore unsent data returned from Serialize without reaching into the
+// unexported sets field.
+func (g *GroupSet) ResetWith(sets map[string]*AggregateSet) {
+	if sets == nil {
+		g.InitSet()
+		return
+	}
+	g.sets = sets
 }
 
 // Return a sorted result slice of the query from the group set.
+//
+// Rows are built in lexicographic groupKey order first. This guarantees a
+// stable, deterministic base ordering before any OrderBy sort is applied.
+// Without the pre-sort, Go's intentionally randomised map iteration would
+// make output order non-deterministic when OrderBy is empty, and would
+// produce non-deterministic tie-breaks when multiple rows share the same
+// OrderBy value (SortStable preserves incoming order, so random map order
+// propagated directly into tied rows).
 func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []int, error) {
 	var err error
 	var rows []result
@@ -67,12 +111,19 @@ func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []in
 	// not a CSV file).
 	columnWidths := make([]int, len(query.Select))
 	var valueStrLen int
+	stats := g.makeResultStats(query)
 
-	for groupKey, set := range g.sets {
+	// Collect and sort group keys lexicographically so that the row slice is
+	// built in a deterministic order. SortStable in resultOrderBy then
+	// preserves this order for tied OrderBy values.
+	keys := sortedGroupKeys(g.sets)
+
+	for _, groupKey := range keys {
+		set := g.sets[groupKey]
 		result := result{groupKey: groupKey}
 
 		for i, sc := range query.Select {
-			if valueStrLen, err = g.resultSelect(query, &sc, set, &result); err != nil {
+			if valueStrLen, err = g.resultSelect(query, &sc, set, &result, &stats); err != nil {
 				return rows, columnWidths, err
 			}
 
@@ -95,8 +146,21 @@ func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []in
 	return rows, columnWidths, nil
 }
 
+// sortedGroupKeys returns the keys of the given sets map sorted
+// lexicographically. This helper centralises the deterministic key extraction
+// used by result() and makeResultStats() to guarantee consistent iteration
+// order regardless of Go's runtime map randomisation.
+func sortedGroupKeys(sets map[string]*AggregateSet) []string {
+	keys := make([]string, 0, len(sets))
+	for k := range sets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 func (*GroupSet) resultSelect(query *Query, sc *selectCondition, set *AggregateSet,
-	result *result) (int, error) {
+	result *result, stats *resultStats) (int, error) {
 
 	var valueStr string
 	var value float64
@@ -118,7 +182,26 @@ func (*GroupSet) resultSelect(query *Query, sc *selectCondition, set *AggregateS
 		valueStr = set.SValues[sc.FieldStorage]
 		value, _ = strconv.ParseFloat(valueStr, 64)
 	case Avg:
-		value = set.FValues[sc.FieldStorage] / float64(set.Samples)
+		// Guard against division by zero when an empty aggregate set (Samples==0)
+		// is received from the server. Without this guard, 0/0 yields NaN, which
+		// propagates as the string "NaN" into CSV/terminal output.
+		if set.Samples == 0 {
+			value = 0
+		} else {
+			value = set.FValues[sc.FieldStorage] / float64(set.Samples)
+		}
+		valueStr = fmt.Sprintf("%f", value)
+	case Percentage:
+		value = set.FValues[sc.FieldStorage]
+		total := stats.percentageTotals[sc.FieldStorage]
+		if total == 0 {
+			value = 0
+		} else {
+			value = (value / total) * 100
+		}
+		valueStr = fmt.Sprintf("%f", value)
+	case Percentile:
+		value = percentileRank(set.FValues[sc.FieldStorage], stats.percentileValues[sc.FieldStorage])
 		valueStr = fmt.Sprintf("%f", value)
 	default:
 		return 0, fmt.Errorf("Unknown aggregation method '%v'", sc.Operation)
@@ -130,6 +213,42 @@ func (*GroupSet) resultSelect(query *Query, sc *selectCondition, set *AggregateS
 	result.values = append(result.values, valueStr)
 
 	return len(valueStr), nil
+}
+
+func (g *GroupSet) makeResultStats(query *Query) resultStats {
+	stats := resultStats{
+		percentageTotals: make(map[string]float64),
+		percentileValues: make(map[string][]float64),
+	}
+
+	for _, set := range g.sets {
+		for _, sc := range query.Select {
+			value := set.FValues[sc.FieldStorage]
+			switch sc.Operation {
+			case Percentage:
+				stats.percentageTotals[sc.FieldStorage] += value
+			case Percentile:
+				stats.percentileValues[sc.FieldStorage] = append(stats.percentileValues[sc.FieldStorage], value)
+			}
+		}
+	}
+
+	for storage := range stats.percentileValues {
+		sort.Float64s(stats.percentileValues[storage])
+	}
+
+	return stats
+}
+
+func percentileRank(value float64, sortedValues []float64) float64 {
+	if len(sortedValues) == 0 {
+		return 0
+	}
+
+	upperBound := sort.Search(len(sortedValues), func(i int) bool {
+		return sortedValues[i] > value
+	})
+	return (float64(upperBound) / float64(len(sortedValues))) * 100
 }
 
 func (*GroupSet) resultOrderBy(query *Query, rows []result) {

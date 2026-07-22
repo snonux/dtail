@@ -19,11 +19,14 @@ func NewHealthHandler(server string) *HealthHandler {
 	dlog.Client.Debug(server, "Creating new health handler")
 	return &HealthHandler{
 		baseHandler: baseHandler{
-			server:       server,
-			shellStarted: false,
-			commands:     make(chan string),
-			status:       2, // Assume CRITICAL status by default.
-			done:         internal.NewDone(),
+			server:         server,
+			shellStarted:   false,
+			commands:       make(chan string),
+			status:         2, // Assume CRITICAL status by default.
+			done:           internal.NewDone(),
+			capabilities:   make(map[string]struct{}),
+			capabilitiesCh: make(chan struct{}),
+			sessionAcks:    make(chan SessionAck, 4),
 		},
 	}
 }

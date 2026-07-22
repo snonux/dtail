@@ -37,6 +37,13 @@ func paintSeverity(sb *strings.Builder, text string) bool {
 
 func paintRemote(sb *strings.Builder, line string) {
 	splitted := strings.SplitN(line, protocol.FieldDelimiter, 6)
+	if len(splitted) < 6 {
+		// Malformed or short frame (e.g. from an older/buggy server):
+		// fall back to the plain-text default branch instead of
+		// indexing out of range.
+		paintDefault(sb, line)
+		return
+	}
 
 	color.PaintWithAttr(sb, splitted[0],
 		config.Client.TermColors.Remote.RemoteFg,
@@ -105,6 +112,10 @@ func paintRemote(sb *strings.Builder, line string) {
 
 func paintClient(sb *strings.Builder, line string) {
 	splitted := strings.SplitN(line, protocol.FieldDelimiter, 3)
+	if len(splitted) < 3 {
+		paintDefault(sb, line)
+		return
+	}
 
 	color.PaintWithAttr(sb, splitted[0],
 		config.Client.TermColors.Client.ClientFg,
@@ -138,6 +149,10 @@ func paintClient(sb *strings.Builder, line string) {
 
 func paintServer(sb *strings.Builder, line string) {
 	splitted := strings.SplitN(line, protocol.FieldDelimiter, 3)
+	if len(splitted) < 3 {
+		paintDefault(sb, line)
+		return
+	}
 
 	color.PaintWithAttr(sb, splitted[0],
 		config.Client.TermColors.Server.ServerFg,
@@ -185,10 +200,17 @@ func Colorfy(line string) string {
 		paintServer(sb, line)
 
 	default:
-		color.PaintWithAttr(sb, line,
-			color.FgDefault,
-			color.BgDefault,
-			color.AttrNone)
+		paintDefault(sb, line)
 	}
 	return sb.String()
+}
+
+// paintDefault writes the line using the default (uncoloured) attributes.
+// It is the fallback used both by Colorfy's default branch and by the
+// paint* functions when the protocol frame is too short to decode safely.
+func paintDefault(sb *strings.Builder, line string) {
+	color.PaintWithAttr(sb, line,
+		color.FgDefault,
+		color.BgDefault,
+		color.AttrNone)
 }

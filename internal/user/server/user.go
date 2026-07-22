@@ -2,17 +2,15 @@ package server
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/fs/permissions"
 )
-
-const maxLinkDepth int = 100
 
 // User represents an end-user which connected to the server via the DTail client.
 type User struct {
@@ -24,11 +22,20 @@ type User struct {
 	permissions []string
 }
 
+// PermissionLookup resolves permissions for a given SSH user.
+type PermissionLookup func(string) ([]string, error)
+
 // New returns a new user.
-func New(name, remoteAddress string) (*User, error) {
-	permissions, err := config.ServerUserPermissions(name)
-	if err != nil {
-		return nil, err
+func New(name, remoteAddress string, permissionLookup PermissionLookup) (*User, error) {
+	var (
+		permissions []string
+		err         error
+	)
+	if permissionLookup != nil {
+		permissions, err = permissionLookup(name)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &User{
 		Name:          name,
@@ -43,27 +50,30 @@ func (u *User) String() string {
 }
 
 // HasFilePermission is used to determine whether user is allowed to read a file.
-func (u *User) HasFilePermission(filePath, permissionType string) (hasPermission bool) {
+func (u *User) HasFilePermission(filePath, permissionType string) bool {
+	_, hasPermission := u.ValidateReadTarget(filePath, permissionType)
+	return hasPermission
+}
+
+// ValidateReadTarget resolves and authorizes a file path for server-side reads.
+func (u *User) ValidateReadTarget(filePath, permissionType string) (fs.ValidatedReadTarget, bool) {
 	dlog.Server.Debug(u, filePath, permissionType, "Checking config permissions")
-	if u.Name == config.ScheduleUser || u.Name == config.ContinuousUser {
-		// Background user has same permissions as dtail process itself.
-		return true
+	if fs.IsJournalSpec(filePath) {
+		return u.validateJournalReadTarget(filePath, permissionType)
 	}
 
 	cleanPath, err := filepath.EvalSymlinks(filePath)
 	if err != nil {
 		dlog.Server.Error(u, filePath, permissionType,
 			"Unable to evaluate symlinks", err)
-		hasPermission = false
-		return
+		return fs.ValidatedReadTarget{}, false
 	}
 
 	cleanPath, err = filepath.Abs(cleanPath)
 	if err != nil {
 		dlog.Server.Error(u, cleanPath, permissionType,
 			"Unable to make file path absolute", err)
-		hasPermission = false
-		return
+		return fs.ValidatedReadTarget{}, false
 	}
 
 	if cleanPath != filePath {
@@ -71,11 +81,42 @@ func (u *User) HasFilePermission(filePath, permissionType string) (hasPermission
 			"Calculated new clean path from original file path (possibly symlink)")
 	}
 
-	hasPermission, err = u.hasFilePermission(cleanPath, permissionType)
-	if err != nil {
-		dlog.Server.Warn(u, cleanPath, err)
+	if u.Name != config.ScheduleUser && u.Name != config.ContinuousUser {
+		hasPermission, permissionErr := u.hasFilePermission(cleanPath, permissionType)
+		if permissionErr != nil {
+			dlog.Server.Warn(u, cleanPath, permissionErr)
+		}
+		if !hasPermission {
+			return fs.ValidatedReadTarget{}, false
+		}
 	}
-	return
+
+	target, err := fs.NewValidatedReadTarget(cleanPath)
+	if err != nil {
+		dlog.Server.Warn(u, cleanPath, permissionType, "Unable to validate read target", err)
+		return fs.ValidatedReadTarget{}, false
+	}
+
+	return target, true
+}
+
+func (u *User) validateJournalReadTarget(spec, permissionType string) (fs.ValidatedReadTarget, bool) {
+	if u.Name != config.ScheduleUser && u.Name != config.ContinuousUser {
+		hasPermission, permissionErr := u.iteratePaths(spec, permissionType)
+		if permissionErr != nil {
+			dlog.Server.Warn(u, spec, permissionErr)
+		}
+		if !hasPermission {
+			return fs.ValidatedReadTarget{}, false
+		}
+	}
+
+	target, err := fs.NewValidatedJournalTarget(spec)
+	if err != nil {
+		dlog.Server.Warn(u, spec, permissionType, "Unable to validate journal read target", err)
+		return fs.ValidatedReadTarget{}, false
+	}
+	return target, true
 }
 
 func (u *User) hasFilePermission(cleanPath, permissionType string) (bool, error) {
@@ -86,14 +127,6 @@ func (u *User) hasFilePermission(cleanPath, permissionType string) (bool, error)
 	dlog.Server.Info(u, cleanPath, permissionType,
 		"User with OS file system permissions to path")
 
-	// Only allow to follow regular files or symlinks.
-	info, err := os.Lstat(cleanPath)
-	if err != nil {
-		return false, fmt.Errorf("Unable to determine file type: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return false, fmt.Errorf("Can only open regular files or follow symlinks")
-	}
 	hasPermission, err := u.iteratePaths(cleanPath, permissionType)
 	if err != nil {
 		return false, err
@@ -102,14 +135,24 @@ func (u *User) hasFilePermission(cleanPath, permissionType string) (bool, error)
 	return hasPermission, nil
 }
 
+// iteratePaths evaluates the user's permission list against cleanPath for the
+// given permissionType and returns whether access is granted.
+//
+// Semantics — "deny wins":
+//   - The list is scanned in order.  A rule prefixed with '!' is a deny rule;
+//     any other rule is an allow rule.
+//   - As soon as a deny rule matches, the function returns false immediately.
+//     No later allow rule can override a deny — this prevents misconfigured
+//     ACL lists from accidentally granting access to sensitive paths.
+//   - If no deny rule matches but at least one allow rule does, access is granted.
+//   - If no rule matches at all, access is denied (deny-by-default).
 func (u *User) iteratePaths(cleanPath, permissionType string) (bool, error) {
-	// By default assume no permissions
+	// Default: no permission until a matching allow rule is found.
 	hasPermission := false
-	for _, permission := range u.permissions {
-		typeStr := "readfiles" // Assume ReadFiles by default.
-		var regexStr string
-		var negate bool
 
+	for _, permission := range u.permissions {
+		// Determine the permission type prefix; default is "readfiles".
+		typeStr := "readfiles"
 		splitted := strings.Split(permission, ":")
 		if len(splitted) > 1 {
 			typeStr = splitted[0]
@@ -121,10 +164,12 @@ func (u *User) iteratePaths(cleanPath, permissionType string) (bool, error) {
 			continue
 		}
 
-		regexStr = permission
-		if strings.HasPrefix(permission, "!") {
+		// Detect deny rules (prefixed with '!') and strip the prefix before
+		// compiling the regex.
+		negate := strings.HasPrefix(permission, "!")
+		regexStr := permission
+		if negate {
 			regexStr = permission[1:]
-			negate = true
 		}
 
 		re, err := regexp.Compile(regexStr)
@@ -132,11 +177,14 @@ func (u *User) iteratePaths(cleanPath, permissionType string) (bool, error) {
 			return false, fmt.Errorf("Permission test failed, can't compile regex "+
 				"'%s': %w", regexStr, err)
 		}
+
 		if negate && re.MatchString(cleanPath) {
-			dlog.Server.Info(u, cleanPath, "Permission test failed partially, "+
-				"matching negative pattern '%s'", permission)
-			hasPermission = false
+			// Deny rule matched: return false immediately (deny wins).
+			// A subsequent allow rule must never override an explicit deny.
+			dlog.Server.Info(u, cleanPath, "Permission denied: matching deny pattern", permission)
+			return false, nil
 		}
+
 		if !negate && re.MatchString(cleanPath) {
 			dlog.Server.Info(u, cleanPath, "Permission test passed partially, "+
 				"matching positive pattern", permission)

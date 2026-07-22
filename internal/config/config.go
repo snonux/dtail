@@ -3,6 +3,13 @@ package config
 import "github.com/mimecast/dtail/internal/source"
 
 const (
+	// DefaultMaxCommandFrameSize is the default maximum number of bytes that
+	// may be buffered between two ';' delimiters in the command protocol.
+	// Frames exceeding this limit cause the session to be closed immediately to
+	// prevent memory exhaustion. Individual server deployments may override this
+	// via ServerConfig.MaxCommandFrameSize.
+	DefaultMaxCommandFrameSize int = 1 << 20 // 1 MiB
+
 	// HealthUser is used for the health check
 	HealthUser string = "DTAIL-HEALTH"
 	// ScheduleUser is used for non-interactive scheduled mapreduce queries.
@@ -25,13 +32,13 @@ const (
 	DefaultHealthCheckLogger string = "none"
 )
 
-// Client holds a DTail client configuration.
+// Client holds DTail client configuration.
 var Client *ClientConfig
 
-// Server holds a DTail server configuration.
+// Server holds DTail server configuration.
 var Server *ServerConfig
 
-// Common holds common configs of both both, client and server.
+// Common holds configuration common to both client and server.
 var Common *CommonConfig
 
 // Setup the DTail configuration.

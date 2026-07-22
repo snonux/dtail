@@ -20,14 +20,26 @@ type HealthHandler struct {
 // NewHealthHandler returns the server handler.
 func NewHealthHandler(user *user.User) *HealthHandler {
 	dlog.Server.Debug(user, "Creating new server health handler")
+
+	// Read the frame-size limit from the global server config when available.
+	// The global config may be nil in tests that exercise the health handler in
+	// isolation; the fallback keeps those tests working while still enforcing
+	// the limit in production.
+	maxFrameSize := config.DefaultMaxCommandFrameSize
+	if config.Server != nil && config.Server.MaxCommandFrameSize > 0 {
+		maxFrameSize = config.Server.MaxCommandFrameSize
+	}
+
 	h := HealthHandler{
 		baseHandler: baseHandler{
-			done:             internal.NewDone(),
-			lines:            make(chan *line.Line, 100),
-			serverMessages:   make(chan string, 10),
-			maprMessages:     make(chan string, 10),
-			ackCloseReceived: make(chan struct{}),
-			user:             user,
+			done:                internal.NewDone(),
+			lines:               make(chan *line.Line, 100),
+			serverMessages:      make(chan string, 10),
+			maprMessages:        make(chan string, 10),
+			ackCloseReceived:    make(chan struct{}),
+			user:                user,
+			codec:               newProtocolCodec(user),
+			maxCommandFrameSize: maxFrameSize,
 		},
 	}
 	h.handleCommandCb = h.handleHealthCommand
@@ -54,5 +66,9 @@ func (h *HealthHandler) handleHealthCommand(ctx context.Context,
 		h.send(h.serverMessages, dlog.Server.Error(h.user,
 			"Received unknown health command", commandName, argc, args))
 	}
+	// Release the per-command cancel before shutdown so the watcher
+	// goroutine spawned by newCommandContext exits via <-ctx.Done() and
+	// not only via the <-h.done.Done() safety net.
+	cancelCommandContext(ctx)
 	h.shutdown()
 }

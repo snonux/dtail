@@ -10,17 +10,22 @@ type ClientHandler struct {
 	baseHandler
 }
 
+var _ Handler = (*ClientHandler)(nil)
+
 // NewClientHandler creates a new client handler.
 func NewClientHandler(server string) *ClientHandler {
 	dlog.Client.Debug(server, "Creating new client handler")
 
 	return &ClientHandler{
 		baseHandler{
-			server:       server,
-			shellStarted: false,
-			commands:     make(chan string),
-			status:       -1,
-			done:         internal.NewDone(),
+			server:         server,
+			shellStarted:   false,
+			commands:       make(chan string),
+			status:         -1,
+			done:           internal.NewDone(),
+			capabilities:   make(map[string]struct{}),
+			capabilitiesCh: make(chan struct{}),
+			sessionAcks:    make(chan SessionAck, 4),
 		},
 	}
 }

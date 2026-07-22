@@ -11,3 +11,11 @@ type maker interface {
 	makeHandler(server string) handlers.Handler
 	makeCommands() (commands []string)
 }
+
+type sessionSpecMaker interface {
+	makeSessionSpec() (SessionSpec, error)
+}
+
+type sessionCommitter interface {
+	commitSessionSpec(spec SessionSpec, generation uint64) error
+}
