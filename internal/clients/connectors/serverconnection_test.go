@@ -800,6 +800,47 @@ func TestServerConnectionHandleCompletesForNormalEOFAndHandlerDone(t *testing.T)
 	}
 }
 
+func TestServerConnectionHandleCancelsTransportAfterIndependentStdoutEOF(t *testing.T) {
+	resetClientLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	allowWrite := make(chan struct{})
+	close(allowWrite)
+	handler := newLifecycleHandler(allowWrite)
+	session := newIndependentEOFSession(ctx.Done())
+	throttleCh := make(chan struct{}, 1)
+	throttleCh <- struct{}{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		authKeyDisabled: true,
+	}
+
+	handleDone := make(chan error, 1)
+	go func() {
+		handleDone <- conn.handle(ctx, cancel, session, throttleCh)
+	}()
+
+	waitForSignal(t, session.stdout.readStarted, "stdout copy to start")
+	close(session.stdout.eof)
+
+	select {
+	case err := <-handleDone:
+		if err != nil {
+			t.Fatalf("handle() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handle did not cancel the transport after stdout EOF")
+	}
+	waitForSignal(t, ctx.Done(), "connection context cancellation")
+	waitForSignal(t, session.closeCalled, "SSH session close")
+
+	if got := handler.shutdownCalls(); got != 1 {
+		t.Fatalf("Shutdown calls = %d, want 1", got)
+	}
+}
+
 func TestServerConnectionStartWaitsForDialCleanup(t *testing.T) {
 	resetClientLogger(t)
 
@@ -987,6 +1028,55 @@ func (r *lifecycleReader) Read(p []byte) (int, error) {
 type lifecycleWriteCloser struct{ io.Writer }
 
 func (lifecycleWriteCloser) Close() error { return nil }
+
+type independentEOFSession struct {
+	stdout      *independentEOFReader
+	transport   <-chan struct{}
+	closeCalled chan struct{}
+	closeOnce   sync.Once
+}
+
+func newIndependentEOFSession(transport <-chan struct{}) *independentEOFSession {
+	return &independentEOFSession{
+		stdout: &independentEOFReader{
+			readStarted: make(chan struct{}),
+			eof:         make(chan struct{}),
+		},
+		transport:   transport,
+		closeCalled: make(chan struct{}),
+	}
+}
+
+var _ sshSession = (*independentEOFSession)(nil)
+
+func (*independentEOFSession) StdinPipe() (io.WriteCloser, error) {
+	return lifecycleWriteCloser{Writer: io.Discard}, nil
+}
+
+func (s *independentEOFSession) StdoutPipe() (io.Reader, error) { return s.stdout, nil }
+func (*independentEOFSession) Shell() error                     { return nil }
+
+func (s *independentEOFSession) Wait() error {
+	<-s.transport
+	return nil
+}
+
+func (s *independentEOFSession) Close() error {
+	s.closeOnce.Do(func() { close(s.closeCalled) })
+	return nil
+}
+
+type independentEOFReader struct {
+	readStarted chan struct{}
+	readOnce    sync.Once
+	eof         chan struct{}
+}
+
+func (r *independentEOFReader) Read([]byte) (int, error) {
+	r.readOnce.Do(func() { close(r.readStarted) })
+	<-r.eof
+	return 0, io.EOF
+}
 
 func waitForSignal(t *testing.T, signal <-chan struct{}, description string) {
 	t.Helper()

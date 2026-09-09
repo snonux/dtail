@@ -365,6 +365,11 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 			cancel()
 			closeSession()
 		case <-stdoutDone:
+			// Stdout EOF does not guarantee that the peer also closed the SSH
+			// channel or request stream. Cancel the connection context so dial's
+			// context hook closes the transport and unblocks Session.Wait.
+			cancel()
+			closeSession()
 		case <-waitDone:
 		}
 	} else {
