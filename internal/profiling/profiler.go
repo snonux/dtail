@@ -2,13 +2,12 @@ package profiling
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/pprof"
 	"time"
-
-	"log"
 )
 
 // Profiler manages CPU and memory profiling for dtail commands
@@ -81,7 +80,9 @@ func (p *Profiler) startCPUProfile() {
 
 	if err := pprof.StartCPUProfile(f); err != nil {
 		log.Printf("Failed to start CPU profile: %v", err)
-		f.Close()
+		if closeErr := f.Close(); closeErr != nil {
+			log.Printf("Failed to close unused CPU profile file: %v", closeErr)
+		}
 		return
 	}
 
@@ -98,8 +99,12 @@ func (p *Profiler) Stop() {
 	// Stop CPU profiling
 	if p.cpuProfile != nil {
 		pprof.StopCPUProfile()
-		p.cpuProfile.Close()
-		log.Printf("Stopped CPU profiling")
+		if err := p.cpuProfile.Close(); err != nil {
+			log.Printf("Failed to close CPU profile: %v", err)
+		} else {
+			log.Printf("Stopped CPU profiling")
+		}
+		p.cpuProfile = nil
 	}
 
 	// Write memory profile
@@ -115,34 +120,50 @@ func (p *Profiler) writeMemProfile() {
 		log.Printf("Failed to create memory profile file: %v", err)
 		return
 	}
-	defer f.Close()
 
 	// Force GC before capturing memory profile for more accurate results
 	runtime.GC()
 
-	if err := pprof.WriteHeapProfile(f); err != nil {
-		log.Printf("Failed to write memory profile: %v", err)
+	writeErr := pprof.WriteHeapProfile(f)
+	closeErr := f.Close()
+	if writeErr != nil {
+		log.Printf("Failed to write memory profile: %v", writeErr)
+		if closeErr != nil {
+			log.Printf("Failed to close memory profile after write failure: %v", closeErr)
+		}
+		return
+	}
+	if closeErr != nil {
+		log.Printf("Failed to close memory profile: %v", closeErr)
 		return
 	}
 
 	log.Printf("Wrote memory profile: %s", p.memProfile)
 
 	// Also write allocation profile for detailed allocation tracking
-	allocProfilePath := filepath.Join(p.profileDir, 
+	allocProfilePath := filepath.Join(p.profileDir,
 		fmt.Sprintf("%s_alloc_%s.prof", p.commandName, time.Now().Format("20060102_150405")))
-	
+
 	allocFile, err := os.Create(allocProfilePath)
 	if err != nil {
 		log.Printf("Failed to create allocation profile file: %v", err)
 		return
 	}
-	defer allocFile.Close()
 
 	// Set allocation profiling rate to capture more samples
 	runtime.MemProfileRate = 1
 
-	if err := pprof.Lookup("allocs").WriteTo(allocFile, 0); err != nil {
-		log.Printf("Failed to write allocation profile: %v", err)
+	writeErr = pprof.Lookup("allocs").WriteTo(allocFile, 0)
+	closeErr = allocFile.Close()
+	if writeErr != nil {
+		log.Printf("Failed to write allocation profile: %v", writeErr)
+		if closeErr != nil {
+			log.Printf("Failed to close allocation profile after write failure: %v", closeErr)
+		}
+		return
+	}
+	if closeErr != nil {
+		log.Printf("Failed to close allocation profile: %v", closeErr)
 		return
 	}
 
@@ -156,7 +177,7 @@ func (p *Profiler) Snapshot(label string) {
 	}
 
 	timestamp := time.Now().Format("20060102_150405")
-	snapshotPath := filepath.Join(p.profileDir, 
+	snapshotPath := filepath.Join(p.profileDir,
 		fmt.Sprintf("%s_snapshot_%s_%s.prof", p.commandName, label, timestamp))
 
 	f, err := os.Create(snapshotPath)
@@ -164,11 +185,18 @@ func (p *Profiler) Snapshot(label string) {
 		log.Printf("Failed to create snapshot file: %v", err)
 		return
 	}
-	defer f.Close()
-
 	runtime.GC()
-	if err := pprof.WriteHeapProfile(f); err != nil {
-		log.Printf("Failed to write snapshot: %v", err)
+	writeErr := pprof.WriteHeapProfile(f)
+	closeErr := f.Close()
+	if writeErr != nil {
+		log.Printf("Failed to write snapshot: %v", writeErr)
+		if closeErr != nil {
+			log.Printf("Failed to close snapshot after write failure: %v", closeErr)
+		}
+		return
+	}
+	if closeErr != nil {
+		log.Printf("Failed to close snapshot: %v", closeErr)
 		return
 	}
 
@@ -178,18 +206,18 @@ func (p *Profiler) Snapshot(label string) {
 // ProfileMetrics captures and returns current runtime metrics
 type ProfileMetrics struct {
 	// Memory statistics
-	Alloc         uint64    // Bytes allocated and still in use
-	TotalAlloc    uint64    // Bytes allocated (even if freed)
-	Sys           uint64    // Bytes obtained from system
-	NumGC         uint32    // Number of completed GC cycles
-	LastGC        time.Time // Time of last GC
-	PauseTotalNs  uint64    // Total GC pause time in nanoseconds
-	
+	Alloc        uint64    // Bytes allocated and still in use
+	TotalAlloc   uint64    // Bytes allocated (even if freed)
+	Sys          uint64    // Bytes obtained from system
+	NumGC        uint32    // Number of completed GC cycles
+	LastGC       time.Time // Time of last GC
+	PauseTotalNs uint64    // Total GC pause time in nanoseconds
+
 	// Goroutine count
-	NumGoroutine  int
-	
+	NumGoroutine int
+
 	// CPU count
-	NumCPU        int
+	NumCPU int
 }
 
 // GetMetrics returns current runtime metrics

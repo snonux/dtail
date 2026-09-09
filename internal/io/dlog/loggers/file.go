@@ -3,7 +3,9 @@ package loggers
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"sync"
@@ -39,10 +41,10 @@ type fileMessageBuf struct {
 }
 
 type file struct {
-	bufferCh     chan *fileMessageBuf
-	pauseCh      chan struct{}
-	resumeCh     chan struct{}
-	rotateCh     chan struct{}
+	bufferCh chan *fileMessageBuf
+	pauseCh  chan struct{}
+	resumeCh chan struct{}
+	rotateCh chan struct{}
 	// flushCh carries a per-call reply channel so Flush() can block until the
 	// logger goroutine has actually drained the buffer channel and flushed the
 	// bufio writer to disk. This makes Flush() synchronous, which the crash path
@@ -110,19 +112,19 @@ func (f *file) Start(ctx context.Context, wg *sync.WaitGroup) {
 		for {
 			select {
 			case m := <-f.bufferCh:
-				f.write(m)
+				f.reportError("write log message", f.write(m))
 			case <-ticker.C:
-				f.flush()
+				f.reportError("flush idle log output", f.flush())
 			case <-f.pauseCh:
 				// Flush before pausing so all output produced so far is on
 				// disk before the caller (e.g. an interactive prompt) writes
 				// directly to the terminal/file; preserves ordering.
-				f.flush()
+				f.reportError("flush log output before pause", f.flush())
 				pause(ctx)
 			case done := <-f.flushCh:
 				// Synchronous flush: drain + write, then acknowledge so the
 				// blocked Flush() caller can proceed (used by FatalPanic).
-				f.flush()
+				f.reportError("flush requested log output", f.flush())
 				close(done)
 			case <-f.rotateCh:
 				// Force re-opening the outfile on the next write.
@@ -130,12 +132,12 @@ func (f *file) Start(ctx context.Context, wg *sync.WaitGroup) {
 				// makes progress even when no log messages arrive.
 				f.lastFileName = ""
 			case <-ctx.Done():
-				f.flush()
+				f.reportError("flush log output during shutdown", f.flush())
 				// f.fd is only populated after the first getWriter() call;
 				// guard against a nil pointer when the logger is shut down
 				// before anything has been written.
 				if f.fd != nil {
-					f.fd.Close()
+					f.reportError("close log file during shutdown", f.fd.Close())
 				}
 				return
 			}
@@ -195,7 +197,7 @@ func (f *file) Flush() {
 
 func (*file) SupportsColors() bool { return false }
 
-func (f *file) write(m *fileMessageBuf) {
+func (f *file) write(m *fileMessageBuf) error {
 	var writer *bufio.Writer
 	if f.strategy.Rotation == DailyRotation {
 		writer = f.getWriter(m.now.Format("20060102"))
@@ -203,11 +205,15 @@ func (f *file) write(m *fileMessageBuf) {
 		writer = f.getWriter(f.strategy.FileBase)
 	}
 
-	// Don't report any error, we won't be able to log it anyway!
-	_, _ = writer.WriteString(m.message)
-	if m.nl {
-		_ = writer.WriteByte('\n')
+	if _, err := writer.WriteString(m.message); err != nil {
+		return err
 	}
+	if m.nl {
+		if err := writer.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *file) getWriter(name string) *bufio.Writer {
@@ -228,8 +234,8 @@ func (f *file) getWriter(name string) *bufio.Writer {
 
 	// Close old writer.
 	if f.fd != nil {
-		f.writer.Flush()
-		f.fd.Close()
+		f.reportError("flush rotated log file", f.writer.Flush())
+		f.reportError("close rotated log file", f.fd.Close())
 	}
 	// Set new writer. Use a real buffer (fileWriterBufSize) so bulk payload
 	// batches into few write syscalls instead of one-or-two per line. The
@@ -242,18 +248,23 @@ func (f *file) getWriter(name string) *bufio.Writer {
 	return f.writer
 }
 
-func (f *file) flush() {
-	defer func() {
-		if f.writer != nil {
-			f.writer.Flush()
-		}
-	}()
+func (f *file) flush() error {
+	var flushErr error
 	for {
 		select {
 		case m := <-f.bufferCh:
-			f.write(m)
+			flushErr = errors.Join(flushErr, f.write(m))
 		default:
-			return
+			if f.writer != nil {
+				flushErr = errors.Join(flushErr, f.writer.Flush())
+			}
+			return flushErr
 		}
+	}
+}
+
+func (*file) reportError(operation string, err error) {
+	if err != nil {
+		log.Printf("file logger: %s: %v", operation, err)
 	}
 }

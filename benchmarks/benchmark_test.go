@@ -12,17 +12,17 @@ func TestMain(m *testing.M) {
 	if err := CleanupBenchmarkFiles(""); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to cleanup old files: %v\n", err)
 	}
-	
+
 	// Run tests/benchmarks
 	code := m.Run()
-	
+
 	// Clean up after benchmarks unless asked to keep files
 	if os.Getenv("DTAIL_BENCH_KEEP_FILES") != "true" {
 		if err := CleanupBenchmarkFiles(""); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to cleanup files: %v\n", err)
 		}
 	}
-	
+
 	os.Exit(code)
 }
 
@@ -31,11 +31,11 @@ func BenchmarkAll(b *testing.B) {
 	b.Run("DCat", func(b *testing.B) {
 		BenchmarkDCatSimple(b)
 	})
-	
+
 	b.Run("DGrep", func(b *testing.B) {
 		BenchmarkDGrepSimplePattern(b)
 	})
-	
+
 	b.Run("DMap", func(b *testing.B) {
 		BenchmarkDMapSimpleAggregation(b)
 	})
@@ -44,26 +44,10 @@ func BenchmarkAll(b *testing.B) {
 // BenchmarkQuick runs only quick benchmarks with small files
 func BenchmarkQuick(b *testing.B) {
 	// Set quick mode
-	oldQuick := os.Getenv("DTAIL_BENCH_QUICK")
-	os.Setenv("DTAIL_BENCH_QUICK", "true")
-	defer func() {
-		if oldQuick == "" {
-			os.Unsetenv("DTAIL_BENCH_QUICK")
-		} else {
-			os.Setenv("DTAIL_BENCH_QUICK", oldQuick)
-		}
-	}()
-	
+	b.Setenv("DTAIL_BENCH_QUICK", "true")
+
 	// Set small files only
-	oldSizes := os.Getenv("DTAIL_BENCH_SIZES")
-	os.Setenv("DTAIL_BENCH_SIZES", "small")
-	defer func() {
-		if oldSizes == "" {
-			os.Unsetenv("DTAIL_BENCH_SIZES")
-		} else {
-			os.Setenv("DTAIL_BENCH_SIZES", oldSizes)
-		}
-	}()
-	
+	b.Setenv("DTAIL_BENCH_SIZES", "small")
+
 	BenchmarkAll(b)
 }

@@ -6,9 +6,11 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -306,7 +308,9 @@ func runProfileWorkload(cfg *Config, command string, testFiles map[string]string
 
 	// Clean up iteration profiles
 	for _, p := range profiles {
-		os.Remove(p)
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("Unable to remove iteration profile %s: %v", p, err)
+		}
 	}
 
 	return nil
@@ -320,7 +324,11 @@ func runSingleWorkload(cfg *Config, command, binary string, testFiles map[string
 	if err := os.MkdirAll(iterProfileDir, 0755); err != nil {
 		return fmt.Errorf("creating iteration profile dir: %w", err)
 	}
-	defer os.RemoveAll(iterProfileDir)
+	defer func() {
+		if err := os.RemoveAll(iterProfileDir); err != nil {
+			log.Printf("Unable to remove iteration profile directory %s: %v", iterProfileDir, err)
+		}
+	}()
 
 	// Always show what command is being executed
 	fmt.Printf("  Executing %s workload...\n", command)
@@ -405,16 +413,25 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer srcFile.Close()
+	defer func() { _ = srcFile.Close() }()
 
 	dstFile, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer dstFile.Close()
+	_, copyErr := io.Copy(dstFile, srcFile)
+	closeErr := dstFile.Close()
+	return errors.Join(
+		wrapFileError("copy", dst, copyErr),
+		wrapFileError("close", dst, closeErr),
+	)
+}
 
-	_, err = io.Copy(dstFile, srcFile)
-	return err
+func wrapFileError(operation, path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s file %q: %w", operation, path, err)
 }
 
 // dserver profiling parameters. The capture window must overlap sustained
@@ -632,7 +649,11 @@ func startFollowFileAppender(followFile string) (chan struct{}, *sync.WaitGroup,
 	appendWg.Add(1)
 	go func() {
 		defer appendWg.Done()
-		defer fd.Close()
+		defer func() {
+			if err := fd.Close(); err != nil {
+				log.Printf("Unable to close dtail follow workload file %s: %v", followFile, err)
+			}
+		}()
 		ticker := time.NewTicker(dtailAppendInterval)
 		defer ticker.Stop()
 		for i := 0; ; i++ {
@@ -640,9 +661,11 @@ func startFollowFileAppender(followFile string) (chan struct{}, *sync.WaitGroup,
 			case <-stopAppend:
 				return
 			case <-ticker.C:
-				// Errors are ignored: this is load generation for the profile.
-				_, _ = fd.WriteString(fmt.Sprintf("%s Hello line %d ERROR test\n",
-					time.Now().Format(time.RFC3339Nano), i))
+				if _, err := fd.WriteString(fmt.Sprintf("%s Hello line %d ERROR test\n",
+					time.Now().Format(time.RFC3339Nano), i)); err != nil {
+					log.Printf("Unable to append dtail follow workload file %s: %v", followFile, err)
+					return
+				}
 			}
 		}
 	}()
@@ -876,19 +899,23 @@ func startServerLoad(cfg *Config, clients []serverLoadClient,
 
 // captureHTTPProfile fetches a CPU profile of the given duration from a running
 // server's /debug/pprof endpoint and writes it to outPath.
-func captureHTTPProfile(pprofAddr string, seconds int, outPath string) error {
+func captureHTTPProfile(pprofAddr string, seconds int, outPath string) (retErr error) {
 	url := fmt.Sprintf("http://%s/debug/pprof/profile?seconds=%d", pprofAddr, seconds)
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("capturing profile: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		retErr = errors.Join(retErr, wrapFileError("close response body for", url, resp.Body.Close()))
+	}()
 
 	outFile, err := os.Create(outPath)
 	if err != nil {
 		return fmt.Errorf("creating profile file: %w", err)
 	}
-	defer outFile.Close()
+	defer func() {
+		retErr = errors.Join(retErr, wrapFileError("close", outPath, outFile.Close()))
+	}()
 
 	if _, err := io.Copy(outFile, resp.Body); err != nil {
 		return fmt.Errorf("writing profile: %w", err)
@@ -944,8 +971,8 @@ func verifyDServerProfileRepresentative(profilePath string) error {
 // streaming/read frame appears in the listing. The -top format is one function
 // per line, with the flat percentage in the second column:
 //
-//	      flat  flat%   sum%        cum   cum%
-//	     0.50s 50.00% 50.00%      0.50s 50.00%  crypto/rsa.(*PrivateKey).Sign
+//	 flat  flat%   sum%        cum   cum%
+//	0.50s 50.00% 50.00%      0.50s 50.00%  crypto/rsa.(*PrivateKey).Sign
 //
 // We sum the flat% of lines naming handshake work (asymmetric crypto + TLS/SSH
 // handshake + the big-integer/curve/hash primitives that drive it) and flag the
@@ -1000,7 +1027,7 @@ func waitForServerReady(port int) error {
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -1063,11 +1090,13 @@ func mergeProfiles(profiles []string, output string) error {
 	if err != nil {
 		return err
 	}
-	defer outFile.Close()
-
 	cmd.Stdout = outFile
-
-	return cmd.Run()
+	runErr := cmd.Run()
+	closeErr := outFile.Close()
+	return errors.Join(
+		wrapFileError("write merged profile to", output, runErr),
+		wrapFileError("close", output, closeErr),
+	)
 }
 
 func buildWithPGO(cfg *Config) error {
@@ -1135,9 +1164,15 @@ func comparePerformance(cfg *Config) error {
 
 		// Run benchmark
 		fmt.Printf("  Running baseline benchmark...\n")
-		baselineTime := benchmarkCommand(baseline, cmd, testFiles)
+		baselineTime, err := benchmarkCommand(baseline, cmd, testFiles)
+		if err != nil {
+			return fmt.Errorf("run baseline benchmark for %s: %w", cmd, err)
+		}
 		fmt.Printf("  Running optimized benchmark...\n")
-		optimizedTime := benchmarkCommand(optimized, cmd, testFiles)
+		optimizedTime, err := benchmarkCommand(optimized, cmd, testFiles)
+		if err != nil {
+			return fmt.Errorf("run optimized benchmark for %s: %w", cmd, err)
+		}
 
 		if baselineTime > 0 && optimizedTime > 0 {
 			improvement := (float64(baselineTime) - float64(optimizedTime)) / float64(baselineTime) * 100
@@ -1150,7 +1185,7 @@ func comparePerformance(cfg *Config) error {
 	return nil
 }
 
-func benchmarkCommand(binary, command string, testFiles map[string]string) time.Duration {
+func benchmarkCommand(binary, command string, testFiles map[string]string) (time.Duration, error) {
 	var cmd *exec.Cmd
 
 	switch command {
@@ -1162,15 +1197,17 @@ func benchmarkCommand(binary, command string, testFiles map[string]string) time.
 		cmd = exec.Command(binary, "-cfg", "none", "-plain", "-files", testFiles["csv"],
 			"-query", "select count(*)")
 	default:
-		return 0
+		return 0, fmt.Errorf("unknown benchmark command %q", command)
 	}
 
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 
 	start := time.Now()
-	cmd.Run()
-	return time.Since(start)
+	if err := cmd.Run(); err != nil {
+		return 0, err
+	}
+	return time.Since(start), nil
 }
 
 func generateTestData(cfg *Config) (map[string]string, error) {
@@ -1214,6 +1251,8 @@ func generateSmallTestData() (map[string]string, error) {
 
 func cleanupTestData(files map[string]string) {
 	for _, f := range files {
-		os.Remove(f)
+		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Printf("Unable to remove PGO test data %s: %v", f, err)
+		}
 	}
 }

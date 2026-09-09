@@ -1,7 +1,6 @@
 package benchmarks
 
 import (
-	"os"
 	"testing"
 )
 
@@ -23,14 +22,14 @@ func BenchmarkDGrepMultipleFiles(b *testing.B) {
 			PatternRate:   10,
 		}
 		files[i] = GenerateTestFile(b, config)
-		defer os.Remove(files[i])
+		cleanupBenchmarkFile(b, files[i])
 	}
 
 	b.Run("WithTurbo", func(b *testing.B) {
 		// Turbo boost is enabled by default; clear the disable flag so this
 		// "WithTurbo" arm genuinely runs with turbo boost on even if a prior
 		// benchmark left DTAIL_TURBOBOOST_DISABLE set in the process env.
-		os.Unsetenv("DTAIL_TURBOBOOST_DISABLE")
+		b.Setenv("DTAIL_TURBOBOOST_DISABLE", "")
 
 		b.ResetTimer()
 		b.ReportAllocs()
@@ -62,13 +61,13 @@ func BenchmarkDGrepLargeFile(b *testing.B) {
 	}
 
 	testFile := GenerateTestFile(b, config)
-	defer os.Remove(testFile)
+	cleanupBenchmarkFile(b, testFile)
 
 	b.Run("WithTurbo", func(b *testing.B) {
 		// Turbo boost is enabled by default; clear the disable flag so this
 		// "WithTurbo" arm genuinely runs with turbo boost on even if a prior
 		// benchmark left DTAIL_TURBOBOOST_DISABLE set in the process env.
-		os.Unsetenv("DTAIL_TURBOBOOST_DISABLE")
+		b.Setenv("DTAIL_TURBOBOOST_DISABLE", "")
 
 		b.ResetTimer()
 		b.ReportAllocs()

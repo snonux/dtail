@@ -3,6 +3,7 @@ package mapr
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -120,14 +121,14 @@ func (*GroupSet) writeQueryFile(query *Query) error {
 
 	fd, err := os.OpenFile(tmpQueryFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	if err != nil {
-		return err
+		return fmt.Errorf("open temporary query file %q: %w", tmpQueryFile, err)
 	}
-	defer fd.Close()
 
-	if _, err := fd.WriteString(query.RawQuery); err != nil {
-		return err
+	_, writeErr := fd.WriteString(query.RawQuery)
+	if err := closeAndRenameWrittenFile(fd, writeErr, tmpQueryFile, queryFile, os.Rename, os.Remove); err != nil {
+		return fmt.Errorf("write query file %q: %w", queryFile, err)
 	}
-	return os.Rename(tmpQueryFile, queryFile)
+	return nil
 }
 
 // WriteResult writes the result to an CSV outfile.
@@ -157,9 +158,19 @@ func (g *GroupSet) WriteResult(query *Query, finalResult bool) error {
 	if err != nil {
 		return err
 	}
-	defer fd.Close()
 
-	return g.resultWriteUnformatted(query, rows, fd, writeHeader, finalResult)
+	writeErr := g.resultWriteUnformatted(query, rows, fd, writeHeader, finalResult)
+	if query.Outfile.AppendMode {
+		return closeWrittenFile(fd, writeErr, query.Outfile.FilePath)
+	}
+
+	tmpOutfile := fmt.Sprintf("%s.tmp", query.Outfile.FilePath)
+	dlog.Common.Debug("Renaming outfile", tmpOutfile, "to", query.Outfile.FilePath)
+	if err := closeAndRenameWrittenFile(fd, writeErr, tmpOutfile, query.Outfile.FilePath, os.Rename, os.Remove); err != nil {
+		return fmt.Errorf("commit outfile %q: %w", query.Outfile.FilePath, err)
+	}
+	dlog.Common.Info("Successfully renamed outfile to", query.Outfile.FilePath)
+	return nil
 }
 
 func (g *GroupSet) getOutfileFD(query *Query) (*os.File, error) {
@@ -173,7 +184,7 @@ func (g *GroupSet) getOutfileFD(query *Query) (*os.File, error) {
 	return os.OpenFile(query.Outfile.FilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 }
 
-func (g *GroupSet) resultWriteUnformatted(query *Query, rows []result, fd *os.File, writeHeader, finalResult bool) error {
+func (g *GroupSet) resultWriteUnformatted(query *Query, rows []result, fd io.StringWriter, writeHeader, finalResult bool) error {
 	lastColumn := len(query.Select) - 1
 
 	if writeHeader {
@@ -203,23 +214,44 @@ func (g *GroupSet) resultWriteUnformatted(query *Query, rows []result, fd *os.Fi
 		}
 	}
 
-	// Always rename .tmp to .csv after writing (not just on final result)
-	// This ensures the .csv file is updated at every interval
-	if !query.Outfile.AppendMode {
-		tmpOutfile := fmt.Sprintf("%s.tmp", query.Outfile.FilePath)
-		dlog.Common.Debug("Renaming outfile", tmpOutfile, "to", query.Outfile.FilePath)
-		if err := os.Rename(tmpOutfile, query.Outfile.FilePath); err != nil {
-			dlog.Common.Error("Failed to rename outfile", tmpOutfile, "error", err)
-			os.Remove(tmpOutfile)
-			return err
-		}
-		dlog.Common.Info("Successfully renamed outfile to", query.Outfile.FilePath)
-	}
-
 	return nil
 }
 
-func (g *GroupSet) resultWriteUnformattedHeader(query *Query, fd *os.File, lastColumn int) (err error) {
+func closeWrittenFile(fd io.Closer, writeErr error, path string) error {
+	closeErr := fd.Close()
+	var errs []error
+	if writeErr != nil {
+		errs = append(errs, fmt.Errorf("write %q: %w", path, writeErr))
+	}
+	if closeErr != nil {
+		errs = append(errs, fmt.Errorf("close %q: %w", path, closeErr))
+	}
+	return errors.Join(errs...)
+}
+
+func closeAndRenameWrittenFile(fd io.Closer, writeErr error, tmpPath, finalPath string,
+	rename func(string, string) error, remove func(string) error) error {
+
+	if err := closeWrittenFile(fd, writeErr, tmpPath); err != nil {
+		return errors.Join(err, removeTemporaryFile(tmpPath, remove))
+	}
+	if err := rename(tmpPath, finalPath); err != nil {
+		return errors.Join(
+			fmt.Errorf("rename %q to %q: %w", tmpPath, finalPath, err),
+			removeTemporaryFile(tmpPath, remove),
+		)
+	}
+	return nil
+}
+
+func removeTemporaryFile(path string, remove func(string) error) error {
+	if err := remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove temporary file %q: %w", path, err)
+	}
+	return nil
+}
+
+func (g *GroupSet) resultWriteUnformattedHeader(query *Query, fd io.StringWriter, lastColumn int) (err error) {
 	for i, sc := range query.Select {
 		if _, err = fd.WriteString(sc.FieldStorage); err != nil {
 			return

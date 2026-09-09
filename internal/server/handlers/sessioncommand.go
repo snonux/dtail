@@ -41,7 +41,7 @@ func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lconte
 
 	switch action {
 	case "START":
-		generation, err = h.sessionState.start(h, parentCtx, spec)
+		generation, err = h.sessionState.start(parentCtx, h, spec)
 		if err != nil {
 			h.send(h.serverMessages, sessionAckErrorPrefix+err.Error())
 			return
@@ -52,7 +52,7 @@ func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lconte
 			h.send(h.serverMessages, sessionAckErrorPrefix+"session not started")
 			return
 		}
-		generation, err = h.sessionState.update(h, parentCtx, spec, generation)
+		generation, err = h.sessionState.update(parentCtx, h, spec, generation)
 		if err != nil {
 			h.send(h.serverMessages, sessionAckErrorPrefix+err.Error())
 			return
@@ -123,7 +123,7 @@ func validateSessionSpec(spec session.Spec) error {
 	return nil
 }
 
-func (s *sessionCommandState) start(handler *ServerHandler, parentCtx context.Context, spec session.Spec) (uint64, error) {
+func (s *sessionCommandState) start(parentCtx context.Context, handler *ServerHandler, spec session.Spec) (uint64, error) {
 	commands, err := prepareSessionCommands(spec)
 	if err != nil {
 		return 0, err
@@ -152,7 +152,7 @@ func (s *sessionCommandState) start(handler *ServerHandler, parentCtx context.Co
 	return 1, nil
 }
 
-func (s *sessionCommandState) update(handler *ServerHandler, parentCtx context.Context, spec session.Spec, generation uint64) (uint64, error) {
+func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerHandler, spec session.Spec, generation uint64) (uint64, error) {
 	commands, err := prepareSessionCommands(spec)
 	if err != nil {
 		return 0, err

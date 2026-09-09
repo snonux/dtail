@@ -236,7 +236,9 @@ func TestProcessEnvVarsAuthKeyPathTakesPrecedence(t *testing.T) {
 		Client: newDefaultClientConfig(),
 	}
 	args := &Args{}
-	in.processEnvVars(args)
+	if err := in.processEnvVars(args); err != nil {
+		t.Fatalf("processEnvVars: %v", err)
+	}
 
 	if args.SSHPrivateKeyFilePath != "/env/auth/key" {
 		t.Fatalf("expected DTAIL_AUTH_KEY_PATH to win, got %q", args.SSHPrivateKeyFilePath)
@@ -255,7 +257,9 @@ func TestProcessEnvVarsLegacyFallback(t *testing.T) {
 		Client: newDefaultClientConfig(),
 	}
 	args := &Args{}
-	in.processEnvVars(args)
+	if err := in.processEnvVars(args); err != nil {
+		t.Fatalf("processEnvVars: %v", err)
+	}
 
 	if args.SSHPrivateKeyFilePath != "/env/legacy/key" {
 		t.Fatalf("expected legacy env var to be used, got %q", args.SSHPrivateKeyFilePath)
@@ -274,10 +278,30 @@ func TestProcessEnvVarsCLIFlagNotOverridden(t *testing.T) {
 		Client: newDefaultClientConfig(),
 	}
 	args := &Args{SSHPrivateKeyFilePath: "/cli/explicit/key"}
-	in.processEnvVars(args)
+	if err := in.processEnvVars(args); err != nil {
+		t.Fatalf("processEnvVars: %v", err)
+	}
 
 	if args.SSHPrivateKeyFilePath != "/cli/explicit/key" {
 		t.Fatalf("expected CLI flag to be preserved, got %q", args.SSHPrivateKeyFilePath)
+	}
+}
+
+func TestProcessEnvVarsReturnsSetEnvironmentError(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
+	wantErr := errors.New("setenv failed")
+	originalSetEnvironment := setEnvironment
+	setEnvironment = func(string, string) error { return wantErr }
+	t.Cleanup(func() { setEnvironment = originalSetEnvironment })
+
+	in := initializer{
+		Common: newDefaultCommonConfig(),
+		Server: newDefaultServerConfig(),
+		Client: newDefaultClientConfig(),
+	}
+	err := in.processEnvVars(&Args{})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("processEnvVars error = %v, want %v", err, wantErr)
 	}
 }
 

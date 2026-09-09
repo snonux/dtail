@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -287,8 +288,11 @@ func profileCommand(name, cmd string, args []string, timeout time.Duration) erro
 
 	select {
 	case <-time.After(timeout):
-		command.Process.Kill()
-		return fmt.Errorf("command timed out after %v", timeout)
+		timeoutErr := fmt.Errorf("command timed out after %v", timeout)
+		if err := command.Process.Kill(); err != nil {
+			return errors.Join(timeoutErr, fmt.Errorf("kill timed-out command: %w", err))
+		}
+		return timeoutErr
 	case err := <-done:
 		if err != nil && !strings.Contains(err.Error(), "signal: interrupt") {
 			return err
@@ -297,14 +301,11 @@ func profileCommand(name, cmd string, args []string, timeout time.Duration) erro
 
 	// Find generated profile
 	pattern := filepath.Join(profileDirFromArgs(args), fmt.Sprintf("%s_cpu_*.prof", name))
-	matches, _ := filepath.Glob(pattern)
+	matches, err := filesByNewestModTime(pattern)
+	if err != nil {
+		return fmt.Errorf("find generated profile: %w", err)
+	}
 	if len(matches) > 0 {
-		// Sort by modification time and get the latest
-		sort.Slice(matches, func(i, j int) bool {
-			fi, _ := os.Stat(matches[i])
-			fj, _ := os.Stat(matches[j])
-			return fi.ModTime().After(fj.ModTime())
-		})
 		fmt.Printf("  Generated: %s\n", filepath.Base(matches[0]))
 	}
 
@@ -328,16 +329,16 @@ func analyzeLatestProfiles(cfg *Config) error {
 		cpuPattern := filepath.Join(cfg.ProfileDir, fmt.Sprintf("%s_cpu_*.prof", cmd))
 		memPattern := filepath.Join(cfg.ProfileDir, fmt.Sprintf("%s_mem_*.prof", cmd))
 
-		cpuProfiles, _ := filepath.Glob(cpuPattern)
-		memProfiles, _ := filepath.Glob(memPattern)
+		cpuProfiles, err := filesByNewestModTime(cpuPattern)
+		if err != nil {
+			return fmt.Errorf("find %s CPU profiles: %w", cmd, err)
+		}
+		memProfiles, err := filesByNewestModTime(memPattern)
+		if err != nil {
+			return fmt.Errorf("find %s memory profiles: %w", cmd, err)
+		}
 
 		if len(cpuProfiles) > 0 {
-			sort.Slice(cpuProfiles, func(i, j int) bool {
-				fi, _ := os.Stat(cpuProfiles[i])
-				fj, _ := os.Stat(cpuProfiles[j])
-				return fi.ModTime().After(fj.ModTime())
-			})
-
 			fmt.Printf("\n%s CPU Profile: %s\n", cmd, filepath.Base(cpuProfiles[0]))
 			if err := showTopFunctions(cpuProfiles[0], 5, false); err != nil {
 				fmt.Printf("  Analysis failed: %v\n", err)
@@ -345,12 +346,6 @@ func analyzeLatestProfiles(cfg *Config) error {
 		}
 
 		if len(memProfiles) > 0 {
-			sort.Slice(memProfiles, func(i, j int) bool {
-				fi, _ := os.Stat(memProfiles[i])
-				fj, _ := os.Stat(memProfiles[j])
-				return fi.ModTime().After(fj.ModTime())
-			})
-
 			fmt.Printf("\n%s Memory Profile: %s\n", cmd, filepath.Base(memProfiles[0]))
 			if err := showTopFunctions(memProfiles[0], 5, true); err != nil {
 				fmt.Printf("  Analysis failed: %v\n", err)
@@ -364,4 +359,32 @@ func analyzeLatestProfiles(cfg *Config) error {
 	fmt.Printf("  dtail-tools profile -mode analyze <profile_file>\n")
 
 	return nil
+}
+
+type profileFile struct {
+	path    string
+	modTime time.Time
+}
+
+func filesByNewestModTime(pattern string) ([]string, error) {
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]profileFile, 0, len(paths))
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("stat %q: %w", path, err)
+		}
+		files = append(files, profileFile{path: path, modTime: info.ModTime()})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.After(files[j].modTime)
+	})
+	paths = paths[:0]
+	for _, file := range files {
+		paths = append(paths, file.path)
+	}
+	return paths, nil
 }

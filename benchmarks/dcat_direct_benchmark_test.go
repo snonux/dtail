@@ -3,6 +3,7 @@ package benchmarks
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,13 +36,12 @@ func BenchmarkDCatDirect(b *testing.B) {
 	// The non-turbo arm sets DTAIL_TURBOBOOST_DISABLE=yes; the turbo arm unsets it
 	// so the two arms genuinely exercise the two code paths.
 	b.Run("NonTurbo", func(b *testing.B) {
-		os.Setenv("DTAIL_TURBOBOOST_DISABLE", "yes")
-		defer os.Unsetenv("DTAIL_TURBOBOOST_DISABLE")
+		b.Setenv("DTAIL_TURBOBOOST_DISABLE", "yes")
 		b.ResetTimer()
 
 		for i := 0; i < b.N; i++ {
 			cmd := exec.Command(dcatPath, testFile)
-			cmd.Stdout = os.NewFile(0, os.DevNull)
+			cmd.Stdout = io.Discard
 			if err := cmd.Run(); err != nil {
 				b.Fatal(err)
 			}
@@ -49,12 +49,12 @@ func BenchmarkDCatDirect(b *testing.B) {
 	})
 
 	b.Run("Turbo", func(b *testing.B) {
-		os.Unsetenv("DTAIL_TURBOBOOST_DISABLE")
+		b.Setenv("DTAIL_TURBOBOOST_DISABLE", "")
 		b.ResetTimer()
 
 		for i := 0; i < b.N; i++ {
 			cmd := exec.Command(dcatPath, testFile)
-			cmd.Stdout = os.NewFile(0, os.DevNull)
+			cmd.Stdout = io.Discard
 			if err := cmd.Run(); err != nil {
 				b.Fatal(err)
 			}
@@ -93,13 +93,12 @@ func BenchmarkDCatDirectWithSizes(b *testing.B) {
 			// Non-turbo arm disables turbo boost; turbo arm relies on the
 			// default-on behaviour by clearing DTAIL_TURBOBOOST_DISABLE.
 			b.Run("NonTurbo", func(b *testing.B) {
-				os.Setenv("DTAIL_TURBOBOOST_DISABLE", "yes")
-				defer os.Unsetenv("DTAIL_TURBOBOOST_DISABLE")
+				b.Setenv("DTAIL_TURBOBOOST_DISABLE", "yes")
 				b.ResetTimer()
 
 				for i := 0; i < b.N; i++ {
 					cmd := exec.Command(dcatPath, testFile)
-					cmd.Stdout = os.NewFile(0, os.DevNull)
+					cmd.Stdout = io.Discard
 					if err := cmd.Run(); err != nil {
 						b.Fatal(err)
 					}
@@ -107,12 +106,12 @@ func BenchmarkDCatDirectWithSizes(b *testing.B) {
 			})
 
 			b.Run("Turbo", func(b *testing.B) {
-				os.Unsetenv("DTAIL_TURBOBOOST_DISABLE")
+				b.Setenv("DTAIL_TURBOBOOST_DISABLE", "")
 				b.ResetTimer()
 
 				for i := 0; i < b.N; i++ {
 					cmd := exec.Command(dcatPath, testFile)
-					cmd.Stdout = os.NewFile(0, os.DevNull)
+					cmd.Stdout = io.Discard
 					if err := cmd.Run(); err != nil {
 						b.Fatal(err)
 					}

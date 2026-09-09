@@ -2,7 +2,6 @@ package benchmarks
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -37,21 +36,21 @@ func BenchmarkDMapSimpleAggregation(b *testing.B) {
 				}
 
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
+				cleanupBenchmarkFile(b, testFile)
 
-				fileSize, _ := GetFileSize(testFile)
-				lineCount, _ := CountFileLines(testFile)
+				fileSize := mustGetFileSize(b, testFile)
+				lineCount := mustCountFileLines(b, testFile)
 
 				// Output file
 				outputFile := fmt.Sprintf("benchmark_%s_%s.csv.tmp", q.name, size)
-				defer os.Remove(outputFile)
+				cleanupBenchmarkFile(b, outputFile)
 
 				// Build query with output file
 				fullQuery := fmt.Sprintf("%s outfile %s", q.query, outputFile)
 
 				// Warmup
 				WarmupCommand(b, "dmap", "--cfg", "none", "--noColor", "--query", fullQuery, testFile)
-				os.Remove(outputFile)
+				removeBenchmarkFile(b, outputFile)
 
 				b.ResetTimer()
 
@@ -64,7 +63,7 @@ func BenchmarkDMapSimpleAggregation(b *testing.B) {
 						b.Fatalf("Command failed: %v", err)
 					}
 					totalDuration += result.Duration
-					os.Remove(outputFile)
+					removeBenchmarkFile(b, outputFile)
 				}
 
 				avgDuration := totalDuration / time.Duration(b.N)
@@ -85,7 +84,7 @@ func BenchmarkDMapSimpleAggregation(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: recordsPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -125,14 +124,14 @@ func BenchmarkDMapGroupByCardinality(b *testing.B) {
 				}
 
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
+				cleanupBenchmarkFile(b, testFile)
 
-				fileSize, _ := GetFileSize(testFile)
-				lineCount, _ := CountFileLines(testFile)
+				fileSize := mustGetFileSize(b, testFile)
+				lineCount := mustCountFileLines(b, testFile)
 
 				// Output file
 				outputFile := fmt.Sprintf("benchmark_groupby_%s_%s.csv.tmp", gb.name, size)
-				defer os.Remove(outputFile)
+				cleanupBenchmarkFile(b, outputFile)
 
 				// Build query
 				query := fmt.Sprintf("from STATS select count($line),avg($goroutines) group by %s outfile %s",
@@ -140,7 +139,7 @@ func BenchmarkDMapGroupByCardinality(b *testing.B) {
 
 				// Warmup
 				WarmupCommand(b, "dmap", "--cfg", "none", "--noColor", "--query", query, testFile)
-				os.Remove(outputFile)
+				removeBenchmarkFile(b, outputFile)
 
 				b.ResetTimer()
 
@@ -153,7 +152,7 @@ func BenchmarkDMapGroupByCardinality(b *testing.B) {
 						b.Fatalf("Command failed: %v", err)
 					}
 					totalDuration += result.Duration
-					os.Remove(outputFile)
+					removeBenchmarkFile(b, outputFile)
 				}
 
 				avgDuration := totalDuration / time.Duration(b.N)
@@ -175,7 +174,7 @@ func BenchmarkDMapGroupByCardinality(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: recordsPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -213,21 +212,21 @@ func BenchmarkDMapComplexQueries(b *testing.B) {
 				}
 
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
+				cleanupBenchmarkFile(b, testFile)
 
-				fileSize, _ := GetFileSize(testFile)
-				lineCount, _ := CountFileLines(testFile)
+				fileSize := mustGetFileSize(b, testFile)
+				lineCount := mustCountFileLines(b, testFile)
 
 				// Output file
 				outputFile := fmt.Sprintf("benchmark_complex_%s_%s.csv.tmp", q.name, size)
-				defer os.Remove(outputFile)
+				cleanupBenchmarkFile(b, outputFile)
 
 				// Build query with output file
 				fullQuery := fmt.Sprintf("%s outfile %s", q.query, outputFile)
 
 				// Warmup
 				WarmupCommand(b, "dmap", "--cfg", "none", "--noColor", "--query", fullQuery, testFile)
-				os.Remove(outputFile)
+				removeBenchmarkFile(b, outputFile)
 
 				b.ResetTimer()
 
@@ -240,7 +239,7 @@ func BenchmarkDMapComplexQueries(b *testing.B) {
 						b.Fatalf("Command failed: %v", err)
 					}
 					totalDuration += result.Duration
-					os.Remove(outputFile)
+					removeBenchmarkFile(b, outputFile)
 				}
 
 				avgDuration := totalDuration / time.Duration(b.N)
@@ -261,7 +260,7 @@ func BenchmarkDMapComplexQueries(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: recordsPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -292,18 +291,18 @@ func BenchmarkDMapSetClauseHighCardinality(b *testing.B) {
 			}
 
 			testFile := GenerateTestFile(b, config)
-			defer os.Remove(testFile)
+			cleanupBenchmarkFile(b, testFile)
 
-			fileSize, _ := GetFileSize(testFile)
-			lineCount, _ := CountFileLines(testFile)
+			fileSize := mustGetFileSize(b, testFile)
+			lineCount := mustCountFileLines(b, testFile)
 
 			outputFile := fmt.Sprintf("benchmark_set_high_cardinality_%s.csv.tmp", size)
-			defer os.Remove(outputFile)
+			cleanupBenchmarkFile(b, outputFile)
 
 			fullQuery := fmt.Sprintf("%s outfile %s", query, outputFile)
 
 			WarmupCommand(b, "dmap", "--cfg", "none", "--noColor", "--query", fullQuery, testFile)
-			os.Remove(outputFile)
+			removeBenchmarkFile(b, outputFile)
 
 			b.ResetTimer()
 
@@ -314,7 +313,7 @@ func BenchmarkDMapSetClauseHighCardinality(b *testing.B) {
 					b.Fatalf("Command failed: %v", err)
 				}
 				totalDuration += result.Duration
-				os.Remove(outputFile)
+				removeBenchmarkFile(b, outputFile)
 			}
 
 			avgDuration := totalDuration / time.Duration(b.N)
@@ -334,7 +333,7 @@ func BenchmarkDMapSetClauseHighCardinality(b *testing.B) {
 				Throughput:  throughput,
 				LinesPerSec: recordsPerSec,
 			}
-			SaveResults([]BenchmarkResult{benchResult})
+			saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 		})
 	}
 }
@@ -370,14 +369,14 @@ func BenchmarkDMapTimeInterval(b *testing.B) {
 				}
 
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
+				cleanupBenchmarkFile(b, testFile)
 
-				fileSize, _ := GetFileSize(testFile)
-				lineCount, _ := CountFileLines(testFile)
+				fileSize := mustGetFileSize(b, testFile)
+				lineCount := mustCountFileLines(b, testFile)
 
 				// Output file
 				outputFile := fmt.Sprintf("benchmark_interval_%s_%s.csv.tmp", interval.name, size)
-				defer os.Remove(outputFile)
+				cleanupBenchmarkFile(b, outputFile)
 
 				// Build query
 				query := fmt.Sprintf("from STATS select count($line),avg($goroutines) group by $hostname interval %d outfile %s",
@@ -385,7 +384,7 @@ func BenchmarkDMapTimeInterval(b *testing.B) {
 
 				// Warmup
 				WarmupCommand(b, "dmap", "--cfg", "none", "--noColor", "--query", query, testFile)
-				os.Remove(outputFile)
+				removeBenchmarkFile(b, outputFile)
 
 				b.ResetTimer()
 
@@ -398,7 +397,7 @@ func BenchmarkDMapTimeInterval(b *testing.B) {
 						b.Fatalf("Command failed: %v", err)
 					}
 					totalDuration += result.Duration
-					os.Remove(outputFile)
+					removeBenchmarkFile(b, outputFile)
 				}
 
 				avgDuration := totalDuration / time.Duration(b.N)
@@ -420,7 +419,7 @@ func BenchmarkDMapTimeInterval(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: recordsPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -457,11 +456,11 @@ func BenchmarkDMapCompressed(b *testing.B) {
 				}
 
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
+				cleanupBenchmarkFile(b, testFile)
 
 				// Get uncompressed size for throughput calculation
 				uncompressedSize := int64(size)
-				compressedSize, _ := GetFileSize(testFile)
+				compressedSize := mustGetFileSize(b, testFile)
 				compressionRatio := float64(uncompressedSize) / float64(compressedSize)
 
 				// Estimate line count
@@ -469,14 +468,14 @@ func BenchmarkDMapCompressed(b *testing.B) {
 
 				// Output file
 				outputFile := fmt.Sprintf("benchmark_compressed_%s_%s.csv.tmp", comp.name, size)
-				defer os.Remove(outputFile)
+				cleanupBenchmarkFile(b, outputFile)
 
 				// Query
 				query := fmt.Sprintf("from STATS select count($line),avg($goroutines) group by $hostname outfile %s", outputFile)
 
 				// Warmup
 				WarmupCommand(b, "dmap", "--cfg", "none", "--noColor", "--query", query, testFile)
-				os.Remove(outputFile)
+				removeBenchmarkFile(b, outputFile)
 
 				b.ResetTimer()
 
@@ -489,7 +488,7 @@ func BenchmarkDMapCompressed(b *testing.B) {
 						b.Fatalf("Command failed: %v", err)
 					}
 					totalDuration += result.Duration
-					os.Remove(outputFile)
+					removeBenchmarkFile(b, outputFile)
 				}
 
 				avgDuration := totalDuration / time.Duration(b.N)
@@ -511,7 +510,7 @@ func BenchmarkDMapCompressed(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: recordsPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -548,21 +547,21 @@ func BenchmarkDMapCustomFunctions(b *testing.B) {
 				}
 
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
+				cleanupBenchmarkFile(b, testFile)
 
-				fileSize, _ := GetFileSize(testFile)
-				lineCount, _ := CountFileLines(testFile)
+				fileSize := mustGetFileSize(b, testFile)
+				lineCount := mustCountFileLines(b, testFile)
 
 				// Output file
 				outputFile := fmt.Sprintf("benchmark_func_%s_%s.csv.tmp", q.name, size)
-				defer os.Remove(outputFile)
+				cleanupBenchmarkFile(b, outputFile)
 
 				// Build query with output file
 				fullQuery := fmt.Sprintf("%s outfile %s", q.query, outputFile)
 
 				// Warmup
 				WarmupCommand(b, "dmap", "--cfg", "none", "--noColor", "--query", fullQuery, testFile)
-				os.Remove(outputFile)
+				removeBenchmarkFile(b, outputFile)
 
 				b.ResetTimer()
 
@@ -577,7 +576,7 @@ func BenchmarkDMapCustomFunctions(b *testing.B) {
 						continue
 					}
 					totalDuration += result.Duration
-					os.Remove(outputFile)
+					removeBenchmarkFile(b, outputFile)
 				}
 
 				avgDuration := totalDuration / time.Duration(b.N)
@@ -598,7 +597,7 @@ func BenchmarkDMapCustomFunctions(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: recordsPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}

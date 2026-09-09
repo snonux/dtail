@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -17,8 +18,11 @@ func main() {
 	fmt.Println()
 
 	// Create test data
-	testFile := createTestData()
-	defer os.Remove(testFile)
+	testFile, err := createTestData()
+	if err != nil {
+		log.Fatalf("Create test data: %v", err)
+	}
+	defer removeGeneratedFile(testFile)
 
 	// Profile dcat
 	fmt.Println("1. Profiling dcat...")
@@ -29,8 +33,11 @@ func main() {
 	profileDGrep(testFile)
 
 	// Profile dmap
-	csvFile := createCSVData()
-	defer os.Remove(csvFile)
+	csvFile, err := createCSVData()
+	if err != nil {
+		log.Fatalf("Create CSV data: %v", err)
+	}
+	defer removeGeneratedFile(csvFile)
 	fmt.Println("\n3. Profiling dmap...")
 	profileDMap(csvFile)
 
@@ -39,35 +46,53 @@ func main() {
 	analyzeProfiles()
 }
 
-func createTestData() string {
-	filename := "test_data.log"
+func removeGeneratedFile(filename string) {
+	if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
+		log.Printf("Remove generated file %s: %v", filename, err)
+	}
+}
+
+func createTestData() (filename string, resultErr error) {
+	filename = "test_data.log"
 	f, err := os.Create(filename)
 	if err != nil {
-		log.Fatal(err)
+		return "", fmt.Errorf("create test data: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close test data: %w", err))
+		}
+	}()
 
 	// Generate 100MB of log data
 	for i := 0; i < 1000000; i++ {
 		timestamp := time.Now().Format("2006-01-02 15:04:05.000")
 		level := []string{"INFO", "WARN", "ERROR", "DEBUG"}[i%4]
-		fmt.Fprintf(f, "[%s] %s - Processing request %d from user%d\n",
-			timestamp, level, i, i%1000)
+		if _, err := fmt.Fprintf(f, "[%s] %s - Processing request %d from user%d\n",
+			timestamp, level, i, i%1000); err != nil {
+			return "", fmt.Errorf("write test data: %w", err)
+		}
 	}
 
-	return filename
+	return filename, nil
 }
 
-func createCSVData() string {
-	filename := "test_data.csv"
+func createCSVData() (filename string, resultErr error) {
+	filename = "test_data.csv"
 	f, err := os.Create(filename)
 	if err != nil {
-		log.Fatal(err)
+		return "", fmt.Errorf("create CSV data: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close CSV data: %w", err))
+		}
+	}()
 
 	// Header
-	fmt.Fprintln(f, "timestamp,user,action,duration,status")
+	if _, err := fmt.Fprintln(f, "timestamp,user,action,duration,status"); err != nil {
+		return "", fmt.Errorf("write CSV header: %w", err)
+	}
 
 	// Generate data
 	for i := 0; i < 100000; i++ {
@@ -77,10 +102,12 @@ func createCSVData() string {
 		duration := 100 + i%900
 		status := []string{"success", "failure"}[i%2]
 
-		fmt.Fprintf(f, "%s,%s,%s,%d,%s\n", timestamp, user, action, duration, status)
+		if _, err := fmt.Fprintf(f, "%s,%s,%s,%d,%s\n", timestamp, user, action, duration, status); err != nil {
+			return "", fmt.Errorf("write CSV data: %w", err)
+		}
 	}
 
-	return filename
+	return filename, nil
 }
 
 func profileDCat(testFile string) {
@@ -105,9 +132,17 @@ func profileDCat(testFile string) {
 	fmt.Printf("  Completed in %v\n", duration)
 
 	// Find generated profiles
-	profiles, _ := filepath.Glob("profiles/dcat_*.prof")
+	profiles, err := filepath.Glob("profiles/dcat_*.prof")
+	if err != nil {
+		fmt.Printf("Error finding dcat profiles: %v\n", err)
+		return
+	}
 	for _, p := range profiles {
-		info, _ := os.Stat(p)
+		info, err := os.Stat(p)
+		if err != nil {
+			fmt.Printf("Error reading profile %s: %v\n", p, err)
+			continue
+		}
 		fmt.Printf("  Generated: %s (%d KB)\n", filepath.Base(p), info.Size()/1024)
 	}
 }
@@ -190,7 +225,11 @@ func truncateQuery(query string) string {
 
 func analyzeProfiles() {
 	// Find latest CPU profiles
-	cpuProfiles, _ := filepath.Glob("profiles/*_cpu_*.prof")
+	cpuProfiles, err := filepath.Glob("profiles/*_cpu_*.prof")
+	if err != nil {
+		fmt.Printf("Error finding CPU profiles: %v\n", err)
+		return
+	}
 	if len(cpuProfiles) == 0 {
 		fmt.Println("No CPU profiles found")
 		return
@@ -206,7 +245,11 @@ func analyzeProfiles() {
 		for _, profile := range cpuProfiles {
 			if strings.Contains(profile, tool+"_cpu_") {
 				info, err := os.Stat(profile)
-				if err == nil && info.ModTime().After(latestTime) {
+				if err != nil {
+					fmt.Printf("  Error reading profile %s: %v\n", profile, err)
+					continue
+				}
+				if info.ModTime().After(latestTime) {
 					latestProfile = profile
 					latestTime = info.ModTime()
 				}

@@ -2,6 +2,7 @@ package common
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -84,15 +85,13 @@ func (g *DataGenerator) GenerateLogFileWithLines(filename string, lines int, for
 	}
 }
 
-func (g *DataGenerator) generateLogFile(filename string, targetSize int64) error {
+func (g *DataGenerator) generateLogFile(filename string, targetSize int64) (retErr error) {
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
 	writer := bufio.NewWriter(file)
-	defer writer.Flush()
+	defer func() { retErr = errors.Join(retErr, finishGeneratedFile(file, writer, filename)) }()
 
 	var currentSize int64
 	lineNum := 0
@@ -125,15 +124,13 @@ func (g *DataGenerator) generateLogFile(filename string, targetSize int64) error
 	return nil
 }
 
-func (g *DataGenerator) generateCSVFile(filename string, targetSize int64) error {
+func (g *DataGenerator) generateCSVFile(filename string, targetSize int64) (retErr error) {
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
 	writer := bufio.NewWriter(file)
-	defer writer.Flush()
+	defer func() { retErr = errors.Join(retErr, finishGeneratedFile(file, writer, filename)) }()
 
 	// Write header
 	header := "timestamp,user,action,duration,status\n"
@@ -170,15 +167,13 @@ func (g *DataGenerator) generateCSVFile(filename string, targetSize int64) error
 	return nil
 }
 
-func (g *DataGenerator) generateDTailFormatFile(filename string, targetSize int64) error {
+func (g *DataGenerator) generateDTailFormatFile(filename string, targetSize int64) (retErr error) {
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
 	writer := bufio.NewWriter(file)
-	defer writer.Flush()
+	defer func() { retErr = errors.Join(retErr, finishGeneratedFile(file, writer, filename)) }()
 
 	var currentSize int64
 	lineNum := 0
@@ -212,15 +207,13 @@ func (g *DataGenerator) generateDTailFormatFile(filename string, targetSize int6
 	return nil
 }
 
-func (g *DataGenerator) generateDTailFormatFileWithLines(filename string, lines int) error {
+func (g *DataGenerator) generateDTailFormatFileWithLines(filename string, lines int) (retErr error) {
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-
 	writer := bufio.NewWriter(file)
-	defer writer.Flush()
+	defer func() { retErr = errors.Join(retErr, finishGeneratedFile(file, writer, filename)) }()
 
 	hostnames := []string{"server01", "server02", "server03", "server04", "server05",
 		"server06", "server07", "server08", "server09", "server10"}
@@ -247,6 +240,17 @@ func (g *DataGenerator) generateDTailFormatFileWithLines(filename string, lines 
 	}
 
 	return nil
+}
+
+func finishGeneratedFile(file *os.File, writer *bufio.Writer, filename string) error {
+	var errs []error
+	if err := writer.Flush(); err != nil {
+		errs = append(errs, fmt.Errorf("flush generated file %q: %w", filename, err))
+	}
+	if err := file.Close(); err != nil {
+		errs = append(errs, fmt.Errorf("close generated file %q: %w", filename, err))
+	}
+	return errors.Join(errs...)
 }
 
 // GenerateLogFile generates a log file with specified number of lines

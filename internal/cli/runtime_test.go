@@ -155,7 +155,9 @@ func waitForHTTPStatus(t *testing.T, url string, want int) {
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(url)
 		if err == nil {
-			resp.Body.Close()
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				t.Fatalf("close response body: %v", closeErr)
+			}
 			if resp.StatusCode == want {
 				return
 			}
@@ -175,7 +177,9 @@ func waitForHTTPError(t *testing.T, url string) {
 		if err != nil {
 			return
 		}
-		resp.Body.Close()
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			t.Fatalf("close response body: %v", closeErr)
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
 

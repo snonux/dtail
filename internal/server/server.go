@@ -138,7 +138,7 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 
 		if err := s.stats.serverLimitExceeded(); err != nil {
 			dlog.Server.Error(err)
-			conn.Close()
+			_ = conn.Close()
 			continue
 		}
 		// Reserve a pre-auth slot immediately after the limit check so that
@@ -167,7 +167,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	// Prevent slow clients from holding connections open indefinitely before SSH handshake completes.
 	if err := conn.SetDeadline(time.Now().Add(sshHandshakeTimeout)); err != nil {
 		dlog.Server.Error("Failed to set SSH handshake deadline", err)
-		conn.Close()
+		_ = conn.Close()
 		releasePreAuth()
 		return
 	}
@@ -184,7 +184,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	// Handshake succeeded; remove deadline so active sessions are not cut off by the handshake timeout.
 	if err := conn.SetDeadline(time.Time{}); err != nil {
 		dlog.Server.Error("Failed to clear SSH handshake deadline", err)
-		sshConn.Close()
+		_ = sshConn.Close()
 		releasePreAuth()
 		return
 	}
@@ -232,7 +232,7 @@ func (s *Server) handleChannel(ctx context.Context, sshConn gossh.Conn,
 
 	if err := s.handleRequests(ctx, sshConn, requests, channel, user); err != nil {
 		dlog.Server.Error(user, err)
-		sshConn.Close()
+		_ = sshConn.Close()
 	}
 }
 
@@ -293,7 +293,9 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 
 	terminate := func() {
 		handler.Shutdown()
-		sshConn.Close()
+		if err := sshConn.Close(); err != nil {
+			dlog.Server.Trace(user, fmt.Errorf("close session connection: %w", err))
+		}
 	}
 
 	// Start goroutine to copy data from channel to handler

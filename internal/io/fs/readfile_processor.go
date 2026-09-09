@@ -24,7 +24,7 @@ func (f *readFile) StartWithProcessor(ctx context.Context, ltx lcontext.LContext
 
 	reader, fd, decompressor, err := f.makeReader(ctx)
 	if fd != nil {
-		defer fd.Close()
+		defer func() { _ = fd.Close() }()
 	}
 	if decompressor != nil {
 		defer func() {

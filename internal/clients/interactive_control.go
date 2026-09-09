@@ -37,7 +37,11 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 		dlog.Client.Error("Unable to open interactive query control TTY", c.Args.ControlTTYPath, err)
 		return 1
 	}
-	defer controlTTY.Close()
+	defer func() {
+		if closeErr := controlTTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			dlog.Client.Debug("Unable to close interactive query control TTY", closeErr)
+		}
+	}()
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

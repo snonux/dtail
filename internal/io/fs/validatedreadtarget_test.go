@@ -173,7 +173,11 @@ func TestValidatedTailFileTruncatedReopenDetectsTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open validated target: %v", err)
 	}
-	defer fd.Close()
+	t.Cleanup(func() {
+		if closeErr := fd.Close(); closeErr != nil {
+			t.Errorf("close validated target: %v", closeErr)
+		}
+	})
 
 	if _, err := fd.Seek(0, io.SeekEnd); err != nil {
 		t.Fatalf("seek end: %v", err)

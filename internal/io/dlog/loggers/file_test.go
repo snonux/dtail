@@ -1,7 +1,9 @@
 package loggers
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +14,12 @@ import (
 
 	"github.com/mimecast/dtail/internal/config"
 )
+
+type failingLogWriter struct {
+	err error
+}
+
+func (w failingLogWriter) Write([]byte) (int, error) { return 0, w.err }
 
 // withTempLogDir points config.Common.LogDir at a fresh temp dir for the
 // duration of a test and restores the previous config afterwards. The file
@@ -120,6 +128,18 @@ func TestFileLoggerExplicitFlush(t *testing.T) {
 
 	if got := readLogFile(t, dir, base); !strings.Contains(got, "flush-me") {
 		t.Fatalf("synchronous Flush() did not persist data before returning; got %q", got)
+	}
+}
+
+func TestFileLoggerWriteReturnsBufferedWriteError(t *testing.T) {
+	wantErr := errors.New("disk full")
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "failure-test"})
+	f.lastFileName = "failure-test"
+	f.writer = bufio.NewWriterSize(failingLogWriter{err: wantErr}, 1)
+
+	err := f.write(&fileMessageBuf{message: "payload", nl: true})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("write error = %v, want %v", err, wantErr)
 	}
 }
 

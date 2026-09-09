@@ -52,6 +52,7 @@ vet:
 lint:
 	@set -e; \
 	${GO} install golang.org/x/lint/golint@v0.0.0-20241112194109-818c5a804067; \
+	${GO} install github.com/kisielk/errcheck@v1.20.0; \
 	gobin=`${GO} env GOBIN`; \
 	if [ -z "$$gobin" ]; then \
 	  gobin=`${GO} env GOPATH`/bin; \
@@ -63,7 +64,10 @@ lint:
 	if [ -n "$$output" ]; then \
 	  echo "$$output"; \
 	  exit 1; \
-	fi
+	fi; \
+	errcheck_bin=$$gobin/errcheck; \
+	echo "Using $$errcheck_bin"; \
+	$$errcheck_bin ./benchmarks/... ./cmd/... ./internal/...
 test:
 	${GO} clean -testcache
 	set -e; find . -name '*_test.go' | while read file; do dirname $$file; done | \

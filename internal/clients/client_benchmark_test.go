@@ -25,13 +25,18 @@ func setupBenchmarkData(b *testing.B, lines int) string {
 	if err != nil {
 		b.Fatalf("Failed to create test file: %v", err)
 	}
-	defer f.Close()
 
 	// Create test data
 	for i := 0; i < lines; i++ {
 		line := fmt.Sprintf("INFO|1002-071143|1|test.go:%d|8|%d|7|0.21|471h0m21s|MAPREDUCE:STATS|currentConnections=%d|lifetimeConnections=%d|pattern=test-%d|data=%s\n",
 			i%100, i%50, i%10, i, i%5, "some-test-data-that-makes-the-line-longer")
-		f.WriteString(line)
+		if _, err := f.WriteString(line); err != nil {
+			_ = f.Close()
+			b.Fatalf("write test data: %v", err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		b.Fatalf("close test data: %v", err)
 	}
 
 	return testFile
@@ -104,7 +109,10 @@ func benchmarkDGrepWithSize(b *testing.B, lines int) {
 
 		// Capture output
 		oldStdout := os.Stdout
-		r, w, _ := os.Pipe()
+		r, w, err := os.Pipe()
+		if err != nil {
+			b.Fatalf("create stdout pipe: %v", err)
+		}
 		os.Stdout = w
 
 		// Run grep
@@ -125,12 +133,21 @@ func benchmarkDGrepWithSize(b *testing.B, lines int) {
 		}
 
 		// Restore stdout
-		w.Close()
 		os.Stdout = oldStdout
+		if err := w.Close(); err != nil {
+			_ = r.Close()
+			b.Fatalf("close stdout writer: %v", err)
+		}
 
 		// Read captured output
 		var buf bytes.Buffer
-		buf.ReadFrom(r)
+		if _, err := buf.ReadFrom(r); err != nil {
+			_ = r.Close()
+			b.Fatalf("read captured output: %v", err)
+		}
+		if err := r.Close(); err != nil {
+			b.Fatalf("close stdout reader: %v", err)
+		}
 	}
 
 	// Report custom metrics

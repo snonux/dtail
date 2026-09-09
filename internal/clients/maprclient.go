@@ -270,7 +270,9 @@ func (c *MaprClient) setRegexForQuery(query *mapr.Query) {
 func warnUnknownQueryVariables(w io.Writer, query *mapr.Query) {
 	logFormat := query.EffectiveLogFormat("")
 	for _, warning := range logformat.PlanVariableWarnings(query, logFormat) {
-		fmt.Fprintln(w, warning)
+		if _, err := fmt.Fprintln(w, warning); err != nil {
+			dlog.Client.Debug("Unable to write query variable warning", err)
+		}
 	}
 }
 

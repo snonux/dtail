@@ -197,7 +197,7 @@ func (f *readFile) truncated(fd *os.File) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	defer pathFd.Close()
+	defer func() { _ = pathFd.Close() }()
 
 	// Can not seek file at original path.
 	pathPosition, err := pathFd.Seek(0, io.SeekEnd)

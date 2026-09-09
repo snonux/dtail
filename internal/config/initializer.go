@@ -21,6 +21,7 @@ type initializer struct {
 type transformCb func(*initializer, *Args, []string) error
 
 var userHomeDirectory = os.UserHomeDir
+var setEnvironment = os.Setenv
 
 func (in *initializer) parseConfig(args *Args) error {
 	if strings.ToLower(args.ConfigFile) == "none" {
@@ -61,7 +62,7 @@ func (in *initializer) parseSpecificConfig(configFile string) error {
 	if err != nil {
 		return fmt.Errorf("Unable to read config file: %w", err)
 	}
-	defer fd.Close()
+	defer func() { _ = fd.Close() }()
 
 	cfgBytes, err := io.ReadAll(fd)
 	if err != nil {
@@ -78,7 +79,9 @@ func (in *initializer) parseSpecificConfig(configFile string) error {
 func (in *initializer) transformConfig(sourceProcess source.Source, args *Args,
 	additionalArgs []string) error {
 
-	in.processEnvVars(args)
+	if err := in.processEnvVars(args); err != nil {
+		return err
+	}
 
 	switch sourceProcess {
 	case source.Server:
@@ -93,9 +96,11 @@ func (in *initializer) transformConfig(sourceProcess source.Source, args *Args,
 	}
 }
 
-func (in *initializer) processEnvVars(args *Args) {
+func (in *initializer) processEnvVars(args *Args) error {
 	if Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		os.Setenv("DTAIL_HOSTNAME_OVERRIDE", "integrationtest")
+		if err := setEnvironment("DTAIL_HOSTNAME_OVERRIDE", "integrationtest"); err != nil {
+			return fmt.Errorf("set integration hostname override: %w", err)
+		}
 		in.Server.MaxLineLength = 1024
 	}
 
@@ -116,6 +121,7 @@ func (in *initializer) processEnvVars(args *Args) {
 	// that still set that JSON key, or callers that still export the old env var,
 	// keep working: unknown JSON keys are silently ignored by the lenient decoder
 	// and an unread env var has no effect.
+	return nil
 }
 
 // resolveSSHKeyPath returns the effective SSH private key file path, applying

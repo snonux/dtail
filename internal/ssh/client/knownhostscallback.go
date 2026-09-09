@@ -3,6 +3,7 @@ package client
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -94,13 +95,13 @@ func ensureKnownHostsFile(knownHostsFile fs.RootedPath) {
 	if err != nil {
 		return
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	fd, err := root.OpenFile(knownHostsFile.Name(), os.O_RDONLY|os.O_CREATE, 0o666)
 	if err != nil {
 		return
 	}
-	fd.Close()
+	_ = fd.Close()
 }
 
 // Wrap the host key callback. The returned ssh.HostKeyCallback is bound to
@@ -279,7 +280,7 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	tmpKnownHostsName := fmt.Sprintf("%s.tmp", c.knownHostsFile.Name())
 	tmpKnownHostsPath := fmt.Sprintf("%s.tmp", c.knownHostsPath)
@@ -294,9 +295,9 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 		return fmt.Errorf("open temp known hosts file %s: %w", tmpKnownHostsPath, err)
 	}
 	if err := newFd.Chmod(0o600); err != nil {
-		newFd.Close()
+		closeErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 		cleanupTmp()
-		return fmt.Errorf("chmod temp known hosts file %s: %w", tmpKnownHostsPath, err)
+		return errors.Join(fmt.Errorf("chmod temp known hosts file %s: %w", tmpKnownHostsPath, err), closeErr)
 	}
 
 	// Newly trusted hosts in normalized form
@@ -309,23 +310,23 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 		addresses[knownhosts.Normalize(unknown.remote.String())] = struct{}{}
 
 		if _, err := newFd.WriteString(fmt.Sprintf("%s\n", unknown.hostLine)); err != nil {
-			newFd.Close()
+			closeErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 			cleanupTmp()
-			return fmt.Errorf("write host known_hosts entry: %w", err)
+			return errors.Join(fmt.Errorf("write host known_hosts entry: %w", err), closeErr)
 		}
 		if _, err := newFd.WriteString(fmt.Sprintf("%s\n", unknown.ipLine)); err != nil {
-			newFd.Close()
+			closeErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 			cleanupTmp()
-			return fmt.Errorf("write ip known_hosts entry: %w", err)
+			return errors.Join(fmt.Errorf("write ip known_hosts entry: %w", err), closeErr)
 		}
 	}
 
 	// Read old known hosts file, to see which are old and new entries
 	oldFd, err := root.OpenFile(c.knownHostsFile.Name(), os.O_RDONLY|os.O_CREATE, 0o600)
 	if err != nil {
-		newFd.Close()
+		closeErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 		cleanupTmp()
-		return fmt.Errorf("open known hosts file %s: %w", c.knownHostsPath, err)
+		return errors.Join(fmt.Errorf("open known hosts file %s: %w", c.knownHostsPath, err), closeErr)
 	}
 
 	scanner := bufio.NewScanner(oldFd)
@@ -336,24 +337,24 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 
 		if _, ok := addresses[address]; !ok {
 			if _, err := newFd.WriteString(fmt.Sprintf("%s\n", line)); err != nil {
-				oldFd.Close()
-				newFd.Close()
+				oldCloseErr := closeKnownHostsFile(oldFd, c.knownHostsPath)
+				newCloseErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 				cleanupTmp()
-				return fmt.Errorf("append existing known_hosts entry: %w", err)
+				return errors.Join(fmt.Errorf("append existing known_hosts entry: %w", err), oldCloseErr, newCloseErr)
 			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		oldFd.Close()
-		newFd.Close()
+		oldCloseErr := closeKnownHostsFile(oldFd, c.knownHostsPath)
+		newCloseErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 		cleanupTmp()
-		return fmt.Errorf("scan existing known_hosts entries: %w", err)
+		return errors.Join(fmt.Errorf("scan existing known_hosts entries: %w", err), oldCloseErr, newCloseErr)
 	}
 
 	if err := oldFd.Close(); err != nil {
-		newFd.Close()
+		newCloseErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 		cleanupTmp()
-		return fmt.Errorf("close known hosts file %s: %w", c.knownHostsPath, err)
+		return errors.Join(fmt.Errorf("close known hosts file %s: %w", c.knownHostsPath, err), newCloseErr)
 	}
 	if err := newFd.Close(); err != nil {
 		cleanupTmp()
@@ -368,6 +369,13 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 
 	for _, unknown := range hosts {
 		unknown.responseCh <- trustHost
+	}
+	return nil
+}
+
+func closeKnownHostsFile(fd *os.File, path string) error {
+	if err := fd.Close(); err != nil {
+		return fmt.Errorf("close known hosts file %s: %w", path, err)
 	}
 	return nil
 }

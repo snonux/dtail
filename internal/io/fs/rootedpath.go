@@ -57,7 +57,7 @@ func (p RootedPath) ReadFile() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	data, err := root.ReadFile(p.rootName)
 	if err != nil {
@@ -72,7 +72,7 @@ func (p RootedPath) Stat() (os.FileInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	info, err := root.Stat(p.rootName)
 	if err != nil {
@@ -87,7 +87,7 @@ func (p RootedPath) WriteFile(data []byte, perm os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	if err := root.WriteFile(p.rootName, data, perm); err != nil {
 		return fmt.Errorf("write rooted file %s: %w", p.path, err)

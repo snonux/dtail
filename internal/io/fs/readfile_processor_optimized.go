@@ -246,7 +246,7 @@ func (f *readFile) StartWithProcessorOptimized(ctx context.Context, ltx lcontext
 
 	reader, fd, decompressor, err := f.makeReader(ctx)
 	if fd != nil {
-		defer fd.Close()
+		defer func() { _ = fd.Close() }()
 	}
 	if decompressor != nil {
 		defer func() {

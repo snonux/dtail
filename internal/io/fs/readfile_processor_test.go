@@ -164,7 +164,11 @@ func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open file: %v", err)
 	}
-	defer fd.Close()
+	t.Cleanup(func() {
+		if closeErr := fd.Close(); closeErr != nil {
+			t.Errorf("close test file: %v", closeErr)
+		}
+	})
 	if _, err := fd.Seek(4096, 0); err != nil {
 		t.Fatalf("seek fd past end: %v", err)
 	}
@@ -367,7 +371,11 @@ func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning
 
 	reader, fd, decompressor, err := rf.makeReader(context.Background())
 	if fd != nil {
-		defer fd.Close()
+		t.Cleanup(func() {
+			if closeErr := fd.Close(); closeErr != nil {
+				t.Errorf("close test file: %v", closeErr)
+			}
+		})
 	}
 	if decompressor != nil {
 		defer func() {

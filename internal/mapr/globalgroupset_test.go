@@ -26,7 +26,7 @@ func TestMergeNoblockSemaphoreReleasedOnPanic(t *testing.T) {
 		}()
 		// This must panic internally; with the bug the semaphore is never released.
 		//nolint:staticcheck // intentional nil dereference to exercise the panic path
-		g.MergeNoblock(nil, nil) //nolint:errcheck
+		_, _ = g.MergeNoblock(nil, nil) //nolint:errcheck
 	}()
 
 	// Wait for the goroutine to finish (panic recovered).
