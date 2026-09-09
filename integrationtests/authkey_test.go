@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/config"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -23,9 +24,22 @@ const (
 	dcatExpectedFirstOutput = "1 Sat  2 Oct 13:46:45 EEST 2021"
 )
 
-var suiteAuthKeyPairCreated bool
-
 func TestMain(m *testing.M) {
+	suiteAuthKeyPairCreated := false
+	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+		var err error
+		suiteAuthKeyPairCreated, err = ensureSuiteAuthKeyPair()
+		if err != nil {
+			_, _ = fmt.Fprintf(os.Stderr, "Unable to prepare integration SSH key pair: %v\n", err)
+			if suiteAuthKeyPairCreated {
+				if cleanupErr := removeSuiteAuthKeyPair(); cleanupErr != nil {
+					_, _ = fmt.Fprintf(os.Stderr, "Unable to remove incomplete generated integration SSH key pair: %v\n", cleanupErr)
+				}
+			}
+			os.Exit(1)
+		}
+	}
+
 	exitCode := m.Run()
 	if suiteAuthKeyPairCreated {
 		if err := removeSuiteAuthKeyPair(); err != nil {
@@ -39,7 +53,6 @@ func TestMain(m *testing.M) {
 func TestAuthKeyFastReconnectIntegration(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 	cleanupTmpFiles(t)
-	ensureSuiteAuthKeyPair(t)
 
 	t.Run("RegistrationFastPathAndFallback", testAuthKeyRegistrationFastPathAndFallback)
 	t.Run("TTLExpiry", testAuthKeyTTLExpiry)
@@ -403,24 +416,30 @@ func writeAuthKeyServerConfig(t *testing.T, ttlSeconds, maxPerUser int) string {
 	return cfgPath
 }
 
-func ensureSuiteAuthKeyPair(t *testing.T) {
-	t.Helper()
-
+func ensureSuiteAuthKeyPair() (bool, error) {
 	const keyPath = "id_rsa"
 	publicKeyPath := keyPath + ".pub"
-	privateKeyExists := authKeyFileExists(t, keyPath)
-	publicKeyExists := authKeyFileExists(t, publicKeyPath)
+	privateKeyExists, err := authKeyFileExists(keyPath)
+	if err != nil {
+		return false, err
+	}
+	publicKeyExists, err := authKeyFileExists(publicKeyPath)
+	if err != nil {
+		return false, err
+	}
 
 	if privateKeyExists != publicKeyExists {
-		t.Fatalf("Incomplete integration SSH key pair: %s exists=%t, %s exists=%t",
+		return false, fmt.Errorf("incomplete integration SSH key pair: %s exists=%t, %s exists=%t",
 			keyPath, privateKeyExists, publicKeyPath, publicKeyExists)
 	}
 	if privateKeyExists {
-		return
+		return false, nil
 	}
 
-	suiteAuthKeyPairCreated = true
-	createAuthKeyPairAtPath(t, keyPath)
+	if err := generateAuthKeyPair(keyPath); err != nil {
+		return true, fmt.Errorf("generate integration SSH key pair: %w", err)
+	}
+	return true, nil
 }
 
 func removeSuiteAuthKeyPair() error {
@@ -433,18 +452,15 @@ func removeSuiteAuthKeyPair() error {
 	return errors.Join(cleanupErrors...)
 }
 
-func authKeyFileExists(t *testing.T, path string) bool {
-	t.Helper()
-
+func authKeyFileExists(path string) (bool, error) {
 	_, err := os.Stat(path)
 	if err == nil {
-		return true
+		return true, nil
 	}
 	if os.IsNotExist(err) {
-		return false
+		return false, nil
 	}
-	t.Fatalf("Unable to inspect integration SSH key %s: %v", path, err)
-	return false
+	return false, fmt.Errorf("inspect integration SSH key %s: %w", path, err)
 }
 
 func createAuthKeyPair(t *testing.T, keyName string) string {
@@ -458,16 +474,22 @@ func createAuthKeyPair(t *testing.T, keyName string) string {
 func createAuthKeyPairAtPath(t *testing.T, keyPath string) {
 	t.Helper()
 
+	if err := generateAuthKeyPair(keyPath); err != nil {
+		t.Fatalf("Unable to create auth-key pair: %v", err)
+	}
+}
+
+func generateAuthKeyPair(keyPath string) error {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Fatalf("Unable to generate private key: %v", err)
+		return fmt.Errorf("generate private key: %w", err)
 	}
 
 	privateKeyBytes := pem.EncodeToMemory(&pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
 	})
-	writeAuthKeyPair(t, keyPath, privateKeyBytes, &privateKey.PublicKey)
+	return writeAuthKeyPair(keyPath, privateKeyBytes, &privateKey.PublicKey)
 }
 
 func createPassphraseAuthKeyPair(t *testing.T, keyName, passphrase string) string {
@@ -483,25 +505,25 @@ func createPassphraseAuthKeyPair(t *testing.T, keyName, passphrase string) strin
 	if err != nil {
 		t.Fatalf("Unable to marshal encrypted private key: %v", err)
 	}
-	writeAuthKeyPair(t, keyPath, pem.EncodeToMemory(privateKeyBlock), &privateKey.PublicKey)
+	if err := writeAuthKeyPair(keyPath, pem.EncodeToMemory(privateKeyBlock), &privateKey.PublicKey); err != nil {
+		t.Fatalf("Unable to write auth-key pair: %v", err)
+	}
 
 	return keyPath
 }
 
-func writeAuthKeyPair(t *testing.T, keyPath string, privateKeyBytes []byte, publicKey *rsa.PublicKey) {
-	t.Helper()
-
-	if err := os.WriteFile(keyPath, privateKeyBytes, 0600); err != nil {
-		t.Fatalf("Unable to write private key: %v", err)
-	}
-
+func writeAuthKeyPair(keyPath string, privateKeyBytes []byte, publicKey *rsa.PublicKey) error {
 	sshPublicKey, err := gossh.NewPublicKey(publicKey)
 	if err != nil {
-		t.Fatalf("Unable to generate public key: %v", err)
+		return fmt.Errorf("generate public key: %w", err)
+	}
+	if err := os.WriteFile(keyPath, privateKeyBytes, 0600); err != nil {
+		return fmt.Errorf("write private key: %w", err)
 	}
 	if err := os.WriteFile(keyPath+".pub", gossh.MarshalAuthorizedKey(sshPublicKey), 0600); err != nil {
-		t.Fatalf("Unable to write public key: %v", err)
+		return fmt.Errorf("write public key: %w", err)
 	}
+	return nil
 }
 
 func waitForServerLogs() {
