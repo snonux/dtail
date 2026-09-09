@@ -16,12 +16,13 @@ import (
 	"github.com/mimecast/dtail/internal/lcontext"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/session"
 )
 
 type journalReadTestServer struct {
 	catLimiter    chan struct{}
 	tailLimiter   chan struct{}
-	outputLines    chan []byte
+	outputLines   chan []byte
 	serverMessage chan string
 	prepared      []string
 	pending       int32
@@ -32,7 +33,7 @@ func newJournalReadTestServer() *journalReadTestServer {
 	return &journalReadTestServer{
 		catLimiter:    make(chan struct{}, 1),
 		tailLimiter:   make(chan struct{}, 1),
-		outputLines:    make(chan []byte, 16),
+		outputLines:   make(chan []byte, 16),
 		serverMessage: make(chan string, 16),
 	}
 }
@@ -248,6 +249,72 @@ func TestReadCommandPassesJournalUnitAsSingleArgWithoutShell(t *testing.T) {
 	got := waitForOutputLine(t, server.outputLines)
 	if !strings.Contains(got, "safe") {
 		t.Fatalf("output output missing line content %q; got %q", "safe", got)
+	}
+}
+
+// TestServerHandlerShutdownTerminatesMapFollowJournalWithoutOutputReader covers
+// the full abrupt-disconnect path with a real ServerHandler and journalctl child.
+// The queued interval result proves the child and AggregateProcessor are active;
+// no goroutine consumes handler output before Shutdown.
+func TestServerHandlerShutdownTerminatesMapFollowJournalWithoutOutputReader(t *testing.T) {
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines: []string{testStatsLine},
+		},
+	})
+	handler := newMapTestHandler(t)
+	spec := session.Spec{
+		Mode:  omode.TailClient,
+		Files: []string{"journal:ssh.service"},
+		Query: "from STATS select count($time),$time group by $time interval 1",
+		Regex: ".",
+	}
+	commands, err := spec.Commands()
+	if err != nil {
+		t.Fatalf("build commands: %v", err)
+	}
+
+	var frames strings.Builder
+	for _, command := range commands {
+		frames.WriteString(encodeTestCommand(command))
+	}
+	if _, err := handler.Write([]byte(frames.String())); err != nil {
+		t.Fatalf("write commands: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for len(handler.maprMessages) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("active journal processor did not queue an aggregate result")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := len(handler.tailLimiter); got != 1 {
+		t.Fatalf("tail limiter occupancy before shutdown = %d, want 1", got)
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		handler.Shutdown()
+	}()
+	select {
+	case <-shutdownDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler Shutdown hung waiting for journal MapReduce follow processor")
+	}
+
+	mock.WaitForTerm(t, time.Second)
+	if pending, active := handler.PendingAndActive(); pending != 0 || active != 0 {
+		t.Fatalf("handler did not quiesce: pending=%d active=%d", pending, active)
+	}
+	if got := len(handler.tailLimiter); got != 0 {
+		t.Fatalf("tail limiter occupancy after shutdown = %d, want 0", got)
+	}
+	select {
+	case <-handler.Done():
+	default:
+		t.Fatal("handler did not signal transport shutdown")
 	}
 }
 

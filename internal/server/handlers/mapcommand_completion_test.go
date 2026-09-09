@@ -442,7 +442,7 @@ func TestServerHandlerShutdownAbortsMapFollowWithoutOutputReader(t *testing.T) {
 	spec := session.Spec{
 		Mode:  omode.TailClient,
 		Files: []string{path},
-		Query: "from STATS select count($time),$time group by $time interval 3600",
+		Query: "from STATS select count($time),$time group by $time interval 1",
 		Regex: ".",
 	}
 	commands, err := spec.Commands()
@@ -470,6 +470,33 @@ func TestServerHandlerShutdownAbortsMapFollowWithoutOutputReader(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
+	// Admission can become visible before the file is opened, which would miss
+	// the original circular wait. Keep appending until interval serialization
+	// queues a result. This proves the real tail reader and AggregateProcessor
+	// are active while deliberately leaving the protocol queue without a reader.
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open stats file for append: %v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for len(handler.maprMessages) == 0 {
+		if _, err := file.WriteString(testStatsLine + "\n"); err != nil {
+			_ = file.Close()
+			t.Fatalf("append stats line: %v", err)
+		}
+		if time.Now().After(deadline) {
+			_ = file.Close()
+			t.Fatal("active tail processor did not queue an aggregate result")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close stats file: %v", err)
+	}
+	if got := len(handler.tailLimiter); got != 1 {
+		t.Fatalf("tail limiter occupancy before shutdown = %d, want 1", got)
+	}
+
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
@@ -482,6 +509,9 @@ func TestServerHandlerShutdownAbortsMapFollowWithoutOutputReader(t *testing.T) {
 	}
 	if pending, active := handler.PendingAndActive(); pending != 0 || active != 0 {
 		t.Fatalf("handler did not quiesce: pending=%d active=%d", pending, active)
+	}
+	if got := len(handler.tailLimiter); got != 0 {
+		t.Fatalf("tail limiter occupancy after shutdown = %d, want 0", got)
 	}
 	select {
 	case <-handler.Done():
