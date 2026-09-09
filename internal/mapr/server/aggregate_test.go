@@ -415,6 +415,110 @@ func TestAggregateAbortReturnsPromptlyWithActiveProcessors(t *testing.T) {
 	}
 }
 
+func TestAggregateAbruptTerminationWinsBeforeProducerChannelCloses(t *testing.T) {
+	for _, termination := range []string{"Abort", "ContextCancel"} {
+		t.Run(termination, func(t *testing.T) {
+			aggregate, messages, producerDone, cancel := newBufferedTestAggregate(t)
+			defer cancel()
+			// Abrupt termination owns the terminal transition before Start
+			// returns and its caller closes messages. A later Shutdown must
+			// respect that output-free outcome; serializing the buffered line
+			// now would send on the closed channel.
+			switch termination {
+			case "Abort":
+				aggregate.Abort()
+			case "ContextCancel":
+				cancel()
+			}
+			select {
+			case <-producerDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Start did not return after abrupt termination")
+			}
+
+			shutdownDone := make(chan struct{})
+			panicValue := make(chan any, 1)
+			go func() {
+				defer close(shutdownDone)
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						panicValue <- recovered
+					}
+				}()
+				aggregate.Shutdown()
+			}()
+			select {
+			case <-shutdownDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("Shutdown did not honor abrupt termination")
+			}
+			select {
+			case recovered := <-panicValue:
+				t.Fatalf("Shutdown sent after the producer channel closed: %v", recovered)
+			default:
+			}
+			if message, ok := <-messages; ok {
+				t.Fatalf("abrupt termination emitted aggregate output: %q", message)
+			}
+		})
+	}
+}
+
+func TestAggregateFinalizationWinsConcurrentAbort(t *testing.T) {
+	aggregate, messages, producerDone, cancel := newBufferedTestAggregate(t)
+	defer cancel()
+
+	// Claim finalization before canceling work, as GracefulShutdown does. The
+	// unbuffered output channel then holds Shutdown inside final serialization
+	// while Abort races with it. Start must stay alive, keeping channel ownership
+	// with the producer until the winning serialization completes.
+	aggregate.PrepareShutdown()
+	shutdownDone := make(chan struct{})
+	go func() {
+		aggregate.Shutdown()
+		close(shutdownDone)
+	}()
+	waitForAggregateSnapshot(t, aggregate)
+
+	abortDone := make(chan struct{})
+	go func() {
+		aggregate.Abort()
+		close(abortDone)
+	}()
+	select {
+	case <-abortDone:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Abort blocked behind final serialization")
+	}
+	select {
+	case <-producerDone:
+		t.Fatal("Start returned and closed the producer channel during final serialization")
+	default:
+	}
+
+	select {
+	case message := <-messages:
+		if !strings.Contains(message, "count($time)≔1") {
+			t.Fatalf("unexpected final aggregate result: %q", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for final aggregate result")
+	}
+	select {
+	case <-shutdownDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Shutdown did not finish after final output was consumed")
+	}
+	select {
+	case <-producerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not return after final serialization")
+	}
+	if message, ok := <-messages; ok {
+		t.Fatalf("unexpected extra aggregate output: %q", message)
+	}
+}
+
 func TestAggregateProcessorCountsFlushOnce(t *testing.T) {
 	aggregate := &Aggregate{
 		done:      internal.NewDone(),
@@ -710,5 +814,57 @@ func waitForAggregateStart(t *testing.T, aggregate *Aggregate) {
 	case <-aggregate.started:
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("aggregate did not finish Start initialization")
+	}
+}
+
+func newBufferedTestAggregate(t *testing.T) (*Aggregate, chan string, <-chan struct{}, context.CancelFunc) {
+	t.Helper()
+	ensureTestServerConfig(t)
+
+	aggregate, err := NewAggregate(
+		`from STATS select count($time),$time group by $time interval 3600`,
+		config.Server.MapreduceLogFormat,
+	)
+	if err != nil {
+		t.Fatalf("NewAggregate failed: %v", err)
+	}
+
+	messages := make(chan string)
+	producerDone := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		aggregate.Start(ctx, messages)
+		close(messages)
+		close(producerDone)
+	}()
+	waitForAggregateStart(t, aggregate)
+
+	processor := NewAggregateProcessor(aggregate, "test")
+	line := "INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|MAPREDUCE:STATS|currentConnections=0|lifetimeConnections=1"
+	if err := processor.ProcessLine(bytes.NewBufferString(line), 1, "test"); err != nil {
+		t.Fatalf("ProcessLine failed: %v", err)
+	}
+	if err := processor.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+	if got := aggregate.countGroups(); got != 1 {
+		t.Fatalf("precondition: expected one buffered aggregate group, got %d", got)
+	}
+
+	return aggregate, messages, producerDone, cancel
+}
+
+func waitForAggregateSnapshot(t *testing.T, aggregate *Aggregate) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if aggregate.countGroups() == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("aggregate did not snapshot data for final serialization")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

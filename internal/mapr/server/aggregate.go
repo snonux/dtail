@@ -77,9 +77,17 @@ type Aggregate struct {
 	started          chan struct{}
 	shutdownOnce     sync.Once
 	shutdownDone     chan struct{}
-	aborted          atomic.Bool
-	finalizing       atomic.Bool
+	terminalMu       sync.Mutex
+	terminalState    aggregateTerminalState
 }
+
+type aggregateTerminalState uint8
+
+const (
+	aggregateRunning aggregateTerminalState = iota
+	aggregateFinalizing
+	aggregateAborted
+)
 
 type rawLine struct {
 	content  *bytes.Buffer
@@ -155,7 +163,9 @@ func (a *Aggregate) countGroups() int {
 
 // Shutdown the aggregation engine.
 func (a *Aggregate) Shutdown() {
-	a.PrepareShutdown()
+	if !a.claimFinalization() {
+		return
+	}
 	a.shutdownOnce.Do(func() {
 		defer close(a.shutdownDone)
 		a.sealProcessors()
@@ -170,25 +180,32 @@ func (a *Aggregate) Shutdown() {
 	<-a.shutdownDone
 }
 
-// PrepareShutdown marks the aggregate for final serialization before its
-// command context is canceled. This closes the small race where Start could
-// otherwise return and let its caller close the result channel before a
-// concurrent graceful shutdown serializes the last batch.
+// PrepareShutdown claims final serialization before the aggregate's command
+// context is canceled. If Abort already owns termination, it has no effect.
+// Claiming first keeps Start from returning and letting its caller close the
+// result channel while a concurrent graceful shutdown serializes the last batch.
 func (a *Aggregate) PrepareShutdown() {
-	a.finalizing.Store(true)
+	a.claimFinalization()
 }
 
-// Abort stops background processing without waiting for final serialization.
-// Session generation replacement uses this to preempt old query work immediately.
+// Abort requests output-free termination and stops background processing
+// without waiting. A finalization that already owns termination is allowed to
+// finish; session generation replacement normally claims abort first and thus
+// preempts old query work immediately.
 func (a *Aggregate) Abort() {
-	a.aborted.Store(true)
+	a.abort()
+}
+
+func (a *Aggregate) abort() bool {
+	abortWon := a.claimAbort()
 	a.sealProcessors()
 	a.done.Shutdown()
 	a.stopSerializeTicker()
+	return abortWon
 }
 
-// AbortAndWait stops the aggregate without producing a final result and waits
-// until every input processor has released its file and buffer resources.
+// AbortAndWait requests output-free termination and waits until every input
+// processor has released its file and buffer resources.
 func (a *Aggregate) AbortAndWait() {
 	a.Abort()
 	a.processorsWg.Wait()
@@ -246,9 +263,9 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 	shouldFinalize := false
 	select {
 	case <-ctx.Done():
-		shouldFinalize = a.finalizing.Load() && !a.aborted.Load()
+		shouldFinalize = !a.abort()
 	case <-a.done.Done():
-		shouldFinalize = a.finalizing.Load() && !a.aborted.Load()
+		shouldFinalize = !a.abort()
 	case <-a.inputFinished.Done():
 		// All one-shot input is consumed: emit the final result and stop.
 		// Shutdown waits for the processors, drains the batch and performs
@@ -270,6 +287,45 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 	// side of the channel right after Start returns.
 	a.done.Shutdown()
 	<-loopDone
+}
+
+// claimFinalization makes graceful final output the aggregate's terminal
+// outcome. Abort and finalization race through this single state transition,
+// so only one can win. Repeated Shutdown calls join the same finalization.
+func (a *Aggregate) claimFinalization() bool {
+	a.terminalMu.Lock()
+	defer a.terminalMu.Unlock()
+
+	switch a.terminalState {
+	case aggregateRunning:
+		a.terminalState = aggregateFinalizing
+		return true
+	case aggregateFinalizing:
+		return true
+	case aggregateAborted:
+		return false
+	default:
+		return false
+	}
+}
+
+// claimAbort makes abrupt, output-free termination the aggregate's terminal
+// outcome. A finalization that already owns termination cannot be preempted.
+func (a *Aggregate) claimAbort() bool {
+	a.terminalMu.Lock()
+	defer a.terminalMu.Unlock()
+
+	switch a.terminalState {
+	case aggregateRunning:
+		a.terminalState = aggregateAborted
+		return true
+	case aggregateFinalizing:
+		return false
+	case aggregateAborted:
+		return true
+	default:
+		return false
+	}
 }
 
 // ProcessLineDirect processes a line directly without channels.
