@@ -339,14 +339,27 @@ func testNoAuthKeyFlagDisablesFeature(t *testing.T) {
 }
 
 func testPassphraseKeyAuthKeyRegistrationAndFastReconnect(t *testing.T) {
-	const passphrase = "secret-passphrase"
+	const (
+		authKeyPassphrase = "secret-passphrase"
+		suitePassphrase   = "different-suite-passphrase"
+	)
 
-	authKeyPath := createPassphraseAuthKeyPair(t, "authkey-passphrase", passphrase)
-	server := startAuthKeyServer(t, "")
+	// Reproduce a caller-provided encrypted suite key whose passphrase differs
+	// from the explicit key under test. The explicit key must bootstrap this
+	// server because one DTAIL_KEY_PASSPHRASE cannot decrypt both keys.
+	suiteAuthKeyPath := createPassphraseAuthKeyPair(t, "suite-authkey-passphrase", suitePassphrase)
+	t.Setenv("DTAIL_AUTH_KEY_PATH", suiteAuthKeyPath)
+	t.Setenv("DTAIL_KEY_PASSPHRASE", suitePassphrase)
+
+	authKeyPath := createPassphraseAuthKeyPair(t, "authkey-passphrase", authKeyPassphrase)
+	server := startAuthKeyServerWithEnv(t, "", map[string]string{
+		"DTAIL_AUTH_KEY_PATH":  authKeyPath,
+		"DTAIL_KEY_PASSPHRASE": authKeyPassphrase,
+	})
 	defer server.Stop()
 
 	env := map[string]string{
-		"DTAIL_KEY_PASSPHRASE": passphrase,
+		"DTAIL_KEY_PASSPHRASE": authKeyPassphrase,
 	}
 
 	exitCode, err := runDCatWithAuthKeyAndEnv(server.Context(), t,
@@ -441,6 +454,13 @@ func (l *authKeyServerLogs) snapshot() []string {
 
 func startAuthKeyServer(t *testing.T, cfgFile string) *authKeyServer {
 	t.Helper()
+	return startAuthKeyServerWithEnv(t, cfgFile, nil)
+}
+
+func startAuthKeyServerWithEnv(t *testing.T, cfgFile string,
+	env map[string]string) *authKeyServer {
+
+	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	port := getUniquePortNumber()
@@ -455,8 +475,12 @@ func startAuthKeyServer(t *testing.T, cfgFile string) *authKeyServer {
 		args = append(args, "--cfg", cfgFile)
 	}
 
+	serverEnv := map[string]string{"DTAIL_TURBOBOOST_DISABLE": "yes"}
+	for name, value := range env {
+		serverEnv[name] = value
+	}
 	stdoutCh, stderrCh, cmdErrCh, err := startCommandWithEnv(ctx, t, "", "../dserver",
-		map[string]string{"DTAIL_TURBOBOOST_DISABLE": "yes"}, args...)
+		serverEnv, args...)
 	if err != nil {
 		cancel()
 		t.Fatalf("Unable to start dserver: %v", err)
