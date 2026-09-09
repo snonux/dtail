@@ -19,7 +19,7 @@ import (
 
 // The evil begins here.
 func main() {
-	var args config.Args
+	args := config.Args{SSHPort: config.DefaultSSHPort}
 	var displayVersion bool
 	var pprof string
 

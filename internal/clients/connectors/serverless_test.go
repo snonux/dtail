@@ -97,8 +97,35 @@ func TestServerlessOutputFailureUsesAbruptShutdownAndReturnsError(t *testing.T) 
 	}
 }
 
+func TestServerlessStartReportsHandlerFactoryFailure(t *testing.T) {
+	resetClientLogger(t)
+
+	clientHandler := newServerlessLifecycleClient()
+	connector := NewServerless(
+		"test-user",
+		clientHandler,
+		nil,
+		sessionspec.Spec{},
+		false,
+		serverlessErrorFactory{err: errors.New("permission setup failed")},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	connector.Start(ctx, cancel, nil, nil)
+	if got := clientHandler.Status(); got != 1 {
+		t.Fatalf("client handler status = %d, want 1 after factory failure", got)
+	}
+}
+
 type serverlessLifecycleFactory struct {
 	handler serverHandlers.Handler
+}
+
+type serverlessErrorFactory struct{ err error }
+
+func (f serverlessErrorFactory) NewServerlessHandler(string) (serverHandlers.Handler, error) {
+	return nil, f.err
 }
 
 func (f serverlessLifecycleFactory) NewServerlessHandler(string) (serverHandlers.Handler, error) {
@@ -116,6 +143,7 @@ type serverlessLifecycleClient struct {
 	received         []byte
 	shutdownCount    int
 	shutdownWasEarly bool
+	status           int
 }
 
 func newServerlessLifecycleClient() *serverlessLifecycleClient {
@@ -128,12 +156,20 @@ func newServerlessLifecycleClient() *serverlessLifecycleClient {
 
 var _ handlers.Handler = (*serverlessLifecycleClient)(nil)
 
-func (*serverlessLifecycleClient) Capabilities() []string                 { return nil }
-func (*serverlessLifecycleClient) HasCapability(string) bool              { return false }
-func (*serverlessLifecycleClient) ReportServerError(string)               {}
-func (*serverlessLifecycleClient) SendMessage(string) error               { return nil }
-func (*serverlessLifecycleClient) Server() string                         { return "lifecycle" }
-func (*serverlessLifecycleClient) Status() int                            { return 0 }
+func (*serverlessLifecycleClient) Capabilities() []string    { return nil }
+func (*serverlessLifecycleClient) HasCapability(string) bool { return false }
+func (h *serverlessLifecycleClient) ReportServerError(string) {
+	h.mu.Lock()
+	h.status = 1
+	h.mu.Unlock()
+}
+func (*serverlessLifecycleClient) SendMessage(string) error { return nil }
+func (*serverlessLifecycleClient) Server() string           { return "lifecycle" }
+func (h *serverlessLifecycleClient) Status() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.status
+}
 func (h *serverlessLifecycleClient) Done() <-chan struct{}                { return h.done }
 func (*serverlessLifecycleClient) WaitForCapabilities(time.Duration) bool { return false }
 func (*serverlessLifecycleClient) WaitForSessionAck(time.Duration) (handlers.SessionAck, bool) {

@@ -5,6 +5,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,5 +34,18 @@ func TestPrivateHostKeyGeneratesAndReloadsExistingKey(t *testing.T) {
 	}
 	if !bytes.Equal(secondPEM, firstPEM) {
 		t.Fatalf("readPrivateHostKey returned different key data")
+	}
+}
+
+func TestPrivateHostKeyReturnsConfiguredPathError(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
+	parent := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(parent, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write parent file: %v", err)
+	}
+
+	_, err := PrivateHostKey(filepath.Join(parent, "ssh_host_key"), 1024)
+	if err == nil || !strings.Contains(err.Error(), "private server RSA host key") {
+		t.Fatalf("PrivateHostKey error = %v, want configured path error", err)
 	}
 }

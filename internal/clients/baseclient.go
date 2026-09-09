@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -78,10 +79,38 @@ func (c *baseClient) init() error {
 	if c.Args.Serverless {
 		return nil
 	}
-	c.sshAuthMethods, c.hostKeyCallback, c.authCloser = client.InitSSHAuthMethods(
+	sshAuthMethods, hostKeyCallback, authCloser, err := client.InitSSHAuthMethods(
 		c.Args.SSHAuthMethods, c.Args.SSHHostKeyCallback, c.Args.TrustAllHosts,
 		c.Args.SSHPrivateKeyFilePath, c.Args.SSHAgentKeyIndex)
+	if err != nil {
+		return fmt.Errorf("initialize SSH authentication: %w", err)
+	}
+	c.sshAuthMethods = sshAuthMethods
+	c.hostKeyCallback = hostKeyCallback
+	c.authCloser = authCloser
 	return nil
+}
+
+func (c *baseClient) initialize(maker maker) error {
+	if err := c.init(); err != nil {
+		return err
+	}
+	if err := c.makeConnections(maker); err != nil {
+		if closeErr := c.closeAuth(); closeErr != nil {
+			return errors.Join(err, fmt.Errorf("close SSH authentication resources: %w", closeErr))
+		}
+		return err
+	}
+	return nil
+}
+
+func (c *baseClient) closeAuth() error {
+	if c.authCloser == nil {
+		return nil
+	}
+	closer := c.authCloser
+	c.authCloser = nil
+	return closer.Close()
 }
 
 func (c *baseClient) makeConnections(maker maker) error {
@@ -99,9 +128,13 @@ func (c *baseClient) makeConnections(maker maker) error {
 
 	discoveryService, err := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle)
 	if err != nil {
-		return err
+		return fmt.Errorf("configure server discovery: %w", err)
 	}
-	for _, server := range discoveryService.ServerList() {
+	servers, err := discoveryService.ServerList()
+	if err != nil {
+		return fmt.Errorf("discover servers: %w", err)
+	}
+	for _, server := range servers {
 		connection, err := c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
 		if err != nil {
 			return fmt.Errorf("create connection for %q: %w", server, err)
@@ -126,7 +159,7 @@ func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) 
 	// reconnect attempts that consume c.sshAuthMethods have finished.
 	if c.authCloser != nil {
 		defer func() {
-			if err := c.authCloser.Close(); err != nil {
+			if err := c.closeAuth(); err != nil {
 				dlog.Client.Debug("baseClient", "failed to close ssh-agent connection", err)
 			}
 		}()

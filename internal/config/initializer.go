@@ -184,6 +184,9 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 	if args.ConnectionsPerCPU == 0 {
 		args.ConnectionsPerCPU = DefaultConnectionsPerCPU
 	}
+	if in.Common.SSHPort < 1 || in.Common.SSHPort > 65535 {
+		return fmt.Errorf("SSH port must be between 1 and 65535, got %d", in.Common.SSHPort)
+	}
 
 	if err := setupLogDirectory(in); err != nil {
 		return err

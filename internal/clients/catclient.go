@@ -32,11 +32,8 @@ func NewCatClient(args config.Args) (*CatClient, error) {
 		},
 	}
 
-	if err := c.init(); err != nil {
+	if err := c.initialize(c); err != nil {
 		return nil, fmt.Errorf("initialize cat client: %w", err)
-	}
-	if err := c.makeConnections(c); err != nil {
-		return nil, err
 	}
 	return &c, nil
 }

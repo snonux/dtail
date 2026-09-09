@@ -32,6 +32,40 @@ func TestNewClientRuntimeReturnsLoggerStartError(t *testing.T) {
 	}
 }
 
+func TestNewClientRuntimeStopsEnabledProfilerWhenLoggerStartFails(t *testing.T) {
+	profiler := &recordingClientProfiler{}
+	runtime, err := newClientRuntimeWithProfiler(
+		context.Background(),
+		profiling.Flags{MemProfile: true},
+		"test",
+		func(context.Context, *sync.WaitGroup, source.Source) error {
+			return errors.New("logger setup failed")
+		},
+		func(cfg profiling.Config) clientProfiler {
+			if !cfg.MemProfile {
+				t.Fatal("profiler factory received disabled memory profile")
+			}
+			return profiler
+		},
+	)
+	if runtime != nil {
+		t.Fatalf("runtime = %#v, want nil", runtime)
+	}
+	if err == nil || !strings.Contains(err.Error(), "logger setup failed") {
+		t.Fatalf("newClientRuntime error = %v, want wrapped logger failure", err)
+	}
+	if profiler.stopCalls != 1 {
+		t.Fatalf("profiler Stop calls = %d, want 1", profiler.stopCalls)
+	}
+}
+
+type recordingClientProfiler struct {
+	stopCalls int
+}
+
+func (*recordingClientProfiler) LogMetrics(string) {}
+func (p *recordingClientProfiler) Stop()           { p.stopCalls++ }
+
 func TestClientRuntimeKeepsLoggerAliveUntilStop(t *testing.T) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	loggerCtxCh := make(chan context.Context, 1)

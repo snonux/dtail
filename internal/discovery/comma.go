@@ -7,7 +7,7 @@ import (
 )
 
 // ServerListFromCOMMA retrieves a list of servers from comma separated input list.
-func (d *Discovery) ServerListFromCOMMA() []string {
+func (d *Discovery) ServerListFromCOMMA() ([]string, error) {
 	dlog.Common.Debug("Retrieving server list from comma separated list", d.server)
 
 	rawServers := strings.Split(d.server, ",")
@@ -19,8 +19,8 @@ func (d *Discovery) ServerListFromCOMMA() []string {
 		servers = append(servers, server)
 	}
 	if len(servers) == 0 && d.server == "" {
-		return rawServers
+		return rawServers, nil
 	}
 
-	return servers
+	return servers, nil
 }

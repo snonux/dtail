@@ -117,8 +117,20 @@ func main() {
 		}
 	}
 
-	serv := server.New(config.CurrentRuntime())
-	status := serv.Start(ctx)
+	serv, err := server.New(config.CurrentRuntime())
+	if err != nil {
+		dlog.Server.Error("Unable to initialize dserver", err)
+		fmt.Fprintf(os.Stderr, "unable to initialize dserver: %v\n", err)
+		cancel()
+		wg.Wait()
+		os.Exit(1)
+	}
+	status, err := serv.Start(ctx)
+	if err != nil {
+		dlog.Server.Error("Unable to run dserver", err)
+		fmt.Fprintf(os.Stderr, "unable to run dserver: %v\n", err)
+		status = 1
+	}
 	cancel()
 	if pprofServer != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -33,11 +33,8 @@ func NewHealthClient(args config.Args) (*HealthClient, error) {
 		},
 	}
 
-	if err := c.init(); err != nil {
+	if err := c.initialize(c); err != nil {
 		return nil, fmt.Errorf("initialize health client: %w", err)
-	}
-	if err := c.makeConnections(c); err != nil {
-		return nil, err
 	}
 	return &c, nil
 }

@@ -54,15 +54,23 @@ func New(method, server string, order ServerOrder) (*Discovery, error) {
 		server:  server,
 		order:   order,
 	}
+	if d.module != "" {
+		methodName := fmt.Sprintf("ServerListFrom%s", d.module)
+		if _, ok := reflect.TypeOf(&d).MethodByName(methodName); !ok {
+			return nil, fmt.Errorf("unknown server discovery module %q", method)
+		}
+	}
 
 	if strings.HasPrefix(server, "/") && strings.HasSuffix(server, "/") {
-		d.initRegex()
+		if err := d.initRegex(); err != nil {
+			return nil, err
+		}
 	}
 
 	return &d, nil
 }
 
-func (d *Discovery) initRegex() {
+func (d *Discovery) initRegex() error {
 	var runes []rune
 	last := len(d.server) - 1
 	for i, char := range d.server {
@@ -75,16 +83,20 @@ func (d *Discovery) initRegex() {
 	dlog.Common.Debug("Using filter regex", regexStr)
 	regex, err := regexp.Compile(regexStr)
 	if err != nil {
-		dlog.Common.FatalPanic("Could not compile regex", regexStr, err)
+		return fmt.Errorf("compile server discovery regex %q: %w", regexStr, err)
 	}
 
 	d.regex = regex
 	d.server = ""
+	return nil
 }
 
 // ServerList to connect to via DTail client.
-func (d *Discovery) ServerList() []string {
-	servers := d.serverListFromModule()
+func (d *Discovery) ServerList() ([]string, error) {
+	servers, err := d.serverListFromModule()
+	if err != nil {
+		return nil, err
+	}
 
 	if d.regex != nil {
 		servers = d.filterList(servers)
@@ -95,15 +107,15 @@ func (d *Discovery) ServerList() []string {
 	}
 
 	dlog.Common.Debug("Discovered servers", len(servers), servers)
-	return servers
+	return servers, nil
 }
 
-func (d *Discovery) serverListFromModule() []string {
+func (d *Discovery) serverListFromModule() ([]string, error) {
 	if d.module != "" {
 		return d.serverListFromReflectedModule()
 	}
 	if d.server == "" && d.regex != nil {
-		return []string{}
+		return []string{}, nil
 	}
 	if _, err := os.Stat(d.server); err == nil {
 		// Appears to be a file name, now try to read from that file.
@@ -116,20 +128,33 @@ func (d *Discovery) serverListFromModule() []string {
 // The aim of this is that everyone can plug in their own server discovery
 // method to DTail. Just add a method ServerListFrommMODULENAME to type
 // Discovery. Whereas MODULENAME must be a upeprcase string.
-func (d *Discovery) serverListFromReflectedModule() []string {
+func (d *Discovery) serverListFromReflectedModule() ([]string, error) {
 	methodName := fmt.Sprintf("ServerListFrom%s", d.module)
 	// Now we are reflecting the serve discovery function by it's name.
 	rt := reflect.TypeOf(d)
 	reflectedMethod, ok := rt.MethodByName(methodName)
 	if !ok {
-		dlog.Common.FatalPanic("No such server discovery module", d.module, methodName)
+		panic(fmt.Sprintf("validated discovery module %q has no method %s", d.module, methodName))
 	}
 	inputValues := make([]reflect.Value, 1)
 	// Thist input value is method receiver.
 	inputValues[0] = reflect.ValueOf(d)
 	returnValues := reflectedMethod.Func.Call(inputValues)
-	// First return value is server list.
-	return returnValues[0].Interface().([]string)
+	if len(returnValues) != 2 {
+		panic(fmt.Sprintf("discovery method %s has invalid return signature", methodName))
+	}
+	servers, ok := returnValues[0].Interface().([]string)
+	if !ok {
+		panic(fmt.Sprintf("discovery method %s does not return []string", methodName))
+	}
+	if returnValues[1].IsNil() {
+		return servers, nil
+	}
+	err, ok := returnValues[1].Interface().(error)
+	if !ok {
+		panic(fmt.Sprintf("discovery method %s does not return error", methodName))
+	}
+	return nil, fmt.Errorf("run server discovery module %q: %w", d.module, err)
 }
 
 // Filter server list based on a regexp.

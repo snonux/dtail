@@ -102,7 +102,9 @@ func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 		defer close(done)
 		defer cancel()
 		if err := s.handle(ctx, cancel); err != nil {
-			dlog.Client.Warn(err)
+			if shouldReportConnectionError(ctx, err) {
+				s.handler.ReportServerError("serverless session failed: " + err.Error())
+			}
 		}
 	}()
 	<-ctx.Done()
@@ -215,8 +217,8 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 				err = io.ErrShortWrite
 			}
 			if err != nil {
-				clientOutputErr <- err
 				cancelOutputDrain()
+				clientOutputErr <- err
 				return
 			}
 		}

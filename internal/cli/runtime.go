@@ -18,7 +18,7 @@ type ClientRuntime struct {
 	loggerCancel   context.CancelFunc
 	wg             sync.WaitGroup
 	pprofServer    *PProfServer
-	profiler       *profiling.Profiler
+	profiler       clientProfiler
 	profileEnabled bool
 }
 
@@ -28,9 +28,20 @@ func NewClientRuntime(parent context.Context, profileFlags profiling.Flags, prof
 }
 
 type clientLoggerStarter func(context.Context, *sync.WaitGroup, source.Source) error
+type clientProfiler interface {
+	LogMetrics(string)
+	Stop()
+}
+type clientProfilerFactory func(profiling.Config) clientProfiler
 
 func newClientRuntime(parent context.Context, profileFlags profiling.Flags, profileName string,
 	startLogger clientLoggerStarter) (*ClientRuntime, error) {
+	return newClientRuntimeWithProfiler(parent, profileFlags, profileName, startLogger,
+		func(cfg profiling.Config) clientProfiler { return profiling.NewProfiler(cfg) })
+}
+
+func newClientRuntimeWithProfiler(parent context.Context, profileFlags profiling.Flags, profileName string,
+	startLogger clientLoggerStarter, newProfiler clientProfilerFactory) (*ClientRuntime, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -44,13 +55,14 @@ func newClientRuntime(parent context.Context, profileFlags profiling.Flags, prof
 		ctx:            ctx,
 		cancel:         cancel,
 		loggerCancel:   loggerCancel,
-		profiler:       profiling.NewProfiler(profileFlags.ToConfig(profileName)),
+		profiler:       newProfiler(profileFlags.ToConfig(profileName)),
 		profileEnabled: profileFlags.Enabled(),
 	}
 
 	runtime.wg.Add(1)
 	if err := startLogger(loggerCtx, &runtime.wg, source.Client); err != nil {
 		runtime.wg.Done()
+		runtime.profiler.Stop()
 		cancel()
 		loggerCancel()
 		return nil, fmt.Errorf("start client logger: %w", err)

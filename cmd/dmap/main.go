@@ -29,12 +29,6 @@ func main() {
 		Mode:             omode.MapClient,
 		SSHAgentKeyIndex: -1,
 	}
-	userName, err := user.CurrentName()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "unable to determine dmap user: %v\n", err)
-		os.Exit(1)
-	}
-
 	flag.BoolVar(&args.NoColor, "noColor", false, "Disable ANSII terminal colors")
 	flag.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")
 	flag.BoolVar(&args.LogPayload, "log-payload", false, "Also tee retrieved payload into the client log file (default: file keeps diagnostics only)")
@@ -57,7 +51,7 @@ func main() {
 	cli.BindAuthKeyFlags(flag.CommandLine, &legacyAuthKeyPath, &args)
 	flag.StringVar(&args.QueryStr, "query", "", "Map reduce query")
 	flag.StringVar(&args.ServersStr, "servers", "", "Remote servers to connect")
-	flag.StringVar(&args.UserName, "user", userName, "Your system user name")
+	flag.StringVar(&args.UserName, "user", "", "Your system user name")
 	flag.StringVar(&args.What, "files", "", "File(s) to read")
 	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
 
@@ -76,6 +70,14 @@ func main() {
 	if displayVersion {
 		runtimeCfg := config.CurrentRuntime()
 		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
+	}
+	if args.UserName == "" {
+		userName, err := user.CurrentName()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "unable to determine dmap user: %v\n", err)
+			os.Exit(1)
+		}
+		args.UserName = userName
 	}
 
 	runtime, err := cli.NewClientRuntime(context.Background(), profileFlags, "dmap")

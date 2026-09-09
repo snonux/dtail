@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -184,24 +186,114 @@ func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
 func TestNewServerConnectionReturnsInvalidPortError(t *testing.T) {
 	resetClientLogger(t)
 
-	conn, err := NewServerConnection(
-		"srv1:not-a-port",
-		"user",
-		nil,
-		testHostKeyCallback{},
-		&mockHandler{},
-		nil,
-		sessionspec.Spec{},
-		false,
+	tests := []string{
 		"",
-		false,
-		nil,
-	)
-	if conn != nil {
-		t.Fatalf("connection = %#v, want nil", conn)
+		" ",
+		":2222",
+		"srv1:",
+		"srv1:not-a-port",
+		"srv1:0",
+		"srv1:65536",
+		"[::1",
+		"[]",
+		"[localhost]",
+		"[::1]:not-a-port",
+		"2001:db8::1:2222:invalid",
 	}
-	if err == nil || !strings.Contains(err.Error(), "srv1:not-a-port") {
-		t.Fatalf("NewServerConnection error = %v, want address and port parse error", err)
+	for _, address := range tests {
+		t.Run(address, func(t *testing.T) {
+			conn, err := NewServerConnection(
+				address,
+				"user",
+				nil,
+				testHostKeyCallback{},
+				&mockHandler{},
+				nil,
+				sessionspec.Spec{},
+				false,
+				"",
+				false,
+				nil,
+			)
+			if conn != nil {
+				t.Fatalf("connection = %#v, want nil", conn)
+			}
+			if err == nil || !strings.Contains(err.Error(), address) {
+				t.Fatalf("NewServerConnection(%q) error = %v, want address parse error", address, err)
+			}
+		})
+	}
+}
+
+func TestNewServerConnectionParsesAddressForms(t *testing.T) {
+	resetClientLogger(t)
+
+	tests := []struct {
+		address      string
+		wantHost     string
+		wantPort     int
+		wantDialAddr string
+	}{
+		{address: "server.example", wantHost: "server.example", wantPort: 3022, wantDialAddr: "server.example:3022"},
+		{address: "server.example:2022", wantHost: "server.example", wantPort: 2022, wantDialAddr: "server.example:2022"},
+		{address: "127.0.0.1", wantHost: "127.0.0.1", wantPort: 3022, wantDialAddr: "127.0.0.1:3022"},
+		{address: "[::1]:2222", wantHost: "::1", wantPort: 2222, wantDialAddr: "[::1]:2222"},
+		{address: "::1", wantHost: "::1", wantPort: 3022, wantDialAddr: "[::1]:3022"},
+		{address: "[::1]", wantHost: "::1", wantPort: 3022, wantDialAddr: "[::1]:3022"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.address, func(t *testing.T) {
+			conn, err := NewServerConnection(
+				tt.address,
+				"user",
+				nil,
+				testHostKeyCallback{},
+				&mockHandler{},
+				nil,
+				sessionspec.Spec{},
+				false,
+				"",
+				false,
+				testSSHSettings{port: 3022},
+			)
+			if err != nil {
+				t.Fatalf("NewServerConnection(%q): %v", tt.address, err)
+			}
+			if conn.hostname != tt.wantHost || conn.port != tt.wantPort {
+				t.Fatalf("parsed address = %q:%d, want %q:%d", conn.hostname, conn.port, tt.wantHost, tt.wantPort)
+			}
+			if got := net.JoinHostPort(conn.hostname, strconv.Itoa(conn.port)); got != tt.wantDialAddr {
+				t.Fatalf("dial address = %q, want %q", got, tt.wantDialAddr)
+			}
+		})
+	}
+}
+
+func TestNewServerConnectionRejectsInvalidConfiguredDefaultPort(t *testing.T) {
+	resetClientLogger(t)
+	for _, port := range []int{-1, 65536} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			conn, err := NewServerConnection(
+				"server.example",
+				"user",
+				nil,
+				testHostKeyCallback{},
+				&mockHandler{},
+				nil,
+				sessionspec.Spec{},
+				false,
+				"",
+				false,
+				testSSHSettings{port: port},
+			)
+			if conn != nil {
+				t.Fatalf("connection = %#v, want nil", conn)
+			}
+			if err == nil || !strings.Contains(err.Error(), "default port must be between 1 and 65535") {
+				t.Fatalf("NewServerConnection default port %d error = %v, want port range error", port, err)
+			}
+		})
 	}
 }
 
@@ -910,6 +1002,146 @@ func TestServerConnectionStartWaitsForDialCleanup(t *testing.T) {
 	}
 }
 
+func TestServerConnectionStartReportsDialFailure(t *testing.T) {
+	resetClientLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := &mockHandler{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+		dialFn: func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
+			return errors.New("dial failed")
+		},
+	}
+
+	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	if handler.status != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.status)
+	}
+	if !strings.Contains(handler.serverError, "dial failed") {
+		t.Fatalf("server error = %q, want dial failure", handler.serverError)
+	}
+}
+
+func TestServerConnectionStartReportsDialTimeoutWhileContextActive(t *testing.T) {
+	resetClientLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := &mockHandler{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+		dialFn: func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
+			return context.DeadlineExceeded
+		},
+	}
+
+	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	if handler.status != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.status)
+	}
+	if handler.serverErrorCalls != 1 {
+		t.Fatalf("server error reports = %d, want 1", handler.serverErrorCalls)
+	}
+}
+
+func TestServerConnectionStartDoesNotReportContextCancellation(t *testing.T) {
+	resetClientLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	dialStarted := make(chan struct{})
+	handler := &mockHandler{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+		dialFn: func(ctx context.Context, _ context.CancelFunc, _ chan struct{}, _ chan struct{}) error {
+			close(dialStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	startDone := make(chan struct{})
+	go func() {
+		defer close(startDone)
+		conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	}()
+	waitForSignal(t, dialStarted, "dial worker to start")
+	cancel()
+	waitForSignal(t, startDone, "Start to return after cancellation")
+
+	if handler.status != 0 {
+		t.Fatalf("handler status = %d, want 0 after context cancellation", handler.status)
+	}
+	if handler.serverErrorCalls != 0 {
+		t.Fatalf("server error reports = %d, want 0 after context cancellation", handler.serverErrorCalls)
+	}
+}
+
+func TestServerConnectionStartDoesNotDuplicateJournalCapabilityError(t *testing.T) {
+	resetClientLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := &mockHandler{waitForCapabilities: true}
+	spec := sessionspec.Spec{Mode: omode.CatClient, Files: []string{"journal:ssh.service"}}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+	}
+	conn.dialFn = func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
+		return dispatchInitialCommands(conn.server, handler, nil, false, spec, &conn.sessionState)
+	}
+
+	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	if handler.status != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.status)
+	}
+	if handler.serverErrorCalls != 1 {
+		t.Fatalf("server error reports = %d, want exactly 1", handler.serverErrorCalls)
+	}
+	if !strings.Contains(handler.serverError, protocol.CapabilityJournalV1) {
+		t.Fatalf("server error = %q, want journal capability error", handler.serverError)
+	}
+}
+
+func TestServerConnectionStartReportsShellRejection(t *testing.T) {
+	resetClientLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := &mockHandler{}
+	session := &shellRejectSession{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+		authKeyDisabled: true,
+	}
+	conn.dialFn = func(ctx context.Context, cancel context.CancelFunc,
+		throttleCh, _ chan struct{}) error {
+		return conn.handle(ctx, cancel, session, throttleCh)
+	}
+
+	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	if handler.status != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.status)
+	}
+	if !strings.Contains(handler.serverError, "failed to start SSH shell") ||
+		!strings.Contains(handler.serverError, "shell rejected") {
+		t.Fatalf("server error = %q, want wrapped shell rejection", handler.serverError)
+	}
+	if session.closeCalls != 1 {
+		t.Fatalf("session Close calls = %d, want 1", session.closeCalls)
+	}
+}
+
 type testSSHSettings struct {
 	port    int
 	timeout time.Duration
@@ -1005,6 +1237,22 @@ type lifecycleSession struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 	allowWait chan struct{}
+}
+
+type shellRejectSession struct{ closeCalls int }
+
+var _ sshSession = (*shellRejectSession)(nil)
+
+func (*shellRejectSession) StdinPipe() (io.WriteCloser, error) {
+	return lifecycleWriteCloser{Writer: io.Discard}, nil
+}
+
+func (*shellRejectSession) StdoutPipe() (io.Reader, error) { return strings.NewReader(""), nil }
+func (*shellRejectSession) Shell() error                   { return errors.New("shell rejected") }
+func (*shellRejectSession) Wait() error                    { return nil }
+func (s *shellRejectSession) Close() error {
+	s.closeCalls++
+	return nil
 }
 
 func newLifecycleSession(payload []byte) *lifecycleSession {
@@ -1153,6 +1401,7 @@ type mockHandler struct {
 	waitForCapabilities bool
 	sessionAcks         []handlers.SessionAck
 	serverError         string
+	serverErrorCalls    int
 	status              int
 }
 
@@ -1176,6 +1425,7 @@ func (m *mockHandler) HasCapability(name string) bool {
 }
 
 func (m *mockHandler) ReportServerError(message string) {
+	m.serverErrorCalls++
 	m.serverError = message
 	m.status = 1
 }

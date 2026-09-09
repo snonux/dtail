@@ -3,9 +3,11 @@ package connectors
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -91,7 +93,7 @@ func NewServerConnection(server string, userName string,
 	if sshConnectTimeout <= 0 {
 		sshConnectTimeout = defaultSSHConnectTimeout
 	}
-	if defaultPort <= 0 {
+	if defaultPort == 0 {
 		defaultPort = defaultSSHPort
 	}
 
@@ -157,26 +159,102 @@ func (c *ServerConnection) RestoreCommittedSession(spec sessionspec.Spec, genera
 
 // Attempt to parse the server port address from the provided server FQDN.
 func (c *ServerConnection) initServerPort(defaultPort int) error {
-	hostname, portText, hasPort := strings.Cut(c.server, ":")
-	if !hasPort {
-		c.hostname = c.server
-		c.port = defaultPort
-		return nil
-	}
-
-	dlog.Client.Debug("Parsing port from hostname", c.server)
-	port, err := strconv.Atoi(portText)
+	hostname, port, err := parseServerAddress(c.server, defaultPort)
 	if err != nil {
-		return fmt.Errorf("parse port in server address %q: %w", c.server, err)
-	}
-	if hostname == "" {
-		return fmt.Errorf("parse server address %q: hostname is empty", c.server)
-	}
-	if port < 1 || port > 65535 {
-		return fmt.Errorf("parse port in server address %q: port must be between 1 and 65535", c.server)
+		return err
 	}
 	c.hostname = hostname
 	c.port = port
+	return nil
+}
+
+func parseServerAddress(address string, defaultPort int) (string, int, error) {
+	if defaultPort < 1 || defaultPort > 65535 {
+		return "", 0, fmt.Errorf("parse server address %q: default port must be between 1 and 65535", address)
+	}
+	if address == "" || address != strings.TrimSpace(address) {
+		return "", 0, fmt.Errorf("parse server address %q: address is empty or contains surrounding whitespace", address)
+	}
+
+	if strings.HasPrefix(address, "[") {
+		if strings.HasSuffix(address, "]") {
+			hostname := address[1 : len(address)-1]
+			if err := validateIPv6Host(hostname); err != nil {
+				return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+			}
+			return hostname, defaultPort, nil
+		}
+
+		hostname, portText, err := net.SplitHostPort(address)
+		if err != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		}
+		if err := validateIPv6Host(hostname); err != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		}
+		port, err := parseServerPort(address, portText)
+		if err != nil {
+			return "", 0, err
+		}
+		return hostname, port, nil
+	}
+
+	if strings.Count(address, ":") > 1 {
+		if err := validateIPv6Host(address); err != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		}
+		return address, defaultPort, nil
+	}
+
+	if strings.Contains(address, ":") {
+		hostname, portText, err := net.SplitHostPort(address)
+		if err != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		}
+		if err := validateServerHost(hostname); err != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		}
+		port, err := parseServerPort(address, portText)
+		if err != nil {
+			return "", 0, err
+		}
+		return hostname, port, nil
+	}
+
+	if err := validateServerHost(address); err != nil {
+		return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+	}
+	return address, defaultPort, nil
+}
+
+func parseServerPort(address, portText string) (int, error) {
+	port, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil {
+		return 0, fmt.Errorf("parse port in server address %q: %w", address, err)
+	}
+	if port == 0 {
+		return 0, fmt.Errorf("parse port in server address %q: port must be between 1 and 65535", address)
+	}
+	return int(port), nil
+}
+
+func validateIPv6Host(hostname string) error {
+	address, err := netip.ParseAddr(hostname)
+	if err != nil || !address.Is6() {
+		return fmt.Errorf("invalid IPv6 host %q", hostname)
+	}
+	return nil
+}
+
+func validateServerHost(hostname string) error {
+	if hostname == "" {
+		return fmt.Errorf("hostname is empty")
+	}
+	if strings.ContainsAny(hostname, "[]/\\") || strings.IndexFunc(hostname, func(r rune) bool {
+		return r <= ' ' || r == 0x7f
+	}) >= 0 {
+		return fmt.Errorf("invalid hostname %q", hostname)
+	}
 	return nil
 }
 
@@ -219,8 +297,10 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 			dial = c.dialFn
 		}
 		if err := dial(ctx, cancel, throttleCh, statsCh); err != nil {
-			dlog.Client.Warn(c.server, err)
-			if c.hostKeyCallback.Untrusted(c.server) {
+			if shouldReportConnectionError(ctx, err) {
+				c.handler.ReportServerError(err.Error())
+			}
+			if c.hostKeyCallback != nil && c.hostKeyCallback.Untrusted(c.server) {
 				dlog.Client.Debug(c.server, "Not trusting host")
 			}
 		}
@@ -240,7 +320,7 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 		<-statsCh
 	}()
 
-	address := fmt.Sprintf("%s:%d", c.hostname, c.port)
+	address := net.JoinHostPort(c.hostname, strconv.Itoa(c.port))
 	dlog.Client.Debug(c.server, "Dialing into the connection", address)
 
 	// Use context-aware dialing to enable proper cancellation during connection establishment.
@@ -253,7 +333,7 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	// Establish TCP connection with context support for cancellation
 	conn, err := dialer.DialContext(ctx, "tcp", address)
 	if err != nil {
-		return fmt.Errorf("failed to dial TCP connection to %s: %w", address, err)
+		return preferContextError(ctx, fmt.Errorf("failed to dial TCP connection to %s: %w", address, err))
 	}
 	stopContextClose := context.AfterFunc(ctx, func() {
 		if err := conn.Close(); err != nil {
@@ -273,7 +353,7 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 		if closeErr := conn.Close(); closeErr != nil {
 			dlog.Client.Trace(closeErr)
 		}
-		return fmt.Errorf("SSH handshake failed for %s: %w", address, err)
+		return preferContextError(ctx, fmt.Errorf("SSH handshake failed for %s: %w", address, err))
 	}
 
 	// Create SSH client from the connection components
@@ -294,7 +374,7 @@ func (c *ServerConnection) session(ctx context.Context, cancel context.CancelFun
 	dlog.Client.Debug(c.server, "Creating SSH session")
 	session, err := client.NewSession()
 	if err != nil {
-		return fmt.Errorf("failed to create SSH session for %s: %w", c.server, err)
+		return preferContextError(ctx, fmt.Errorf("failed to create SSH session for %s: %w", c.server, err))
 	}
 	return c.handle(ctx, cancel, session, throttleCh)
 }
@@ -314,14 +394,14 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	dlog.Client.Debug(c.server, "Creating handler for SSH session")
 	stdinPipe, err := session.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("failed to get SSH session stdin pipe for %s: %w", c.server, err)
+		return preferContextError(ctx, fmt.Errorf("failed to get SSH session stdin pipe for %s: %w", c.server, err))
 	}
 	stdoutPipe, err := session.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("failed to get SSH session stdout pipe for %s: %w", c.server, err)
+		return preferContextError(ctx, fmt.Errorf("failed to get SSH session stdout pipe for %s: %w", c.server, err))
 	}
 	if err := session.Shell(); err != nil {
-		return fmt.Errorf("failed to start SSH shell for %s: %w", c.server, err)
+		return preferContextError(ctx, fmt.Errorf("failed to start SSH shell for %s: %w", c.server, err))
 	}
 
 	stdinDone := copyAsync(stdinPipe, c.handler)
@@ -335,6 +415,9 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	}
 
 	dispatchErr := dispatchInitialCommands(c.server, c.handler, c.commands, c.interactive, c.sessionSpec, &c.sessionState)
+	if dispatchErr != nil {
+		dispatchErr = preferContextError(ctx, dispatchErr)
+	}
 
 	// Release the throttle slot as soon as the session is fully established so
 	// the next pending connection can proceed without waiting for this session
@@ -405,6 +488,21 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	cancel()
 
 	return dispatchErr
+}
+
+func preferContextError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
+}
+
+func shouldReportConnectionError(ctx context.Context, err error) bool {
+	if errors.Is(err, ErrJournalUnsupported) {
+		return false
+	}
+	ctxErr := ctx.Err()
+	return ctxErr == nil || !errors.Is(err, ctxErr)
 }
 
 func copyAsync(dst io.Writer, src io.Reader) <-chan struct{} {

@@ -86,7 +86,9 @@ func (h *baseHandler) HasCapability(name string) bool {
 }
 
 func (h *baseHandler) ReportServerError(message string) {
-	h.status = 1
+	if h.status <= 0 {
+		h.status = 1
+	}
 	// Route through the DIAGNOSTIC (Log) sink, not Raw: a server-error report is
 	// an audit line, not bulk payload. Via Raw it would be gated out of the
 	// client log file whenever Client.LogPayload is false (the default), silently

@@ -28,24 +28,24 @@ var (
 // InitSSHAuthMethods initialises all known SSH auth methods on the client side.
 // The returned io.Closer owns any ssh-agent connection acquired while building
 // the auth methods and must be closed by the caller once all SSH handshakes
-// that consume the returned auth methods have completed. The closer is always
-// non-nil so callers can unconditionally `defer closer.Close()`.
+// that consume the returned auth methods have completed. On success the closer
+// is always non-nil so callers can unconditionally defer closer.Close().
 func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool,
-	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback, io.Closer) {
+	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
 
 	if len(sshAuthMethods) > 0 {
 		simpleCallback, err := NewSimpleCallback()
 		if err != nil {
-			dlog.Client.FatalPanic(err)
+			return nil, nil, nil, fmt.Errorf("initialize SSH host-key callback: %w", err)
 		}
-		return sshAuthMethods, simpleCallback, noAuthCloser
+		return sshAuthMethods, simpleCallback, noAuthCloser, nil
 	}
 	return initKnownHostsAuthMethods(trustAllHosts, privateKeyPath, agentKeyIndex)
 }
 
 func initKnownHostsAuthMethods(trustAllHosts bool,
-	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback, io.Closer) {
+	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
 
 	knownHostsFile := fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME"))
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
@@ -55,7 +55,7 @@ func initKnownHostsAuthMethods(trustAllHosts bool,
 
 	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts)
 	if err != nil {
-		dlog.Client.FatalPanic(knownHostsFile, err)
+		return nil, nil, nil, fmt.Errorf("initialize known-hosts callback from %q: %w", knownHostsFile, err)
 	}
 	dlog.Client.Debug("initKnownHostsAuthMethods", "Added known hosts file path", knownHostsFile)
 
@@ -65,21 +65,26 @@ func initKnownHostsAuthMethods(trustAllHosts bool,
 		}
 	}
 
-	sshAuthMethods, agentCloser := collectKnownHostsAuthMethods(privateKeyPath, agentKeyIndex)
-	if len(sshAuthMethods) == 0 {
-		_ = agentCloser.Close()
-		dlog.Client.FatalPanic("Unable to find private SSH key information")
+	sshAuthMethods, agentCloser, err := collectKnownHostsAuthMethods(privateKeyPath, agentKeyIndex)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
-	return sshAuthMethods, knownHostsCallback, agentCloser
+	return sshAuthMethods, knownHostsCallback, agentCloser, nil
 }
 
-func collectKnownHostsAuthMethods(privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, io.Closer) {
+func collectKnownHostsAuthMethods(privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, io.Closer, error) {
 	signers, agentCloser := collectKnownHostsSigners(privateKeyPath, agentKeyIndex)
 	if len(signers) == 0 {
-		return nil, agentCloser
+		if err := agentCloser.Close(); err != nil {
+			return nil, nil, fmt.Errorf("close SSH agent after authentication setup failure: %w", err)
+		}
+		if privateKeyPath != "" {
+			return nil, nil, fmt.Errorf("unable to load SSH private key %q or find an SSH agent key", privateKeyPath)
+		}
+		return nil, nil, fmt.Errorf("unable to find a usable SSH private key or SSH agent key")
 	}
-	return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, agentCloser
+	return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, agentCloser, nil
 }
 
 func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int) ([]gossh.Signer, io.Closer) {

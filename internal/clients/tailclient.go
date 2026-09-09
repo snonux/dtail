@@ -27,11 +27,8 @@ func NewTailClient(args config.Args) (*TailClient, error) {
 		},
 	}
 
-	if err := c.init(); err != nil {
+	if err := c.initialize(c); err != nil {
 		return nil, fmt.Errorf("initialize tail client: %w", err)
-	}
-	if err := c.makeConnections(c); err != nil {
-		return nil, err
 	}
 	return &c, nil
 }

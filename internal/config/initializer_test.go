@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,17 @@ func TestSetupLogDirectoryReturnsHomeLookupError(t *testing.T) {
 	err := setupLogDirectory(&in)
 	if err == nil || !strings.Contains(err.Error(), "lookup failed") {
 		t.Fatalf("setupLogDirectory error = %v, want wrapped lookup failure", err)
+	}
+}
+
+func TestSetupRejectsInvalidSSHPort(t *testing.T) {
+	for _, port := range []int{-1, 0, 65536} {
+		t.Run(fmt.Sprintf("port_%d", port), func(t *testing.T) {
+			err := Setup(source.Client, &Args{ConfigFile: "none", SSHPort: port}, nil)
+			if err == nil || !strings.Contains(err.Error(), "SSH port must be between 1 and 65535") {
+				t.Fatalf("Setup SSHPort %d error = %v, want port range error", port, err)
+			}
+		})
 	}
 }
 

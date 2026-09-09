@@ -73,11 +73,8 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 	dlog.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
 	c.setRegexForQuery(query)
-	if err := c.baseClient.init(); err != nil {
+	if err := c.baseClient.initialize(&c); err != nil {
 		return nil, fmt.Errorf("initialize mapreduce client: %w", err)
-	}
-	if err := c.baseClient.makeConnections(&c); err != nil {
-		return nil, err
 	}
 
 	return &c, nil

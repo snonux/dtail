@@ -53,7 +53,7 @@ func secretsEqual(a, b string) bool {
 }
 
 // New returns a new server.
-func New(cfg config.RuntimeConfig) *Server {
+func New(cfg config.RuntimeConfig) (*Server, error) {
 	if cfg.Server == nil || cfg.Common == nil {
 		dlog.Server.FatalPanic("Missing runtime server/common configuration")
 	}
@@ -88,24 +88,28 @@ func New(cfg config.RuntimeConfig) *Server {
 		s.authKeyStore,
 	)
 
-	private, err := gossh.ParsePrivateKey(server.PrivateHostKey(cfg.Server.HostKeyFile, cfg.Server.HostKeyBits))
+	privateKey, err := server.PrivateHostKey(cfg.Server.HostKeyFile, cfg.Server.HostKeyBits)
 	if err != nil {
-		dlog.Server.FatalPanic(err)
+		return nil, fmt.Errorf("load SSH host key: %w", err)
+	}
+	private, err := gossh.ParsePrivateKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("parse SSH host key: %w", err)
 	}
 	s.sshServerConfig.AddHostKey(private)
 
-	return &s
+	return &s, nil
 }
 
 // Start the server.
-func (s *Server) Start(ctx context.Context) int {
+func (s *Server) Start(ctx context.Context) (int, error) {
 	dlog.Server.Info("Starting server")
-	bindAt := fmt.Sprintf("%s:%d", s.cfg.Server.SSHBindAddress, s.cfg.Common.SSHPort)
+	bindAt := net.JoinHostPort(s.cfg.Server.SSHBindAddress, fmt.Sprintf("%d", s.cfg.Common.SSHPort))
 	dlog.Server.Info("Binding server", bindAt)
 
 	listener, err := net.Listen("tcp", bindAt)
 	if err != nil {
-		dlog.Server.FatalPanic("Failed to open listening TCP socket", err)
+		return 1, fmt.Errorf("listen on %s: %w", bindAt, err)
 	}
 
 	go s.stats.start(ctx)
@@ -115,7 +119,7 @@ func (s *Server) Start(ctx context.Context) int {
 
 	<-ctx.Done()
 	// For future use.
-	return 0
+	return 0, nil
 }
 
 func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {

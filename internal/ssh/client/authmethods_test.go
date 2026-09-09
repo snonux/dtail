@@ -94,7 +94,10 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 		return []gossh.Signer{newMockSigner("agent")}, agentCloser, nil
 	}
 
-	methods, closer := collectKnownHostsAuthMethods("/custom/id_fast", 7)
+	methods, closer, err := collectKnownHostsAuthMethods("/custom/id_fast", 7)
+	if err != nil {
+		t.Fatalf("collectKnownHostsAuthMethods: %v", err)
+	}
 	if len(methods) != 1 {
 		t.Fatalf("Expected 1 auth method, got %d", len(methods))
 	}
@@ -162,7 +165,10 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 		return []gossh.Signer{sharedSigner}, agentCloser, nil
 	}
 
-	methods, closer := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", 2)
+	methods, closer, err := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", 2)
+	if err != nil {
+		t.Fatalf("collectKnownHostsAuthMethods: %v", err)
+	}
 	if len(methods) != 1 {
 		t.Fatalf("Expected 1 auth method, got %d", len(methods))
 	}
@@ -190,6 +196,40 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 	}
 	if !reflect.DeepEqual(callOrder, expectedOrder) {
 		t.Fatalf("Unexpected auth method call order.\nexpected: %v\ngot:      %v", expectedOrder, callOrder)
+	}
+}
+
+func TestCollectKnownHostsAuthMethodsReturnsErrorAndClosesAgentWithoutKeys(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
+
+	originalPrivateKeySigner := privateKeySigner
+	originalAgentSigners := agentSigners
+	originalLogger := dlog.Client
+	dlog.Client = &dlog.DLog{}
+	t.Cleanup(func() {
+		privateKeySigner = originalPrivateKeySigner
+		agentSigners = originalAgentSigners
+		dlog.Client = originalLogger
+	})
+
+	privateKeySigner = func(string) (gossh.Signer, error) {
+		return nil, fmt.Errorf("missing key")
+	}
+	agentCloser := &testCloser{}
+	agentSigners = func(int) ([]gossh.Signer, io.Closer, error) {
+		return nil, agentCloser, nil
+	}
+
+	methods, closer, err := collectKnownHostsAuthMethods("/missing/explicit-key", 0)
+	if err == nil {
+		t.Fatal("collectKnownHostsAuthMethods succeeded without any usable key")
+	}
+	if methods != nil || closer != nil {
+		t.Fatalf("failure returned methods=%v closer=%v, want nil resources", methods, closer)
+	}
+	if agentCloser.closed != 1 {
+		t.Fatalf("agent closer calls = %d, want 1", agentCloser.closed)
 	}
 }
 
