@@ -33,7 +33,7 @@ func main() {
 	var shutdownAfter int
 	var profileFlags profiling.Flags
 
-	userName, err := user.Name()
+	userName, err := user.CurrentName()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unable to determine dtail user: %v\n", err)
 		os.Exit(1)

@@ -25,7 +25,7 @@ func main() {
 	var pprof string
 	var profileFlags profiling.Flags
 
-	userName, err := user.Name()
+	userName, err := user.CurrentName()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unable to determine dcat user: %v\n", err)
 		os.Exit(1)

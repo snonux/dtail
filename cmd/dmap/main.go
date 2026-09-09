@@ -29,7 +29,7 @@ func main() {
 		Mode:             omode.MapClient,
 		SSHAgentKeyIndex: -1,
 	}
-	userName, err := user.Name()
+	userName, err := user.CurrentName()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unable to determine dmap user: %v\n", err)
 		os.Exit(1)

@@ -25,7 +25,7 @@ func main() {
 	var legacyAuthKeyPath string
 	var pprof string
 	var profileFlags profiling.Flags
-	userName, err := user.Name()
+	userName, err := user.CurrentName()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "unable to determine dgrep user: %v\n", err)
 		os.Exit(1)

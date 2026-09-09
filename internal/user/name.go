@@ -25,8 +25,8 @@ func NoRootCheck() error {
 	return nil
 }
 
-// Name of the current run user.
-func Name() (string, error) {
+// CurrentName returns the name of the current run user.
+func CurrentName() (string, error) {
 	currentUser, err := current()
 	if err != nil {
 		return "", fmt.Errorf("look up current user: %w", err)
@@ -35,4 +35,13 @@ func Name() (string, error) {
 		return "", fmt.Errorf("look up current user: empty user name")
 	}
 	return currentUser.Username, nil
+}
+
+// Name returns the name of the current run user. It is retained for source
+// compatibility with callers that cannot handle an identity lookup error. An
+// unavailable or incomplete identity is represented by an empty string;
+// production command entry points should use CurrentName and report its error.
+func Name() string {
+	name, _ := CurrentName()
+	return name
 }
