@@ -28,10 +28,21 @@ type SSHSettings interface {
 	SSHConnectTimeout() time.Duration
 }
 
+type sshSession interface {
+	StdinPipe() (io.WriteCloser, error)
+	StdoutPipe() (io.Reader, error)
+	Shell() error
+	Wait() error
+	Close() error
+}
+
+type serverDialFunc func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error
+
 const (
-	defaultSSHConnectTimeout = 2 * time.Second
-	defaultSSHPort           = 2222
-	defaultCapabilityWait    = 250 * time.Millisecond
+	defaultSSHConnectTimeout    = 2 * time.Second
+	defaultSSHPort              = 2222
+	defaultCapabilityWait       = 250 * time.Millisecond
+	defaultSSHCloseDrainTimeout = 6 * time.Second
 )
 
 // ServerConnection represents a connection to a single remote dtail server via
@@ -52,6 +63,8 @@ type ServerConnection struct {
 	authKeyPath     string
 	authKeyDisabled bool
 	hostKeyCallback client.HostKeyCallback
+	// dialFn is an optional seam for connection lifecycle tests.
+	dialFn serverDialFunc
 	// throttleReleased ensures the throttle slot is returned to throttleCh
 	// exactly once, even if both the early-release path in handle() and the
 	// deferred cleanup in Start() execute concurrently or the same goroutine
@@ -176,7 +189,9 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 	dlog.Client.Debug(c.server, "Throttling says that the connection can be established",
 		len(throttleCh), cap(throttleCh))
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		defer func() {
 			// Release the throttle slot on the way out regardless of which
 			// code path already attempted it.  throttleReleased.Do guarantees
@@ -190,7 +205,11 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 			cancel()
 		}()
 
-		if err := c.dial(ctx, cancel, throttleCh, statsCh); err != nil {
+		dial := c.dial
+		if c.dialFn != nil {
+			dial = c.dialFn
+		}
+		if err := dial(ctx, cancel, throttleCh, statsCh); err != nil {
 			dlog.Client.Warn(c.server, err)
 			if c.hostKeyCallback.Untrusted(c.server) {
 				dlog.Client.Debug(c.server, "Not trusting host")
@@ -198,7 +217,7 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 		}
 	}()
 
-	<-ctx.Done()
+	<-done
 }
 
 // Dail into a new SSH connection. Close connection in case of an error.
@@ -227,6 +246,12 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	if err != nil {
 		return fmt.Errorf("failed to dial TCP connection to %s: %w", address, err)
 	}
+	stopContextClose := context.AfterFunc(ctx, func() {
+		if err := conn.Close(); err != nil {
+			dlog.Client.Trace(err)
+		}
+	})
+	defer stopContextClose()
 
 	// Perform SSH handshake over the established TCP connection. Build a
 	// per-handshake ssh.ClientConfig so the host-key callback is bound to
@@ -236,13 +261,19 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	handshakeConfig.HostKeyCallback = c.hostKeyCallback.Wrap(ctx)
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, address, &handshakeConfig)
 	if err != nil {
-		conn.Close()
+		if closeErr := conn.Close(); closeErr != nil {
+			dlog.Client.Trace(closeErr)
+		}
 		return fmt.Errorf("SSH handshake failed for %s: %w", address, err)
 	}
 
 	// Create SSH client from the connection components
 	client := ssh.NewClient(sshConn, chans, reqs)
-	defer client.Close()
+	defer func() {
+		if err := client.Close(); err != nil {
+			dlog.Client.Trace(err)
+		}
+	}()
 
 	return c.session(ctx, cancel, client, throttleCh)
 }
@@ -256,12 +287,20 @@ func (c *ServerConnection) session(ctx context.Context, cancel context.CancelFun
 	if err != nil {
 		return fmt.Errorf("failed to create SSH session for %s: %w", c.server, err)
 	}
-	defer session.Close()
 	return c.handle(ctx, cancel, session, throttleCh)
 }
 
 func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc,
-	session *ssh.Session, throttleCh chan struct{}) error {
+	session sshSession, throttleCh chan struct{}) error {
+	var closeSessionOnce sync.Once
+	closeSession := func() {
+		closeSessionOnce.Do(func() {
+			if err := session.Close(); err != nil {
+				dlog.Client.Trace(err)
+			}
+		})
+	}
+	defer closeSession()
 
 	dlog.Client.Debug(c.server, "Creating handler for SSH session")
 	stdinPipe, err := session.StdinPipe()
@@ -276,25 +315,9 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 		return fmt.Errorf("failed to start SSH shell for %s: %w", c.server, err)
 	}
 
-	go func() {
-		defer cancel()
-		if _, err := io.Copy(stdinPipe, c.handler); err != nil {
-			dlog.Client.Trace(err)
-		}
-	}()
-	go func() {
-		defer cancel()
-		if _, err := io.Copy(c.handler, stdoutPipe); err != nil {
-			dlog.Client.Trace(err)
-		}
-	}()
-	go func() {
-		defer cancel()
-		select {
-		case <-c.handler.Done():
-		case <-ctx.Done():
-		}
-	}()
+	stdinDone := copyAsync(stdinPipe, c.handler)
+	stdoutDone := copyAsync(c.handler, stdoutPipe)
+	waitDone := waitSessionAsync(session)
 
 	if c.authKeyDisabled {
 		dlog.Client.Debug(c.server, "Skipping AUTHKEY registration because auth-key is disabled")
@@ -302,25 +325,94 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 		c.sendAuthKeyRegistrationCommand()
 	}
 
-	if err := dispatchInitialCommands(c.server, c.handler, c.commands, c.interactive, c.sessionSpec, &c.sessionState); err != nil {
-		c.handler.Shutdown()
-		return err
-	}
+	dispatchErr := dispatchInitialCommands(c.server, c.handler, c.commands, c.interactive, c.sessionSpec, &c.sessionState)
 
 	// Release the throttle slot as soon as the session is fully established so
 	// the next pending connection can proceed without waiting for this session
 	// to finish.  throttleReleased.Do is idempotent: if the deferred cleanup
 	// in Start() fires first (e.g. on a dial error path that never reaches
 	// here), the slot is still returned exactly once.
-	c.throttleReleased.Do(func() {
-		dlog.Client.Debug(c.server, "Unthrottling connection (session up)",
-			len(throttleCh), cap(throttleCh))
-		<-throttleCh
-	})
+	if dispatchErr == nil {
+		c.throttleReleased.Do(func() {
+			dlog.Client.Debug(c.server, "Unthrottling connection (session up)",
+				len(throttleCh), cap(throttleCh))
+			<-throttleCh
+		})
 
-	<-ctx.Done()
+		select {
+		case <-ctx.Done():
+			closeSession()
+		case <-c.handler.Done():
+			// A hidden close request marks the handler done after enqueueing its
+			// acknowledgement. Give the stdin copy a bounded opportunity to send
+			// that acknowledgement before closing the transport.
+			timer := time.NewTimer(defaultSSHCloseDrainTimeout)
+			select {
+			case <-stdinDone:
+			case <-stdoutDone:
+			case <-ctx.Done():
+			case <-timer.C:
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			cancel()
+			closeSession()
+		case <-stdinDone:
+			cancel()
+			closeSession()
+		case <-stdoutDone:
+		case <-waitDone:
+		}
+	} else {
+		cancel()
+		closeSession()
+	}
+
+	// Closing the transport above interrupts a blocked stdout read. Joining the
+	// copy before Shutdown makes the MapReduce flush final: no subsequent Write
+	// can leave local aggregate state behind after it has been flushed.
+	<-stdoutDone
 	c.handler.Shutdown()
-	return nil
+
+	// Shutdown releases a handler.Read blocked waiting for another command.
+	// Closing the SSH stdin pipe also interrupts a write if the peer has stopped
+	// reading. Join both remaining session goroutines before returning so callers
+	// can safely render final results.
+	if err := stdinPipe.Close(); err != nil {
+		dlog.Client.Trace(err)
+	}
+	<-stdinDone
+	closeSession()
+	<-waitDone
+	cancel()
+
+	return dispatchErr
+}
+
+func copyAsync(dst io.Writer, src io.Reader) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := io.Copy(dst, src); err != nil {
+			dlog.Client.Trace(err)
+		}
+	}()
+	return done
+}
+
+func waitSessionAsync(session sshSession) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := session.Wait(); err != nil {
+			dlog.Client.Trace(err)
+		}
+	}()
+	return done
 }
 
 // resolveAuthKeyPath returns the effective auth-key path. When the provided

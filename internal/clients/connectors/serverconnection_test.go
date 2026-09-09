@@ -3,6 +3,7 @@ package connectors
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -681,9 +682,319 @@ func TestThrottleReleasedIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestServerConnectionHandleFlushesAfterStdoutCopyAndWaitsForSession(t *testing.T) {
+	resetClientLogger(t)
+
+	allowWrite := make(chan struct{})
+	handler := newLifecycleHandler(allowWrite)
+	session := newLifecycleSession([]byte("aggregate payload"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	throttleCh := make(chan struct{}, 1)
+	throttleCh <- struct{}{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		authKeyDisabled: true,
+	}
+	handleDone := make(chan error, 1)
+	go func() {
+		handleDone <- conn.handle(ctx, cancel, session, throttleCh)
+	}()
+
+	waitForSignal(t, handler.writeStarted, "stdout handler Write to start")
+	cancel()
+	waitForSignal(t, session.closed, "session to close after cancellation")
+
+	select {
+	case <-handler.shutdown:
+		t.Fatal("handler shut down while its stdout Write was still in flight")
+	default:
+	}
+
+	close(allowWrite)
+	waitForSignal(t, handler.shutdown, "handler shutdown after stdout copy")
+
+	select {
+	case err := <-handleDone:
+		t.Fatalf("handle returned before Session.Wait completed: %v", err)
+	default:
+	}
+
+	close(session.allowWait)
+	select {
+	case err := <-handleDone:
+		if err != nil {
+			t.Fatalf("handle() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handle did not return after stdout copy and Session.Wait completed")
+	}
+
+	if got := handler.shutdownCalls(); got != 1 {
+		t.Fatalf("Shutdown calls = %d, want 1", got)
+	}
+	if handler.shutdownDuringWrite() {
+		t.Fatal("Shutdown ran before the final stdout Write completed")
+	}
+}
+
+func TestServerConnectionHandleCompletesForNormalEOFAndHandlerDone(t *testing.T) {
+	tests := []struct {
+		name    string
+		trigger func(*lifecycleHandler, *lifecycleSession)
+	}{
+		{
+			name: "normal stdout EOF",
+			trigger: func(_ *lifecycleHandler, session *lifecycleSession) {
+				session.finish()
+			},
+		},
+		{
+			name: "handler done",
+			trigger: func(handler *lifecycleHandler, _ *lifecycleSession) {
+				handler.signalDone()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetClientLogger(t)
+
+			allowWrite := make(chan struct{})
+			close(allowWrite)
+			handler := newLifecycleHandler(allowWrite)
+			session := newLifecycleSession([]byte("payload"))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			throttleCh := make(chan struct{}, 1)
+			throttleCh <- struct{}{}
+			conn := &ServerConnection{
+				server:          "srv1",
+				handler:         handler,
+				authKeyDisabled: true,
+			}
+
+			handleDone := make(chan error, 1)
+			go func() {
+				handleDone <- conn.handle(ctx, cancel, session, throttleCh)
+			}()
+			waitForSignal(t, handler.writeFinished, "stdout handler Write to finish")
+			tt.trigger(handler, session)
+			close(session.allowWait)
+
+			select {
+			case err := <-handleDone:
+				if err != nil {
+					t.Fatalf("handle() error = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("handle did not complete")
+			}
+			if got := handler.shutdownCalls(); got != 1 {
+				t.Fatalf("Shutdown calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestServerConnectionStartWaitsForDialCleanup(t *testing.T) {
+	resetClientLogger(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         &mockHandler{},
+		hostKeyCallback: testHostKeyCallback{},
+		dialFn: func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
+			close(dialStarted)
+			<-releaseDial
+			return nil
+		},
+	}
+	throttleCh := make(chan struct{}, 1)
+	statsCh := make(chan struct{}, 1)
+	startDone := make(chan struct{})
+	go func() {
+		defer close(startDone)
+		conn.Start(ctx, cancel, throttleCh, statsCh)
+	}()
+
+	waitForSignal(t, dialStarted, "dial worker to start")
+	cancel()
+	select {
+	case <-startDone:
+		t.Fatal("Start returned before the dial worker cleaned up")
+	default:
+	}
+
+	close(releaseDial)
+	waitForSignal(t, startDone, "Start to return after dial cleanup")
+	if got := len(throttleCh); got != 0 {
+		t.Fatalf("throttle channel length = %d, want 0 after cleanup", got)
+	}
+}
+
 type testSSHSettings struct {
 	port    int
 	timeout time.Duration
+}
+
+type lifecycleHandler struct {
+	done           chan struct{}
+	doneOnce       sync.Once
+	writeStarted   chan struct{}
+	writeStartOne  sync.Once
+	writeFinished  chan struct{}
+	writeFinishOne sync.Once
+	allowWrite     <-chan struct{}
+	shutdown       chan struct{}
+	shutdownOnce   sync.Once
+	mu             sync.Mutex
+	writeActive    bool
+	shutdownCount  int
+	badShutdown    bool
+}
+
+func newLifecycleHandler(allowWrite <-chan struct{}) *lifecycleHandler {
+	return &lifecycleHandler{
+		done:          make(chan struct{}),
+		writeStarted:  make(chan struct{}),
+		writeFinished: make(chan struct{}),
+		allowWrite:    allowWrite,
+		shutdown:      make(chan struct{}),
+	}
+}
+
+var _ handlers.Handler = (*lifecycleHandler)(nil)
+
+func (*lifecycleHandler) Capabilities() []string                 { return nil }
+func (*lifecycleHandler) HasCapability(string) bool              { return false }
+func (*lifecycleHandler) ReportServerError(string)               {}
+func (*lifecycleHandler) SendMessage(string) error               { return nil }
+func (*lifecycleHandler) Server() string                         { return "lifecycle" }
+func (*lifecycleHandler) Status() int                            { return 0 }
+func (h *lifecycleHandler) Done() <-chan struct{}                { return h.done }
+func (*lifecycleHandler) WaitForCapabilities(time.Duration) bool { return false }
+func (*lifecycleHandler) WaitForSessionAck(time.Duration) (handlers.SessionAck, bool) {
+	return handlers.SessionAck{}, false
+}
+
+func (h *lifecycleHandler) Read([]byte) (int, error) {
+	<-h.done
+	return 0, io.EOF
+}
+
+func (h *lifecycleHandler) Write(p []byte) (int, error) {
+	h.mu.Lock()
+	h.writeActive = true
+	h.mu.Unlock()
+	h.writeStartOne.Do(func() { close(h.writeStarted) })
+	<-h.allowWrite
+	h.mu.Lock()
+	h.writeActive = false
+	h.mu.Unlock()
+	h.writeFinishOne.Do(func() { close(h.writeFinished) })
+	return len(p), nil
+}
+
+func (h *lifecycleHandler) Shutdown() {
+	h.mu.Lock()
+	h.shutdownCount++
+	if h.writeActive {
+		h.badShutdown = true
+	}
+	h.mu.Unlock()
+	h.signalDone()
+	h.shutdownOnce.Do(func() { close(h.shutdown) })
+}
+
+func (h *lifecycleHandler) signalDone() {
+	h.doneOnce.Do(func() { close(h.done) })
+}
+
+func (h *lifecycleHandler) shutdownCalls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.shutdownCount
+}
+
+func (h *lifecycleHandler) shutdownDuringWrite() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.badShutdown
+}
+
+type lifecycleSession struct {
+	stdout    *lifecycleReader
+	closed    chan struct{}
+	closeOnce sync.Once
+	allowWait chan struct{}
+}
+
+func newLifecycleSession(payload []byte) *lifecycleSession {
+	closed := make(chan struct{})
+	return &lifecycleSession{
+		stdout:    &lifecycleReader{payload: payload, closed: closed},
+		closed:    closed,
+		allowWait: make(chan struct{}),
+	}
+}
+
+var _ sshSession = (*lifecycleSession)(nil)
+
+func (*lifecycleSession) StdinPipe() (io.WriteCloser, error) {
+	return lifecycleWriteCloser{Writer: io.Discard}, nil
+}
+
+func (s *lifecycleSession) StdoutPipe() (io.Reader, error) { return s.stdout, nil }
+func (*lifecycleSession) Shell() error                     { return nil }
+
+func (s *lifecycleSession) Wait() error {
+	<-s.closed
+	<-s.allowWait
+	return nil
+}
+
+func (s *lifecycleSession) Close() error {
+	s.finish()
+	return nil
+}
+
+func (s *lifecycleSession) finish() {
+	s.closeOnce.Do(func() { close(s.closed) })
+}
+
+type lifecycleReader struct {
+	payload []byte
+	closed  <-chan struct{}
+}
+
+func (r *lifecycleReader) Read(p []byte) (int, error) {
+	if len(r.payload) > 0 {
+		n := copy(p, r.payload)
+		r.payload = r.payload[n:]
+		return n, nil
+	}
+	<-r.closed
+	return 0, io.EOF
+}
+
+type lifecycleWriteCloser struct{ io.Writer }
+
+func (lifecycleWriteCloser) Close() error { return nil }
+
+func waitForSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
 }
 
 func (s testSSHSettings) SSHPort() int {
