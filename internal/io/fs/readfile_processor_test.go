@@ -100,8 +100,8 @@ func TestServerlessPipeReadReturnsOnCancellationWithoutClosingInput(t *testing.T
 		t.Fatal("pipe input was not processed")
 	}
 
-	// Keep the write side open and idle. Cancellation must wake the poll-based
-	// reader rather than waiting for writer EOF.
+	// Keep the write side open and idle. Cancellation must wake the
+	// platform-specific reader rather than waiting for writer EOF.
 	cancel()
 	select {
 	case err := <-done:

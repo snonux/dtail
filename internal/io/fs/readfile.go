@@ -133,7 +133,11 @@ func (f *readFile) makePipeReader(ctx context.Context) (*bufio.Reader, *os.File,
 	if input == nil {
 		input = os.Stdin
 	}
-	return bufio.NewReader(newContextFileReader(ctx, input)), nil, nil, nil
+	reader, err := newContextFileReader(ctx, input)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return bufio.NewReader(reader), nil, reader, nil
 }
 
 func (f *readFile) periodicTruncateCheck(ctx context.Context, truncate chan<- struct{}) {

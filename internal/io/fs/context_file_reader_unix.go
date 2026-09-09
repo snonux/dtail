@@ -1,3 +1,5 @@
+//go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris
+
 package fs
 
 import (
@@ -20,9 +22,13 @@ type contextFileReader struct {
 	file *os.File
 }
 
-func newContextFileReader(ctx context.Context, file *os.File) *contextFileReader {
-	return &contextFileReader{ctx: ctx, file: file}
+func newContextFileReader(ctx context.Context, file *os.File) (*contextFileReader, error) {
+	return &contextFileReader{ctx: ctx, file: file}, nil
 }
+
+// Close deliberately leaves the borrowed descriptor open. Unix cancellation
+// is implemented with readiness polling, so this reader owns no resource.
+func (r *contextFileReader) Close() error { return nil }
 
 func (r *contextFileReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {

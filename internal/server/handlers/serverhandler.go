@@ -114,10 +114,24 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	argc int, args []string, commandName string) {
 
 	dlog.Server.Debug(h.user, "Handling user command", argc, args)
-	shutdownOnCompletion := shouldShutdownOnCommandCompletion(commandName)
-	if !h.beginCommand() {
+	// The close acknowledgement completes an existing shutdown handshake; it
+	// is protocol control traffic rather than new workload. Process it even
+	// after graceful shutdown has sealed command admission, and keep it out of
+	// commandWg so shutdown never waits on its own acknowledgement.
+	if strings.EqualFold(commandName, ".ack") {
+		h.handleAckCommand(argc, args)
 		cancelCommandContext(ctx)
 		return
+	}
+
+	shutdownOnCompletion := shouldShutdownOnCommandCompletion(commandName)
+	if !h.beginCommand(hasSessionCommandAdmission(ctx)) {
+		cancelCommandContext(ctx)
+		return
+	}
+	markCommandAdmitted(ctx)
+	if strings.EqualFold(commandName, "SESSION") {
+		ctx = withSessionCommandAdmission(ctx)
 	}
 	defer h.finishCommandInitialization()
 	commandFinished := func() {
@@ -300,7 +314,21 @@ func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
 	}
 
 	h.stopCommandAdmission()
-	h.commandInitWg.Wait()
+	if ctx.Err() != nil {
+		h.Shutdown()
+		return
+	}
+	initializationDone := make(chan struct{})
+	go func() {
+		h.commandInitWg.Wait()
+		close(initializationDone)
+	}()
+	select {
+	case <-initializationDone:
+	case <-ctx.Done():
+		h.Shutdown()
+		return
+	}
 	if ctx.Err() != nil {
 		h.Shutdown()
 		return
@@ -308,7 +336,7 @@ func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
 
 	ta := h.getAggregate()
 	if ta != nil {
-		ta.PrepareShutdown()
+		ta.PrepareShutdownContext(ctx)
 	}
 	h.cancelCommandWork()
 	if ta != nil {

@@ -30,7 +30,7 @@ type sessionCommandState struct {
 	cancel     context.CancelFunc
 }
 
-func (h *ServerHandler) handleSessionCommand(_ context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
+func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
 	defer commandFinished()
 
 	action, generation, spec, err := parseSessionCommand(args, argc)
@@ -41,7 +41,7 @@ func (h *ServerHandler) handleSessionCommand(_ context.Context, _ lcontext.LCont
 
 	switch action {
 	case "START":
-		generation, err = h.sessionState.start(h, spec)
+		generation, err = h.sessionState.start(h, parentCtx, spec)
 		if err != nil {
 			h.send(h.serverMessages, sessionAckErrorPrefix+err.Error())
 			return
@@ -52,7 +52,7 @@ func (h *ServerHandler) handleSessionCommand(_ context.Context, _ lcontext.LCont
 			h.send(h.serverMessages, sessionAckErrorPrefix+"session not started")
 			return
 		}
-		generation, err = h.sessionState.update(h, spec, generation)
+		generation, err = h.sessionState.update(h, parentCtx, spec, generation)
 		if err != nil {
 			h.send(h.serverMessages, sessionAckErrorPrefix+err.Error())
 			return
@@ -123,7 +123,7 @@ func validateSessionSpec(spec session.Spec) error {
 	return nil
 }
 
-func (s *sessionCommandState) start(handler *ServerHandler, spec session.Spec) (uint64, error) {
+func (s *sessionCommandState) start(handler *ServerHandler, parentCtx context.Context, spec session.Spec) (uint64, error) {
 	commands, err := prepareSessionCommands(spec)
 	if err != nil {
 		return 0, err
@@ -134,7 +134,7 @@ func (s *sessionCommandState) start(handler *ServerHandler, spec session.Spec) (
 		s.mu.Unlock()
 		return 0, fmt.Errorf("session already started")
 	}
-	ctx, cancel := handler.newCommandContext(context.Background())
+	ctx, cancel := handler.newCommandContext(sessionCommandContext(parentCtx))
 	s.active = true
 	s.generation = 1
 	s.spec = spec
@@ -152,7 +152,7 @@ func (s *sessionCommandState) start(handler *ServerHandler, spec session.Spec) (
 	return 1, nil
 }
 
-func (s *sessionCommandState) update(handler *ServerHandler, spec session.Spec, generation uint64) (uint64, error) {
+func (s *sessionCommandState) update(handler *ServerHandler, parentCtx context.Context, spec session.Spec, generation uint64) (uint64, error) {
 	commands, err := prepareSessionCommands(spec)
 	if err != nil {
 		return 0, err
@@ -164,7 +164,7 @@ func (s *sessionCommandState) update(handler *ServerHandler, spec session.Spec, 
 		return 0, fmt.Errorf("session not started")
 	}
 	oldCancel := s.cancel
-	ctx, cancel := handler.newCommandContext(context.Background())
+	ctx, cancel := handler.newCommandContext(sessionCommandContext(parentCtx))
 	if generation == 0 {
 		generation = s.generation + 1
 	}
@@ -196,6 +196,14 @@ func prepareSessionCommands(spec session.Spec) ([]string, error) {
 	}
 
 	return commands, nil
+}
+
+func sessionCommandContext(parent context.Context) context.Context {
+	ctx := context.Background()
+	if hasSessionCommandAdmission(parent) {
+		ctx = withSessionCommandAdmission(ctx)
+	}
+	return ctx
 }
 
 func validateSessionOptions(raw string) error {
@@ -240,8 +248,17 @@ func (s *sessionCommandState) reset() {
 
 func (h *ServerHandler) dispatchSessionCommands(ctx context.Context, commands []string) error {
 	for _, command := range commands {
-		if err := h.handleRawCommand(ctx, command); err != nil {
+		commandCtx := ctx
+		var admission *commandAdmissionResult
+		if hasSessionCommandAdmission(ctx) {
+			admission = &commandAdmissionResult{}
+			commandCtx = context.WithValue(commandCtx, commandAdmissionResultKey, admission)
+		}
+		if err := h.handleRawCommand(commandCtx, command); err != nil {
 			return err
+		}
+		if admission != nil && !admission.admitted {
+			return fmt.Errorf("server is shutting down")
 		}
 	}
 	return nil

@@ -33,6 +33,37 @@ type commandCancelKeyType struct{}
 
 var commandCancelKey commandCancelKeyType
 
+// sessionCommandAdmissionKey marks work dispatched by a SESSION command whose
+// outer transaction has already passed command admission. Graceful shutdown
+// must let that synchronous nested dispatch finish before it waits, even after
+// sealing admission to unrelated commands.
+type sessionCommandAdmissionKeyType struct{}
+
+var sessionCommandAdmissionKey sessionCommandAdmissionKeyType
+
+type commandAdmissionResultKeyType struct{}
+
+var commandAdmissionResultKey commandAdmissionResultKeyType
+
+type commandAdmissionResult struct {
+	admitted bool
+}
+
+func withSessionCommandAdmission(ctx context.Context) context.Context {
+	return context.WithValue(ctx, sessionCommandAdmissionKey, true)
+}
+
+func hasSessionCommandAdmission(ctx context.Context) bool {
+	admitted, _ := ctx.Value(sessionCommandAdmissionKey).(bool)
+	return admitted
+}
+
+func markCommandAdmitted(ctx context.Context) {
+	if result, ok := ctx.Value(commandAdmissionResultKey).(*commandAdmissionResult); ok {
+		result.admitted = true
+	}
+}
+
 // withCommandCancel returns a derived context that carries the per-command
 // cancel func. See cancelCommandContext for the matching consumer.
 func withCommandCancel(ctx context.Context, cancel context.CancelFunc) context.Context {
@@ -78,6 +109,7 @@ type baseHandler struct {
 	commandInitWg    sync.WaitGroup
 	commandWg        sync.WaitGroup
 	stopping         bool
+	aborting         bool
 
 	// readBuf holds the formatted protocol message currently being sent to
 	// the client. It is only touched by Read (single session output
@@ -124,6 +156,7 @@ func (h *baseHandler) Shutdown() {
 	// a racing Aggregate.Start never attempts a final send to a dead peer.
 	h.commandMu.Lock()
 	h.stopping = true
+	h.aborting = true
 	if h.outputAbort != nil {
 		h.outputAbort.Shutdown()
 	}
@@ -658,10 +691,10 @@ func (h *baseHandler) shutdown() {
 	h.done.Shutdown()
 }
 
-func (h *baseHandler) beginCommand() bool {
+func (h *baseHandler) beginCommand(admittedSessionWork bool) bool {
 	h.commandMu.Lock()
 	defer h.commandMu.Unlock()
-	if h.stopping {
+	if h.aborting || (h.stopping && !admittedSessionWork) {
 		return false
 	}
 	h.commandWg.Add(1)

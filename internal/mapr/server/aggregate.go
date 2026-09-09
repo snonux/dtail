@@ -78,6 +78,13 @@ type Aggregate struct {
 	shutdownDone     chan struct{}
 	terminalMu       sync.Mutex
 	terminalState    aggregateTerminalState
+	// finalizationCtx and finalizationCancelable are fixed when finalization
+	// wins the terminal-state transition. Start may subsequently be the
+	// goroutine that executes shutdownOnce, but it must use the graceful
+	// caller's output context rather than silently replacing it with the
+	// context-insensitive Shutdown behavior.
+	finalizationCtx        context.Context
+	finalizationCancelable bool
 }
 
 type aggregateTerminalState uint8
@@ -173,7 +180,8 @@ func (a *Aggregate) ShutdownContext(ctx context.Context) {
 }
 
 func (a *Aggregate) shutdown(outputCtx context.Context) {
-	if !a.claimFinalization() {
+	finalizationCtx, finalizationCancelable, ok := a.claimFinalization(outputCtx)
+	if !ok {
 		return
 	}
 	a.shutdownOnce.Do(func() {
@@ -183,16 +191,12 @@ func (a *Aggregate) shutdown(outputCtx context.Context) {
 		a.stopSerializeTicker()
 		a.processorsWg.Wait()
 		a.processBatchAndWait()
-		ctx := outputCtx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(finalizationCtx, 10*time.Second)
 		defer cancel()
-		if outputCtx == nil {
-			a.doSerialize(ctx)
-		} else {
+		if finalizationCancelable {
 			a.doSerializeCancelable(ctx)
+		} else {
+			a.doSerialize(ctx)
 		}
 	})
 	<-a.shutdownDone
@@ -203,7 +207,15 @@ func (a *Aggregate) shutdown(outputCtx context.Context) {
 // Claiming first keeps Start from returning and letting its caller close the
 // result channel while a concurrent graceful shutdown serializes the last batch.
 func (a *Aggregate) PrepareShutdown() {
-	a.claimFinalization()
+	a.claimFinalization(nil)
+}
+
+// PrepareShutdownContext claims final serialization and binds the output
+// lifetime that every shutdown participant must use. This must happen before
+// canceling command work so Start cannot wake first and choose an
+// context-insensitive final drain.
+func (a *Aggregate) PrepareShutdownContext(ctx context.Context) {
+	a.claimFinalization(ctx)
 }
 
 // Abort requests output-free termination and stops background processing
@@ -318,20 +330,25 @@ func (a *Aggregate) PrepareOutput(maprMessages chan<- string) {
 // claimFinalization makes graceful final output the aggregate's terminal
 // outcome. Abort and finalization race through this single state transition,
 // so only one can win. Repeated Shutdown calls join the same finalization.
-func (a *Aggregate) claimFinalization() bool {
+func (a *Aggregate) claimFinalization(outputCtx context.Context) (context.Context, bool, bool) {
 	a.terminalMu.Lock()
 	defer a.terminalMu.Unlock()
 
 	switch a.terminalState {
 	case aggregateRunning:
 		a.terminalState = aggregateFinalizing
-		return true
+		a.finalizationCancelable = outputCtx != nil
+		if outputCtx == nil {
+			outputCtx = context.Background()
+		}
+		a.finalizationCtx = outputCtx
+		return a.finalizationCtx, a.finalizationCancelable, true
 	case aggregateFinalizing:
-		return true
+		return a.finalizationCtx, a.finalizationCancelable, true
 	case aggregateAborted:
-		return false
+		return nil, false, false
 	default:
-		return false
+		return nil, false, false
 	}
 }
 

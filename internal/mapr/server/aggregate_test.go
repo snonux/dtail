@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -516,6 +517,84 @@ func TestAggregateFinalizationWinsConcurrentAbort(t *testing.T) {
 	}
 	if message, ok := <-messages; ok {
 		t.Fatalf("unexpected extra aggregate output: %q", message)
+	}
+}
+
+func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
+	ensureTestServerConfig(t)
+
+	aggregate, err := NewAggregate(
+		`from STATS select count($time),$time group by $time interval 3600`,
+		config.Server.MapreduceLogFormat,
+	)
+	if err != nil {
+		t.Fatalf("NewAggregate failed: %v", err)
+	}
+
+	messages := make(chan string, 1)
+	commandCtx, cancelCommand := context.WithCancel(context.Background())
+	producerDone := make(chan struct{})
+	go func() {
+		aggregate.Start(commandCtx, messages)
+		close(messages)
+		close(producerDone)
+	}()
+	waitForAggregateStart(t, aggregate)
+
+	processor := NewAggregateProcessor(aggregate, "test")
+	for i := 0; i < cap(messages)+2; i++ {
+		line := strings.Replace(
+			"INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|MAPREDUCE:STATS|currentConnections=0|lifetimeConnections=1",
+			"1002-071143", fmt.Sprintf("1002-%06d", i), 1,
+		)
+		if err := processor.ProcessLine(bytes.NewBufferString(line), uint64(i+1), "test"); err != nil {
+			t.Fatalf("ProcessLine failed: %v", err)
+		}
+	}
+	if err := processor.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Graceful shutdown claims and binds its output context before canceling
+	// command work. Deliberately let Start wake and enter shutdown first: it
+	// must still use drainCtx, otherwise the over-capacity result blocks until
+	// the context-insensitive ten-second fallback expires.
+	drainCtx, cancelDrain := context.WithCancel(context.Background())
+	aggregate.PrepareShutdownContext(drainCtx)
+	cancelCommand()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(messages) < cap(messages) {
+		if time.Now().After(deadline) {
+			t.Fatal("Start did not enter final serialization")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-producerDone:
+		t.Fatal("final serialization completed despite a full output channel")
+	default:
+	}
+
+	cancelDrain()
+	select {
+	case <-producerDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start-owned finalization ignored the prepared output context")
+	}
+
+	// A later graceful participant joins the completed terminal result rather
+	// than starting a second serialization with a different context.
+	aggregate.ShutdownContext(context.Background())
+	var emitted int
+	for range messages {
+		emitted++
+	}
+	if emitted != cap(messages) {
+		t.Fatalf("emitted %d results, want the %d that fit before cancellation", emitted, cap(messages))
+	}
+	if remaining := aggregate.countGroups(); remaining == 0 {
+		t.Fatal("expected canceled finalization to retain unsent groups")
 	}
 }
 
