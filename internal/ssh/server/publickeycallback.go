@@ -61,7 +61,7 @@ func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
 	dlog.Server.Info(user, "Reading", authorizedKeysPath.Path())
 	authorizedKeysBytes, err := authorizedKeysPath.ReadFile()
 	if err != nil {
-		return nil, fmt.Errorf("Unable to read authorized keys file|%s|%s|%s",
+		return nil, fmt.Errorf("unable to read authorized keys file|%s|%s|%s",
 			authorizedKeysPath.Path(), user, err.Error())
 	}
 

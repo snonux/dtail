@@ -3,7 +3,16 @@ package server
 import (
 	"sync"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/io/dlog"
 )
+
+func resetStatsTestLogger(t *testing.T) {
+	t.Helper()
+	original := dlog.Server
+	dlog.Server = &dlog.DLog{}
+	t.Cleanup(func() { dlog.Server = original })
+}
 
 // TestStatsConnectionCounterBalance verifies that incrementConnections and
 // decrementConnections remain balanced so currentConnections never goes negative.
@@ -17,6 +26,7 @@ import (
 // The fix pairs both calls inside handleConnection via a defer, removing the
 // decrement from handleShellRequest entirely.
 func TestStatsConnectionCounterBalance(t *testing.T) {
+	resetStatsTestLogger(t)
 	s := newStats(100)
 
 	// Simulate a single TCP connection that opens 3 shell channels (requests).
@@ -43,6 +53,7 @@ func TestStatsConnectionCounterBalance(t *testing.T) {
 // TestStatsMultipleConnectionsBalance verifies counters stay non-negative across
 // multiple independent connections each with their own lifecycle.
 func TestStatsMultipleConnectionsBalance(t *testing.T) {
+	resetStatsTestLogger(t)
 	s := newStats(100)
 	const n = 5
 
@@ -74,6 +85,7 @@ func TestStatsMultipleConnectionsBalance(t *testing.T) {
 // must always be >= 0. With the fix in place (decrement once per connection),
 // the counter stays at 0 after one increment + one decrement.
 func TestStatsCounterInvariant(t *testing.T) {
+	resetStatsTestLogger(t)
 	s := newStats(100)
 
 	s.incrementConnections() // one connection
@@ -91,6 +103,7 @@ func TestStatsCounterInvariant(t *testing.T) {
 // regression test for the security fix: before the fix, slow or unauthenticated
 // handshakes bypassed the limit and could create unbounded goroutines.
 func TestPreAuthSlotsCountAgainstLimit(t *testing.T) {
+	resetStatsTestLogger(t)
 	const maxConns = 3
 	s := newStats(maxConns)
 
@@ -122,6 +135,7 @@ func TestPreAuthSlotsCountAgainstLimit(t *testing.T) {
 // promotePreAuthToConnection correctly transitions a pre-auth reservation into
 // a full authenticated connection without losing or double-counting the slot.
 func TestPromotePreAuthToConnectionIsAtomic(t *testing.T) {
+	resetStatsTestLogger(t)
 	s := newStats(10)
 
 	// Reserve a pre-auth slot then promote it; the totals must balance.
@@ -157,6 +171,7 @@ func TestPromotePreAuthToConnectionIsAtomic(t *testing.T) {
 // both pre-auth and authenticated connections together. This models the real
 // scenario where some handshakes are still in flight while others have completed.
 func TestPreAuthLimitMixedWithAuthenticated(t *testing.T) {
+	resetStatsTestLogger(t)
 	const maxConns = 4
 	s := newStats(maxConns)
 
@@ -186,6 +201,7 @@ func TestPreAuthLimitMixedWithAuthenticated(t *testing.T) {
 // TestPreAuthConcurrentReserveRelease exercises reservePreAuth and releasePreAuth
 // under concurrent access to verify there are no data races. Run with -race.
 func TestPreAuthConcurrentReserveRelease(t *testing.T) {
+	resetStatsTestLogger(t)
 	s := newStats(1000)
 	const goroutines = 50
 

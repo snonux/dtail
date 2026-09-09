@@ -205,7 +205,7 @@ func (f *readFile) truncated(fd *os.File) (bool, error) {
 		return true, err
 	}
 	if currentPosition > pathPosition {
-		return true, errors.New("File got truncated")
+		return true, errors.New("file got truncated")
 	}
 	return false, nil
 }

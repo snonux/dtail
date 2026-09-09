@@ -30,16 +30,16 @@ func (g *GroupSet) Result(query *Query, rowsLimit int, renderer ResultRenderer) 
 		renderer = PlainResultRenderer()
 	}
 
-	g.resultWriteFormattedHeader(query, renderer, sb, lastColumn, rowsLimit, columnWidths)
+	g.resultWriteFormattedHeader(query, renderer, sb, lastColumn, columnWidths)
 	g.resultWriteFormattedHeaderRowSeparator(query, renderer, sb, lastColumn, columnWidths)
-	g.resultWriteFormattedData(query, renderer, sb, lastColumn, rowsLimit, columnWidths, rows)
+	g.resultWriteFormattedData(renderer, sb, lastColumn, rowsLimit, columnWidths, rows)
 
 	return sb.String(), len(rows), nil
 }
 
 // Write a nicely formatted header for the result data.
 func (g *GroupSet) resultWriteFormattedHeader(query *Query, renderer ResultRenderer, sb *strings.Builder,
-	lastColumn, rowsLimit int, columnWidths []int) {
+	lastColumn int, columnWidths []int) {
 
 	for i, sc := range query.Select {
 		format := fmt.Sprintf(" %%%ds ", columnWidths[i])
@@ -88,7 +88,7 @@ func (g *GroupSet) resultWriteFormattedHeaderRowSeparator(query *Query, renderer
 }
 
 // Write the result data nicely formatted.
-func (g *GroupSet) resultWriteFormattedData(query *Query, renderer ResultRenderer, sb *strings.Builder,
+func (g *GroupSet) resultWriteFormattedData(renderer ResultRenderer, sb *strings.Builder,
 	lastColumn, rowsLimit int, columnWidths []int, rows []result) {
 
 	for i, r := range rows {
@@ -134,7 +134,7 @@ func (*GroupSet) writeQueryFile(query *Query) error {
 // WriteResult writes the result to an CSV outfile.
 func (g *GroupSet) WriteResult(query *Query, finalResult bool) error {
 	if !query.HasOutfile() {
-		return errors.New("No outfile specified")
+		return errors.New("no outfile specified")
 	}
 	if err := g.writeQueryFile(query); err != nil {
 		return err
@@ -149,7 +149,7 @@ func (g *GroupSet) WriteResult(query *Query, finalResult bool) error {
 
 	// In append mode, only write CSV header when file doesn't exist yet or is empty.
 	if query.Outfile.AppendMode {
-		if info, err := os.Stat(query.Outfile.FilePath); err == nil && info.Size() > 0 {
+		if info, statErr := os.Stat(query.Outfile.FilePath); statErr == nil && info.Size() > 0 {
 			writeHeader = false
 		}
 	}
@@ -159,7 +159,7 @@ func (g *GroupSet) WriteResult(query *Query, finalResult bool) error {
 		return err
 	}
 
-	writeErr := g.resultWriteUnformatted(query, rows, fd, writeHeader, finalResult)
+	writeErr := g.resultWriteUnformatted(query, rows, fd, writeHeader)
 	if query.Outfile.AppendMode {
 		return closeWrittenFile(fd, writeErr, query.Outfile.FilePath)
 	}
@@ -184,7 +184,7 @@ func (g *GroupSet) getOutfileFD(query *Query) (*os.File, error) {
 	return os.OpenFile(query.Outfile.FilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 }
 
-func (g *GroupSet) resultWriteUnformatted(query *Query, rows []result, fd io.StringWriter, writeHeader, finalResult bool) error {
+func (g *GroupSet) resultWriteUnformatted(query *Query, rows []result, fd io.StringWriter, writeHeader bool) error {
 	lastColumn := len(query.Select) - 1
 
 	if writeHeader {

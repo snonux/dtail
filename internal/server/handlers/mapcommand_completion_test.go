@@ -13,6 +13,7 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -175,7 +176,7 @@ func startTestReader(handler *ServerHandler, output *testOutput,
 					})
 				}
 			}
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return
 			}
 		}
@@ -213,9 +214,9 @@ func TestServerModeMapCommandCompletesSession(t *testing.T) {
 		Query: "from STATS select count($time),$time group by $time",
 		Regex: ".",
 	}
-	commands, err := spec.Commands()
-	if err != nil {
-		t.Fatalf("build commands: %v", err)
+	commands, commandsErr := spec.Commands()
+	if commandsErr != nil {
+		t.Fatalf("build commands: %v", commandsErr)
 	}
 
 	commandWg := wrapHandlerCommandsForJoin(handler)
@@ -458,8 +459,8 @@ func TestServerHandlerShutdownAbortsMapFollowWithoutOutputReader(t *testing.T) {
 	for _, command := range commands {
 		frames.WriteString(encodeTestCommand(command))
 	}
-	if _, err := handler.Write([]byte(frames.String())); err != nil {
-		t.Fatalf("write commands: %v", err)
+	if _, writeErr := handler.Write([]byte(frames.String())); writeErr != nil {
+		t.Fatalf("write commands: %v", writeErr)
 	}
 
 	deadline := time.Now().Add(5 * time.Second)

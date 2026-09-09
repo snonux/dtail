@@ -15,14 +15,14 @@ func TestPrivateHostKeyGeneratesAndReloadsExistingKey(t *testing.T) {
 		t.Fatalf("MkdirAll failed: %v", err)
 	}
 
-	hostKeyPath, err := fs.NewRootedPath(hostKeyFile)
-	if err != nil {
-		t.Fatalf("NewRootedPath failed: %v", err)
+	hostKeyPath, pathErr := fs.NewRootedPath(hostKeyFile)
+	if pathErr != nil {
+		t.Fatalf("NewRootedPath failed: %v", pathErr)
 	}
 
-	firstPEM, err := generatePrivateHostKey(1024)
-	if err != nil {
-		t.Fatalf("generatePrivateHostKey failed: %v", err)
+	firstPEM, generateErr := generatePrivateHostKey(1024)
+	if generateErr != nil {
+		t.Fatalf("generatePrivateHostKey failed: %v", generateErr)
 	}
 	if err := storePrivateHostKey(hostKeyPath, firstPEM); err != nil {
 		t.Fatalf("storePrivateHostKey failed: %v", err)

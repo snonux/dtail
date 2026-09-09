@@ -62,8 +62,8 @@ func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error
 
 	for {
 		token, next, done := scanDelimitedField(maprLine, start, delimiter)
-		switch {
-		case tokenIndex == 0:
+		switch tokenIndex {
+		case 0:
 			if !strings.HasPrefix(token, "INFO") {
 				return nil, ErrIgnoreFields
 			}
@@ -74,7 +74,7 @@ func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error
 			if p.wantLogLevel {
 				fields["$loglevel"] = token
 			}
-		case tokenIndex == 1:
+		case 1:
 			if p.wantTime {
 				fields["$time"] = token
 			}
@@ -93,35 +93,35 @@ func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error
 					fields["$second"] = token[13:]
 				}
 			}
-		case tokenIndex == 2:
+		case 2:
 			if p.wantPID {
 				fields["$pid"] = token
 			}
-		case tokenIndex == 3:
+		case 3:
 			if p.wantCaller {
 				fields["$caller"] = token
 			}
-		case tokenIndex == 4:
+		case 4:
 			if p.wantCPUs {
 				fields["$cpus"] = token
 			}
-		case tokenIndex == 5:
+		case 5:
 			if p.wantGoroutines {
 				fields["$goroutines"] = token
 			}
-		case tokenIndex == 6:
+		case 6:
 			if p.wantCGOCalls {
 				fields["$cgocalls"] = token
 			}
-		case tokenIndex == 7:
+		case 7:
 			if p.wantLoadAvg {
 				fields["$loadavg"] = token
 			}
-		case tokenIndex == 8:
+		case 8:
 			if p.wantUptime {
 				fields["$uptime"] = token
 			}
-		case tokenIndex == 9:
+		case 9:
 			if !strings.HasPrefix(token, "MAPREDUCE:") {
 				return nil, ErrIgnoreFields
 			}
@@ -183,7 +183,7 @@ func (p *defaultParser) addDynamicField(fields map[string]string, key string, va
 func (p *defaultParser) addKeyValueField(fields map[string]string, token string) error {
 	keyAndValueIndex := strings.IndexByte(token, '=')
 	if keyAndValueIndex < 0 {
-		return fmt.Errorf("Unable to parse key-value token '%s'", token)
+		return fmt.Errorf("unable to parse key-value token '%s'", token)
 	}
 	p.addDynamicField(fields, token[:keyAndValueIndex], token[keyAndValueIndex+1:])
 	return nil

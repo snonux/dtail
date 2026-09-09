@@ -21,4 +21,8 @@ const (
 	AggregateDelimiter string = "∥"
 	// AggregateGroupKeyCombinator combines the group set keys.
 	AggregateGroupKeyCombinator string = ","
+	// ServerlessInputCompleteCommand marks the end of the initial in-process
+	// command batch. It travels through the normal command stream so every
+	// preceding frame has been admitted before idle shutdown becomes eligible.
+	ServerlessInputCompleteCommand string = ".ack input complete"
 )

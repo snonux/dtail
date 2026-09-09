@@ -198,9 +198,9 @@ func TestAggregateProducesResults(t *testing.T) {
 
 	t.Run("Aggregate", func(t *testing.T) {
 		// Create aggregate
-		agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
-		if err != nil {
-			t.Fatalf("Failed to create aggregate: %v", err)
+		agg, aggregateErr := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+		if aggregateErr != nil {
+			t.Fatalf("Failed to create aggregate: %v", aggregateErr)
 		}
 
 		// Channel to collect messages
@@ -220,22 +220,22 @@ func TestAggregateProducesResults(t *testing.T) {
 		processor := NewAggregateProcessor(agg, "test")
 		for i, line := range testLines {
 			buf := bytes.NewBufferString(line)
-			err := processor.ProcessLine(buf, uint64(i+1), "test")
-			if err != nil {
-				t.Errorf("Failed to process line %d: %v", i+1, err)
+			processErr := processor.ProcessLine(buf, uint64(i+1), "test")
+			if processErr != nil {
+				t.Errorf("Failed to process line %d: %v", i+1, processErr)
 			}
 		}
 
 		// Flush to ensure all data is processed
-		err = processor.Flush()
-		if err != nil {
-			t.Errorf("Failed to flush: %v", err)
+		flushErr := processor.Flush()
+		if flushErr != nil {
+			t.Errorf("Failed to flush: %v", flushErr)
 		}
 
 		// Close the processor to decrement activeProcessors
-		err = processor.Close()
-		if err != nil {
-			t.Errorf("Failed to close processor: %v", err)
+		closeErr := processor.Close()
+		if closeErr != nil {
+			t.Errorf("Failed to close processor: %v", closeErr)
 		}
 
 		// Shutdown and get results

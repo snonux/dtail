@@ -24,7 +24,7 @@ func TestGracefulShutdownWaitsForAdmittedAggregatePublication(t *testing.T) {
 	handler.commands["map"] = func(ctx context.Context, _ lcontext.LContext, _ int, _ []string, commandFinished func()) {
 		close(commandEntered)
 		<-publish
-		messages, closeMessages := handler.newGeneratedMaprMessagesChannel(ctx, 0)
+		messages, closeMessages := handler.newGeneratedMaprMessagesChannel(0)
 		aggregate.PrepareOutput(messages)
 		handler.setAggregate(aggregate)
 		go func() {
@@ -71,7 +71,7 @@ func TestGracefulShutdownContextAbortsWhenFinalOutputCannotDrain(t *testing.T) {
 	handler := newMapTestHandler(t)
 	groupCount := cap(handler.maprMessages) + 32
 	aggregate := newPopulatedTestAggregate(t, groupCount)
-	messages, closeMessages := handler.newGeneratedMaprMessagesChannel(context.Background(), 0)
+	messages, closeMessages := handler.newGeneratedMaprMessagesChannel(0)
 	aggregate.PrepareOutput(messages)
 	handler.setAggregate(aggregate)
 

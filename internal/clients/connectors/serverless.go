@@ -2,12 +2,14 @@ package connectors
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/protocol"
 	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
 	sessionspec "github.com/mimecast/dtail/internal/session"
 )
@@ -23,6 +25,10 @@ type gracefulServerlessHandler interface {
 
 type contextGracefulServerlessHandler interface {
 	GracefulShutdownContext(context.Context)
+}
+
+type serverlessCommandBatchHandler interface {
+	BeginCommandBatch()
 }
 
 // Serverless creates a server object directly without TCP.
@@ -121,6 +127,11 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	if err != nil {
 		return err
 	}
+	commandBatchHandler, batchesCommands := serverHandler.(serverlessCommandBatchHandler)
+	batchInitialCommands := batchesCommands && !s.interactive
+	if batchInitialCommands {
+		commandBatchHandler.BeginCommandBatch()
+	}
 
 	// Use buffered channels to prevent deadlock
 	// This approach avoids the circular dependency of direct io.Copy
@@ -154,7 +165,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 				}
 			}
 			if err != nil {
-				if err != io.EOF {
+				if !errors.Is(err, io.EOF) {
 					errChan <- err
 				}
 				return
@@ -196,7 +207,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 				}
 			}
 			if err != nil {
-				if err != io.EOF {
+				if !errors.Is(err, io.EOF) {
 					errChan <- err
 				}
 				return
@@ -225,6 +236,12 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	}()
 
 	dispatchErr := dispatchInitialCommands(s.Server(), s.handler, s.commands, s.interactive, s.sessionSpec, &s.sessionState)
+	if dispatchErr == nil && batchInitialCommands {
+		// Queue the completion marker behind every initial command. The client
+		// command channel and toServer channel are FIFO, so processing this on
+		// the server proves all preceding commands have reached admission.
+		dispatchErr = s.handler.SendMessage(protocol.ServerlessInputCompleteCommand)
+	}
 	var transferErr error
 	if dispatchErr == nil {
 		select {

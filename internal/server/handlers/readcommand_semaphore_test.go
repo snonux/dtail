@@ -55,13 +55,13 @@ func buildLimiterTestHandler(t *testing.T, capacity int) (*ServerHandler, chan s
 			user:             &userserver.User{Name: "semaphore-test-user"},
 			codec:            newProtocolCodec(&userserver.User{Name: "semaphore-test-user"}),
 		},
-		serverCfg: &config.ServerConfig{},
+		serverCfg:   &config.ServerConfig{},
 		catLimiter:  limiter,
 		tailLimiter: limiter,
 	}
 	// activeGeneration must be set so newGeneratedServerMessagesChannel works
 	// correctly; use the session-state helper the real constructor would use.
-	handler.baseHandler.activeGeneration = handler.sessionState.currentGeneration
+	handler.activeGeneration = handler.sessionState.currentGeneration
 
 	return handler, limiter
 }

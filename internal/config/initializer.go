@@ -60,17 +60,17 @@ func (in *initializer) parseConfig(args *Args) error {
 func (in *initializer) parseSpecificConfig(configFile string) error {
 	fd, err := os.Open(configFile)
 	if err != nil {
-		return fmt.Errorf("Unable to read config file: %w", err)
+		return fmt.Errorf("unable to read config file: %w", err)
 	}
 	defer func() { _ = fd.Close() }()
 
 	cfgBytes, err := io.ReadAll(fd)
 	if err != nil {
-		return fmt.Errorf("Unable to read config file %s: %w", configFile, err)
+		return fmt.Errorf("unable to read config file %s: %w", configFile, err)
 	}
 
 	if err := json.Unmarshal([]byte(cfgBytes), in); err != nil {
-		return fmt.Errorf("Unable to parse config file %s: %w", configFile, err)
+		return fmt.Errorf("unable to parse config file %s: %w", configFile, err)
 	}
 
 	return nil
@@ -91,7 +91,7 @@ func (in *initializer) transformConfig(sourceProcess source.Source, args *Args,
 	case source.HealthCheck:
 		return in.setupConfig(transformHealthCheck, args, additionalArgs)
 	default:
-		return fmt.Errorf("Unable to transform config, unknown source '%s'",
+		return fmt.Errorf("unable to transform config, unknown source '%s'",
 			sourceProcess)
 	}
 }
@@ -204,7 +204,7 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 		setupPlainMode(in, args)
 	}
 	if args.What == "" {
-		setupAdditionalArgs(in, args)
+		setupAdditionalArgs(args)
 	}
 
 	return nil
@@ -233,7 +233,7 @@ func setupPlainMode(in *initializer, args *Args) {
 	}
 }
 
-func setupAdditionalArgs(in *initializer, args *Args) {
+func setupAdditionalArgs(args *Args) {
 	// Interpret additional args as file list or as query.
 	if args.What == "" {
 		var files []string

@@ -27,6 +27,6 @@ func NewValidatedCatFile(filePath string, target ValidatedReadTarget, globID str
 	serverMessages chan<- string, maxLineLength int) CatFile {
 
 	cat := NewCatFile(filePath, globID, serverMessages, maxLineLength)
-	cat.readFile.validatedTarget = &target
+	cat.validatedTarget = &target
 	return cat
 }

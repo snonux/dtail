@@ -24,7 +24,7 @@ func TestValidatedCatFileStartWithProcessorOptimizedReadsAllLines(t *testing.T) 
 	cat := NewValidatedCatFile(filePath, target, "glob-id", make(chan string, 1), defaultMaxLineLength)
 	processor := &captureProcessor{}
 
-	if err := cat.readFile.StartWithProcessorOptimized(
+	if err := cat.StartWithProcessorOptimized(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
@@ -169,9 +169,9 @@ func TestValidatedTailFileTruncatedReopenDetectsTruncation(t *testing.T) {
 	target := mustValidatedReadTarget(t, filePath)
 
 	tail := NewValidatedTailFile(filePath, target, "glob-id", make(chan string, 1), defaultMaxLineLength)
-	fd, err := target.Open()
-	if err != nil {
-		t.Fatalf("open validated target: %v", err)
+	fd, openErr := target.Open()
+	if openErr != nil {
+		t.Fatalf("open validated target: %v", openErr)
 	}
 	t.Cleanup(func() {
 		if closeErr := fd.Close(); closeErr != nil {
@@ -186,7 +186,7 @@ func TestValidatedTailFileTruncatedReopenDetectsTruncation(t *testing.T) {
 		t.Fatalf("truncate file: %v", err)
 	}
 
-	isTruncated, err := tail.readFile.truncated(fd)
+	isTruncated, err := tail.truncated(fd)
 	if !isTruncated {
 		t.Fatal("expected truncation to be detected")
 	}

@@ -18,7 +18,7 @@ type CatClient struct {
 // NewCatClient returns a new cat client.
 func NewCatClient(args config.Args) (*CatClient, error) {
 	if args.RegexStr != "" {
-		return nil, errors.New("Can't use regex with 'cat' operating mode")
+		return nil, errors.New("can't use regex with 'cat' operating mode")
 	}
 	args.Mode = omode.CatClient
 
@@ -42,6 +42,6 @@ func (c CatClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewClientHandler(server)
 }
 
-func (c CatClient) makeSessionSpec() (SessionSpec, error) {
+func (c CatClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
 	return NewSessionSpec(c.Args), nil
 }

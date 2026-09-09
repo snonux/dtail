@@ -19,7 +19,7 @@ type GrepClient struct {
 // NewGrepClient creates a new grep client.
 func NewGrepClient(args config.Args) (*GrepClient, error) {
 	if args.RegexStr == "" {
-		return nil, errors.New("No regex specified, use '-regex' flag")
+		return nil, errors.New("no regex specified, use '-regex' flag")
 	}
 	args.Mode = omode.GrepClient
 
@@ -43,6 +43,6 @@ func (c GrepClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewClientHandler(server)
 }
 
-func (c GrepClient) makeSessionSpec() (SessionSpec, error) {
+func (c GrepClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
 	return NewSessionSpec(c.Args), nil
 }

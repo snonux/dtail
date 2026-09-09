@@ -371,7 +371,7 @@ func (w *ChannelWriter) Stats() (linesWritten, bytesWritten uint64) {
 
 // NetworkWriter writes directly to the network connection bypassing channels
 type NetworkWriter struct {
-	outputLines     chan<- []byte
+	outputLines    chan<- []byte
 	serverMessages chan<- string
 	hostname       string
 	plain          bool
@@ -414,7 +414,7 @@ func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
 	serverMessages chan<- string, hostname string, plain, serverless bool,
 	generation uint64, activeGeneration func() uint64) *NetworkWriter {
 	return &NetworkWriter{
-		outputLines:       outputLines,
+		outputLines:      outputLines,
 		serverMessages:   serverMessages,
 		hostname:         hostname,
 		plain:            plain,

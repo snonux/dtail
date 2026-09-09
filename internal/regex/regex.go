@@ -169,7 +169,7 @@ func (r Regex) Serialize() (string, error) {
 		flags = append(flags, flag.String())
 	}
 	if !r.initialized {
-		return "", fmt.Errorf("Unable to serialize regex as not initialized properly: %v", r)
+		return "", fmt.Errorf("unable to serialize regex as not initialized properly: %v", r)
 	}
 	// Include literal flag in serialization if applicable
 	if r.isLiteral {

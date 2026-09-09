@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/omode"
@@ -32,13 +31,13 @@ type epochOrderTestServer struct {
 	mu             sync.Mutex
 	calls          []string
 	signaledEpochs []uint64
-	outputLines     chan []byte
+	outputLines    chan []byte
 }
 
 func newEpochOrderTestServer() *epochOrderTestServer {
 	return &epochOrderTestServer{
 		globCapTestServer: newGlobCapTestServer(100),
-		outputLines:        make(chan []byte, 100),
+		outputLines:       make(chan []byte, 100),
 	}
 }
 
@@ -54,9 +53,9 @@ func (s *epochOrderTestServer) recordedCalls() []string {
 	return append([]string(nil), s.calls...)
 }
 
-func (s *epochOrderTestServer) DirectOutputActive() bool        { return true }
-func (s *epochOrderTestServer) EnableDirectOutput() bool    { return false }
-func (s *epochOrderTestServer) HasOutputEOF() bool        { return true }
+func (s *epochOrderTestServer) DirectOutputActive() bool { return true }
+func (s *epochOrderTestServer) EnableDirectOutput() bool { return false }
+func (s *epochOrderTestServer) HasOutputEOF() bool       { return true }
 
 func (s *epochOrderTestServer) GetOutputChannel() chan []byte { return s.outputLines }
 
@@ -103,7 +102,7 @@ func TestReadFilesCapturesEpochBeforePendingCheck(t *testing.T) {
 	srv := newEpochOrderTestServer()
 	cmd := newReadCommand(srv, omode.CatClient)
 	cmd.readFiles(context.Background(), lcontext.LContext{}, []string{path}, path,
-		regex.NewNoop(), time.Millisecond)
+		regex.NewNoop())
 
 	calls := srv.recordedCalls()
 	wantTail := []string{"OutputEpoch", "PendingAndActive", "FlushOutput", "SignalOutputEOF"}

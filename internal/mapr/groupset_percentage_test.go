@@ -6,9 +6,9 @@ import (
 )
 
 func TestGroupSetResultPercentageAndPercentile(t *testing.T) {
-	query, err := NewQuery("select percentage(value),percentile(value) from stats group by host order by percentage(value)")
-	if err != nil {
-		t.Fatalf("Unable to parse query: %v", err)
+	query, queryErr := NewQuery("select percentage(value),percentile(value) from stats group by host order by percentage(value)")
+	if queryErr != nil {
+		t.Fatalf("Unable to parse query: %v", queryErr)
 	}
 
 	groupSet := NewGroupSet()
@@ -62,18 +62,18 @@ func TestGroupSetResultPercentageAndPercentile(t *testing.T) {
 		valuesByGroup[row.groupKey] = parsedValues
 	}
 
-	assertAlmostEqual(t, valuesByGroup["host-a"][0], 16.6666666667, 0.0001, "host-a percentage")
-	assertAlmostEqual(t, valuesByGroup["host-a"][1], 33.3333333333, 0.0001, "host-a percentile")
-	assertAlmostEqual(t, valuesByGroup["host-b"][0], 50.0, 0.0001, "host-b percentage")
-	assertAlmostEqual(t, valuesByGroup["host-b"][1], 100.0, 0.0001, "host-b percentile")
-	assertAlmostEqual(t, valuesByGroup["host-c"][0], 33.3333333333, 0.0001, "host-c percentage")
-	assertAlmostEqual(t, valuesByGroup["host-c"][1], 66.6666666667, 0.0001, "host-c percentile")
+	assertAlmostEqual(t, valuesByGroup["host-a"][0], 16.6666666667, "host-a percentage")
+	assertAlmostEqual(t, valuesByGroup["host-a"][1], 33.3333333333, "host-a percentile")
+	assertAlmostEqual(t, valuesByGroup["host-b"][0], 50.0, "host-b percentage")
+	assertAlmostEqual(t, valuesByGroup["host-b"][1], 100.0, "host-b percentile")
+	assertAlmostEqual(t, valuesByGroup["host-c"][0], 33.3333333333, "host-c percentage")
+	assertAlmostEqual(t, valuesByGroup["host-c"][1], 66.6666666667, "host-c percentile")
 }
 
 func TestGroupSetPercentageReturnsZeroWhenTotalIsZero(t *testing.T) {
-	query, err := NewQuery("select percentage(value) from stats group by host")
-	if err != nil {
-		t.Fatalf("Unable to parse query: %v", err)
+	query, queryErr := NewQuery("select percentage(value) from stats group by host")
+	if queryErr != nil {
+		t.Fatalf("Unable to parse query: %v", queryErr)
 	}
 
 	groupSet := NewGroupSet()
@@ -99,7 +99,7 @@ func TestGroupSetPercentageReturnsZeroWhenTotalIsZero(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Unable to parse percentage result %q: %v", row.values[0], err)
 		}
-		assertAlmostEqual(t, value, 0.0, 0.0001, row.groupKey+" percentage")
+		assertAlmostEqual(t, value, 0.0, row.groupKey+" percentage")
 	}
 }
 
@@ -120,18 +120,19 @@ func TestPercentileRank(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertAlmostEqual(t, percentileRank(tt.value, sortedValues), tt.expected, 0.0001, tt.name)
+			assertAlmostEqual(t, percentileRank(tt.value, sortedValues), tt.expected, tt.name)
 		})
 	}
 
-	assertAlmostEqual(t, percentileRank(10, []float64{10, 10, 30}), 66.6666666667, 0.0001, "duplicate percentile rank")
+	assertAlmostEqual(t, percentileRank(10, []float64{10, 10, 30}), 66.6666666667, "duplicate percentile rank")
 	if got := percentileRank(10, nil); got != 0 {
 		t.Fatalf("Expected empty percentile input to return 0, got %f", got)
 	}
 }
 
-func assertAlmostEqual(t *testing.T, got, expected, tolerance float64, label string) {
+func assertAlmostEqual(t *testing.T, got, expected float64, label string) {
 	t.Helper()
+	const tolerance = 0.0001
 
 	diff := got - expected
 	if diff < 0 {

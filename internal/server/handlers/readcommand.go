@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/ctxutil"
@@ -23,6 +22,7 @@ import (
 
 type readCommand struct {
 	server              readCommandServer
+	aggregate           *server.Aggregate
 	mode                omode.Mode
 	generation          uint64
 	shutdownCoordinator *shutdownCoordinator
@@ -37,14 +37,19 @@ type readProcessor interface {
 }
 
 func newReadCommand(server readCommandServer, mode omode.Mode) *readCommand {
+	return newReadCommandWithAggregate(server, mode, server.Aggregate())
+}
+
+func newReadCommandWithAggregate(server readCommandServer, mode omode.Mode, aggregate *server.Aggregate) *readCommand {
 	// cat/grep reads are one-shot: their input is exhausted once every file
 	// has been read to EOF. tail follows its files indefinitely, so its input
 	// never exhausts and must not finish a output aggregate.
 	oneShotInput := mode == omode.CatClient || mode == omode.GrepClient
 	return &readCommand{
 		server:              server,
+		aggregate:           aggregate,
 		mode:                mode,
-		shutdownCoordinator: newShutdownCoordinator(server, oneShotInput),
+		shutdownCoordinator: newShutdownCoordinator(server, oneShotInput, aggregate),
 	}
 }
 
@@ -113,7 +118,7 @@ func (r *readCommand) readPipe(ctx context.Context, ltx lcontext.LContext, re re
 func (r *readCommand) readJournal(ctx context.Context, ltx lcontext.LContext,
 	spec string, re regex.Regex, _ int) {
 
-	r.readFiles(ctx, ltx, []string{spec}, spec, re, r.server.ReadGlobRetryInterval())
+	r.readFiles(ctx, ltx, []string{spec}, spec, re)
 }
 
 func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
@@ -160,17 +165,16 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 			paths = paths[:cap]
 		}
 
-		r.readFiles(ctx, ltx, paths, glob, re, retryInterval)
+		r.readFiles(ctx, ltx, paths, glob, re)
 		return
 	}
 
 	r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(),
 		"Giving up to read file(s)"))
-	return
 }
 
 func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
-	paths []string, glob string, re regex.Regex, retryInterval time.Duration) {
+	paths []string, glob string, re regex.Regex) {
 
 	dlog.Server.Info(r.server.LogContext(), "Processing files", "count", len(paths), "glob", glob)
 
@@ -314,17 +318,18 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 
 	switch r.mode {
 	case omode.GrepClient, omode.CatClient:
-		if target != nil && target.Kind == fs.JournalKind {
+		switch {
+		case target != nil && target.Kind == fs.JournalKind:
 			journalReader, err := journal.NewReader(journalArgs(path), path, false, serverMessages)
 			if err != nil {
 				r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(), "Unable to read journal", err))
 				return
 			}
 			reader = journalReader
-		} else if target != nil {
+		case target != nil:
 			catFile := fs.NewValidatedCatFile(path, *target, globID, serverMessages, r.server.MaxLineLength())
 			reader = &catFile
-		} else {
+		default:
 			catFile := fs.NewCatFile(path, globID, serverMessages, r.server.MaxLineLength())
 			reader = &catFile
 		}
@@ -332,17 +337,18 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	case omode.TailClient:
 		fallthrough
 	default:
-		if target != nil && target.Kind == fs.JournalKind {
+		switch {
+		case target != nil && target.Kind == fs.JournalKind:
 			journalReader, err := journal.NewReader(journalArgs(path), path, true, serverMessages)
 			if err != nil {
 				r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(), "Unable to read journal", err))
 				return
 			}
 			reader = journalReader
-		} else if target != nil {
+		case target != nil:
 			tailFile := fs.NewValidatedTailFile(path, *target, globID, serverMessages, r.server.MaxLineLength())
 			reader = &tailFile
-		} else {
+		default:
 			tailFile := fs.NewTailFile(path, globID, serverMessages, r.server.MaxLineLength())
 			reader = &tailFile
 		}
@@ -390,8 +396,8 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	// serverless MapReduce migrated to the output aggregate (tasks sv0/hv0), so
 	// there is no non-output path left here.
 	dlog.Server.Debug(r.server.LogContext(), "Selecting read mode",
-		"mode", r.mode, "hasAggregate", r.server.Aggregate() != nil)
-	dlog.Server.Info(r.server.LogContext(), "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.server.Aggregate() != nil)
+		"mode", r.mode, "hasAggregate", r.aggregate != nil)
+	dlog.Server.Info(r.server.LogContext(), "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
 	r.readWithProcessor(ctx, ltx, path, globID, re, reader)
 }
 
@@ -540,7 +546,7 @@ func (payloadFileTeeWriter) Write(p []byte) (int, error) {
 }
 
 func (r *readCommand) makeProcessor(path, globID string, writer LineWriter) readProcessor {
-	if aggregate := r.server.Aggregate(); aggregate != nil {
+	if aggregate := r.aggregate; aggregate != nil {
 		dlog.Server.Info(r.server.LogContext(), "Using turbo aggregate processor for MapReduce", path, globID)
 		return server.NewAggregateProcessor(aggregate, globID)
 	}

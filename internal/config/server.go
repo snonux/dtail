@@ -168,7 +168,7 @@ func (c *ServerConfig) UserPermissions(userName string) (permissions []string, e
 		permissions = p
 	}
 	if len(permissions) == 0 {
-		err = errors.New("Empty set of permission, user won't be able to open any files")
+		err = errors.New("empty set of permission, user won't be able to open any files")
 	}
 	return
 }

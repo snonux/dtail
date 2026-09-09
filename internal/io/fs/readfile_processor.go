@@ -84,14 +84,14 @@ func (f *readFile) readWithProcessor(ctx context.Context, fd *os.File, reader *b
 	}
 
 	for {
-		b, err := reader.ReadByte()
-		if err != nil {
+		b, readErr := reader.ReadByte()
+		if readErr != nil {
 			// handleReadErrorProcessor may hand `message` to ProcessFilteredLine
 			// (which takes ownership); in that case it sets *messagePtr = nil so
 			// the caller's defer does not recycle an already-recycled buffer.
-			status, err := f.handleReadErrorProcessor(ctx, err, fd, truncate, &message, filterProcessor)
+			status, handleErr := f.handleReadErrorProcessor(ctx, readErr, fd, truncate, &message, filterProcessor)
 			if abortReading == status {
-				return err
+				return handleErr
 			}
 			if !ctxutil.Sleep(ctx, 100*time.Millisecond) {
 				return nil
@@ -156,7 +156,7 @@ func (f *readFile) handleReadByteProcessor(ctx context.Context, b byte,
 func (f *readFile) handleReadErrorProcessor(ctx context.Context, err error, fd *os.File,
 	truncate <-chan struct{}, messagePtr **bytes.Buffer, processor *filteringProcessor) (readStatus, error) {
 
-	if err != io.EOF {
+	if !errors.Is(err, io.EOF) {
 		return abortReading, err
 	}
 

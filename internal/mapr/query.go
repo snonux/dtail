@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	invalidQuery  string = "Invalid query: "
-	unexpectedEnd string = "Unexpected end of query"
+	invalidQuery  string = "invalid query: "
+	unexpectedEnd string = "unexpected end of query"
 )
 
 // Outfile represents the output file of a mapreduce query.

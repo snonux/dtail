@@ -19,7 +19,7 @@ func TestSafeAggregateSetConcurrency(t *testing.T) {
 
 	// Launch concurrent goroutines
 	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
+		go func() {
 			defer wg.Done()
 
 			for j := 0; j < opsPerGoroutine; j++ {
@@ -56,7 +56,7 @@ func TestSafeAggregateSetConcurrency(t *testing.T) {
 				// Increment samples
 				safeSet.IncrementSamples()
 			}
-		}(i)
+		}()
 	}
 
 	// Wait for all goroutines to complete

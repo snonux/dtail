@@ -22,7 +22,7 @@ type Info struct {
 	Size    int64
 }
 
-func runAnalyze(cfg *Config) error {
+func runAnalyze() error {
 	args := flag.Args()
 	if len(args) == 0 {
 		return fmt.Errorf("no profile file specified")
@@ -41,7 +41,7 @@ func runAnalyze(cfg *Config) error {
 	}
 
 	// Default to text analysis
-	return analyzeProfile(profilePath, args[1:]...)
+	return analyzeProfile(profilePath)
 }
 
 func listProfiles(cfg *Config) error {
@@ -129,7 +129,7 @@ func findProfiles(dir string) ([]Info, error) {
 	return profiles, nil
 }
 
-func analyzeProfile(profilePath string, args ...string) error {
+func analyzeProfile(profilePath string) error {
 	// Detect profile type
 	isMemProfile := strings.Contains(profilePath, "_mem_") || strings.Contains(profilePath, "_alloc_")
 

@@ -113,7 +113,7 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	// Check for scanner errors
 	if err := scanner.Err(); err != nil {
 		// Handle EOF specially for tailing
-		if err == io.EOF && f.seekEOF {
+		if errors.Is(err, io.EOF) && f.seekEOF {
 			// For tail mode, we want to keep reading
 			return nil
 		}
@@ -139,53 +139,7 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 // downstream failure (e.g. an ssh channel Write after the peer closed), which we
 // deliberately do NOT want to mistake for a clean early stop.
 func isEarlyStop(err error) bool {
-	return err == io.EOF
-}
-
-// scanLinesPreserveEndings is a custom split function that preserves original line endings
-// and respects MaxLineLength
-func (f *readFile) scanLinesPreserveEndings(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 {
-		return 0, nil, nil
-	}
-
-	maxLineLen := f.lineLimit()
-
-	// Look for a newline
-	if i := bytes.IndexByte(data, '\n'); i >= 0 {
-		// Check if the line before the newline exceeds max length
-		if i > maxLineLen {
-			// Line is too long, split it silently at maxLineLen
-			return maxLineLen, data[0:maxLineLen], nil
-		}
-
-		// Line is within limit, include the line ending in the token
-		// Check if there's a \r before the \n
-		if i > 0 && data[i-1] == '\r' {
-			// Windows line ending (\r\n) - include both in token
-			return i + 1, data[0 : i+1], nil
-		}
-		// Unix line ending (\n) - include it in token
-		return i + 1, data[0 : i+1], nil
-	}
-
-	// If we're at EOF, we have a final, non-terminated line
-	if atEOF {
-		if len(data) > maxLineLen {
-			// Even at EOF, respect max line length (split silently)
-			return maxLineLen, data[0:maxLineLen], nil
-		}
-		return len(data), data, nil
-	}
-
-	// If the line is too long, split it
-	if len(data) >= maxLineLen {
-		// Return a chunk up to MaxLineLength (split silently)
-		return maxLineLen, data[0:maxLineLen], nil
-	}
-
-	// Request more data
-	return 0, nil, nil
+	return err == io.EOF //nolint:errorlint // Wrapped EOF is a downstream write failure, not the private early-stop sentinel.
 }
 
 // scanLinesWithMaxLength is a custom split function for bufio.Scanner that respects MaxLineLength.
@@ -330,7 +284,7 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	for {
 		// Read available data using pooled buffer
 		buf := (*bufPtr)[:cap(*bufPtr)] // Reset to full capacity
-		n, err := reader.Read(buf)
+		n, readErr := reader.Read(buf)
 
 		if n > 0 {
 			// Process the data we read
@@ -347,13 +301,13 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 
 					// Process the line if it's not empty
 					if partialLine.Len() > 0 {
-						if err := processPartialLine(); err != nil {
+						if processErr := processPartialLine(); processErr != nil {
 							// Max-count early stop is a clean stop, not an error
 							// (see isEarlyStop); mirror the byte-by-byte path.
-							if isEarlyStop(err) {
+							if isEarlyStop(processErr) {
 								return nil
 							}
-							return err
+							return processErr
 						}
 					}
 
@@ -373,11 +327,11 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 						}
 
 						// Process the partial line
-						if err := processPartialLine(); err != nil {
-							if isEarlyStop(err) {
+						if processErr := processPartialLine(); processErr != nil {
+							if isEarlyStop(processErr) {
 								return nil
 							}
-							return err
+							return processErr
 						}
 
 						partialLine.Reset()
@@ -388,15 +342,15 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 			}
 
 			// Flush processor periodically
-			if err := processor.Flush(); err != nil {
-				return err
+			if flushErr := processor.Flush(); flushErr != nil {
+				return flushErr
 			}
 		}
 
 		// Handle read errors
-		if err != nil {
-			if err != io.EOF {
-				return err
+		if readErr != nil {
+			if readErr != io.EOF {
+				return readErr
 			}
 
 			waitForMoreData := true

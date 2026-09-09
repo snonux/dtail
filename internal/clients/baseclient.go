@@ -61,27 +61,27 @@ type baseClient struct {
 }
 
 func (c *baseClient) init() error {
-	dlog.Client.Debug("Initiating base client", c.Args.String())
+	dlog.Client.Debug("Initiating base client", c.String())
 	if c.runtime == nil {
 		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime())
 	}
 
 	flag := regex.Default
-	if c.Args.RegexInvert {
+	if c.RegexInvert {
 		flag = regex.Invert
 	}
-	compiledRegex, err := regex.New(c.Args.RegexStr, flag)
+	compiledRegex, err := regex.New(c.RegexStr, flag)
 	if err != nil {
-		return fmt.Errorf("compile regular expression %q: %w", c.Args.RegexStr, err)
+		return fmt.Errorf("compile regular expression %q: %w", c.RegexStr, err)
 	}
 	c.Regex = compiledRegex
 
-	if c.Args.Serverless {
+	if c.Serverless {
 		return nil
 	}
 	sshAuthMethods, hostKeyCallback, authCloser, err := client.InitSSHAuthMethods(
-		c.Args.SSHAuthMethods, c.Args.SSHHostKeyCallback, c.Args.TrustAllHosts,
-		c.Args.SSHPrivateKeyFilePath, c.Args.SSHAgentKeyIndex)
+		c.SSHAuthMethods, c.SSHHostKeyCallback, c.TrustAllHosts,
+		c.SSHPrivateKeyFilePath, c.SSHAgentKeyIndex)
 	if err != nil {
 		return fmt.Errorf("initialize SSH authentication: %w", err)
 	}
@@ -147,7 +147,7 @@ func (c *baseClient) makeConnections(maker maker) error {
 }
 
 func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
-	if c.Args.InteractiveQuery {
+	if c.InteractiveQuery {
 		return c.startInteractiveControl(ctx, statsCh)
 	}
 	return c.runConnections(ctx, statsCh)
@@ -170,7 +170,7 @@ func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) 
 		go c.hostKeyCallback.PromptAddHosts(ctx)
 	}
 	// Print client stats every time something on statsCh is received.
-	go c.stats.Start(ctx, c.throttleCh, statsCh, c.Args.Quiet)
+	go c.stats.Start(ctx, c.throttleCh, statsCh, c.Quiet)
 
 	var wg sync.WaitGroup
 	connections := c.snapshotConnections()

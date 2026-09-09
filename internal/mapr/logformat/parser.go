@@ -12,7 +12,7 @@ import (
 )
 
 // ErrIgnoreFields indicates that the fields should be ignored.
-var ErrIgnoreFields error = errors.New("Ignore this field set")
+var ErrIgnoreFields error = errors.New("ignore this field set")
 
 // Parser is used to parse the mapreduce information from the server log files.
 type Parser interface {
@@ -94,23 +94,23 @@ func NewParser(logFormatName string, query *mapr.Query) (Parser, error) {
 	timeZoneName, timeZoneOffset := now.Zone()
 
 	if parserFactory, found := getParserFactory(logFormatName); found {
-		parser, err := parserFactory(hostname, timeZoneName, timeZoneOffset)
-		configureParserQuery(parser, query)
-		return parser, err
+		selectedParser, parserErr := parserFactory(hostname, timeZoneName, timeZoneOffset)
+		configureParserQuery(selectedParser, query)
+		return selectedParser, parserErr
 	}
 
 	defaultFactory, found := getParserFactory("default")
 	if !found {
-		return nil, fmt.Errorf("No '%s' mapr log format and no default parser registered", logFormatName)
+		return nil, fmt.Errorf("no '%s' mapr log format and no default parser registered", logFormatName)
 	}
 
 	p, err := defaultFactory(hostname, timeZoneName, timeZoneOffset)
 	if err != nil {
-		return p, fmt.Errorf("No '%s' mapr log format and problem creating default one: %v",
+		return p, fmt.Errorf("no '%s' mapr log format and problem creating default one: %w",
 			logFormatName, err)
 	}
 	configureParserQuery(p, query)
-	return p, fmt.Errorf("No '%s' mapr log format", logFormatName)
+	return p, fmt.Errorf("no '%s' mapr log format", logFormatName)
 }
 
 func configureParserQuery(parser Parser, query *mapr.Query) {

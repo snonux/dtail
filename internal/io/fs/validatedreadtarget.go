@@ -96,9 +96,9 @@ func (t ValidatedReadTarget) Open() (*os.File, error) {
 		return nil, fmt.Errorf("read target kind %d cannot be opened as a file", t.Kind)
 	}
 
-	root, err := t.rootedPath.OpenRoot()
-	if err != nil {
-		return nil, fmt.Errorf("open root for %s: %w", t.resolvedPath, err)
+	root, rootErr := t.rootedPath.OpenRoot()
+	if rootErr != nil {
+		return nil, fmt.Errorf("open root for %s: %w", t.resolvedPath, rootErr)
 	}
 	defer func() { _ = root.Close() }()
 

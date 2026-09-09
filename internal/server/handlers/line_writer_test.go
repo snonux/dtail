@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"sync/atomic"
@@ -273,7 +274,7 @@ func TestDirectWriter_FlushFailsOnZeroProgress(t *testing.T) {
 
 	if err := w.Flush(); err == nil {
 		t.Fatal("expected Flush to fail on zero-progress writes")
-	} else if err != io.ErrShortWrite {
+	} else if !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("expected io.ErrShortWrite, got %v", err)
 	}
 }
@@ -430,14 +431,12 @@ func TestNetworkWriterWriteLineDataStopsOnCancellation(t *testing.T) {
 	t.Cleanup(cancel)
 
 	writer := &NetworkWriter{
-		outputLines:  outputLines,
-		plain:       true,
-		generation:  1,
-		ctx:         ctx,
-		sendStateCh: make(chan struct{}),
-		activeGeneration: func() uint64 {
-			return activeGeneration.Load()
-		},
+		outputLines:      outputLines,
+		plain:            true,
+		generation:       1,
+		ctx:              ctx,
+		sendStateCh:      make(chan struct{}),
+		activeGeneration: activeGeneration.Load,
 	}
 
 	done := make(chan error, 1)
@@ -445,12 +444,12 @@ func TestNetworkWriterWriteLineDataStopsOnCancellation(t *testing.T) {
 		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
 	}()
 
-	waitForNetworkWriterSending(t, writer, true)
+	waitForNetworkWriterSending(t, writer)
 	cancel()
 
 	select {
 	case err := <-done:
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("WriteLineData returned unexpected error: %v", err)
 		}
 	case <-time.After(150 * time.Millisecond):
@@ -472,14 +471,12 @@ func TestNetworkWriterStopsBlockedSendAfterGenerationAdvance(t *testing.T) {
 	activeGeneration.Store(1)
 
 	writer := &NetworkWriter{
-		outputLines:  outputLines,
-		plain:       true,
-		generation:  1,
-		ctx:         context.Background(),
-		sendStateCh: make(chan struct{}),
-		activeGeneration: func() uint64 {
-			return activeGeneration.Load()
-		},
+		outputLines:      outputLines,
+		plain:            true,
+		generation:       1,
+		ctx:              context.Background(),
+		sendStateCh:      make(chan struct{}),
+		activeGeneration: activeGeneration.Load,
 	}
 
 	done := make(chan error, 1)
@@ -487,7 +484,7 @@ func TestNetworkWriterStopsBlockedSendAfterGenerationAdvance(t *testing.T) {
 		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
 	}()
 
-	waitForNetworkWriterSending(t, writer, true)
+	waitForNetworkWriterSending(t, writer)
 	activeGeneration.Store(2)
 
 	select {
@@ -515,7 +512,7 @@ func TestNetworkWriterStopsBlockedSendAfterGenerationAdvance(t *testing.T) {
 	}
 }
 
-func waitForNetworkWriterSending(t *testing.T, writer *NetworkWriter, want bool) {
+func waitForNetworkWriterSending(t *testing.T, writer *NetworkWriter) {
 	t.Helper()
 
 	deadline := time.After(250 * time.Millisecond)
@@ -524,13 +521,13 @@ func waitForNetworkWriterSending(t *testing.T, writer *NetworkWriter, want bool)
 		got := writer.sending
 		writer.mutex.Unlock()
 
-		if got == want {
+		if got {
 			return
 		}
 
 		select {
 		case <-deadline:
-			t.Fatalf("timed out waiting for sending=%v", want)
+			t.Fatal("timed out waiting for writer to start sending")
 		case <-time.After(time.Millisecond):
 		}
 	}
@@ -553,15 +550,13 @@ func TestNetworkWriterFlushWaitsForBufferedDataAndInFlightSend(t *testing.T) {
 	t.Cleanup(cancel)
 
 	writer := &NetworkWriter{
-		outputLines:  outputLines,
-		plain:       true,
-		generation:  1,
-		ctx:         ctx,
-		bufSize:     8,
-		sendStateCh: make(chan struct{}),
-		activeGeneration: func() uint64 {
-			return activeGeneration.Load()
-		},
+		outputLines:      outputLines,
+		plain:            true,
+		generation:       1,
+		ctx:              ctx,
+		bufSize:          8,
+		sendStateCh:      make(chan struct{}),
+		activeGeneration: activeGeneration.Load,
 	}
 
 	if err := writer.WriteLineData([]byte("first"), 1, "app.log"); err != nil {
@@ -573,7 +568,7 @@ func TestNetworkWriterFlushWaitsForBufferedDataAndInFlightSend(t *testing.T) {
 		writeDone <- writer.WriteLineData([]byte("second"), 2, "app.log")
 	}()
 
-	waitForNetworkWriterSending(t, writer, true)
+	waitForNetworkWriterSending(t, writer)
 
 	if err := writer.WriteLineData([]byte("third"), 3, "app.log"); err != nil {
 		t.Fatalf("third WriteLineData failed: %v", err)
@@ -662,14 +657,12 @@ func TestNetworkWriterStopsWaitingWhenContextIsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	writer := &NetworkWriter{
-		outputLines:  outputLines,
-		plain:       true,
-		generation:  1,
-		ctx:         ctx,
-		sendStateCh: make(chan struct{}),
-		activeGeneration: func() uint64 {
-			return activeGeneration.Load()
-		},
+		outputLines:      outputLines,
+		plain:            true,
+		generation:       1,
+		ctx:              ctx,
+		sendStateCh:      make(chan struct{}),
+		activeGeneration: activeGeneration.Load,
 	}
 
 	done := make(chan error, 1)
@@ -677,12 +670,12 @@ func TestNetworkWriterStopsWaitingWhenContextIsCancelled(t *testing.T) {
 		done <- writer.WriteLineData([]byte("stale line"), 1, "app.log")
 	}()
 
-	waitForNetworkWriterSending(t, writer, true)
+	waitForNetworkWriterSending(t, writer)
 	cancel()
 
 	select {
 	case err := <-done:
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("WriteLineData returned unexpected error: %v", err)
 		}
 	case <-time.After(150 * time.Millisecond):
@@ -722,15 +715,13 @@ func TestNetworkWriterFlushCancelsWhileWaitingOnInFlightSend(t *testing.T) {
 	t.Cleanup(cancel)
 
 	writer := &NetworkWriter{
-		outputLines:  outputLines,
-		plain:       true,
-		generation:  1,
-		ctx:         ctx,
-		bufSize:     8,
-		sendStateCh: make(chan struct{}),
-		activeGeneration: func() uint64 {
-			return activeGeneration.Load()
-		},
+		outputLines:      outputLines,
+		plain:            true,
+		generation:       1,
+		ctx:              ctx,
+		bufSize:          8,
+		sendStateCh:      make(chan struct{}),
+		activeGeneration: activeGeneration.Load,
 	}
 
 	if err := writer.WriteLineData([]byte("first"), 1, "app.log"); err != nil {
@@ -742,7 +733,7 @@ func TestNetworkWriterFlushCancelsWhileWaitingOnInFlightSend(t *testing.T) {
 		writeDone <- writer.WriteLineData([]byte("second"), 2, "app.log")
 	}()
 
-	waitForNetworkWriterSending(t, writer, true)
+	waitForNetworkWriterSending(t, writer)
 
 	flushDone := make(chan error, 1)
 	flushStarted := make(chan struct{})
@@ -779,7 +770,7 @@ func TestNetworkWriterFlushCancelsWhileWaitingOnInFlightSend(t *testing.T) {
 	// acceptable values (guards against a panic or a bogus error).
 	select {
 	case err := <-flushDone:
-		if err != nil && err != context.Canceled {
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("Flush returned unexpected error: %v", err)
 		}
 	case <-time.After(150 * time.Millisecond):
@@ -788,7 +779,7 @@ func TestNetworkWriterFlushCancelsWhileWaitingOnInFlightSend(t *testing.T) {
 
 	select {
 	case err := <-writeDone:
-		if err != context.Canceled {
+		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("WriteLineData returned unexpected error: %v", err)
 		}
 	case <-time.After(150 * time.Millisecond):
@@ -1017,9 +1008,9 @@ func TestNetworkWriter_StatsBytesWrittenBelowThreshold(t *testing.T) {
 	outputLines := make(chan []byte, 1)
 	writer := &NetworkWriter{
 		outputLines: outputLines,
-		plain:      true,
-		ctx:        context.Background(),
-		bufSize:    64 * 1024,
+		plain:       true,
+		ctx:         context.Background(),
+		bufSize:     64 * 1024,
 	}
 
 	const numLines = 10
@@ -1071,9 +1062,9 @@ func TestNetworkWriter_StatsBytesWrittenAcrossFlushThreshold(t *testing.T) {
 	outputLines := make(chan []byte, numLines)
 	writer := &NetworkWriter{
 		outputLines: outputLines,
-		plain:      true,
-		ctx:        context.Background(),
-		bufSize:    32, // Three 11-byte lines accumulate before each send.
+		plain:       true,
+		ctx:         context.Background(),
+		bufSize:     32, // Three 11-byte lines accumulate before each send.
 	}
 
 	content := []byte("0123456789") // 11 bytes with the message delimiter.

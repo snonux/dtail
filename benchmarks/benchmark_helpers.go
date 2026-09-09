@@ -3,6 +3,7 @@ package benchmarks
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -70,11 +71,13 @@ func RunBenchmarkCommand(b *testing.B, cmd string, args ...string) (*CommandResu
 		Error:    err,
 	}
 
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	exitErr := &exec.ExitError{}
+	switch {
+	case errors.As(err, &exitErr):
 		result.ExitCode = exitErr.ExitCode()
-	} else if err == nil {
+	case err == nil:
 		result.ExitCode = 0
-	} else {
+	default:
 		result.ExitCode = -1
 	}
 

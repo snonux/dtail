@@ -67,9 +67,9 @@ func (a *Aggregate) Aggregate(message string) error {
 	}
 
 	groupKey := parts[0]
-	samples, err := strconv.Atoi(parts[1])
-	if err != nil {
-		return fmt.Errorf("unable to parse sample count '%s': %w", parts[1], err)
+	samples, parseErr := strconv.Atoi(parts[1])
+	if parseErr != nil {
+		return fmt.Errorf("unable to parse sample count '%s': %w", parts[1], parseErr)
 	}
 
 	fields := a.makeFields(parts[2:])
@@ -78,8 +78,8 @@ func (a *Aggregate) Aggregate(message string) error {
 
 	for _, sc := range snapshot.Query.Select {
 		if val, ok := fields[sc.FieldStorage]; ok {
-			if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, true); err != nil {
-				dlog.Client.Error(err)
+			if aggregateErr := set.Aggregate(sc.FieldStorage, sc.Operation, val, true); aggregateErr != nil {
+				dlog.Client.Error(aggregateErr)
 				continue
 			}
 			addedSamples = true

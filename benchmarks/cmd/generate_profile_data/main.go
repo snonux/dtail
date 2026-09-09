@@ -51,13 +51,14 @@ func parseSize(size string) (int64, error) {
 	size = strings.ToUpper(size)
 	multiplier := int64(1)
 
-	if strings.HasSuffix(size, "GB") {
+	switch {
+	case strings.HasSuffix(size, "GB"):
 		multiplier = 1024 * 1024 * 1024
 		size = strings.TrimSuffix(size, "GB")
-	} else if strings.HasSuffix(size, "MB") {
+	case strings.HasSuffix(size, "MB"):
 		multiplier = 1024 * 1024
 		size = strings.TrimSuffix(size, "MB")
-	} else if strings.HasSuffix(size, "KB") {
+	case strings.HasSuffix(size, "KB"):
 		multiplier = 1024
 		size = strings.TrimSuffix(size, "KB")
 	}
@@ -118,7 +119,7 @@ func generateLogFile(filename string, targetSize int64) (resultErr error) {
 
 		// Add some variety with stack traces for errors
 		if level == "ERROR" && rand.Float32() < 0.3 {
-			stackTrace := fmt.Sprintf("  Stack trace:\n    at function1() file1.go:123\n    at function2() file2.go:456\n    at main() main.go:789\n")
+			stackTrace := "  Stack trace:\n    at function1() file1.go:123\n    at function2() file2.go:456\n    at main() main.go:789\n"
 			n, err := f.WriteString(stackTrace)
 			if err != nil {
 				return fmt.Errorf("write stack trace: %w", err)

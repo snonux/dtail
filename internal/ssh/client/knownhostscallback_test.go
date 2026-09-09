@@ -23,7 +23,7 @@ func TestTrustHostsAppendsDistinctExistingEntries(t *testing.T) {
 	}
 
 	callback := testKnownHostsCallback(t, knownHostsPath)
-	unknown := testUnknownHost("new.example:2222", "127.0.0.1:2222", "new")
+	unknown := testUnknownHost("new.example:2222", "new")
 
 	if err := callback.trustHosts([]unknownHost{unknown}); err != nil {
 		t.Fatalf("trustHosts failed: %v", err)
@@ -44,14 +44,14 @@ func TestTrustHostsAppendsDistinctExistingEntries(t *testing.T) {
 		t.Fatalf("trustHosts wrote:\n%s\nwant:\n%s", got, want)
 	}
 
-	if response := <-unknown.responseCh; response != trustHost {
-		t.Fatalf("unexpected trust response: %v", response)
+	if trustResponse := <-unknown.responseCh; trustResponse != trustHost {
+		t.Fatalf("unexpected trust response: %v", trustResponse)
 	}
 }
 
 func TestTrustHostsReplacesExistingEntriesForSameHostAndIP(t *testing.T) {
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	oldUnknown := testUnknownHost("replace.example:2222", "127.0.0.1:2222", "old")
+	oldUnknown := testUnknownHost("replace.example:2222", "old")
 	keepLine := knownhosts.Line([]string{"keep.example:2222"}, &mockPublicKey{id: "keep"})
 	initialContents := strings.Join([]string{
 		oldUnknown.hostLine,
@@ -64,7 +64,7 @@ func TestTrustHostsReplacesExistingEntriesForSameHostAndIP(t *testing.T) {
 	}
 
 	callback := testKnownHostsCallback(t, knownHostsPath)
-	newUnknown := testUnknownHost("replace.example:2222", "127.0.0.1:2222", "new")
+	newUnknown := testUnknownHost("replace.example:2222", "new")
 
 	if err := callback.trustHosts([]unknownHost{newUnknown}); err != nil {
 		t.Fatalf("trustHosts failed: %v", err)
@@ -85,8 +85,8 @@ func TestTrustHostsReplacesExistingEntriesForSameHostAndIP(t *testing.T) {
 		t.Fatalf("trustHosts wrote:\n%s\nwant:\n%s", got, want)
 	}
 
-	if response := <-newUnknown.responseCh; response != trustHost {
-		t.Fatalf("unexpected trust response: %v", response)
+	if trustResponse := <-newUnknown.responseCh; trustResponse != trustHost {
+		t.Fatalf("unexpected trust response: %v", trustResponse)
 	}
 }
 
@@ -107,7 +107,7 @@ func TestTrustHostsRejectsEscapingKnownHostsSymlink(t *testing.T) {
 	}
 
 	callback := testKnownHostsCallback(t, knownHostsPath)
-	unknown := testUnknownHost("escape.example:2222", "127.0.0.1:2222", "new")
+	unknown := testUnknownHost("escape.example:2222", "new")
 
 	if err := callback.trustHosts([]unknownHost{unknown}); err == nil {
 		t.Fatalf("trustHosts succeeded for escaping known_hosts symlink")
@@ -276,9 +276,9 @@ func testKnownHostsCallback(t *testing.T, knownHostsPath string) *KnownHostsCall
 	return knownHostsCallback
 }
 
-func testUnknownHost(server, remoteAddr, keyID string) unknownHost {
+func testUnknownHost(server, keyID string) unknownHost {
 	key := &mockPublicKey{id: keyID}
-	remote := testTCPAddr(remoteAddr)
+	remote := testTCPAddr("127.0.0.1:2222")
 
 	return unknownHost{
 		server:     server,

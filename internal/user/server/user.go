@@ -174,7 +174,7 @@ func (u *User) iteratePaths(cleanPath, permissionType string) (bool, error) {
 
 		re, err := regexp.Compile(regexStr)
 		if err != nil {
-			return false, fmt.Errorf("Permission test failed, can't compile regex "+
+			return false, fmt.Errorf("permission test failed, can't compile regex "+
 				"'%s': %w", regexStr, err)
 		}
 

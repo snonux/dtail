@@ -185,44 +185,44 @@ func parseServerAddress(address string, defaultPort int) (string, int, error) {
 			return hostname, defaultPort, nil
 		}
 
-		hostname, portText, err := net.SplitHostPort(address)
-		if err != nil {
-			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		hostname, portText, splitErr := net.SplitHostPort(address)
+		if splitErr != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, splitErr)
 		}
-		if err := validateIPv6Host(hostname); err != nil {
-			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		if validateErr := validateIPv6Host(hostname); validateErr != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, validateErr)
 		}
-		port, err := parseServerPort(address, portText)
-		if err != nil {
-			return "", 0, err
+		port, portErr := parseServerPort(address, portText)
+		if portErr != nil {
+			return "", 0, portErr
 		}
 		return hostname, port, nil
 	}
 
 	if strings.Count(address, ":") > 1 {
-		if err := validateIPv6Host(address); err != nil {
-			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		if validateErr := validateIPv6Host(address); validateErr != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, validateErr)
 		}
 		return address, defaultPort, nil
 	}
 
 	if strings.Contains(address, ":") {
-		hostname, portText, err := net.SplitHostPort(address)
-		if err != nil {
-			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		hostname, portText, splitErr := net.SplitHostPort(address)
+		if splitErr != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, splitErr)
 		}
-		if err := validateServerHost(hostname); err != nil {
-			return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+		if validateErr := validateServerHost(hostname); validateErr != nil {
+			return "", 0, fmt.Errorf("parse server address %q: %w", address, validateErr)
 		}
-		port, err := parseServerPort(address, portText)
-		if err != nil {
-			return "", 0, err
+		port, portErr := parseServerPort(address, portText)
+		if portErr != nil {
+			return "", 0, portErr
 		}
 		return hostname, port, nil
 	}
 
-	if err := validateServerHost(address); err != nil {
-		return "", 0, fmt.Errorf("parse server address %q: %w", address, err)
+	if validateErr := validateServerHost(address); validateErr != nil {
+		return "", 0, fmt.Errorf("parse server address %q: %w", address, validateErr)
 	}
 	return address, defaultPort, nil
 }
@@ -336,8 +336,8 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 		return preferContextError(ctx, fmt.Errorf("failed to dial TCP connection to %s: %w", address, err))
 	}
 	stopContextClose := context.AfterFunc(ctx, func() {
-		if err := conn.Close(); err != nil {
-			dlog.Client.Trace(err)
+		if closeErr := conn.Close(); closeErr != nil {
+			dlog.Client.Trace(closeErr)
 		}
 	})
 	defer stopContextClose()

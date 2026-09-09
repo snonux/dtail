@@ -6,7 +6,7 @@ const legacyIntegrationSSHPrivateKeyPath = "./id_rsa"
 
 // Env returns true when a given environment variable is set to "yes".
 func Env(env string) bool {
-	return "yes" == os.Getenv(env)
+	return os.Getenv(env) == "yes"
 }
 
 // IntegrationSSHPrivateKeyPath returns the private key used to bootstrap

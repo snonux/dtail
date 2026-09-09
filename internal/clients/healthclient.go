@@ -43,7 +43,7 @@ func (c HealthClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewHealthHandler(server)
 }
 
-func (c HealthClient) makeSessionSpec() (SessionSpec, error) {
+func (c HealthClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
 	return NewSessionSpec(c.Args), nil
 }
 

@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -170,18 +171,18 @@ func (a *Aggregate) countGroups() int {
 
 // Shutdown the aggregation engine.
 func (a *Aggregate) Shutdown() {
-	a.shutdown(nil)
+	a.shutdown(context.Background(), false)
 }
 
 // ShutdownContext finalizes the aggregation while output remains writable.
 // Canceling ctx abandons blocked final sends promptly; the unsent snapshot is
 // re-merged before shutdown completes so cancellation never corrupts state.
 func (a *Aggregate) ShutdownContext(ctx context.Context) {
-	a.shutdown(ctx)
+	a.shutdown(ctx, true)
 }
 
-func (a *Aggregate) shutdown(outputCtx context.Context) {
-	finalizationCtx, finalizationCancelable, ok := a.claimFinalization(outputCtx)
+func (a *Aggregate) shutdown(outputCtx context.Context, outputCancelable bool) {
+	finalizationCtx, finalizationCancelable, ok := a.claimFinalization(outputCtx, outputCancelable)
 	if !ok {
 		return
 	}
@@ -208,7 +209,7 @@ func (a *Aggregate) shutdown(outputCtx context.Context) {
 // Claiming first keeps Start from returning and letting its caller close the
 // result channel while a concurrent graceful shutdown serializes the last batch.
 func (a *Aggregate) PrepareShutdown() {
-	a.claimFinalization(nil)
+	a.claimFinalization(context.Background(), false)
 }
 
 // PrepareShutdownContext claims final serialization and binds the output
@@ -216,7 +217,7 @@ func (a *Aggregate) PrepareShutdown() {
 // canceling command work so Start cannot wake first and choose an
 // context-insensitive final drain.
 func (a *Aggregate) PrepareShutdownContext(ctx context.Context) {
-	a.claimFinalization(ctx)
+	a.claimFinalization(ctx, true)
 }
 
 // Abort requests output-free termination and stops background processing
@@ -331,17 +332,19 @@ func (a *Aggregate) PrepareOutput(maprMessages chan<- string) {
 // claimFinalization makes graceful final output the aggregate's terminal
 // outcome. Abort and finalization race through this single state transition,
 // so only one can win. Repeated Shutdown calls join the same finalization.
-func (a *Aggregate) claimFinalization(outputCtx context.Context) (context.Context, bool, bool) {
+func (a *Aggregate) claimFinalization(outputCtx context.Context, outputCancelable bool) (context.Context, bool, bool) {
+	if outputCtx == nil {
+		outputCtx = context.Background()
+		outputCancelable = false
+	}
+
 	a.terminalMu.Lock()
 	defer a.terminalMu.Unlock()
 
 	switch a.terminalState {
 	case aggregateRunning:
 		a.terminalState = aggregateFinalizing
-		a.finalizationCancelable = outputCtx != nil
-		if outputCtx == nil {
-			outputCtx = context.Background()
-		}
+		a.finalizationCancelable = outputCancelable
 		a.finalizationCtx = outputCtx
 		return a.finalizationCtx, a.finalizationCancelable, true
 	case aggregateFinalizing:
@@ -435,7 +438,7 @@ func (a *Aggregate) processLine(lineContent *bytes.Buffer, sourceID string) erro
 	maprLine := strings.TrimSpace(lineContent.String())
 	parsedFields, err := a.parser.MakeFields(maprLine, sourceID)
 	if err != nil {
-		if err != logformat.ErrIgnoreFields {
+		if !errors.Is(err, logformat.ErrIgnoreFields) {
 			return err
 		}
 		return nil

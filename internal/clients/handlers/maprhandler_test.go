@@ -18,9 +18,9 @@ import (
 )
 
 func TestMaprHandlerShutdownFlushesPendingAggregateState(t *testing.T) {
-	query, err := mapr.NewQuery("select status,count(status) from stats group by status")
-	if err != nil {
-		t.Fatalf("NewQuery() error = %v", err)
+	query, queryErr := mapr.NewQuery("select status,count(status) from stats group by status")
+	if queryErr != nil {
+		t.Fatalf("NewQuery() error = %v", queryErr)
 	}
 
 	session := maprclient.NewSessionState(query)
@@ -58,9 +58,9 @@ func TestMaprHandlerWriteEmptyMessageBetweenDelimiters(t *testing.T) {
 		dlog.Client = originalLogger
 	})
 
-	query, err := mapr.NewQuery("select status,count(status) from stats group by status")
-	if err != nil {
-		t.Fatalf("NewQuery() error = %v", err)
+	query, queryErr := mapr.NewQuery("select status,count(status) from stats group by status")
+	if queryErr != nil {
+		t.Fatalf("NewQuery() error = %v", queryErr)
 	}
 
 	session := maprclient.NewSessionState(query)
@@ -185,8 +185,8 @@ func TestMaprHandlerWriteAuthKeyAckEmitsNoAggregateError(t *testing.T) {
 	input = append(input, protocol.MessageDelimiter)
 
 	logOutput := captureStdout(t, func() {
-		if _, err := handler.Write(input); err != nil {
-			t.Fatalf("Write() error = %v", err)
+		if _, writeErr := handler.Write(input); writeErr != nil {
+			t.Fatalf("Write() error = %v", writeErr)
 		}
 		handler.Shutdown()
 	})

@@ -45,7 +45,7 @@ func Run() error {
 	case "dmap":
 		return runDMapProfile(cfg)
 	case "analyze":
-		return runAnalyze(cfg)
+		return runAnalyze()
 	case "list":
 		return listProfiles(cfg)
 	default:
@@ -149,16 +149,17 @@ func runFullProfile(cfg *Config) error {
 	common.PrintInfo("Generating test data...\n")
 	for filename, size := range testFiles {
 		fullPath := filepath.Join(cfg.TestDataDir, filename)
-		if filename == "dtail_format.log" {
+		switch {
+		case filename == "dtail_format.log":
 			lines := 100000
 			if err := gen.GenerateLogFileWithLines(fullPath, lines, common.FormatDTail); err != nil {
 				return fmt.Errorf("failed to generate %s: %w", filename, err)
 			}
-		} else if strings.HasSuffix(filename, ".csv") {
+		case strings.HasSuffix(filename, ".csv"):
 			if err := gen.GenerateFile(fullPath, size, common.FormatCSV); err != nil {
 				return fmt.Errorf("failed to generate %s: %w", filename, err)
 			}
-		} else {
+		default:
 			if err := gen.GenerateFile(fullPath, size, common.FormatLog); err != nil {
 				return fmt.Errorf("failed to generate %s: %w", filename, err)
 			}

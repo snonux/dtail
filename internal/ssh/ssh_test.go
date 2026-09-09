@@ -14,9 +14,9 @@ import (
 
 func TestPrivateKeySignerLoadsUnencryptedKey(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "id_rsa")
-	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
+	privateKey, keyErr := rsa.GenerateKey(rand.Reader, 1024)
+	if keyErr != nil {
+		t.Fatalf("GenerateKey failed: %v", keyErr)
 	}
 
 	if err := os.WriteFile(keyFile, EncodePrivateKeyToPEM(privateKey), 0o600); err != nil {
@@ -34,14 +34,14 @@ func TestPrivateKeySignerLoadsUnencryptedKey(t *testing.T) {
 
 func TestPrivateKeySignerLoadsEncryptedKeyWithEnvPassphrase(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "id_rsa")
-	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
+	privateKey, keyErr := rsa.GenerateKey(rand.Reader, 1024)
+	if keyErr != nil {
+		t.Fatalf("GenerateKey failed: %v", keyErr)
 	}
 
-	block, err := gossh.MarshalPrivateKeyWithPassphrase(privateKey, "", []byte("secret-passphrase"))
-	if err != nil {
-		t.Fatalf("MarshalPrivateKeyWithPassphrase failed: %v", err)
+	block, marshalErr := gossh.MarshalPrivateKeyWithPassphrase(privateKey, "", []byte("secret-passphrase"))
+	if marshalErr != nil {
+		t.Fatalf("MarshalPrivateKeyWithPassphrase failed: %v", marshalErr)
 	}
 	if err := os.WriteFile(keyFile, pem.EncodeToMemory(block), 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -60,20 +60,20 @@ func TestPrivateKeySignerLoadsEncryptedKeyWithEnvPassphrase(t *testing.T) {
 
 func TestPrivateKeySignerReturnsPassphraseMissingWithoutEnv(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "id_rsa")
-	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
+	privateKey, keyErr := rsa.GenerateKey(rand.Reader, 1024)
+	if keyErr != nil {
+		t.Fatalf("GenerateKey failed: %v", keyErr)
 	}
 
-	block, err := gossh.MarshalPrivateKeyWithPassphrase(privateKey, "", []byte("secret-passphrase"))
-	if err != nil {
-		t.Fatalf("MarshalPrivateKeyWithPassphrase failed: %v", err)
+	block, marshalErr := gossh.MarshalPrivateKeyWithPassphrase(privateKey, "", []byte("secret-passphrase"))
+	if marshalErr != nil {
+		t.Fatalf("MarshalPrivateKeyWithPassphrase failed: %v", marshalErr)
 	}
 	if err := os.WriteFile(keyFile, pem.EncodeToMemory(block), 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	_, err = PrivateKeySigner(keyFile)
+	_, err := PrivateKeySigner(keyFile)
 	if err == nil {
 		t.Fatalf("PrivateKeySigner succeeded without passphrase env")
 	}
@@ -86,14 +86,14 @@ func TestPrivateKeySignerReturnsPassphraseMissingWithoutEnv(t *testing.T) {
 
 func TestPrivateKeySignerRejectsIncorrectEnvPassphrase(t *testing.T) {
 	keyFile := filepath.Join(t.TempDir(), "id_rsa")
-	privateKey, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		t.Fatalf("GenerateKey failed: %v", err)
+	privateKey, keyErr := rsa.GenerateKey(rand.Reader, 1024)
+	if keyErr != nil {
+		t.Fatalf("GenerateKey failed: %v", keyErr)
 	}
 
-	block, err := gossh.MarshalPrivateKeyWithPassphrase(privateKey, "", []byte("secret-passphrase"))
-	if err != nil {
-		t.Fatalf("MarshalPrivateKeyWithPassphrase failed: %v", err)
+	block, marshalErr := gossh.MarshalPrivateKeyWithPassphrase(privateKey, "", []byte("secret-passphrase"))
+	if marshalErr != nil {
+		t.Fatalf("MarshalPrivateKeyWithPassphrase failed: %v", marshalErr)
 	}
 	if err := os.WriteFile(keyFile, pem.EncodeToMemory(block), 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -101,7 +101,7 @@ func TestPrivateKeySignerRejectsIncorrectEnvPassphrase(t *testing.T) {
 
 	t.Setenv("DTAIL_KEY_PASSPHRASE", "wrong-passphrase")
 
-	_, err = PrivateKeySigner(keyFile)
+	_, err := PrivateKeySigner(keyFile)
 	if err == nil {
 		t.Fatalf("PrivateKeySigner succeeded with wrong passphrase env")
 	}

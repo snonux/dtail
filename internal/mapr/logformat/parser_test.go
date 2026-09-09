@@ -49,7 +49,7 @@ func TestNewParserFallbackToDefault(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Expected NewParser to return error for missing parser format")
 	}
-	if !strings.Contains(err.Error(), "No 'missing-parser-format' mapr log format") {
+	if !strings.Contains(err.Error(), "no 'missing-parser-format' mapr log format") {
 		t.Errorf("Unexpected error message: %s", err.Error())
 	}
 	if parser == nil {

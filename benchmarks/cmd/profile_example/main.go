@@ -22,7 +22,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("Create test data: %v", err)
 	}
+	csvFile, err := createCSVData()
+	if err != nil {
+		removeGeneratedFile(testFile)
+		log.Fatalf("Create CSV data: %v", err)
+	}
 	defer removeGeneratedFile(testFile)
+	defer removeGeneratedFile(csvFile)
 
 	// Profile dcat
 	fmt.Println("1. Profiling dcat...")
@@ -33,11 +39,6 @@ func main() {
 	profileDGrep(testFile)
 
 	// Profile dmap
-	csvFile, err := createCSVData()
-	if err != nil {
-		log.Fatalf("Create CSV data: %v", err)
-	}
-	defer removeGeneratedFile(csvFile)
 	fmt.Println("\n3. Profiling dmap...")
 	profileDMap(csvFile)
 

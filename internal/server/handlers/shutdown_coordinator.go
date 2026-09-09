@@ -5,26 +5,32 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
+	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 )
 
-// aggregateInputGrace is how long the coordinator waits after observing
-// pendingFiles==0 before re-checking and signaling input-exhausted to the
-// output aggregate. It mirrors the 100ms channel-registration grace of the
-// non-output aggregate (see Aggregate.nextLine): a sibling read command from
-// the same client batch may already be dispatched (activeCommands counted)
-// but not yet registered its files via AddPendingFiles.
+// aggregateInputGrace is the compatibility wait used by transports without a
+// FIFO command-batch boundary. An asynchronously launched sibling read may be
+// admitted but not yet have registered its files via AddPendingFiles.
 const aggregateInputGrace = 100 * time.Millisecond
 
 type shutdownCoordinator struct {
 	server readCommandServer
+	// aggregate is captured when the read command is admitted. An interactive
+	// update may replace the handler's current aggregate before this read exits;
+	// completion must still apply only to the generation this read fed.
+	aggregate *maprserver.Aggregate
 	// oneShotInput is true for cat/grep style reads whose input is exhausted
 	// once every file has been read to EOF. Follow-mode (tail) reads never
 	// exhaust their input, so they must never finish the output aggregate.
 	oneShotInput bool
 }
 
-func newShutdownCoordinator(server readCommandServer, oneShotInput bool) *shutdownCoordinator {
-	return &shutdownCoordinator{server: server, oneShotInput: oneShotInput}
+type aggregateInputBatchCoordinator interface {
+	coordinateAggregateInputCompletion(*maprserver.Aggregate) bool
+}
+
+func newShutdownCoordinator(server readCommandServer, oneShotInput bool, aggregate *maprserver.Aggregate) *shutdownCoordinator {
+	return &shutdownCoordinator{server: server, aggregate: aggregate, oneShotInput: oneShotInput}
 }
 
 func (c *shutdownCoordinator) onFileProcessed(path string) {
@@ -56,22 +62,24 @@ func (c *shutdownCoordinator) onFileProcessed(path string) {
 // forever even after receiving all results (the aggregate used to be
 // finished only at session teardown or generation-replacement Abort).
 //
-// The aggregate pointer is captured before the grace sleep and compared
-// afterwards, so an interactive :reload (which replaces the aggregate for a
-// new generation) can never have its fresh aggregate finished by a stale
-// pending==0 observation from the previous generation.
+// The aggregate pointer is captured when the read command is admitted and
+// compared after the grace sleep, so an interactive :reload cannot have its
+// fresh aggregate finished by a stale observation from the old generation.
 func (c *shutdownCoordinator) maybeFinishAggregateInput() {
 	if !c.oneShotInput {
 		return
 	}
-	aggregate := c.server.Aggregate()
+	aggregate := c.aggregate
 	if aggregate == nil {
 		return
 	}
+	if batch, ok := c.server.(aggregateInputBatchCoordinator); ok && batch.coordinateAggregateInputCompletion(aggregate) {
+		return
+	}
 
-	// Grace period: a sibling read command of the same batch may be
-	// dispatched but not yet registered in the pending-files counter;
-	// finishing now would drop that command's contribution to the result.
+	// Compatibility grace: a sibling read command may be dispatched but not
+	// yet registered in the pending-files counter. Serverless initial commands
+	// use the exact FIFO batch accounting above instead.
 	time.Sleep(aggregateInputGrace)
 	if pending, _ := c.server.PendingAndActive(); pending != 0 {
 		return

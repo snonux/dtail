@@ -90,7 +90,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	status := client.Start(runtime.Context(), signal.InterruptCh(runtime.Context()))
+	status := client.Start(runtime.Context(), signal.InterruptChWithCancel(runtime.Context(), runtime.Cancel))
 	runtime.LogShutdownMetrics()
 	runtime.Stop()
 	os.Exit(status)

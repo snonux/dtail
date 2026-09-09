@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients"
@@ -48,13 +49,16 @@ func (c *continuous) start(ctx context.Context) {
 }
 
 func (c *continuous) runJobs(ctx context.Context) {
+	var workers sync.WaitGroup
 	for i := range c.cfg.Server.Continuous {
 		job := &c.cfg.Server.Continuous[i]
 		if !job.Enable {
 			dlog.Server.Debug(job.Name, "Not running job as not enabled")
 			continue
 		}
+		workers.Add(1)
 		go func(job *config.Continuous) {
+			defer workers.Done()
 			c.runJob(ctx, job)
 			retryTicker := time.NewTicker(c.retryInterval)
 			defer retryTicker.Stop()
@@ -69,6 +73,10 @@ func (c *continuous) runJobs(ctx context.Context) {
 			}
 		}(job)
 	}
+	// runJobs owns the retry workers it starts. Joining them makes context
+	// cancellation a real lifecycle boundary for callers and prevents workers
+	// from outliving server/test resources such as the process logger.
+	workers.Wait()
 }
 
 func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
@@ -100,9 +108,15 @@ func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 	}
 
 	jobCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	var watcher sync.WaitGroup
+	defer func() {
+		cancel()
+		watcher.Wait()
+	}()
 	if job.RestartOnDayChange {
+		watcher.Add(1)
 		go func() {
+			defer watcher.Done()
 			if c.dayChangeWatcher(jobCtx) {
 				dlog.Server.Info(fmt.Sprintf("Canceling job %s due to day change", job.Name))
 				cancel()

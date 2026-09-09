@@ -19,6 +19,10 @@ import (
 
 // The evil begins here.
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	args := config.Args{SSHPort: config.DefaultSSHPort}
 	var displayVersion bool
 	var pprof string
@@ -37,7 +41,7 @@ func main() {
 
 	if err := config.Setup(source.HealthCheck, &args, flag.Args()); err != nil {
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to configure dtailhealth: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -47,12 +51,13 @@ func main() {
 	if err := dlog.Start(ctx, &wg, source.HealthCheck); err != nil {
 		wg.Done()
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to initialize dtailhealth logger: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 
 	var pprofServer *cli.PProfServer
 	if pprof != "" {
-		pprofServer, pprofErr := cli.NewPProfServer(pprof)
+		var pprofErr error
+		pprofServer, pprofErr = cli.NewPProfServer(pprof)
 		if pprofErr != nil {
 			dlog.Client.Error("Unable to start PProf", pprofErr)
 		} else {
@@ -80,5 +85,5 @@ func main() {
 
 	cancel()
 	wg.Wait()
-	os.Exit(status)
+	return status
 }

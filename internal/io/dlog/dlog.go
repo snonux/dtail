@@ -56,7 +56,7 @@ func new(sourceProcess, sourcePackage source.Source) (*DLog, error) {
 	}
 	logRotation := loggers.NewStrategy(config.Common.LogRotation)
 	loggerName := config.Common.Logger
-	level, err := newLevel(config.Common.LogLevel)
+	maxLevel, err := newLevel(config.Common.LogLevel)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +69,7 @@ func new(sourceProcess, sourcePackage source.Source) (*DLog, error) {
 		logger:        logger,
 		sourceProcess: sourceProcess,
 		sourcePackage: sourcePackage,
-		maxLevel:      level,
+		maxLevel:      maxLevel,
 		hostname:      hostname,
 	}, nil
 }
@@ -354,7 +354,7 @@ func (d *DLog) writeArgStrings(sb *strings.Builder, args []interface{}) {
 		case error:
 			sb.WriteString(v.Error())
 		default:
-			sb.WriteString(fmt.Sprintf("%v", v))
+			fmt.Fprintf(sb, "%v", v)
 		}
 	}
 }

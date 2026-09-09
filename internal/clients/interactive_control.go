@@ -32,9 +32,9 @@ type interactiveReloadState struct {
 }
 
 func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan string) int {
-	controlTTY, err := os.OpenFile(c.Args.ControlTTYPath, os.O_RDWR, 0)
+	controlTTY, err := os.OpenFile(c.ControlTTYPath, os.O_RDWR, 0)
 	if err != nil {
-		dlog.Client.Error("Unable to open interactive query control TTY", c.Args.ControlTTYPath, err)
+		dlog.Client.Error("Unable to open interactive query control TTY", c.ControlTTYPath, err)
 		return 1
 	}
 	defer func() {
@@ -316,9 +316,9 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 		fs.StringVar(&next.RegexStr, "regex", current.RegexStr, "Regular expression")
 		fs.StringVar(&grep, "grep", "", "Alias for -regex")
 		fs.BoolVar(&next.RegexInvert, "invert", current.RegexInvert, "Invert regex")
-		fs.IntVar(&next.LContext.BeforeContext, "before", current.LContext.BeforeContext, "Leading context lines")
-		fs.IntVar(&next.LContext.AfterContext, "after", current.LContext.AfterContext, "Trailing context lines")
-		fs.IntVar(&next.LContext.MaxCount, "max", current.LContext.MaxCount, "Maximum number of matches")
+		fs.IntVar(&next.BeforeContext, "before", current.BeforeContext, "Leading context lines")
+		fs.IntVar(&next.AfterContext, "after", current.AfterContext, "Trailing context lines")
+		fs.IntVar(&next.MaxCount, "max", current.MaxCount, "Maximum number of matches")
 		if err := fs.Parse(tokens); err != nil {
 			return current, err
 		}

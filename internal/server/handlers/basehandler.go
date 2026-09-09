@@ -196,17 +196,17 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 	}
 
 	for {
-		if n, handled := h.output.tryRead(p, h.user, h.shouldDropGeneration); handled {
-			if n == 0 {
+		if readN, handled := h.output.tryRead(p, h.user, h.shouldDropGeneration); handled {
+			if readN == 0 {
 				continue
 			}
-			return n, nil
+			return readN, nil
 		}
-		if n, handled := h.tryReadQueued(p); handled {
-			if n == 0 {
+		if readN, handled := h.tryReadQueued(p); handled {
+			if readN == 0 {
 				continue
 			}
-			return n, nil
+			return readN, nil
 		}
 
 		pollInterval := time.Second
@@ -648,7 +648,7 @@ func (h *baseHandler) flush() {
 			dlog.Server.Warn(h.user, "Some lines remain unsent", unsent)
 			return
 		}
-		dlog.Server.Debug(h.user, "Still lines to be sent", "iteration", i, "unsent", unsent, "deadline", deadline.Sub(time.Now()))
+		dlog.Server.Debug(h.user, "Still lines to be sent", "iteration", i, "unsent", unsent, "deadline", time.Until(deadline))
 		time.Sleep(time.Millisecond * 10)
 	}
 }

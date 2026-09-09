@@ -37,7 +37,7 @@ func (s *AggregateSet) String() string {
 // Merge one aggregate set into this one.
 func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 	s.Samples += set.Samples
-	//dlog.Common.Trace("Merge", set)
+	// dlog.Common.Trace("Merge", set)
 	for _, sc := range query.Select {
 		storage := sc.FieldStorage
 		switch sc.Operation {
@@ -65,7 +65,7 @@ func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 			s.setString(storage, set.SValues[storage])
 			s.setFloat(storage, set.FValues[storage])
 		default:
-			return fmt.Errorf("Unknown aggregation method '%v'", sc.Operation)
+			return fmt.Errorf("unknown aggregation method '%v'", sc.Operation)
 		}
 	}
 	return nil
@@ -197,7 +197,7 @@ func (s *AggregateSet) Aggregate(key string, agg AggregateOperation, value strin
 	case Max:
 		s.addFloatMax(key, f)
 	default:
-		err = fmt.Errorf("Unknown aggregation method '%v'", agg)
+		err = fmt.Errorf("unknown aggregation method '%v'", agg)
 	}
 	return
 }

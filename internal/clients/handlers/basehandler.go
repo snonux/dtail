@@ -106,7 +106,7 @@ func (h *baseHandler) SendMessage(command string) error {
 	select {
 	case h.commands <- fmt.Sprintf("protocol %s base64 %v;", protocol.ProtocolCompat, encoded):
 	case <-time.After(time.Second * 5):
-		return fmt.Errorf("Timed out sending command '%s' (base64: '%s')", command, encoded)
+		return fmt.Errorf("timed out sending command '%s' (base64: '%s')", command, encoded)
 	case <-h.Done():
 		return nil
 	}

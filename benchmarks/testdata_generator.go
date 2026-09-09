@@ -262,12 +262,12 @@ func generateTemplateLines(format LogFormat, variation int, pattern string, patt
 		case SimpleLogFormat:
 			templates = append(templates, generateSimpleLogLine(i, includePattern, pattern, rng))
 		case MapReduceLogFormat:
-			templates = append(templates, generateMapReduceLogLine(i, includePattern, pattern, rng))
+			templates = append(templates, generateMapReduceLogLine(includePattern, pattern, rng))
 		case MixedLogFormat:
 			if rng.Intn(2) == 0 {
 				templates = append(templates, generateSimpleLogLine(i, includePattern, pattern, rng))
 			} else {
-				templates = append(templates, generateMapReduceLogLine(i, includePattern, pattern, rng))
+				templates = append(templates, generateMapReduceLogLine(includePattern, pattern, rng))
 			}
 		}
 	}
@@ -291,7 +291,7 @@ func generateSimpleLogLine(id int, includePattern bool, pattern string, rng *ran
 }
 
 // generateMapReduceLogLine creates a MapReduce format log line template
-func generateMapReduceLogLine(id int, includePattern bool, pattern string, rng *rand.Rand) string {
+func generateMapReduceLogLine(includePattern bool, pattern string, rng *rand.Rand) string {
 	goroutines := rng.Intn(50) + 10
 	connections := rng.Intn(100)
 	lifetime := rng.Intn(1000) + 100

@@ -476,23 +476,23 @@ func runDtailWorkload(cfg *Config, binary, iterProfileDir, profilePath string) e
 	// Prepare an isolated working directory with deterministic key-based auth.
 	// The server resolves ./cache/<user>.authorized_keys and ./cache/ssh_host_key
 	// relative to its working directory, so everything lives under absWorkDir.
-	absWorkDir, err := filepath.Abs(filepath.Join(iterProfileDir, "dtailwork"))
-	if err != nil {
-		return fmt.Errorf("resolving dtail work dir: %w", err)
+	absWorkDir, workDirErr := filepath.Abs(filepath.Join(iterProfileDir, "dtailwork"))
+	if workDirErr != nil {
+		return fmt.Errorf("resolving dtail work dir: %w", workDirErr)
 	}
 	cacheDir := filepath.Join(absWorkDir, "cache")
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return fmt.Errorf("creating dtail work dir: %w", err)
+	if mkdirErr := os.MkdirAll(cacheDir, 0755); mkdirErr != nil {
+		return fmt.Errorf("creating dtail work dir: %w", mkdirErr)
 	}
 	privateKeyPath := filepath.Join(absWorkDir, "id_rsa")
 	authorizedKeysPath := filepath.Join(cacheDir, dtailWorkloadUser+".authorized_keys")
-	if err := writeDtailAuthKeypair(privateKeyPath, authorizedKeysPath); err != nil {
-		return err
+	if keyErr := writeDtailAuthKeypair(privateKeyPath, authorizedKeysPath); keyErr != nil {
+		return keyErr
 	}
 
-	dserverBinary, err := filepath.Abs(filepath.Join(cfg.OutputDir, "dserver-baseline"))
-	if err != nil {
-		return fmt.Errorf("resolving dserver binary path: %w", err)
+	dserverBinary, binaryErr := filepath.Abs(filepath.Join(cfg.OutputDir, "dserver-baseline"))
+	if binaryErr != nil {
+		return fmt.Errorf("resolving dserver binary path: %w", binaryErr)
 	}
 	serverCmd := exec.Command(dserverBinary,
 		"-cfg", "none",
@@ -506,30 +506,30 @@ func runDtailWorkload(cfg *Config, binary, iterProfileDir, profilePath string) e
 		serverCmd.Stdout = os.Stdout
 		serverCmd.Stderr = os.Stderr
 	}
-	if err := serverCmd.Start(); err != nil {
-		return fmt.Errorf("starting dserver for dtail workload: %w", err)
+	if startErr := serverCmd.Start(); startErr != nil {
+		return fmt.Errorf("starting dserver for dtail workload: %w", startErr)
 	}
 	defer stopServer(serverCmd)
 
-	if err := waitForServerReady(dtailSSHPort); err != nil {
-		return err
+	if readyErr := waitForServerReady(dtailSSHPort); readyErr != nil {
+		return readyErr
 	}
 
 	// Create the followed file and keep appending to it in the background so the
 	// follow session streams real work for the whole capture window.
 	followFile := filepath.Join(absWorkDir, "dtail_follow.log")
-	stopAppend, appendWg, err := startFollowFileAppender(followFile)
-	if err != nil {
-		return err
+	stopAppend, appendWg, appendErr := startFollowFileAppender(followFile)
+	if appendErr != nil {
+		return appendErr
 	}
 	defer func() {
 		close(stopAppend)
 		appendWg.Wait()
 	}()
 
-	absProfileDir, err := filepath.Abs(iterProfileDir)
-	if err != nil {
-		return fmt.Errorf("resolving dtail profile dir: %w", err)
+	absProfileDir, profileDirErr := filepath.Abs(iterProfileDir)
+	if profileDirErr != nil {
+		return fmt.Errorf("resolving dtail profile dir: %w", profileDirErr)
 	}
 	server := fmt.Sprintf("localhost:%d", dtailSSHPort)
 	cmd := exec.Command(binary,
@@ -557,8 +557,8 @@ func runDtailWorkload(cfg *Config, binary, iterProfileDir, profilePath string) e
 		cmd.Stderr = &clientOutput
 	}
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("running dtail follow workload: %w\n%s", err, clientOutput.String())
+	if runErr := cmd.Run(); runErr != nil {
+		return fmt.Errorf("running dtail follow workload: %w\n%s", runErr, clientOutput.String())
 	}
 
 	// Representativeness guard: if the client could not complete the SSH
@@ -590,28 +590,28 @@ func runDtailWorkload(cfg *Config, binary, iterProfileDir, profilePath string) e
 // as <user>.authorized_keys. This gives the follow client deterministic
 // key-based auth so the capture reflects streaming rather than handshake churn.
 func writeDtailAuthKeypair(privateKeyPath, authorizedKeysPath string) error {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		return fmt.Errorf("generating dtail workload key: %w", err)
+	privateKey, keyErr := rsa.GenerateKey(rand.Reader, 2048)
+	if keyErr != nil {
+		return fmt.Errorf("generating dtail workload key: %w", keyErr)
 	}
 	privatePEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
 	})
-	if err := os.WriteFile(privateKeyPath, privatePEM, 0600); err != nil {
-		return fmt.Errorf("writing dtail workload private key: %w", err)
+	if writeErr := os.WriteFile(privateKeyPath, privatePEM, 0600); writeErr != nil {
+		return fmt.Errorf("writing dtail workload private key: %w", writeErr)
 	}
 
-	publicKey, err := ssh.NewPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		return fmt.Errorf("deriving dtail workload public key: %w", err)
+	publicKey, publicKeyErr := ssh.NewPublicKey(&privateKey.PublicKey)
+	if publicKeyErr != nil {
+		return fmt.Errorf("deriving dtail workload public key: %w", publicKeyErr)
 	}
 	authorizedKey := ssh.MarshalAuthorizedKey(publicKey)
-	if err := os.WriteFile(privateKeyPath+".pub", authorizedKey, 0644); err != nil {
-		return fmt.Errorf("writing dtail workload public key: %w", err)
+	if writeErr := os.WriteFile(privateKeyPath+".pub", authorizedKey, 0644); writeErr != nil {
+		return fmt.Errorf("writing dtail workload public key: %w", writeErr)
 	}
-	if err := os.WriteFile(authorizedKeysPath, authorizedKey, 0600); err != nil {
-		return fmt.Errorf("writing dtail workload authorized_keys: %w", err)
+	if writeErr := os.WriteFile(authorizedKeysPath, authorizedKey, 0600); writeErr != nil {
+		return fmt.Errorf("writing dtail workload authorized_keys: %w", writeErr)
 	}
 	return nil
 }
@@ -661,8 +661,8 @@ func startFollowFileAppender(followFile string) (chan struct{}, *sync.WaitGroup,
 			case <-stopAppend:
 				return
 			case <-ticker.C:
-				if _, err := fd.WriteString(fmt.Sprintf("%s Hello line %d ERROR test\n",
-					time.Now().Format(time.RFC3339Nano), i)); err != nil {
+				if _, err := fmt.Fprintf(fd, "%s Hello line %d ERROR test\n",
+					time.Now().Format(time.RFC3339Nano), i); err != nil {
 					log.Printf("Unable to append dtail follow workload file %s: %v", followFile, err)
 					return
 				}
@@ -710,18 +710,18 @@ func runDServerWorkload(cfg *Config, binary, iterProfileDir string,
 	// Prepare an isolated working directory with deterministic key-based auth.
 	// The server resolves ./cache/<user>.authorized_keys and ./cache/ssh_host_key
 	// relative to its working directory, so everything lives under absWorkDir.
-	absWorkDir, err := filepath.Abs(filepath.Join(iterProfileDir, "dserverwork"))
-	if err != nil {
-		return fmt.Errorf("resolving dserver work dir: %w", err)
+	absWorkDir, workDirErr := filepath.Abs(filepath.Join(iterProfileDir, "dserverwork"))
+	if workDirErr != nil {
+		return fmt.Errorf("resolving dserver work dir: %w", workDirErr)
 	}
 	cacheDir := filepath.Join(absWorkDir, "cache")
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
-		return fmt.Errorf("creating dserver work dir: %w", err)
+	if mkdirErr := os.MkdirAll(cacheDir, 0755); mkdirErr != nil {
+		return fmt.Errorf("creating dserver work dir: %w", mkdirErr)
 	}
 	privateKeyPath := filepath.Join(absWorkDir, "id_rsa")
 	authorizedKeysPath := filepath.Join(cacheDir, dtailWorkloadUser+".authorized_keys")
-	if err := writeDtailAuthKeypair(privateKeyPath, authorizedKeysPath); err != nil {
-		return err
+	if keyErr := writeDtailAuthKeypair(privateKeyPath, authorizedKeysPath); keyErr != nil {
+		return keyErr
 	}
 
 	// The load clients read files by the path they send to the server, and the
@@ -739,9 +739,9 @@ func runDServerWorkload(cfg *Config, binary, iterProfileDir string,
 
 	// The server binary must be absolute because serverCmd.Dir is set below;
 	// cfg.OutputDir is otherwise a relative path resolved against the tool cwd.
-	absBinary, err := filepath.Abs(binary)
-	if err != nil {
-		return fmt.Errorf("resolving dserver binary path: %w", err)
+	absBinary, binaryErr := filepath.Abs(binary)
+	if binaryErr != nil {
+		return fmt.Errorf("resolving dserver binary path: %w", binaryErr)
 	}
 	serverCmd := exec.Command(absBinary,
 		"-cfg", "none",
@@ -756,13 +756,13 @@ func runDServerWorkload(cfg *Config, binary, iterProfileDir string,
 		serverCmd.Stdout = os.Stdout
 		serverCmd.Stderr = os.Stderr
 	}
-	if err := serverCmd.Start(); err != nil {
-		return fmt.Errorf("starting dserver: %w", err)
+	if startErr := serverCmd.Start(); startErr != nil {
+		return fmt.Errorf("starting dserver: %w", startErr)
 	}
 	defer stopServer(serverCmd)
 
-	if err := waitForServerReady(dserverSSHPort); err != nil {
-		return err
+	if readyErr := waitForServerReady(dserverSSHPort); readyErr != nil {
+		return readyErr
 	}
 
 	// Build the authenticated client invocations once; clients[0] doubles as the
@@ -775,8 +775,8 @@ func runDServerWorkload(cfg *Config, binary, iterProfileDir string,
 	// churn through reconnect crypto and the captured profile would be handshake
 	// noise, not streaming work. detectHandshakeFailure is the same signal used
 	// by the dtail workload guard.
-	if err := probeServerAuth(cfg, clients[0]); err != nil {
-		return err
+	if probeErr := probeServerAuth(cfg, clients[0]); probeErr != nil {
+		return probeErr
 	}
 
 	// Start sustained background load, let it ramp up, then capture while it
@@ -787,20 +787,20 @@ func runDServerWorkload(cfg *Config, binary, iterProfileDir string,
 	time.Sleep(500 * time.Millisecond)
 
 	fmt.Printf("    Capturing CPU profile (%ds) under sustained client load...\n", dserverCaptureSecs)
-	err = captureHTTPProfile(dserverPProfAddr, dserverCaptureSecs, profilePath)
+	captureErr := captureHTTPProfile(dserverPProfAddr, dserverCaptureSecs, profilePath)
 
 	close(stopLoad)
 	loadWg.Wait()
 
-	if err != nil {
-		return err
+	if captureErr != nil {
+		return captureErr
 	}
 
 	// Guard 2: the HTTP capture always returns a file, so verify the profile is
 	// actually dominated by streaming/read work rather than SSH-handshake crypto
 	// before it is allowed to ship.
-	if err := verifyDServerProfileRepresentative(profilePath); err != nil {
-		return err
+	if verifyErr := verifyDServerProfileRepresentative(profilePath); verifyErr != nil {
+		return verifyErr
 	}
 
 	fmt.Printf("    Profile captured and saved to %s\n", profilePath)

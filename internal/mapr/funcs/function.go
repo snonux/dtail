@@ -94,9 +94,9 @@ func validateParenBalance(aux, original string) error {
 // Call the function stack.
 func (fs FunctionStack) Call(str string) string {
 	for i := len(fs) - 1; i >= 0; i-- {
-		//dlog.Common.Debug("Call", fs[i].Name, str)
+		// dlog.Common.Debug("Call", fs[i].Name, str)
 		str = fs[i].call(str)
-		//dlog.Common.Debug("Call.result", fs[i].Name, str)
+		// dlog.Common.Debug("Call.result", fs[i].Name, str)
 	}
 	return str
 }

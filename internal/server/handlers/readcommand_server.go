@@ -159,7 +159,7 @@ func (h *ServerHandler) ActiveSessionGeneration() uint64 {
 
 // TriggerShutdown starts the handler shutdown sequence.
 func (h *ServerHandler) TriggerShutdown() {
-	h.shutdown()
+	h.triggerIdleShutdown()
 }
 
 // FlushOutput drains pending output data to the underlying writer.

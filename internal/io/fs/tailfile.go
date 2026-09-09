@@ -27,6 +27,6 @@ func NewValidatedTailFile(filePath string, target ValidatedReadTarget, globID st
 	serverMessages chan<- string, maxLineLength int) TailFile {
 
 	tail := NewTailFile(filePath, globID, serverMessages, maxLineLength)
-	tail.readFile.validatedTarget = &target
+	tail.validatedTarget = &target
 	return tail
 }

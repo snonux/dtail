@@ -49,6 +49,7 @@ func InterruptChWithCancel(ctx context.Context, cancel context.CancelFunc) <-cha
 }
 
 // InterruptCh returns a channel for "please print stats" signalling.
+//
 // Deprecated: Use InterruptChWithCancel for proper cleanup on termination signals.
 func InterruptCh(ctx context.Context) <-chan string {
 	sigIntCh := make(chan os.Signal, 10)

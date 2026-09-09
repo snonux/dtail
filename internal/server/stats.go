@@ -113,16 +113,19 @@ func (s *stats) serverLimitExceeded() error {
 	// Count both authenticated connections and pre-auth handshakes in progress.
 	total := s.currentConnections + s.preAuthConnections
 	if total >= s.maxConnections {
-		return fmt.Errorf("Exceeded max allowed concurrent connections of %d (current=%d, pre-auth=%d)",
+		return fmt.Errorf("exceeded max allowed concurrent connections of %d (current=%d, pre-auth=%d)",
 			s.maxConnections, s.currentConnections, s.preAuthConnections)
 	}
 	return nil
 }
 
 func (s *stats) start(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
-		case <-time.NewTimer(time.Second * 10).C:
+		case <-ticker.C:
 			s.logServerStats()
 		case <-ctx.Done():
 			return
@@ -131,12 +134,13 @@ func (s *stats) start(ctx context.Context) {
 }
 
 func (s *stats) waitForConnections() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
 	for {
-		select {
-		case <-time.NewTimer(time.Second).C:
-			if !s.hasConnections() {
-				return
-			}
+		<-ticker.C
+		if !s.hasConnections() {
+			return
 		}
 	}
 }

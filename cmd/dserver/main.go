@@ -21,6 +21,10 @@ import (
 
 // The evil begins here.
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	var args config.Args
 	var color bool
 	var displayVersion bool
@@ -29,7 +33,7 @@ func main() {
 
 	if err := user.NoRootCheck(); err != nil {
 		fmt.Fprintf(os.Stderr, "unable to start dserver: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	flag.BoolVar(&color, "color", false, "Enable ANSII terminal colors")
@@ -47,7 +51,7 @@ func main() {
 	args.NoColor = !color
 	if err := config.Setup(source.Server, &args, flag.Args()); err != nil {
 		fmt.Fprintf(os.Stderr, "unable to configure dserver: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if displayVersion {
@@ -94,7 +98,7 @@ func main() {
 	if err := dlog.Start(ctx, &wg, source.Server); err != nil {
 		wg.Done()
 		fmt.Fprintf(os.Stderr, "unable to initialize dserver logger: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	var pprofServer *cli.PProfServer
@@ -123,7 +127,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unable to initialize dserver: %v\n", err)
 		cancel()
 		wg.Wait()
-		os.Exit(1)
+		return 1
 	}
 	status, err := serv.Start(ctx)
 	if err != nil {
@@ -141,5 +145,5 @@ func main() {
 	}
 
 	wg.Wait()
-	os.Exit(status)
+	return status
 }

@@ -53,36 +53,36 @@ func (a *Args) String() string {
 
 	sb.WriteString("Args(")
 
-	sb.WriteString(fmt.Sprintf("%s:%v,", "Arguments", a.Arguments))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "ConfigFile", a.ConfigFile))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "ConnectionsPerCPU", a.ConnectionsPerCPU))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "ControlTTYPath", a.ControlTTYPath))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "Discovery", a.Discovery))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "InteractiveQuery", a.InteractiveQuery))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "LogDir", a.LogDir))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "LogLevel", a.LogLevel))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "LogPayload", a.LogPayload))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "Logger", a.Logger))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "Mode", a.Mode))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "NoAuthKey", a.NoAuthKey))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "NoColor", a.NoColor))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "QueryStr", a.QueryStr))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "Quiet", a.Quiet))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "RegexInvert", a.RegexInvert))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "RegexStr", a.RegexStr))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHAgentKeyIndex", a.SSHAgentKeyIndex))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHAuthMethods", a.SSHAuthMethods))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHBindAddress", a.SSHBindAddress))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHHostKeyCallback", a.SSHHostKeyCallback))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHPrivateKeyFilePath", a.SSHPrivateKeyFilePath))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "SSHPort", a.SSHPort))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "Serverless", a.Serverless))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "ServersStr", a.ServersStr))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "Plain", a.Plain))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "Timeout", a.Timeout))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "TrustAllHosts", a.TrustAllHosts))
-	sb.WriteString(fmt.Sprintf("%s:%v,", "UserName", a.UserName))
-	sb.WriteString(fmt.Sprintf("%s:%v", "What", a.What))
+	fmt.Fprintf(&sb, "Arguments:%v,", a.Arguments)
+	fmt.Fprintf(&sb, "ConfigFile:%v,", a.ConfigFile)
+	fmt.Fprintf(&sb, "ConnectionsPerCPU:%v,", a.ConnectionsPerCPU)
+	fmt.Fprintf(&sb, "ControlTTYPath:%v,", a.ControlTTYPath)
+	fmt.Fprintf(&sb, "Discovery:%v,", a.Discovery)
+	fmt.Fprintf(&sb, "InteractiveQuery:%v,", a.InteractiveQuery)
+	fmt.Fprintf(&sb, "LogDir:%v,", a.LogDir)
+	fmt.Fprintf(&sb, "LogLevel:%v,", a.LogLevel)
+	fmt.Fprintf(&sb, "LogPayload:%v,", a.LogPayload)
+	fmt.Fprintf(&sb, "Logger:%v,", a.Logger)
+	fmt.Fprintf(&sb, "Mode:%v,", a.Mode)
+	fmt.Fprintf(&sb, "NoAuthKey:%v,", a.NoAuthKey)
+	fmt.Fprintf(&sb, "NoColor:%v,", a.NoColor)
+	fmt.Fprintf(&sb, "QueryStr:%v,", a.QueryStr)
+	fmt.Fprintf(&sb, "Quiet:%v,", a.Quiet)
+	fmt.Fprintf(&sb, "RegexInvert:%v,", a.RegexInvert)
+	fmt.Fprintf(&sb, "RegexStr:%v,", a.RegexStr)
+	fmt.Fprintf(&sb, "SSHAgentKeyIndex:%v,", a.SSHAgentKeyIndex)
+	fmt.Fprintf(&sb, "SSHAuthMethods:%v,", a.SSHAuthMethods)
+	fmt.Fprintf(&sb, "SSHBindAddress:%v,", a.SSHBindAddress)
+	fmt.Fprintf(&sb, "SSHHostKeyCallback:%v,", a.SSHHostKeyCallback)
+	fmt.Fprintf(&sb, "SSHPrivateKeyFilePath:%v,", a.SSHPrivateKeyFilePath)
+	fmt.Fprintf(&sb, "SSHPort:%v,", a.SSHPort)
+	fmt.Fprintf(&sb, "Serverless:%v,", a.Serverless)
+	fmt.Fprintf(&sb, "ServersStr:%v,", a.ServersStr)
+	fmt.Fprintf(&sb, "Plain:%v,", a.Plain)
+	fmt.Fprintf(&sb, "Timeout:%v,", a.Timeout)
+	fmt.Fprintf(&sb, "TrustAllHosts:%v,", a.TrustAllHosts)
+	fmt.Fprintf(&sb, "UserName:%v,", a.UserName)
+	fmt.Fprintf(&sb, "What:%v", a.What)
 	sb.WriteString(")")
 
 	return sb.String()
@@ -101,14 +101,14 @@ func (a *Args) SerializeOptions() string {
 	if a.Serverless {
 		options["serverless"] = fmt.Sprintf("%v", a.Serverless)
 	}
-	if a.LContext.MaxCount != 0 {
-		options["max"] = fmt.Sprintf("%d", a.LContext.MaxCount)
+	if a.MaxCount != 0 {
+		options["max"] = fmt.Sprintf("%d", a.MaxCount)
 	}
-	if a.LContext.BeforeContext != 0 {
-		options["before"] = fmt.Sprintf("%d", a.LContext.BeforeContext)
+	if a.BeforeContext != 0 {
+		options["before"] = fmt.Sprintf("%d", a.BeforeContext)
 	}
-	if a.LContext.AfterContext != 0 {
-		options["after"] = fmt.Sprintf("%d", a.LContext.AfterContext)
+	if a.AfterContext != 0 {
+		options["after"] = fmt.Sprintf("%d", a.AfterContext)
 	}
 
 	return serializeOptions(options)
@@ -161,7 +161,7 @@ func DeserializeOptions(opts []string) (map[string]string, lcontext.LContext, er
 	for _, o := range opts {
 		kv := strings.SplitN(o, "=", 2)
 		if len(kv) != 2 {
-			return options, ltx, fmt.Errorf("Unable to parse options: %v", kv)
+			return options, ltx, fmt.Errorf("unable to parse options: %v", kv)
 		}
 		key := kv[0]
 		val := kv[1]

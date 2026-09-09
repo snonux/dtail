@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +57,7 @@ func TestGeneratedMaprMessagesChannelCloseWaitsForForwarding(t *testing.T) {
 		},
 	}
 
-	generated, closeGenerated := handler.newGeneratedMaprMessagesChannel(context.Background(), 7)
+	generated, closeGenerated := handler.newGeneratedMaprMessagesChannel(7)
 	generated <- "final aggregate"
 
 	closed := make(chan struct{})

@@ -276,28 +276,28 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 }
 
 func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
-	root, err := c.knownHostsFile.OpenRoot()
-	if err != nil {
-		return err
+	root, rootErr := c.knownHostsFile.OpenRoot()
+	if rootErr != nil {
+		return rootErr
 	}
 	defer func() { _ = root.Close() }()
 
 	tmpKnownHostsName := fmt.Sprintf("%s.tmp", c.knownHostsFile.Name())
 	tmpKnownHostsPath := fmt.Sprintf("%s.tmp", c.knownHostsPath)
 	cleanupTmp := func() {
-		if err := root.Remove(tmpKnownHostsName); err != nil && !os.IsNotExist(err) {
-			dlog.Client.Debug("Unable to remove temporary known hosts file", tmpKnownHostsPath, err)
+		if removeErr := root.Remove(tmpKnownHostsName); removeErr != nil && !os.IsNotExist(removeErr) {
+			dlog.Client.Debug("Unable to remove temporary known hosts file", tmpKnownHostsPath, removeErr)
 		}
 	}
 
-	newFd, err := root.OpenFile(tmpKnownHostsName, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
-	if err != nil {
-		return fmt.Errorf("open temp known hosts file %s: %w", tmpKnownHostsPath, err)
+	newFd, openErr := root.OpenFile(tmpKnownHostsName, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if openErr != nil {
+		return fmt.Errorf("open temp known hosts file %s: %w", tmpKnownHostsPath, openErr)
 	}
-	if err := newFd.Chmod(0o600); err != nil {
+	if chmodErr := newFd.Chmod(0o600); chmodErr != nil {
 		closeErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 		cleanupTmp()
-		return errors.Join(fmt.Errorf("chmod temp known hosts file %s: %w", tmpKnownHostsPath, err), closeErr)
+		return errors.Join(fmt.Errorf("chmod temp known hosts file %s: %w", tmpKnownHostsPath, chmodErr), closeErr)
 	}
 
 	// Newly trusted hosts in normalized form
@@ -309,24 +309,24 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 		// And once as [IP]:PORT
 		addresses[knownhosts.Normalize(unknown.remote.String())] = struct{}{}
 
-		if _, err := newFd.WriteString(fmt.Sprintf("%s\n", unknown.hostLine)); err != nil {
+		if _, writeErr := fmt.Fprintf(newFd, "%s\n", unknown.hostLine); writeErr != nil {
 			closeErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 			cleanupTmp()
-			return errors.Join(fmt.Errorf("write host known_hosts entry: %w", err), closeErr)
+			return errors.Join(fmt.Errorf("write host known_hosts entry: %w", writeErr), closeErr)
 		}
-		if _, err := newFd.WriteString(fmt.Sprintf("%s\n", unknown.ipLine)); err != nil {
+		if _, writeErr := fmt.Fprintf(newFd, "%s\n", unknown.ipLine); writeErr != nil {
 			closeErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 			cleanupTmp()
-			return errors.Join(fmt.Errorf("write ip known_hosts entry: %w", err), closeErr)
+			return errors.Join(fmt.Errorf("write ip known_hosts entry: %w", writeErr), closeErr)
 		}
 	}
 
 	// Read old known hosts file, to see which are old and new entries
-	oldFd, err := root.OpenFile(c.knownHostsFile.Name(), os.O_RDONLY|os.O_CREATE, 0o600)
-	if err != nil {
+	oldFd, oldOpenErr := root.OpenFile(c.knownHostsFile.Name(), os.O_RDONLY|os.O_CREATE, 0o600)
+	if oldOpenErr != nil {
 		closeErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 		cleanupTmp()
-		return errors.Join(fmt.Errorf("open known hosts file %s: %w", c.knownHostsPath, err), closeErr)
+		return errors.Join(fmt.Errorf("open known hosts file %s: %w", c.knownHostsPath, oldOpenErr), closeErr)
 	}
 
 	scanner := bufio.NewScanner(oldFd)
@@ -336,11 +336,11 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 		address := strings.SplitN(line, " ", 2)[0]
 
 		if _, ok := addresses[address]; !ok {
-			if _, err := newFd.WriteString(fmt.Sprintf("%s\n", line)); err != nil {
+			if _, writeErr := fmt.Fprintf(newFd, "%s\n", line); writeErr != nil {
 				oldCloseErr := closeKnownHostsFile(oldFd, c.knownHostsPath)
 				newCloseErr := closeKnownHostsFile(newFd, tmpKnownHostsPath)
 				cleanupTmp()
-				return errors.Join(fmt.Errorf("append existing known_hosts entry: %w", err), oldCloseErr, newCloseErr)
+				return errors.Join(fmt.Errorf("append existing known_hosts entry: %w", writeErr), oldCloseErr, newCloseErr)
 			}
 		}
 	}

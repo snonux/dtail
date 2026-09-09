@@ -48,9 +48,9 @@ func (h *MaprHandler) Write(p []byte) (n int, err error) {
 		case '\n':
 			h.removedNl = true
 		case protocol.MessageDelimiter:
-			message := h.baseHandler.receiveBuf.String()
+			message := h.receiveBuf.String()
 			if len(message) == 0 {
-				h.baseHandler.receiveBuf.Reset()
+				h.receiveBuf.Reset()
 				h.removedNl = false
 				continue
 			}
@@ -59,15 +59,15 @@ func (h *MaprHandler) Write(p []byte) (n int, err error) {
 				h.handleAggregateMessage(message)
 			} else {
 				if h.removedNl {
-					h.baseHandler.handleMessage(message + "\n")
+					h.handleMessage(message + "\n")
 				} else {
-					h.baseHandler.handleMessage(message)
+					h.handleMessage(message)
 				}
 			}
-			h.baseHandler.receiveBuf.Reset()
+			h.receiveBuf.Reset()
 			h.removedNl = false
 		default:
-			h.baseHandler.receiveBuf.WriteByte(b)
+			h.receiveBuf.WriteByte(b)
 		}
 	}
 

@@ -11,11 +11,11 @@ type Processor interface {
 	// The line buffer ownership is transferred to the processor.
 	// Returns error if processing should stop.
 	ProcessLine(line *bytes.Buffer, lineNum uint64, sourceID string) error
-	
+
 	// Flush ensures any buffered data is written out.
 	// Called when file reading completes or on periodic intervals.
 	Flush() error
-	
+
 	// Close cleans up any resources used by the processor.
 	// Called when processing is complete.
 	Close() error

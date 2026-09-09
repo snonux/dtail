@@ -1,4 +1,5 @@
 GO ?= go
+GOLANGCI_LINT ?= golangci-lint
 ifdef DTAIL_USE_ACL
 GO_TAGS=linuxacl
 endif
@@ -41,37 +42,14 @@ clean:
 	@echo "Removing .prof files..."
 	find . -name "*.prof" -type f -delete
 vet:
-	@set -e; \
-	packages=`${GO} list ./... | grep -v '^github.com/mimecast/dtail/benchmarks/cmd$$'`; \
-	for pkg in $$packages; do \
-	  echo ${GO} vet $$pkg; \
-	  ${GO} vet $$pkg; \
-	done
-	sh -c 'grep -R NEXT: .'
-	sh -c 'grep -R TODO: .'
+	${GO} vet -tags '${GO_TAGS}' ./...
 lint:
-	@set -e; \
-	${GO} install golang.org/x/lint/golint@v0.0.0-20241112194109-818c5a804067; \
-	${GO} install github.com/kisielk/errcheck@v1.20.0; \
-	gobin=`${GO} env GOBIN`; \
-	if [ -z "$$gobin" ]; then \
-	  gobin=`${GO} env GOPATH`/bin; \
-	fi; \
-	golint_bin=$$gobin/golint; \
-	packages=`${GO} list ./... | grep -v '^github.com/mimecast/dtail/benchmarks/cmd$$'`; \
-	echo "Using $$golint_bin"; \
-	output=`$$golint_bin $$packages || true`; \
-	if [ -n "$$output" ]; then \
-	  echo "$$output"; \
-	  exit 1; \
-	fi; \
-	errcheck_bin=$$gobin/errcheck; \
-	echo "Using $$errcheck_bin"; \
-	$$errcheck_bin ./benchmarks/... ./cmd/... ./internal/...
+	${GOLANGCI_LINT} run --build-tags '${GO_TAGS}' ./...
 test:
 	${GO} clean -testcache
-	set -e; find . -name '*_test.go' | while read file; do dirname $$file; done | \
-		sort -u | while read dir; do ${GO} test -tags '${GO_TAGS}' --race -v -failfast $$dir || exit 2; done
+	${GO} test -tags '${GO_TAGS}' -race -shuffle=on ./...
+todos:
+	@git grep -n -E 'NEXT:|TODO:' -- . || true
 test-integration: clean build
 	${GO} clean -testcache
 	DTAIL_INTEGRATION_TEST_RUN_MODE=yes ${GO} test -v -tags '${GO_TAGS}' --race -count=1 ./integrationtests
@@ -156,7 +134,7 @@ profile-help:
 	@echo "  make profile-analyze PROFILE=profiles/dcat_cpu_*.prof"
 	@echo ""
 
-.PHONY: profile-all profile-quick profile-dmap profile-list profile-analyze profile-web profile-clean profile-help
+.PHONY: lint vet test test-integration todos profile-all profile-quick profile-dmap profile-list profile-analyze profile-web profile-clean profile-help
 
 ## Profile-Guided Optimization targets
 pgo: build dtail-tools

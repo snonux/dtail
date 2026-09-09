@@ -205,33 +205,33 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 func (s *Server) handleChannel(ctx context.Context, sshConn gossh.Conn,
 	newChannel gossh.NewChannel) {
 
-	user, err := user.New(sshConn.User(), sshConn.RemoteAddr().String(), s.cfg.Server.UserPermissions)
-	if err != nil {
-		dlog.Server.Error(user, err)
-		if err := newChannel.Reject(gossh.Prohibited, err.Error()); err != nil {
-			dlog.Server.Debug(err)
+	serverUser, userErr := user.New(sshConn.User(), sshConn.RemoteAddr().String(), s.cfg.Server.UserPermissions)
+	if userErr != nil {
+		dlog.Server.Error(serverUser, userErr)
+		if rejectErr := newChannel.Reject(gossh.Prohibited, userErr.Error()); rejectErr != nil {
+			dlog.Server.Debug(rejectErr)
 		}
 		return
 	}
 
-	dlog.Server.Info(user, "Invoking channel handler")
+	dlog.Server.Info(serverUser, "Invoking channel handler")
 	if newChannel.ChannelType() != "session" {
-		err := errors.New("Don'w allow other channel types than session")
-		dlog.Server.Error(user, err)
-		if err := newChannel.Reject(gossh.Prohibited, err.Error()); err != nil {
-			dlog.Server.Debug(err)
+		channelTypeErr := errors.New("don't allow channel types other than session")
+		dlog.Server.Error(serverUser, channelTypeErr)
+		if rejectErr := newChannel.Reject(gossh.Prohibited, channelTypeErr.Error()); rejectErr != nil {
+			dlog.Server.Debug(rejectErr)
 		}
 		return
 	}
 
-	channel, requests, err := newChannel.Accept()
-	if err != nil {
-		dlog.Server.Error(user, "Could not accept channel", err)
+	channel, requests, acceptErr := newChannel.Accept()
+	if acceptErr != nil {
+		dlog.Server.Error(serverUser, "Could not accept channel", acceptErr)
 		return
 	}
 
-	if err := s.handleRequests(ctx, sshConn, requests, channel, user); err != nil {
-		dlog.Server.Error(user, err)
+	if err := s.handleRequests(ctx, sshConn, requests, channel, serverUser); err != nil {
+		dlog.Server.Error(serverUser, err)
 		_ = sshConn.Close()
 	}
 }
@@ -253,7 +253,7 @@ func (s *Server) handleRequests(ctx context.Context, sshConn gossh.Conn,
 			if err := req.Reply(false, nil); err != nil {
 				dlog.Server.Trace(user, fmt.Errorf("reply(false): %w", err))
 			}
-			return fmt.Errorf("Closing SSH connection as unknown request received|%s|%v",
+			return fmt.Errorf("closing SSH connection as unknown request received|%s|%v",
 				req.Type, payload.Value)
 		}
 	}
@@ -328,7 +328,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	// handleConnection via defer, not here, so that the counter is balanced
 	// 1:1 per TCP connection regardless of how many shell requests are opened.
 	go func() {
-		if err := sshConn.Wait(); err != nil && err != io.EOF {
+		if err := sshConn.Wait(); err != nil && !errors.Is(err, io.EOF) {
 			dlog.Server.Error(user, err)
 		}
 		dlog.Server.Info(user, "Good bye Mister!")

@@ -58,6 +58,6 @@ func (l Line) String() string {
 func (l *Line) Recycle() {
 	// No explicit reset required, as NewLine overrides all elements
 	// already takes care of it.
-	//l.Reset()
+	// l.Reset()
 	lineBuffer.Put(l)
 }

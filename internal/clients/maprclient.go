@@ -42,7 +42,7 @@ type MaprClient struct {
 // NewMaprClient returns a new mapreduce client.
 func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient, error) {
 	if args.QueryStr == "" {
-		return nil, errors.New("No mapreduce query specified, use '-query' flag")
+		return nil, errors.New("no mapreduce query specified, use '-query' flag")
 	}
 
 	query, err := mapr.NewQuery(args.QueryStr)
@@ -73,7 +73,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 	dlog.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
 	c.setRegexForQuery(query)
-	if err := c.baseClient.initialize(&c); err != nil {
+	if err := c.initialize(&c); err != nil {
 		return nil, fmt.Errorf("initialize mapreduce client: %w", err)
 	}
 
@@ -104,7 +104,7 @@ func (c *MaprClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewMaprHandler(server, c.session)
 }
 
-func (c *MaprClient) makeSessionSpec() (SessionSpec, error) {
+func (c *MaprClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
 	sessionSpec := NewSessionSpec(c.Args)
 	if snapshot := c.session.Snapshot(); snapshot.Query != nil {
 		sessionSpec.Query = snapshot.Query.RawQuery
@@ -240,7 +240,7 @@ func (c *MaprClient) commitSessionSpec(spec SessionSpec, generation uint64) erro
 		return err
 	}
 
-	c.Args.QueryStr = spec.Query
+	c.QueryStr = spec.Query
 	c.setRegexForQuery(query)
 	return nil
 }
@@ -252,7 +252,7 @@ func (c *MaprClient) isCumulative(query *mapr.Query) bool {
 	case NonCumulativeMode:
 		return false
 	default:
-		return c.Args.Mode == omode.MapClient || (query != nil && query.HasOutfile())
+		return c.Mode == omode.MapClient || (query != nil && query.HasOutfile())
 	}
 }
 

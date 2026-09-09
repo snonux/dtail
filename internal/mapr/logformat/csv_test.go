@@ -1,6 +1,7 @@
 package logformat
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -27,7 +28,7 @@ func TestCSVLogFormat(t *testing.T) {
 	const sourceID = "file-a"
 
 	// First line is the header!
-	if _, err := parser.MakeFields(inputs[0], sourceID); err != ErrIgnoreFields {
+	if _, parseErr := parser.MakeFields(inputs[0], sourceID); !errors.Is(parseErr, ErrIgnoreFields) {
 		t.Errorf("Unable to parse the CSV header")
 	}
 
@@ -84,7 +85,7 @@ func TestCSVLogFormatMultiFileHeaders(t *testing.T) {
 	const sourceB = "file-b"
 
 	// First line of file A is its header.
-	if _, err := parser.MakeFields(fileA[0], sourceA); err != ErrIgnoreFields {
+	if _, err := parser.MakeFields(fileA[0], sourceA); !errors.Is(err, ErrIgnoreFields) {
 		t.Fatalf("Expected header line of file A to be ignored, got err=%v", err)
 	}
 	for _, line := range fileA[1:] {
@@ -98,7 +99,7 @@ func TestCSVLogFormatMultiFileHeaders(t *testing.T) {
 	}
 
 	// First line of file B MUST also be treated as a header, not a data row.
-	if _, err := parser.MakeFields(fileB[0], sourceB); err != ErrIgnoreFields {
+	if _, err := parser.MakeFields(fileB[0], sourceB); !errors.Is(err, ErrIgnoreFields) {
 		t.Fatalf("Expected header line of file B to be ignored (bug: header is being consumed as a data row), got err=%v", err)
 	}
 
@@ -165,7 +166,7 @@ func TestCSVLogFormatConcurrentSameSourceInstall(t *testing.T) {
 
 		ignored := 0
 		for _, r := range results {
-			if r.err == ErrIgnoreFields {
+			if errors.Is(r.err, ErrIgnoreFields) {
 				ignored++
 			}
 		}
@@ -197,7 +198,7 @@ func TestCSVLogFormatConcurrentSources(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			sourceID := "source-" + string(rune('a'+id))
-			if _, err := parser.MakeFields(header, sourceID); err != ErrIgnoreFields {
+			if _, err := parser.MakeFields(header, sourceID); !errors.Is(err, ErrIgnoreFields) {
 				t.Errorf("worker %d: expected header to be ignored, got err=%v", id, err)
 				return
 			}

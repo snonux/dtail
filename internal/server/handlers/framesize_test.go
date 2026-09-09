@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"testing"
 	"time"
@@ -72,7 +73,7 @@ func TestWriteOversizeFrameClosesSession(t *testing.T) {
 	oversizeFrame := bytes.Repeat([]byte("x"), limit+1)
 
 	_, err := h.Write(oversizeFrame)
-	if err != io.ErrClosedPipe {
+	if !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("expected io.ErrClosedPipe from Write on oversize frame, got %v", err)
 	}
 
@@ -98,7 +99,7 @@ func TestWriteOversizeFrameHealthHandlerClosesSession(t *testing.T) {
 	oversizeFrame := bytes.Repeat([]byte("y"), limit+1)
 
 	_, err := h.Write(oversizeFrame)
-	if err != io.ErrClosedPipe {
+	if !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("expected io.ErrClosedPipe from health handler Write on oversize frame, got %v", err)
 	}
 

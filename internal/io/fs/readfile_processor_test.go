@@ -51,7 +51,7 @@ func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
 	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
 	processor := &captureProcessor{}
 
-	if err := cat.readFile.StartWithProcessorOptimized(
+	if err := cat.StartWithProcessorOptimized(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
@@ -80,7 +80,7 @@ func TestServerlessPipeReadReturnsOnCancellationWithoutClosingInput(t *testing.T
 	flushed := make(chan struct{}, 1)
 	processor := &signalingPipeProcessor{processed: processed, flushed: flushed}
 	reader := NewCatFile("", "-", make(chan string, 1), defaultMaxLineLength)
-	reader.readFile.pipeInput = input
+	reader.pipeInput = input
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -160,9 +160,9 @@ func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
 	// its end to emulate having read a file that shrank underneath us.
 	filePath := writeProcessorTestFile(t, "short")
 
-	fd, err := os.Open(filePath)
-	if err != nil {
-		t.Fatalf("open file: %v", err)
+	fd, openErr := os.Open(filePath)
+	if openErr != nil {
+		t.Fatalf("open file: %v", openErr)
 	}
 	t.Cleanup(func() {
 		if closeErr := fd.Close(); closeErr != nil {
@@ -187,7 +187,7 @@ func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
 		maxLineLength: defaultMaxLineLength,
 	}
 
-	err = rf.readWithProcessorOptimized(
+	readErr := rf.readWithProcessorOptimized(
 		context.Background(),
 		fd,
 		reader,
@@ -196,11 +196,11 @@ func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
 		&captureProcessor{},
 		regex.NewNoop(),
 	)
-	if err == nil {
+	if readErr == nil {
 		t.Fatal("expected truncation to be detected, got nil error")
 	}
-	if !strings.Contains(err.Error(), "truncated") {
-		t.Fatalf("expected truncation error, got: %v", err)
+	if !strings.Contains(readErr.Error(), "truncated") {
+		t.Fatalf("expected truncation error, got: %v", readErr)
 	}
 }
 
@@ -248,7 +248,7 @@ func TestStartWithProcessorOptimizedPropagatesProcessError(t *testing.T) {
 		processErr: expectedErr,
 	}
 
-	err := cat.readFile.StartWithProcessorOptimized(
+	err := cat.StartWithProcessorOptimized(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
@@ -268,7 +268,7 @@ func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
 	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), 3)
 	processor := &captureProcessor{}
 
-	if err := cat.readFile.StartWithProcessorOptimized(
+	if err := cat.StartWithProcessorOptimized(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
@@ -295,7 +295,7 @@ func TestStartWithProcessorOptimizedWaitsOnLiveLongLineWarningUntilCanceled(t *t
 
 	done := make(chan error, 1)
 	go func() {
-		done <- cat.readFile.StartWithProcessorOptimized(
+		done <- cat.StartWithProcessorOptimized(
 			ctx,
 			lcontext.LContext{},
 			processor,
@@ -340,7 +340,7 @@ func TestStartWithProcessorExitsWhenContextCanceledDuringLongLineWarning(t *test
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- cat.readFile.StartWithProcessor(ctx, lcontext.LContext{}, &captureProcessor{}, re)
+		errCh <- cat.StartWithProcessor(ctx, lcontext.LContext{}, &captureProcessor{}, re)
 	}()
 
 	select {
@@ -432,7 +432,7 @@ func TestReadWithProcessorNoDoubleRecycle(t *testing.T) {
 	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
 	processor := &captureProcessor{}
 
-	if err := cat.readFile.StartWithProcessor(
+	if err := cat.StartWithProcessor(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
@@ -529,7 +529,7 @@ func TestReadWithProcessorOptimizedFastPathByteIdentical(t *testing.T) {
 			cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
 			processor := &captureProcessor{}
 
-			if err := cat.readFile.StartWithProcessorOptimized(
+			if err := cat.StartWithProcessorOptimized(
 				context.Background(),
 				lcontext.LContext{},
 				processor,
@@ -564,7 +564,7 @@ func TestReadWithProcessorOptimizedContextPathUnchanged(t *testing.T) {
 
 	// One line of before context and one line of after context around the match.
 	ltx := lcontext.LContext{BeforeContext: 1, AfterContext: 1}
-	if err := cat.readFile.StartWithProcessorOptimized(
+	if err := cat.StartWithProcessorOptimized(
 		context.Background(),
 		ltx,
 		processor,

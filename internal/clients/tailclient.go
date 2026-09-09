@@ -37,6 +37,6 @@ func (c TailClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewClientHandler(server)
 }
 
-func (c TailClient) makeSessionSpec() (SessionSpec, error) {
+func (c TailClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
 	return NewSessionSpec(c.Args), nil
 }

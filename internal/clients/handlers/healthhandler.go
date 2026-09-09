@@ -36,11 +36,11 @@ func (h *HealthHandler) Write(p []byte) (n int, err error) {
 	for _, b := range p {
 		switch b {
 		case '\n', protocol.MessageDelimiter:
-			message := h.baseHandler.receiveBuf.String()
+			message := h.receiveBuf.String()
 			h.handleMessage(message)
-			h.baseHandler.receiveBuf.Reset()
+			h.receiveBuf.Reset()
 		default:
-			h.baseHandler.receiveBuf.WriteByte(b)
+			h.receiveBuf.WriteByte(b)
 		}
 	}
 	return len(p), nil
@@ -48,12 +48,12 @@ func (h *HealthHandler) Write(p []byte) (n int, err error) {
 
 func (h *HealthHandler) handleMessage(message string) {
 	if len(message) > 0 && message[0] == '.' {
-		h.baseHandler.handleHiddenMessage(message)
+		h.handleHiddenMessage(message)
 		return
 	}
 	s := strings.Split(message, protocol.FieldDelimiter)
 	message = s[len(s)-1]
 	if message == "OK" {
-		h.baseHandler.status = 0
+		h.status = 0
 	}
 }

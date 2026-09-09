@@ -43,7 +43,7 @@ func TestParseInteractiveCommandForGrepReload(t *testing.T) {
 	if !command.next.RegexInvert || !command.next.Plain || !command.next.Quiet {
 		t.Fatalf("expected invert/plain/quiet flags to be set: %#v", command.next)
 	}
-	if command.next.LContext.BeforeContext != 2 || command.next.LContext.AfterContext != 3 || command.next.LContext.MaxCount != 4 {
+	if command.next.BeforeContext != 2 || command.next.AfterContext != 3 || command.next.MaxCount != 4 {
 		t.Fatalf("unexpected context values: %#v", command.next.LContext)
 	}
 	if command.spec.Regex != "WARN" {
@@ -116,7 +116,7 @@ func TestApplyInteractiveReloadRejectsUnsupportedConnections(t *testing.T) {
 	if !errors.Is(err, connectors.ErrSessionUnsupported) {
 		t.Fatalf("expected ErrSessionUnsupported, got %v", err)
 	}
-	if client.Args.What != "/var/log/app.log" || client.sessionSpec.Regex != "ERROR" {
+	if client.What != "/var/log/app.log" || client.sessionSpec.Regex != "ERROR" {
 		t.Fatalf("client state changed on unsupported reload: args=%#v spec=%#v", client.Args, client.sessionSpec)
 	}
 }
@@ -371,7 +371,7 @@ func TestApplyInteractiveReloadCommitsSharedState(t *testing.T) {
 		t.Fatalf("applyInteractiveReload() error = %v", err)
 	}
 
-	if client.Args.What != "/tmp/new.log" || client.sessionSpec.Query != nextArgs.QueryStr {
+	if client.What != "/tmp/new.log" || client.sessionSpec.Query != nextArgs.QueryStr {
 		t.Fatalf("client state not committed: args=%#v spec=%#v", client.Args, client.sessionSpec)
 	}
 	if len(maker.commits) != 1 {
@@ -426,7 +426,7 @@ func TestApplyInteractiveReloadRejectsMismatchedCommittedGenerations(t *testing.
 	if err == nil || err.Error() != "mismatched committed generations: got 5 and 6" {
 		t.Fatalf("expected mismatched generation error, got %v", err)
 	}
-	if client.Args.What != "/var/log/app.log" || client.sessionSpec.Regex != "ERROR" {
+	if client.What != "/var/log/app.log" || client.sessionSpec.Regex != "ERROR" {
 		t.Fatalf("client state changed on mismatched generations: args=%#v spec=%#v", client.Args, client.sessionSpec)
 	}
 	if len(maker.commits) != 0 {
@@ -633,7 +633,7 @@ type interactiveReloadCommit struct {
 
 func (*interactiveReloadMaker) makeHandler(string) handlers.Handler { return nil }
 
-func (m *interactiveReloadMaker) commitSessionSpec(spec SessionSpec, generation uint64) error {
+func (m *interactiveReloadMaker) commitSessionSpec(spec SessionSpec, generation uint64) error { //nolint:unparam // The sessionCommitter contract permits commit errors.
 	m.commits = append(m.commits, interactiveReloadCommit{
 		generation: generation,
 		spec:       spec,

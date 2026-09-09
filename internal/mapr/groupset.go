@@ -120,10 +120,10 @@ func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []in
 
 	for _, groupKey := range keys {
 		set := g.sets[groupKey]
-		result := result{groupKey: groupKey}
+		row := result{groupKey: groupKey}
 
 		for i, sc := range query.Select {
-			if valueStrLen, err = g.resultSelect(query, &sc, set, &result, &stats); err != nil {
+			if valueStrLen, err = g.resultSelect(query, &sc, set, &row, &stats); err != nil {
 				return rows, columnWidths, err
 			}
 
@@ -139,7 +139,7 @@ func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []in
 				columnWidths[i] = valueStrLen
 			}
 		}
-		rows = append(rows, result)
+		rows = append(rows, row)
 	}
 
 	g.resultOrderBy(query, rows)
@@ -204,7 +204,7 @@ func (*GroupSet) resultSelect(query *Query, sc *selectCondition, set *AggregateS
 		value = percentileRank(set.FValues[sc.FieldStorage], stats.percentileValues[sc.FieldStorage])
 		valueStr = fmt.Sprintf("%f", value)
 	default:
-		return 0, fmt.Errorf("Unknown aggregation method '%v'", sc.Operation)
+		return 0, fmt.Errorf("unknown aggregation method '%v'", sc.Operation)
 	}
 
 	if sc.FieldStorage == query.OrderBy {

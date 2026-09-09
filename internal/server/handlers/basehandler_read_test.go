@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -311,7 +312,7 @@ func TestBaseHandlerReadDrainsQueuedMaprMessageBeforeShutdownEOF(t *testing.T) {
 	}
 
 	n, err = handler.Read(p)
-	if n != 0 || err != io.EOF {
+	if n != 0 || !errors.Is(err, io.EOF) {
 		t.Fatalf("Read() after drain = (%d, %v), want (0, EOF)", n, err)
 	}
 }
@@ -321,7 +322,7 @@ func TestBaseHandlerReadShutdownWithoutQueuedOutputReturnsEOF(t *testing.T) {
 	handler.done.Shutdown()
 
 	n, err := handler.Read(make([]byte, 32))
-	if n != 0 || err != io.EOF {
+	if n != 0 || !errors.Is(err, io.EOF) {
 		t.Fatalf("Read() = (%d, %v), want (0, EOF)", n, err)
 	}
 }

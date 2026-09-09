@@ -14,6 +14,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
+	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	sshserver "github.com/mimecast/dtail/internal/ssh/server"
@@ -27,13 +28,15 @@ import (
 // This handler implements the handler of the SSH server.
 type ServerHandler struct {
 	baseHandler
-	catLimiter   chan struct{}
-	tailLimiter  chan struct{}
-	serverCfg    *config.ServerConfig
-	authKeyStore *sshserver.AuthKeyStore
-	regex        string
-	commands     map[string]commandHandler
-	sessionState sessionCommandState
+	catLimiter          chan struct{}
+	tailLimiter         chan struct{}
+	serverCfg           *config.ServerConfig
+	authKeyStore        *sshserver.AuthKeyStore
+	regex               string
+	commands            map[string]commandHandler
+	sessionState        sessionCommandState
+	commandBatch        commandBatch
+	idleShutdownStarted atomic.Bool
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
 }
@@ -85,7 +88,7 @@ func NewServerHandler(user *user.User, catLimiter,
 	h.handleCommandCb = h.handleUserCommand
 	h.commands = h.newCommandRegistry()
 	h.output.configure(h.outputManagerConfig())
-	h.baseHandler.activeGeneration = h.sessionState.currentGeneration
+	h.activeGeneration = h.sessionState.currentGeneration
 
 	fqdn, err := handlerHostname()
 	if err != nil {
@@ -124,6 +127,11 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	// after graceful shutdown has sealed command admission, and keep it out of
 	// commandWg so shutdown never waits on its own acknowledgement.
 	if strings.EqualFold(commandName, ".ack") {
+		if isServerlessInputComplete(argc, args) {
+			h.completeCommandBatch()
+			cancelCommandContext(ctx)
+			return
+		}
 		h.handleAckCommand(argc, args)
 		cancelCommandContext(ctx)
 		return
@@ -156,7 +164,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		// because user commands may still follow in the same session.
 		if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 &&
 			!h.sessionState.keepAlive() && !h.isStopping() {
-			h.shutdown()
+			h.triggerIdleShutdown()
 		}
 	}
 
@@ -169,6 +177,43 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	}
 
 	handler(ctx, ltx, argc, args, commandFinished)
+}
+
+func isServerlessInputComplete(argc int, args []string) bool {
+	return argc == 3 && strings.EqualFold(args[1], "input") && strings.EqualFold(args[2], "complete")
+}
+
+// BeginCommandBatch prevents a fast initial command from closing an in-process
+// session before the remaining initial commands reach the server handler.
+func (h *ServerHandler) BeginCommandBatch() {
+	h.commandBatch.begin()
+}
+
+func (h *ServerHandler) completeCommandBatch() {
+	for _, aggregate := range h.commandBatch.complete() {
+		aggregate.FinishInput()
+	}
+	pending, active := h.PendingAndActive()
+	if pending == 0 && active == 0 && !h.sessionState.keepAlive() && !h.isStopping() {
+		// The marker is processed by the sole client-to-server writer. Run the
+		// close handshake separately so that writer remains free to deliver its
+		// acknowledgement.
+		go h.triggerIdleShutdown()
+	}
+}
+
+func (h *ServerHandler) triggerIdleShutdown() {
+	if h.commandBatch.isOpen() || !h.idleShutdownStarted.CompareAndSwap(false, true) {
+		return
+	}
+	h.shutdown()
+}
+
+// coordinateAggregateInputCompletion lets the initial serverless batch own
+// aggregate input completion. The legacy pending-file grace remains in use for
+// SSH sessions, which do not have a FIFO end-of-batch marker.
+func (h *ServerHandler) coordinateAggregateInputCompletion(aggregate *maprserver.Aggregate) bool {
+	return h.commandBatch.ownsAggregate(aggregate)
 }
 
 func shouldShutdownOnCommandCompletion(commandName string) bool {
@@ -198,16 +243,21 @@ func (h *ServerHandler) newCommandRegistry() map[string]commandHandler {
 
 func (h *ServerHandler) makeReadCommandHandler(mode omode.Mode, tailBackoff int) commandHandler {
 	return func(ctx context.Context, ltx lcontext.LContext, argc int, args []string, commandFinished func()) {
-		command := newReadCommand(h, mode)
+		aggregate := h.getAggregate()
+		batchRead := h.commandBatch.beginRead(mode, aggregate)
+		command := newReadCommandWithAggregate(h, mode, aggregate)
 		go func() {
 			command.Start(ctx, ltx, argc, args, tailBackoff)
+			if aggregate := h.commandBatch.completeRead(batchRead); aggregate != nil {
+				aggregate.FinishInput()
+			}
 			commandFinished()
 		}()
 	}
 }
 
 func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
-	command, aggregate, err := newMapCommand(h, argc, args)
+	command, aggregate, err := newMapCommand(h, args)
 	if err != nil {
 		h.sendln(h.serverMessages, err.Error())
 		dlog.Server.Error(h.user, err)
@@ -215,7 +265,7 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 		return
 	}
 
-	maprMessages, closeMaprMessages := h.newGeneratedMaprMessagesChannel(ctx, sessionGenerationFromContext(ctx))
+	maprMessages, closeMaprMessages := h.newGeneratedMaprMessagesChannel(sessionGenerationFromContext(ctx))
 	// Bind the destination before publishing the aggregate pointer. Graceful
 	// shutdown waits for admitted command initialization and can therefore
 	// never observe an aggregate whose Start goroutine has not published its
@@ -276,7 +326,7 @@ func (h *ServerHandler) handleAuthKeyCommand(_ context.Context, _ lcontext.LCont
 	h.sendln(h.serverMessages, "AUTHKEY OK")
 }
 
-func (h *ServerHandler) newGeneratedMaprMessagesChannel(ctx context.Context, generation uint64) (chan string, func()) {
+func (h *ServerHandler) newGeneratedMaprMessagesChannel(generation uint64) (chan string, func()) {
 	maprMessages := make(chan string, 16)
 	done := make(chan struct{})
 	go func() {

@@ -21,8 +21,7 @@ type mapCommand struct {
 // directly via AggregateProcessor (no aggregate line-channel). The former
 // regular server.Aggregate has been deleted (task hv0), so there is no
 // fallback branch.
-func newMapCommand(serverHandler *ServerHandler, argc int,
-	args []string) (mapCommand, *server.Aggregate, error) {
+func newMapCommand(serverHandler *ServerHandler, args []string) (mapCommand, *server.Aggregate, error) {
 
 	m := mapCommand{server: serverHandler}
 	queryStr := strings.Join(args[1:], " ")

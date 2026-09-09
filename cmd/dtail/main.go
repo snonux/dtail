@@ -47,9 +47,9 @@ func main() {
 	flag.BoolVar(&displayVersion, "version", false, "Display version")
 	flag.IntVar(&args.ConnectionsPerCPU, "cpc", config.DefaultConnectionsPerCPU,
 		"How many connections established per CPU core concurrently")
-	flag.IntVar(&args.LContext.AfterContext, "after", 0, "Print lines of trailing context after matching lines")
-	flag.IntVar(&args.LContext.BeforeContext, "before", 0, "Print lines of leading context before matching lines")
-	flag.IntVar(&args.LContext.MaxCount, "max", 0, "Stop reading file after NUM matching lines")
+	flag.IntVar(&args.AfterContext, "after", 0, "Print lines of trailing context after matching lines")
+	flag.IntVar(&args.BeforeContext, "before", 0, "Print lines of leading context before matching lines")
+	flag.IntVar(&args.MaxCount, "max", 0, "Stop reading file after NUM matching lines")
 	flag.IntVar(&args.SSHAgentKeyIndex, "agentKeyIndex", -1, "SSH agent key index to use (-1 for all keys)")
 	flag.IntVar(&args.SSHPort, "port", config.DefaultSSHPort, "SSH server port")
 	flag.IntVar(&args.Timeout, "timeout", 0, "Max time dtail server will collect data until disconnection")

@@ -6,9 +6,9 @@ import (
 )
 
 func TestGroupSetResultUsesProvidedRenderer(t *testing.T) {
-	query, err := NewQuery("select host,count(value) from stats group by host order by count(value)")
-	if err != nil {
-		t.Fatalf("Unable to parse query: %v", err)
+	query, queryErr := NewQuery("select host,count(value) from stats group by host order by count(value)")
+	if queryErr != nil {
+		t.Fatalf("Unable to parse query: %v", queryErr)
 	}
 
 	groupSet := NewGroupSet()
@@ -49,9 +49,9 @@ func TestGroupSetResultUsesProvidedRenderer(t *testing.T) {
 }
 
 func TestGroupSetResultFallsBackToPlainRenderer(t *testing.T) {
-	query, err := NewQuery("select count(value) from stats")
-	if err != nil {
-		t.Fatalf("Unable to parse query: %v", err)
+	query, queryErr := NewQuery("select count(value) from stats")
+	if queryErr != nil {
+		t.Fatalf("Unable to parse query: %v", queryErr)
 	}
 
 	groupSet := NewGroupSet()

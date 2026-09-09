@@ -65,15 +65,15 @@ func (s *globCapTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarg
 	return fs.ValidatedReadTarget{Kind: fs.FileKind}, true
 }
 
-func (s *globCapTestServer) CatLimiter() chan struct{} { return s.catLimiter }
+func (s *globCapTestServer) CatLimiter() chan struct{}  { return s.catLimiter }
 func (s *globCapTestServer) TailLimiter() chan struct{} { return s.tailLimiter }
 
-func (s *globCapTestServer) LogContext() interface{}        { return "glob-cap-test" }
-func (s *globCapTestServer) SendServerMessage(msg string)   { s.drainOrStore(msg) }
+func (s *globCapTestServer) LogContext() interface{}            { return "glob-cap-test" }
+func (s *globCapTestServer) SendServerMessage(msg string)       { s.drainOrStore(msg) }
 func (s *globCapTestServer) ServerMessagesChannel() chan string { return s.serverMessage }
-func (s *globCapTestServer) Hostname() string                { return "testhost" }
-func (s *globCapTestServer) PlainOutput() bool               { return false }
-func (s *globCapTestServer) Serverless() bool                { return false }
+func (s *globCapTestServer) Hostname() string                   { return "testhost" }
+func (s *globCapTestServer) PlainOutput() bool                  { return false }
+func (s *globCapTestServer) Serverless() bool                   { return false }
 
 func (s *globCapTestServer) drainOrStore(msg string) {
 	select {
@@ -98,27 +98,27 @@ func (s *globCapTestServer) CompletePendingFile() (int32, int32) {
 func (s *globCapTestServer) PendingAndActive() (int32, int32) {
 	return atomic.LoadInt32(&s.pendingFiles), 0
 }
-func (s *globCapTestServer) ActiveSessionGeneration() uint64      { return 0 }
-func (s *globCapTestServer) TriggerShutdown()                     {}
+func (s *globCapTestServer) ActiveSessionGeneration() uint64 { return 0 }
+func (s *globCapTestServer) TriggerShutdown()                {}
 
-func (s *globCapTestServer) DirectOutputActive() bool                     { return false }
-func (s *globCapTestServer) EnableDirectOutput() bool                 { return false }
+func (s *globCapTestServer) DirectOutputActive() bool               { return false }
+func (s *globCapTestServer) EnableDirectOutput() bool               { return false }
 func (s *globCapTestServer) HasOutputEOF() bool                     { return false }
-func (s *globCapTestServer) FlushOutput()                       {}
+func (s *globCapTestServer) FlushOutput()                           {}
 func (s *globCapTestServer) OutputEpoch() uint64                    { return 0 }
 func (s *globCapTestServer) SignalOutputEOF(epoch uint64)           {}
-func (s *globCapTestServer) GetOutputChannel() chan []byte           { return nil }
+func (s *globCapTestServer) GetOutputChannel() chan []byte          { return nil }
 func (s *globCapTestServer) OutputChannelLen() int                  { return 0 }
 func (s *globCapTestServer) WaitForOutputEOFAck(time.Duration) bool { return true }
 
-func (s *globCapTestServer) ReadGlobRetryInterval() time.Duration      { return time.Millisecond }
-func (s *globCapTestServer) ReadRetryInterval() time.Duration          { return time.Millisecond }
-func (s *globCapTestServer) MaxLineLength() int                        { return 1024 * 1024 }
-func (s *globCapTestServer) OutputTransmissionDelay() time.Duration { return time.Millisecond }
-func (s *globCapTestServer) OutputEOFWaitDuration(int) time.Duration    { return time.Millisecond }
-func (s *globCapTestServer) ShutdownSerializeWait() time.Duration { return time.Millisecond }
-func (s *globCapTestServer) ShutdownIdleRecheckWait() time.Duration    { return time.Millisecond }
-func (s *globCapTestServer) OutputEOFAckTimeout() time.Duration         { return time.Millisecond }
+func (s *globCapTestServer) ReadGlobRetryInterval() time.Duration    { return time.Millisecond }
+func (s *globCapTestServer) ReadRetryInterval() time.Duration        { return time.Millisecond }
+func (s *globCapTestServer) MaxLineLength() int                      { return 1024 * 1024 }
+func (s *globCapTestServer) OutputTransmissionDelay() time.Duration  { return time.Millisecond }
+func (s *globCapTestServer) OutputEOFWaitDuration(int) time.Duration { return time.Millisecond }
+func (s *globCapTestServer) ShutdownSerializeWait() time.Duration    { return time.Millisecond }
+func (s *globCapTestServer) ShutdownIdleRecheckWait() time.Duration  { return time.Millisecond }
+func (s *globCapTestServer) OutputEOFAckTimeout() time.Duration      { return time.Millisecond }
 
 // MaxGlobTargets returns the configurable cap for this test server.
 func (s *globCapTestServer) MaxGlobTargets() int { return s.maxGlobTargets }
@@ -146,8 +146,8 @@ func TestGlobCapTruncatesExcessPaths(t *testing.T) {
 	resetServerLogger(t)
 
 	const (
-		totalFiles = 20  // files on disk — clearly above the cap
-		cap        = 5   // deliberately low cap to prove truncation
+		totalFiles = 20 // files on disk — clearly above the cap
+		cap        = 5  // deliberately low cap to prove truncation
 	)
 
 	dir := t.TempDir()

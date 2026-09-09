@@ -144,6 +144,20 @@ func TestContinuousRunJobsReleasesDayChangeWatcherAcrossRetries(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("continuous job runner did not stop after cancellation")
 	}
+	if starts, exits := atomic.LoadInt32(&watcherStarts), atomic.LoadInt32(&watcherExits); starts != exits {
+		t.Fatalf("day-change watchers still active after runJobs returned: starts=%d exits=%d", starts, exits)
+	}
+}
+
+func TestContinuousRunJobsReturnsWhenNoJobsAreEnabled(t *testing.T) {
+	dlog.Server = &dlog.DLog{}
+	disabledJob := config.Continuous{}
+	disabledJob.Enable = false
+	c := newContinuous(config.RuntimeConfig{Server: &config.ServerConfig{
+		Continuous: []config.Continuous{disabledJob},
+	}})
+
+	c.runJobs(context.Background())
 }
 
 func TestContinuousWaitForDayChangeDetectsMonthBoundary(t *testing.T) {
@@ -207,10 +221,18 @@ func (immediateBackgroundClient) Start(context.Context, <-chan string) int {
 	return 0
 }
 
-func (f blockingContinuousClient) Start(context.Context, <-chan string) int {
-	f.started <- struct{}{}
-	<-f.release
-	return 0
+func (f blockingContinuousClient) Start(ctx context.Context, _ <-chan string) int {
+	select {
+	case f.started <- struct{}{}:
+	case <-ctx.Done():
+		return 1
+	}
+	select {
+	case <-f.release:
+		return 0
+	case <-ctx.Done():
+		return 1
+	}
 }
 
 func waitForCounterAtLeast(t *testing.T, current func() int32, min int32) {

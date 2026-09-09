@@ -128,7 +128,7 @@ func (s *stats) statsLine(connected, newConnections int, throttle int) string {
 		}
 		sb.WriteString(k)
 		sb.WriteByte('=')
-		sb.WriteString(fmt.Sprintf("%v", v))
+		fmt.Fprintf(&sb, "%v", v)
 		i++
 	}
 	return sb.String()

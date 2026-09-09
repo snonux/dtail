@@ -10,9 +10,9 @@ import (
 func TestRootedPathReadWrite(t *testing.T) {
 	dir := t.TempDir()
 	filePath := filepath.Join(dir, "known_hosts")
-	rootedPath, err := NewRootedPath(filePath)
-	if err != nil {
-		t.Fatalf("NewRootedPath failed: %v", err)
+	rootedPath, pathErr := NewRootedPath(filePath)
+	if pathErr != nil {
+		t.Fatalf("NewRootedPath failed: %v", pathErr)
 	}
 
 	want := []byte("trusted host\n")

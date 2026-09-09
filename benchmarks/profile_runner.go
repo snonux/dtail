@@ -63,10 +63,10 @@ func RunProfiledCommand(b *testing.B, config ProfileConfig, tool string, args ..
 	}
 
 	// Combine all arguments
-	allArgs := append(profileArgs, args...)
+	profileArgs = append(profileArgs, args...)
 
 	// Create command
-	cmd := exec.Command(cmdPath, allArgs...)
+	cmd := exec.Command(cmdPath, profileArgs...)
 
 	// Set up output capture
 	outputFile := filepath.Join(config.ProfileDir, fmt.Sprintf("%s_output_%s.log",
@@ -115,11 +115,12 @@ func RunProfiledCommand(b *testing.B, config ProfileConfig, tool string, args ..
 	}
 
 	for _, profile := range profiles {
-		if strings.Contains(profile, "_cpu_") {
+		switch {
+		case strings.Contains(profile, "_cpu_"):
 			result.CPUProfile = profile
-		} else if strings.Contains(profile, "_mem_") {
+		case strings.Contains(profile, "_mem_"):
 			result.MemProfile = profile
-		} else if strings.Contains(profile, "_alloc_") {
+		case strings.Contains(profile, "_alloc_"):
 			result.AllocProfile = profile
 		}
 	}
