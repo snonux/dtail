@@ -335,3 +335,157 @@ func TestServerModeMapFollowSessionKeepsStreaming(t *testing.T) {
 		t.Fatalf("handler did not quiesce: pending=%d active=%d", pending, active)
 	}
 }
+
+// TestServerlessMapFollowGracefulShutdownDrainsFinalResult exercises the real
+// server-side command, tail reader, AggregateProcessor, aggregate, and protocol
+// reader lifecycle used by the in-process connector. The long interval ensures
+// the aggregate cannot emit periodically during the test: the result asserted
+// below must come from graceful shutdown's final serialization.
+func TestServerlessMapFollowGracefulShutdownDrainsFinalResult(t *testing.T) {
+	handler := newMapTestHandler(t)
+	path := writeTestStatsFile(t, 0)
+
+	spec := session.Spec{
+		Mode:    omode.TailClient,
+		Files:   []string{path},
+		Options: "plain=true:serverless=true",
+		Query:   "from STATS select count($time),$time group by $time interval 3600",
+		Regex:   ".",
+	}
+	commands, err := spec.Commands()
+	if err != nil {
+		t.Fatalf("build commands: %v", err)
+	}
+
+	output := &testOutput{}
+	var writeMu sync.Mutex
+	readerDone := startTestReader(handler, output, &writeMu)
+
+	var frames strings.Builder
+	for _, command := range commands {
+		frames.WriteString(encodeTestCommand(command))
+	}
+	writeMu.Lock()
+	_, writeErr := handler.Write([]byte(frames.String()))
+	writeMu.Unlock()
+	if writeErr != nil {
+		t.Fatalf("write commands: %v", writeErr)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pending, active := handler.PendingAndActive()
+		if pending == 1 && active >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tail command did not become active: pending=%d active=%d", pending, active)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Let the tail reader finish opening and seeking to the original EOF before
+	// appending the records that must be included in the final aggregate.
+	time.Sleep(200 * time.Millisecond)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open stats file for append: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := file.WriteString(testStatsLine + "\n"); err != nil {
+			_ = file.Close()
+			t.Fatalf("append stats line: %v", err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close stats file: %v", err)
+	}
+
+	// The follow reader polls EOF every 100ms. No aggregate output can be
+	// emitted during this wait because the query interval is one hour.
+	time.Sleep(500 * time.Millisecond)
+	if strings.Contains(output.String(), "count($time)≔") {
+		t.Fatalf("aggregate emitted before graceful shutdown: %q", output.String())
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		handler.GracefulShutdown()
+	}()
+	select {
+	case <-shutdownDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("graceful shutdown hung with active MapReduce follow input")
+	}
+	select {
+	case <-readerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("protocol reader did not observe EOF after graceful shutdown")
+	}
+
+	if !strings.Contains(output.String(), "count($time)≔3") {
+		t.Fatalf("final aggregate result was not drained before EOF: %q", output.String())
+	}
+	if pending, active := handler.PendingAndActive(); pending != 0 || active != 0 {
+		t.Fatalf("handler did not quiesce: pending=%d active=%d", pending, active)
+	}
+}
+
+// TestServerHandlerShutdownAbortsMapFollowWithoutOutputReader is the network
+// teardown counterpart to the graceful serverless test. Once a peer has gone
+// away there may be no output consumer, so Shutdown must cancel the follow
+// reader and join its processor without attempting final serialization.
+func TestServerHandlerShutdownAbortsMapFollowWithoutOutputReader(t *testing.T) {
+	handler := newMapTestHandler(t)
+	path := writeTestStatsFile(t, 0)
+	spec := session.Spec{
+		Mode:  omode.TailClient,
+		Files: []string{path},
+		Query: "from STATS select count($time),$time group by $time interval 3600",
+		Regex: ".",
+	}
+	commands, err := spec.Commands()
+	if err != nil {
+		t.Fatalf("build commands: %v", err)
+	}
+
+	var frames strings.Builder
+	for _, command := range commands {
+		frames.WriteString(encodeTestCommand(command))
+	}
+	if _, err := handler.Write([]byte(frames.String())); err != nil {
+		t.Fatalf("write commands: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		pending, active := handler.PendingAndActive()
+		if pending == 1 && active >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tail command did not become active: pending=%d active=%d", pending, active)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		defer close(shutdownDone)
+		handler.Shutdown()
+	}()
+	select {
+	case <-shutdownDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler Shutdown hung waiting for active MapReduce follow processor")
+	}
+	if pending, active := handler.PendingAndActive(); pending != 0 || active != 0 {
+		t.Fatalf("handler did not quiesce: pending=%d active=%d", pending, active)
+	}
+	select {
+	case <-handler.Done():
+	default:
+		t.Fatal("handler did not signal transport shutdown")
+	}
+}

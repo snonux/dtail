@@ -17,6 +17,10 @@ type ServerlessHandlerFactory interface {
 	NewServerlessHandler(userName string) (serverHandlers.Handler, error)
 }
 
+type gracefulServerlessHandler interface {
+	GracefulShutdown()
+}
+
 // Serverless creates a server object directly without TCP.
 type Serverless struct {
 	handler        handlers.Handler
@@ -238,7 +242,11 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	// handler. In particular, MaprHandler.Shutdown performs its final aggregate
 	// flush, so it must run after the last server-to-client Write has completed.
 	dlog.Client.Debug("Terminating serverless connection")
-	serverHandler.Shutdown()
+	if gracefulHandler, ok := serverHandler.(gracefulServerlessHandler); ok {
+		gracefulHandler.GracefulShutdown()
+	} else {
+		serverHandler.Shutdown()
+	}
 	cancel()
 	<-serverOutputDone
 	s.handler.Shutdown()

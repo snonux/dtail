@@ -72,6 +72,11 @@ type baseHandler struct {
 	ackCloseOnce     sync.Once
 	activeCommands   int32
 	codec            protocolCodec
+	commandDone      *internal.Done
+	outputAbort      *internal.Done
+	commandMu        sync.Mutex
+	commandWg        sync.WaitGroup
+	stopping         bool
 
 	// readBuf holds the formatted protocol message currently being sent to
 	// the client. It is only touched by Read (single session output
@@ -113,12 +118,28 @@ func (h *baseHandler) setAggregate(ta *maprserver.Aggregate) {
 // Shutdown the handler. Uses atomic accessors to read aggregate pointers so
 // the reads are race-free with concurrent writes from handleMapCommand.
 func (h *baseHandler) Shutdown() {
-	// Shutdown output aggregate if present.
+	// A transport shutdown cannot depend on an output reader still being
+	// present. Mark aggregate output abandoned before canceling command work so
+	// a racing Aggregate.Start never attempts a final send to a dead peer.
+	h.commandMu.Lock()
+	h.stopping = true
+	if h.outputAbort != nil {
+		h.outputAbort.Shutdown()
+	}
 	if ta := h.getAggregate(); ta != nil {
-		dlog.Server.Info(h.user, "Shutting down output aggregate")
-		ta.Shutdown()
+		ta.Abort()
+	}
+	if h.commandDone != nil {
+		h.commandDone.Shutdown()
+	}
+	h.commandMu.Unlock()
+
+	if ta := h.getAggregate(); ta != nil {
+		dlog.Server.Info(h.user, "Aborting output aggregate")
+		ta.AbortAndWait()
 	}
 	h.done.Shutdown()
+	h.commandWg.Wait()
 }
 
 // Done channel of the handler.
@@ -147,6 +168,12 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			}
 			return n, nil
 		}
+		if n, handled := h.tryReadQueued(p); handled {
+			if n == 0 {
+				continue
+			}
+			return n, nil
+		}
 
 		pollInterval := time.Second
 		if h.output.enabled() {
@@ -157,93 +184,136 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 
 		select {
 		case message := <-h.serverMessages:
-			generation, decodedMessage := decodeGeneratedMessage(message)
-			if h.shouldDropGeneration(generation) {
+			n = h.readServerMessage(p, message)
+			if n == 0 {
 				continue
 			}
-			message = decodedMessage
-			if len(message) > 0 && message[0] == '.' {
-				// Handle hidden message (don't display to the user)
-				h.readBuf.WriteString(message)
-				h.readBuf.WriteByte(protocol.MessageDelimiter)
-				n = h.drainReadBuf(p)
-				return
-			}
-
-			if h.serverless {
-				return
-			}
-
-			// Skip empty server messages when in plain mode
-			if h.plain && (message == "" || message == "\n") {
-				return
-			}
-
-			// Handle normal server message (display to the user).
-			formatServerMessage(&h.readBuf, h.hostname, message, h.plain)
-			n = h.drainReadBuf(p)
-			return
+			return n, nil
 
 		case message := <-h.maprMessages:
-			generation, decodedMessage := decodeGeneratedMessage(message)
-			if h.shouldDropGeneration(generation) {
+			n = h.readMaprMessage(p, message)
+			if n == 0 {
 				continue
 			}
-			message = decodedMessage
-			// Send mapreduce-aggregated data as a message. The leading
-			// AggregateMessageID field lets the mapr client tell aggregate
-			// data apart from plain server acks that happen to start with 'A'.
-			h.readBuf.WriteString(protocol.AggregateMessageID)
-			h.readBuf.WriteString(protocol.FieldDelimiter)
-			h.readBuf.WriteString(h.hostname)
-			h.readBuf.WriteString(protocol.FieldDelimiter)
-			h.readBuf.WriteString(message)
-			h.readBuf.WriteByte(protocol.MessageDelimiter)
-			n = h.drainReadBuf(p)
-			return
+			return n, nil
 
 		case line := <-h.lines:
-			if line == nil {
+			n = h.readLine(p, line)
+			if n == 0 {
 				continue
 			}
-			if h.shouldDropGeneration(line.Generation) {
-				pool.RecycleBytesBuffer(line.Content)
-				line.Recycle()
-				continue
-			}
-			if h.plain {
-				h.readBuf.Write(line.Content.Bytes())
-				h.readBuf.WriteByte(protocol.MessageDelimiter)
-			} else {
-				formatRemoteLine(
-					&h.readBuf,
-					h.hostname,
-					fmt.Sprintf("%3d", line.TransmittedPerc),
-					line.Count,
-					line.SourceID,
-					line.Content.Bytes(),
-				)
-			}
-			n = h.drainReadBuf(p)
-			pool.RecycleBytesBuffer(line.Content)
-			line.Recycle()
-			return
+			return n, nil
 
 		case <-h.done.Done():
-			err = io.EOF
-			return
+			// Producers finish before graceful shutdown closes done. Recheck
+			// every queue after observing it so EOF can never overtake a final
+			// protocol message that was ready in the same select.
+			if n, handled := h.output.tryRead(p, h.user, h.shouldDropGeneration); handled {
+				if n == 0 {
+					continue
+				}
+				return n, nil
+			}
+			if n, handled := h.tryReadQueued(p); handled {
+				if n == 0 {
+					continue
+				}
+				return n, nil
+			}
+			return 0, io.EOF
 
 		case <-poll:
 			// Wake periodically so output mode transitions don't leave this read blocked forever.
 			select {
 			case <-h.done.Done():
-				err = io.EOF
-				return
+				// Loop through the non-blocking queue drains before reporting
+				// EOF. A final message may have become ready at the same time as
+				// this timer and the shutdown signal.
+				continue
 			default:
 			}
 			return
 		}
 	}
+}
+
+func (h *baseHandler) tryReadQueued(p []byte) (int, bool) {
+	select {
+	case message := <-h.serverMessages:
+		return h.readServerMessage(p, message), true
+	default:
+	}
+	select {
+	case message := <-h.maprMessages:
+		return h.readMaprMessage(p, message), true
+	default:
+	}
+	select {
+	case queuedLine := <-h.lines:
+		return h.readLine(p, queuedLine), true
+	default:
+	}
+	return 0, false
+}
+
+func (h *baseHandler) readServerMessage(p []byte, message string) int {
+	generation, decodedMessage := decodeGeneratedMessage(message)
+	if h.shouldDropGeneration(generation) {
+		return 0
+	}
+	message = decodedMessage
+	if len(message) > 0 && message[0] == '.' {
+		h.readBuf.WriteString(message)
+		h.readBuf.WriteByte(protocol.MessageDelimiter)
+		return h.drainReadBuf(p)
+	}
+	if h.serverless || h.plain && (message == "" || message == "\n") {
+		return 0
+	}
+	formatServerMessage(&h.readBuf, h.hostname, message, h.plain)
+	return h.drainReadBuf(p)
+}
+
+func (h *baseHandler) readMaprMessage(p []byte, message string) int {
+	generation, decodedMessage := decodeGeneratedMessage(message)
+	if h.shouldDropGeneration(generation) {
+		return 0
+	}
+	h.readBuf.WriteString(protocol.AggregateMessageID)
+	h.readBuf.WriteString(protocol.FieldDelimiter)
+	h.readBuf.WriteString(h.hostname)
+	h.readBuf.WriteString(protocol.FieldDelimiter)
+	h.readBuf.WriteString(decodedMessage)
+	h.readBuf.WriteByte(protocol.MessageDelimiter)
+	return h.drainReadBuf(p)
+}
+
+func (h *baseHandler) readLine(p []byte, queuedLine *line.Line) int {
+	if queuedLine == nil {
+		return 0
+	}
+	if h.shouldDropGeneration(queuedLine.Generation) {
+		pool.RecycleBytesBuffer(queuedLine.Content)
+		queuedLine.Recycle()
+		return 0
+	}
+	if h.plain {
+		h.readBuf.Write(queuedLine.Content.Bytes())
+		h.readBuf.WriteByte(protocol.MessageDelimiter)
+	} else {
+		formatRemoteLine(
+			&h.readBuf,
+			h.hostname,
+			fmt.Sprintf("%3d", queuedLine.TransmittedPerc),
+			queuedLine.Count,
+			queuedLine.SourceID,
+			queuedLine.Content.Bytes(),
+		)
+	}
+	n := h.drainReadBuf(p)
+	pool.RecycleBytesBuffer(queuedLine.Content)
+	queuedLine.Recycle()
+	return n
 }
 
 // drainReadBuf copies as many buffered message bytes as fit into p and keeps
@@ -435,8 +505,14 @@ func (h *baseHandler) newCommandContext(parent context.Context) (context.Context
 	}
 
 	ctx, cancel := context.WithCancel(parent)
+	commandDone := h.done.Done()
+	if h.commandDone != nil {
+		commandDone = h.commandDone.Done()
+	}
 	go func() {
 		select {
+		case <-commandDone:
+			cancel()
 		case <-h.done.Done():
 			cancel()
 		case <-ctx.Done():
@@ -581,13 +657,46 @@ func (h *baseHandler) shutdown() {
 	h.done.Shutdown()
 }
 
-func (h *baseHandler) incrementActiveCommands() {
+func (h *baseHandler) beginCommand() bool {
+	h.commandMu.Lock()
+	defer h.commandMu.Unlock()
+	if h.stopping {
+		return false
+	}
+	h.commandWg.Add(1)
 	atomic.AddInt32(&h.activeCommands, 1)
+	return true
 }
 
 func (h *baseHandler) decrementActiveCommands() int32 {
 	atomic.AddInt32(&h.activeCommands, -1)
 	return atomic.LoadInt32(&h.activeCommands)
+}
+
+func (h *baseHandler) finishCommand() {
+	h.commandWg.Done()
+}
+
+func (h *baseHandler) isStopping() bool {
+	h.commandMu.Lock()
+	defer h.commandMu.Unlock()
+	return h.stopping
+}
+
+func (h *baseHandler) stopCommandWork() {
+	h.commandMu.Lock()
+	h.stopping = true
+	if h.commandDone != nil {
+		h.commandDone.Shutdown()
+	}
+	h.commandMu.Unlock()
+}
+
+func (h *baseHandler) outputAbortDone() <-chan struct{} {
+	if h.outputAbort == nil {
+		return nil
+	}
+	return h.outputAbort.Done()
 }
 
 // EnableDirectOutput enables output mode for direct line processing. It is an

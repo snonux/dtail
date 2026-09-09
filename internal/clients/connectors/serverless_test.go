@@ -50,6 +50,9 @@ func TestServerlessStartReturnsAfterCancellationAndDrainsServerOutput(t *testing
 	if got := serverHandler.shutdownCalls(); got != 1 {
 		t.Fatalf("server handler Shutdown calls = %d, want 1", got)
 	}
+	if got := serverHandler.gracefulShutdownCalls(); got != 1 {
+		t.Fatalf("server handler GracefulShutdown calls = %d, want 1", got)
+	}
 }
 
 type serverlessLifecycleFactory struct {
@@ -143,6 +146,7 @@ type serverlessLifecycleServer struct {
 	readStartedOnce sync.Once
 	mu              sync.Mutex
 	shutdownCount   int
+	gracefulCount   int
 }
 
 func newServerlessLifecycleServer(payload []byte) *serverlessLifecycleServer {
@@ -175,10 +179,23 @@ func (h *serverlessLifecycleServer) Shutdown() {
 	h.shutdownOnce.Do(func() { close(h.shutdown) })
 }
 
+func (h *serverlessLifecycleServer) GracefulShutdown() {
+	h.mu.Lock()
+	h.gracefulCount++
+	h.mu.Unlock()
+	h.Shutdown()
+}
+
 func (h *serverlessLifecycleServer) Done() <-chan struct{} { return h.shutdown }
 
 func (h *serverlessLifecycleServer) shutdownCalls() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.shutdownCount
+}
+
+func (h *serverlessLifecycleServer) gracefulShutdownCalls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.gracefulCount
 }

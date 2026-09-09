@@ -66,10 +66,19 @@ type Aggregate struct {
 	filesProcessed atomic.Uint64
 	// Synchronization for clean shutdown.
 	processorsWg sync.WaitGroup
+	processorMu  sync.Mutex
+	// processorsSealed prevents Wait from racing a late processor registration.
+	// Shutdown/Abort seals registration before waiting or returning; readers
+	// that reach processor creation after cancellation receive an inert processor.
+	processorsSealed bool
 	// Track active file processors
 	activeProcessors atomic.Int32
 	startOnce        sync.Once
 	started          chan struct{}
+	shutdownOnce     sync.Once
+	shutdownDone     chan struct{}
+	aborted          atomic.Bool
+	finalizing       atomic.Bool
 }
 
 type rawLine struct {
@@ -133,6 +142,7 @@ func NewAggregate(queryStr string, defaultLogFormat string) (*Aggregate, error) 
 		batchSize:     100, // Process 100 lines at a time
 		batch:         make([]rawLine, 0, 100),
 		started:       make(chan struct{}),
+		shutdownDone:  make(chan struct{}),
 	}, nil
 }
 
@@ -145,20 +155,43 @@ func (a *Aggregate) countGroups() int {
 
 // Shutdown the aggregation engine.
 func (a *Aggregate) Shutdown() {
-	a.done.Shutdown()
-	a.stopSerializeTicker()
-	a.processorsWg.Wait()
-	a.processBatchAndWait()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	a.doSerialize(ctx)
+	a.PrepareShutdown()
+	a.shutdownOnce.Do(func() {
+		defer close(a.shutdownDone)
+		a.sealProcessors()
+		a.done.Shutdown()
+		a.stopSerializeTicker()
+		a.processorsWg.Wait()
+		a.processBatchAndWait()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		a.doSerialize(ctx)
+	})
+	<-a.shutdownDone
+}
+
+// PrepareShutdown marks the aggregate for final serialization before its
+// command context is canceled. This closes the small race where Start could
+// otherwise return and let its caller close the result channel before a
+// concurrent graceful shutdown serializes the last batch.
+func (a *Aggregate) PrepareShutdown() {
+	a.finalizing.Store(true)
 }
 
 // Abort stops background processing without waiting for final serialization.
 // Session generation replacement uses this to preempt old query work immediately.
 func (a *Aggregate) Abort() {
+	a.aborted.Store(true)
+	a.sealProcessors()
 	a.done.Shutdown()
 	a.stopSerializeTicker()
+}
+
+// AbortAndWait stops the aggregate without producing a final result and waits
+// until every input processor has released its file and buffer resources.
+func (a *Aggregate) AbortAndWait() {
+	a.Abort()
+	a.processorsWg.Wait()
 }
 
 // FinishInput signals that all one-shot input (cat/grep style file reads)
@@ -210,9 +243,12 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 		a.serializationLoop(ctx)
 	}()
 
+	shouldFinalize := false
 	select {
 	case <-ctx.Done():
+		shouldFinalize = a.finalizing.Load() && !a.aborted.Load()
 	case <-a.done.Done():
+		shouldFinalize = a.finalizing.Load() && !a.aborted.Load()
 	case <-a.inputFinished.Done():
 		// All one-shot input is consumed: emit the final result and stop.
 		// Shutdown waits for the processors, drains the batch and performs
@@ -220,6 +256,12 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 		// command would block here until session teardown while keeping the
 		// session's active-command count nonzero — a circular wait that hung
 		// the client forever even though all results had been transmitted.
+		shouldFinalize = true
+	}
+	if shouldFinalize {
+		// Shutdown owns the final processor join and serialization. Waiting here
+		// keeps the producer channel valid until the final result has been sent,
+		// including when command cancellation and external shutdown race.
 		a.Shutdown()
 	}
 
@@ -500,25 +542,32 @@ func (a *Aggregate) swapGroupSets() map[string]*mapr.AggregateSet {
 
 // AggregateProcessor implements the line processor interface for aggregation.
 type AggregateProcessor struct {
-	aggregate *Aggregate
-	globID    string
-	flushOnce sync.Once
-	closeOnce sync.Once
+	aggregate  *Aggregate
+	globID     string
+	registered bool
+	flushOnce  sync.Once
+	closeOnce  sync.Once
 }
 
 // NewAggregateProcessor creates a new aggregate processor.
 func NewAggregateProcessor(aggregate *Aggregate, globID string) *AggregateProcessor {
-	aggregate.processorsWg.Add(1)
-	aggregate.activeProcessors.Add(1)
+	aggregate.processorMu.Lock()
+	registered := !aggregate.processorsSealed
+	if registered {
+		aggregate.processorsWg.Add(1)
+		aggregate.activeProcessors.Add(1)
+	}
+	aggregate.processorMu.Unlock()
 	return &AggregateProcessor{
-		aggregate: aggregate,
-		globID:    globID,
+		aggregate:  aggregate,
+		globID:     globID,
+		registered: registered,
 	}
 }
 
 // ProcessLine processes a line directly to the aggregate.
 func (p *AggregateProcessor) ProcessLine(lineContent *bytes.Buffer, _ uint64, sourceID string) error {
-	if p.aggregate.stopping() {
+	if !p.registered || p.aggregate.stopping() {
 		pool.RecycleBytesBuffer(lineContent)
 		return nil
 	}
@@ -527,7 +576,7 @@ func (p *AggregateProcessor) ProcessLine(lineContent *bytes.Buffer, _ uint64, so
 
 // Flush ensures all buffered data is processed.
 func (p *AggregateProcessor) Flush() error {
-	if p.aggregate.stopping() {
+	if !p.registered || p.aggregate.stopping() {
 		return nil
 	}
 
@@ -542,8 +591,16 @@ func (p *AggregateProcessor) Flush() error {
 func (p *AggregateProcessor) Close() error {
 	err := p.Flush()
 	p.closeOnce.Do(func() {
-		p.aggregate.activeProcessors.Add(-1)
-		p.aggregate.processorsWg.Done()
+		if p.registered {
+			p.aggregate.activeProcessors.Add(-1)
+			p.aggregate.processorsWg.Done()
+		}
 	})
 	return err
+}
+
+func (a *Aggregate) sealProcessors() {
+	a.processorMu.Lock()
+	a.processorsSealed = true
+	a.processorMu.Unlock()
 }

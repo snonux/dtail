@@ -65,6 +65,8 @@ func NewServerHandler(user *user.User, catLimiter,
 			serverMessages:      make(chan string, 10),
 			maprMessages:        make(chan string, 10),
 			ackCloseReceived:    make(chan struct{}),
+			commandDone:         internal.NewDone(),
+			outputAbort:         internal.NewDone(),
 			user:                user,
 			codec:               newProtocolCodec(user),
 			maxCommandFrameSize: serverCfg.MaxCommandFrameSize,
@@ -113,8 +115,12 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 
 	dlog.Server.Debug(h.user, "Handling user command", argc, args)
 	shutdownOnCompletion := shouldShutdownOnCommandCompletion(commandName)
-	h.incrementActiveCommands()
+	if !h.beginCommand() {
+		cancelCommandContext(ctx)
+		return
+	}
 	commandFinished := func() {
+		defer h.finishCommand()
 		activeCommands := h.decrementActiveCommands()
 		pendingFiles := atomic.LoadInt32(&h.pendingFiles)
 		dlog.Server.Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
@@ -128,7 +134,8 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		// Only shutdown if no active commands AND no pending files.
 		// AUTHKEY is a session-side effect command and should not terminate the shell
 		// because user commands may still follow in the same session.
-		if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 && !h.sessionState.keepAlive() {
+		if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 &&
+			!h.sessionState.keepAlive() && !h.isStopping() {
 			h.shutdown()
 		}
 	}
@@ -256,7 +263,7 @@ func (h *ServerHandler) newGeneratedMaprMessagesChannel(ctx context.Context, gen
 					return
 				}
 				h.send(h.maprMessages, encodeGeneratedMessage(generation, message))
-			case <-ctx.Done():
+			case <-h.outputAbortDone():
 				return
 			case <-h.done.Done():
 				return
@@ -267,4 +274,23 @@ func (h *ServerHandler) newGeneratedMaprMessagesChannel(ctx context.Context, gen
 		close(maprMessages)
 		<-done
 	}
+}
+
+// GracefulShutdown stops active serverless work, waits for every processor and
+// aggregate result to reach the protocol queues, then signals EOF. The
+// connector keeps Read running during this call and drains those queues before
+// it finalizes the client-side handler.
+func (h *ServerHandler) GracefulShutdown() {
+	ta := h.getAggregate()
+	if ta != nil {
+		ta.PrepareShutdown()
+	}
+	h.stopCommandWork()
+	if ta != nil {
+		dlog.Server.Info(h.user, "Finalizing serverless output aggregate")
+		ta.Shutdown()
+	}
+	h.commandWg.Wait()
+	h.flushOutput()
+	h.done.Shutdown()
 }

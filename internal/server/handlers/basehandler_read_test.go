@@ -3,6 +3,8 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -291,5 +293,35 @@ func TestBaseHandlerReadPlainEmptyLine(t *testing.T) {
 	}
 	if n != 1 || p[0] != protocol.MessageDelimiter {
 		t.Fatalf("expected single delimiter byte, got %q", p[:n])
+	}
+}
+
+func TestBaseHandlerReadDrainsQueuedMaprMessageBeforeShutdownEOF(t *testing.T) {
+	handler := newReadTestHandler()
+	handler.maprMessages <- "final aggregate"
+	handler.done.Shutdown()
+
+	p := make([]byte, 256)
+	n, err := handler.Read(p)
+	if err != nil {
+		t.Fatalf("Read() returned EOF before final message: %v", err)
+	}
+	if got := string(p[:n]); !strings.Contains(got, "final aggregate") {
+		t.Fatalf("Read() output = %q, want final aggregate", got)
+	}
+
+	n, err = handler.Read(p)
+	if n != 0 || err != io.EOF {
+		t.Fatalf("Read() after drain = (%d, %v), want (0, EOF)", n, err)
+	}
+}
+
+func TestBaseHandlerReadShutdownWithoutQueuedOutputReturnsEOF(t *testing.T) {
+	handler := newReadTestHandler()
+	handler.done.Shutdown()
+
+	n, err := handler.Read(make([]byte, 32))
+	if n != 0 || err != io.EOF {
+		t.Fatalf("Read() = (%d, %v), want (0, EOF)", n, err)
 	}
 }
