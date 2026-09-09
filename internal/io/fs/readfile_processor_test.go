@@ -66,6 +66,84 @@ func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
 	}
 }
 
+func TestServerlessPipeReadReturnsOnCancellationWithoutClosingInput(t *testing.T) {
+	resetCommonLogger(t)
+
+	input, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create input pipe: %v", err)
+	}
+	defer func() { _ = input.Close() }()
+	defer func() { _ = writer.Close() }()
+
+	processed := make(chan string, 1)
+	flushed := make(chan struct{}, 1)
+	processor := &signalingPipeProcessor{processed: processed, flushed: flushed}
+	reader := NewCatFile("", "-", make(chan string, 1), defaultMaxLineLength)
+	reader.readFile.pipeInput = input
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.StartWithProcessorOptimized(ctx, lcontext.LContext{}, processor, regex.NewNoop())
+	}()
+
+	if _, err := writer.WriteString("complete line\n"); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	select {
+	case got := <-processed:
+		if got != "complete line\n" {
+			t.Fatalf("processed line = %q, want complete input line", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipe input was not processed")
+	}
+
+	// Keep the write side open and idle. Cancellation must wake the poll-based
+	// reader rather than waiting for writer EOF.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("canceled pipe read returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled pipe read stayed blocked on held-open input")
+	}
+	select {
+	case <-flushed:
+	default:
+		t.Fatal("processor was not flushed before canceled pipe read returned")
+	}
+
+	// The reader borrows stdin; teardown must not close the caller-owned file.
+	if _, err := writer.WriteString("input remains open\n"); err != nil {
+		t.Fatalf("pipe input was closed by canceled read: %v", err)
+	}
+}
+
+type signalingPipeProcessor struct {
+	processed chan<- string
+	flushed   chan<- struct{}
+}
+
+func (p *signalingPipeProcessor) ProcessLine(content *bytes.Buffer, _ uint64, _ string) error {
+	p.processed <- content.String()
+	pool.RecycleBytesBuffer(content)
+	return nil
+}
+
+func (p *signalingPipeProcessor) Flush() error {
+	select {
+	case p.flushed <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (*signalingPipeProcessor) Close() error { return nil }
+
 // TestReadWithProcessorOptimizedDetectsTruncation proves that after the
 // per-line time.Since truncate gate was removed (task 2t0), the non-follow
 // read loop still detects truncation: when the periodicTruncateCheck goroutine
@@ -287,7 +365,7 @@ func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning
 		maxLineLength:  1,
 	}
 
-	reader, fd, decompressor, err := rf.makeReader()
+	reader, fd, decompressor, err := rf.makeReader(context.Background())
 	if fd != nil {
 		defer fd.Close()
 	}

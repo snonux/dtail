@@ -21,6 +21,10 @@ type gracefulServerlessHandler interface {
 	GracefulShutdown()
 }
 
+type contextGracefulServerlessHandler interface {
+	GracefulShutdownContext(context.Context)
+}
+
 // Serverless creates a server object directly without TCP.
 type Serverless struct {
 	handler        handlers.Handler
@@ -125,6 +129,9 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 
 	// Error tracking
 	errChan := make(chan error, 4)
+	clientOutputErr := make(chan error, 1)
+	outputDrainCtx, cancelOutputDrain := context.WithCancel(context.Background())
+	defer cancelOutputDrain()
 	var ioWg sync.WaitGroup
 
 	// Read from client handler
@@ -203,8 +210,13 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		defer close(serverOutputDone)
 		defer close(clientOutputStopped)
 		for data := range fromServer {
-			if _, err := s.handler.Write(data); err != nil {
-				errChan <- err
+			n, err := s.handler.Write(data)
+			if err == nil && n != len(data) {
+				err = io.ErrShortWrite
+			}
+			if err != nil {
+				clientOutputErr <- err
+				cancelOutputDrain()
 				return
 			}
 		}
@@ -234,6 +246,8 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 			dlog.Client.Trace("<-ctx.Done()")
 		case transferErr = <-errChan:
 			dlog.Client.Trace("Serverless transfer failed", transferErr)
+		case transferErr = <-clientOutputErr:
+			dlog.Client.Trace("Serverless client output failed", transferErr)
 		}
 	}
 
@@ -242,7 +256,11 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	// handler. In particular, MaprHandler.Shutdown performs its final aggregate
 	// flush, so it must run after the last server-to-client Write has completed.
 	dlog.Client.Debug("Terminating serverless connection")
-	if gracefulHandler, ok := serverHandler.(gracefulServerlessHandler); ok {
+	if outputDrainCtx.Err() != nil {
+		serverHandler.Shutdown()
+	} else if gracefulHandler, ok := serverHandler.(contextGracefulServerlessHandler); ok {
+		gracefulHandler.GracefulShutdownContext(outputDrainCtx)
+	} else if gracefulHandler, ok := serverHandler.(gracefulServerlessHandler); ok {
 		gracefulHandler.GracefulShutdown()
 	} else {
 		serverHandler.Shutdown()
@@ -257,6 +275,11 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	}
 	if transferErr != nil {
 		return transferErr
+	}
+	select {
+	case err := <-clientOutputErr:
+		return err
+	default:
 	}
 	select {
 	case err := <-errChan:

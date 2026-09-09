@@ -54,11 +54,10 @@ type Aggregate struct {
 	// contract.
 	serializeTicker atomic.Pointer[time.Ticker]
 	serialize       chan struct{}
-	// maprMessages is the output channel for serialized results. It is
-	// published once by Start and read by doSerialize; both accesses are
-	// guarded by serializeMu so the write in Start happens-before any read in
-	// doSerialize, even when doSerialize runs from a different goroutine via
-	// Shutdown.
+	// maprMessages is the output channel for serialized results. Start or its
+	// caller publishes it through PrepareOutput, and doSerialize reads it while
+	// holding the same mutex. This lets ServerHandler publish the destination
+	// before exposing the aggregate to concurrent graceful shutdown.
 	maprMessages chan<- string
 	// Stats
 	linesProcessed atomic.Uint64
@@ -163,6 +162,17 @@ func (a *Aggregate) countGroups() int {
 
 // Shutdown the aggregation engine.
 func (a *Aggregate) Shutdown() {
+	a.shutdown(nil)
+}
+
+// ShutdownContext finalizes the aggregation while output remains writable.
+// Canceling ctx abandons blocked final sends promptly; the unsent snapshot is
+// re-merged before shutdown completes so cancellation never corrupts state.
+func (a *Aggregate) ShutdownContext(ctx context.Context) {
+	a.shutdown(ctx)
+}
+
+func (a *Aggregate) shutdown(outputCtx context.Context) {
 	if !a.claimFinalization() {
 		return
 	}
@@ -173,9 +183,17 @@ func (a *Aggregate) Shutdown() {
 		a.stopSerializeTicker()
 		a.processorsWg.Wait()
 		a.processBatchAndWait()
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx := outputCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		a.doSerialize(ctx)
+		if outputCtx == nil {
+			a.doSerialize(ctx)
+		} else {
+			a.doSerializeCancelable(ctx)
+		}
 	})
 	<-a.shutdownDone
 }
@@ -235,9 +253,7 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 	// establishes a happens-before edge, so the read is never torn or stale.
 	// The internal serializationLoop reader is already ordered by the go
 	// statement below, but the external Shutdown reader needs this lock.
-	a.serializeMu.Lock()
-	a.maprMessages = maprMessages
-	a.serializeMu.Unlock()
+	a.PrepareOutput(maprMessages)
 	interval := a.query.Interval
 	if interval <= 0 {
 		interval = time.Second
@@ -287,6 +303,16 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 	// side of the channel right after Start returns.
 	a.done.Shutdown()
 	<-loopDone
+}
+
+// PrepareOutput publishes the serialization destination before Start is
+// scheduled. ServerHandler uses this barrier before exposing the aggregate to
+// concurrent graceful shutdown; direct callers may continue to rely on Start
+// publishing the same channel itself.
+func (a *Aggregate) PrepareOutput(maprMessages chan<- string) {
+	a.serializeMu.Lock()
+	a.maprMessages = maprMessages
+	a.serializeMu.Unlock()
 }
 
 // claimFinalization makes graceful final output the aggregate's terminal
@@ -482,6 +508,16 @@ func (a *Aggregate) Serialize(ctx context.Context) {
 
 // doSerialize performs the actual serialization.
 func (a *Aggregate) doSerialize(ctx context.Context) {
+	serializeCtx := ctx
+	if _, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		serializeCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+	}
+	a.doSerializeCancelable(serializeCtx)
+}
+
+func (a *Aggregate) doSerializeCancelable(ctx context.Context) {
 	a.serializeMu.Lock()
 	defer a.serializeMu.Unlock()
 
@@ -502,13 +538,7 @@ func (a *Aggregate) doSerialize(ctx context.Context) {
 		*groupSet = *aggregateSet
 	}
 
-	serializeCtx := ctx
-	if _, ok := ctx.Deadline(); ok {
-		var cancel context.CancelFunc
-		serializeCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-	}
-	remaining := group.Serialize(serializeCtx, a.maprMessages)
+	remaining := group.Serialize(ctx, a.maprMessages)
 	if len(remaining) > 0 {
 		a.mergeRemainingLocked(remaining)
 	}

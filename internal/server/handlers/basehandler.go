@@ -75,6 +75,7 @@ type baseHandler struct {
 	commandDone      *internal.Done
 	outputAbort      *internal.Done
 	commandMu        sync.Mutex
+	commandInitWg    sync.WaitGroup
 	commandWg        sync.WaitGroup
 	stopping         bool
 
@@ -664,8 +665,13 @@ func (h *baseHandler) beginCommand() bool {
 		return false
 	}
 	h.commandWg.Add(1)
+	h.commandInitWg.Add(1)
 	atomic.AddInt32(&h.activeCommands, 1)
 	return true
+}
+
+func (h *baseHandler) finishCommandInitialization() {
+	h.commandInitWg.Done()
 }
 
 func (h *baseHandler) decrementActiveCommands() int32 {
@@ -683,9 +689,16 @@ func (h *baseHandler) isStopping() bool {
 	return h.stopping
 }
 
-func (h *baseHandler) stopCommandWork() {
+// stopCommandAdmission prevents WaitGroup additions before graceful shutdown
+// waits for every already-admitted command to finish synchronous setup.
+func (h *baseHandler) stopCommandAdmission() {
 	h.commandMu.Lock()
 	h.stopping = true
+	h.commandMu.Unlock()
+}
+
+func (h *baseHandler) cancelCommandWork() {
+	h.commandMu.Lock()
 	if h.commandDone != nil {
 		h.commandDone.Shutdown()
 	}

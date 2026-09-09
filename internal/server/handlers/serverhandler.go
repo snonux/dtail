@@ -119,6 +119,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		cancelCommandContext(ctx)
 		return
 	}
+	defer h.finishCommandInitialization()
 	commandFinished := func() {
 		defer h.finishCommand()
 		activeCommands := h.decrementActiveCommands()
@@ -195,10 +196,15 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 		return
 	}
 
+	maprMessages, closeMaprMessages := h.newGeneratedMaprMessagesChannel(ctx, sessionGenerationFromContext(ctx))
+	// Bind the destination before publishing the aggregate pointer. Graceful
+	// shutdown waits for admitted command initialization and can therefore
+	// never observe an aggregate whose Start goroutine has not published its
+	// result channel yet.
+	aggregate.PrepareOutput(maprMessages)
 	// Use the atomic setter so concurrent reads from Shutdown, Aggregate,
 	// and resetSessionAggregates are race-free.
 	h.setAggregate(aggregate)
-	maprMessages, closeMaprMessages := h.newGeneratedMaprMessagesChannel(ctx, sessionGenerationFromContext(ctx))
 	go func() {
 		command.Start(ctx, maprMessages)
 		closeMaprMessages()
@@ -281,16 +287,54 @@ func (h *ServerHandler) newGeneratedMaprMessagesChannel(ctx context.Context, gen
 // connector keeps Read running during this call and drains those queues before
 // it finalizes the client-side handler.
 func (h *ServerHandler) GracefulShutdown() {
+	h.GracefulShutdownContext(context.Background())
+}
+
+// GracefulShutdownContext gracefully drains serverless output while ctx says
+// the client output consumer is available. If the consumer fails, teardown
+// switches to Shutdown so blocked producers and forwarding goroutines are
+// released without depending on an unread protocol queue.
+func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	h.stopCommandAdmission()
+	h.commandInitWg.Wait()
+	if ctx.Err() != nil {
+		h.Shutdown()
+		return
+	}
+
 	ta := h.getAggregate()
 	if ta != nil {
 		ta.PrepareShutdown()
 	}
-	h.stopCommandWork()
+	h.cancelCommandWork()
 	if ta != nil {
 		dlog.Server.Info(h.user, "Finalizing serverless output aggregate")
-		ta.Shutdown()
+		ta.ShutdownContext(ctx)
 	}
-	h.commandWg.Wait()
+	if ctx.Err() != nil {
+		h.Shutdown()
+		return
+	}
+
+	commandsDone := make(chan struct{})
+	go func() {
+		h.commandWg.Wait()
+		close(commandsDone)
+	}()
+	select {
+	case <-commandsDone:
+	case <-ctx.Done():
+		h.Shutdown()
+		return
+	}
 	h.flushOutput()
+	if ctx.Err() != nil {
+		h.Shutdown()
+		return
+	}
 	h.done.Shutdown()
 }

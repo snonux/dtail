@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"time"
@@ -21,7 +22,7 @@ import (
 func (f *readFile) StartWithProcessor(ctx context.Context, ltx lcontext.LContext,
 	processor line.Processor, re regex.Regex) error {
 
-	reader, fd, decompressor, err := f.makeReader()
+	reader, fd, decompressor, err := f.makeReader(ctx)
 	if fd != nil {
 		defer fd.Close()
 	}
@@ -45,6 +46,9 @@ func (f *readFile) StartWithProcessor(ctx context.Context, ltx lcontext.LContext
 
 	// Process file with direct callbacks instead of channels
 	err = f.readWithProcessor(ctx, fd, reader, truncate, ltx, processor, re)
+	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		err = nil
+	}
 
 	// Ensure any buffered data is flushed
 	if flushErr := processor.Flush(); flushErr != nil && err == nil {

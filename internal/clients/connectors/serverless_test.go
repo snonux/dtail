@@ -2,6 +2,7 @@ package connectors
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -52,6 +53,47 @@ func TestServerlessStartReturnsAfterCancellationAndDrainsServerOutput(t *testing
 	}
 	if got := serverHandler.gracefulShutdownCalls(); got != 1 {
 		t.Fatalf("server handler GracefulShutdown calls = %d, want 1", got)
+	}
+}
+
+func TestServerlessOutputFailureUsesAbruptShutdownAndReturnsError(t *testing.T) {
+	resetClientLogger(t)
+
+	wantErr := errors.New("client output failed")
+	clientHandler := &failingServerlessClient{
+		serverlessLifecycleClient: newServerlessLifecycleClient(),
+		err:                       wantErr,
+	}
+	serverHandler := newEagerServerlessLifecycleServer([]byte("trigger output failure"))
+	connector := NewServerless(
+		"test-user",
+		clientHandler,
+		nil,
+		sessionspec.Spec{},
+		false,
+		serverlessLifecycleFactory{handler: serverHandler},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- connector.handle(ctx, cancel)
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, wantErr) {
+			t.Fatalf("serverless handle error = %v, want %v", err, wantErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serverless teardown blocked after its output consumer failed")
+	}
+	if got := serverHandler.gracefulShutdownCalls(); got != 0 {
+		t.Fatalf("GracefulShutdown calls = %d, want abrupt shutdown", got)
+	}
+	if got := serverHandler.shutdownCalls(); got != 1 {
+		t.Fatalf("Shutdown calls = %d, want 1", got)
 	}
 }
 
@@ -147,6 +189,7 @@ type serverlessLifecycleServer struct {
 	mu              sync.Mutex
 	shutdownCount   int
 	gracefulCount   int
+	eager           bool
 }
 
 func newServerlessLifecycleServer(payload []byte) *serverlessLifecycleServer {
@@ -157,11 +200,19 @@ func newServerlessLifecycleServer(payload []byte) *serverlessLifecycleServer {
 	}
 }
 
+func newEagerServerlessLifecycleServer(payload []byte) *serverlessLifecycleServer {
+	h := newServerlessLifecycleServer(payload)
+	h.eager = true
+	return h
+}
+
 var _ serverHandlers.Handler = (*serverlessLifecycleServer)(nil)
 
 func (h *serverlessLifecycleServer) Read(p []byte) (int, error) {
 	h.readStartedOnce.Do(func() { close(h.readStarted) })
-	<-h.shutdown
+	if !h.eager || len(h.payload) == 0 {
+		<-h.shutdown
+	}
 	if len(h.payload) == 0 {
 		return 0, io.EOF
 	}
@@ -186,6 +237,10 @@ func (h *serverlessLifecycleServer) GracefulShutdown() {
 	h.Shutdown()
 }
 
+func (h *serverlessLifecycleServer) GracefulShutdownContext(context.Context) {
+	h.GracefulShutdown()
+}
+
 func (h *serverlessLifecycleServer) Done() <-chan struct{} { return h.shutdown }
 
 func (h *serverlessLifecycleServer) shutdownCalls() int {
@@ -198,4 +253,13 @@ func (h *serverlessLifecycleServer) gracefulShutdownCalls() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.gracefulCount
+}
+
+type failingServerlessClient struct {
+	*serverlessLifecycleClient
+	err error
+}
+
+func (h *failingServerlessClient) Write([]byte) (int, error) {
+	return 0, h.err
 }

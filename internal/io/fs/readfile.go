@@ -45,6 +45,10 @@ type readFile struct {
 	warnedAboutLongLine bool
 	// Maximum line length before a line is split.
 	maxLineLength int
+	// pipeInput overrides os.Stdin for serverless pipe reads. It exists so the
+	// cancellation and ownership contract can be tested without replacing the
+	// process-wide stdin descriptor.
+	pipeInput *os.File
 }
 
 // String returns the string representation of the readFile
@@ -95,9 +99,9 @@ func (f *readFile) warnAboutLongLine(ctx context.Context) bool {
 	}
 }
 
-func (f *readFile) makeReader() (*bufio.Reader, *os.File, io.Closer, error) {
+func (f *readFile) makeReader(ctx context.Context) (*bufio.Reader, *os.File, io.Closer, error) {
 	if f.filePath == "" && f.globID == "-" {
-		return f.makePipeReader()
+		return f.makePipeReader(ctx)
 	}
 	return f.makeFileReader()
 }
@@ -124,8 +128,12 @@ func (f *readFile) openFile() (*os.File, error) {
 	return os.Open(f.filePath)
 }
 
-func (f *readFile) makePipeReader() (*bufio.Reader, *os.File, io.Closer, error) {
-	return bufio.NewReader(os.Stdin), nil, nil, nil
+func (f *readFile) makePipeReader(ctx context.Context) (*bufio.Reader, *os.File, io.Closer, error) {
+	input := f.pipeInput
+	if input == nil {
+		input = os.Stdin
+	}
+	return bufio.NewReader(newContextFileReader(ctx, input)), nil, nil, nil
 }
 
 func (f *readFile) periodicTruncateCheck(ctx context.Context, truncate chan<- struct{}) {
@@ -197,4 +205,3 @@ func (f *readFile) truncated(fd *os.File) (bool, error) {
 	}
 	return false, nil
 }
-
