@@ -7,7 +7,6 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -34,7 +33,9 @@ func NewHealthClient(args config.Args) (*HealthClient, error) {
 		},
 	}
 
-	c.init()
+	if err := c.init(); err != nil {
+		return nil, fmt.Errorf("initialize health client: %w", err)
+	}
 	if err := c.makeConnections(c); err != nil {
 		return nil, err
 	}
@@ -47,18 +48,6 @@ func (c HealthClient) makeHandler(server string) handlers.Handler {
 
 func (c HealthClient) makeSessionSpec() (SessionSpec, error) {
 	return NewSessionSpec(c.Args), nil
-}
-
-func (c HealthClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build health session spec", err)
-	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build health commands from session spec", err)
-	}
-	return commands
 }
 
 // Start the health client.

@@ -1,6 +1,7 @@
 package brush
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -12,7 +13,10 @@ import (
 // TestMain ensures config.Client is populated with defaults so Colorfy can
 // reach the colourised branches without nil-dereferencing TermColors fields.
 func TestMain(m *testing.M) {
-	config.Setup(source.Client, &config.Args{ConfigFile: "none"}, nil)
+	if err := config.Setup(source.Client, &config.Args{ConfigFile: "none"}, nil); err != nil {
+		fmt.Fprintf(os.Stderr, "set up brush tests: %v\n", err)
+		os.Exit(1)
+	}
 	os.Exit(m.Run())
 }
 

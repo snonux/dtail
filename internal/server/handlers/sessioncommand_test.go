@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +24,71 @@ import (
 	userserver "github.com/mimecast/dtail/internal/user/server"
 )
 
+func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
+	resetServerLogger(t)
+	store := sshserver.NewAuthKeyStore(time.Hour, 5)
+	serverUser := &userserver.User{Name: "test-user"}
+
+	tests := []struct {
+		name string
+		new  func() error
+		want string
+	}{
+		{
+			name: "missing config",
+			new: func() error {
+				_, err := NewServerHandler(serverUser, nil, nil, nil, store)
+				return err
+			},
+			want: "server config",
+		},
+		{
+			name: "missing auth store",
+			new: func() error {
+				_, err := NewServerHandler(serverUser, nil, nil, &config.ServerConfig{}, nil)
+				return err
+			},
+			want: "auth-key store",
+		},
+		{
+			name: "missing health user",
+			new: func() error {
+				_, err := NewHealthHandler(nil)
+				return err
+			},
+			want: "user",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.new()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("constructor error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestHandlerConstructorsReturnHostnameError(t *testing.T) {
+	resetServerLogger(t)
+	original := handlerHostname
+	handlerHostname = func() (string, error) { return "", errors.New("hostname unavailable") }
+	t.Cleanup(func() { handlerHostname = original })
+
+	serverUser := &userserver.User{Name: "test-user"}
+	_, err := NewServerHandler(serverUser, nil, nil, &config.ServerConfig{},
+		sshserver.NewAuthKeyStore(time.Hour, 5))
+	if err == nil || !strings.Contains(err.Error(), "hostname unavailable") {
+		t.Fatalf("NewServerHandler error = %v, want wrapped hostname error", err)
+	}
+
+	_, err = NewHealthHandler(serverUser)
+	if err == nil || !strings.Contains(err.Error(), "hostname unavailable") {
+		t.Fatalf("NewHealthHandler error = %v, want wrapped hostname error", err)
+	}
+}
+
 func TestNewServerHandlerSendsAdvertisedServerCapabilities(t *testing.T) {
 	resetServerLogger(t)
 
@@ -35,13 +101,16 @@ func TestNewServerHandlerSendsAdvertisedServerCapabilities(t *testing.T) {
 		advertisedServerCapabilities = originalCapabilities
 	})
 
-	handler := NewServerHandler(
+	handler, err := NewServerHandler(
 		&userserver.User{Name: "session-capability-user"},
 		make(chan struct{}, 1),
 		make(chan struct{}, 1),
 		&config.ServerConfig{AuthKeyEnabled: true},
 		sshserver.NewAuthKeyStore(time.Hour, 5),
 	)
+	if err != nil {
+		t.Fatalf("NewServerHandler: %v", err)
+	}
 
 	message := readServerMessage(t, handler.serverMessages)
 	if !strings.HasPrefix(message, protocol.HiddenCapabilitiesPrefix) {

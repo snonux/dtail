@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"os"
 	"os/signal"
 	"sync"
@@ -26,7 +27,10 @@ func main() {
 	var pprof string
 	var shutdownAfter int
 
-	user.NoRootCheck()
+	if err := user.NoRootCheck(); err != nil {
+		fmt.Fprintf(os.Stderr, "unable to start dserver: %v\n", err)
+		os.Exit(1)
+	}
 
 	flag.BoolVar(&color, "color", false, "Enable ANSII terminal colors")
 	flag.BoolVar(&displayVersion, "version", false, "Display version")
@@ -41,7 +45,10 @@ func main() {
 
 	flag.Parse()
 	args.NoColor = !color
-	config.Setup(source.Server, &args, flag.Args())
+	if err := config.Setup(source.Server, &args, flag.Args()); err != nil {
+		fmt.Fprintf(os.Stderr, "unable to configure dserver: %v\n", err)
+		os.Exit(1)
+	}
 
 	if displayVersion {
 		runtimeCfg := config.CurrentRuntime()
@@ -84,7 +91,11 @@ func main() {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	dlog.Start(ctx, &wg, source.Server)
+	if err := dlog.Start(ctx, &wg, source.Server); err != nil {
+		wg.Done()
+		fmt.Fprintf(os.Stderr, "unable to initialize dserver logger: %v\n", err)
+		os.Exit(1)
+	}
 
 	var pprofServer *cli.PProfServer
 	if pprof != "" {

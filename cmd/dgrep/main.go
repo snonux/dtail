@@ -9,6 +9,7 @@ import (
 	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
 	"github.com/mimecast/dtail/internal/profiling"
 	"github.com/mimecast/dtail/internal/source"
@@ -24,7 +25,11 @@ func main() {
 	var legacyAuthKeyPath string
 	var pprof string
 	var profileFlags profiling.Flags
-	userName := user.Name()
+	userName, err := user.Name()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unable to determine dgrep user: %v\n", err)
+		os.Exit(1)
+	}
 
 	flag.BoolVar(&args.NoColor, "noColor", false, "Disable ANSII terminal colors")
 	flag.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")
@@ -63,14 +68,21 @@ func main() {
 	if warning := cli.ApplyAuthKeyPathCompatibility(&args, legacyAuthKeyPath, cli.FlagWasSet("auth-key-path")); warning != "" {
 		fmt.Fprintln(os.Stderr, warning)
 	}
-	config.Setup(source.Client, &args, flag.Args())
+	if err := config.Setup(source.Client, &args, flag.Args()); err != nil {
+		fmt.Fprintf(os.Stderr, "unable to configure dgrep: %v\n", err)
+		os.Exit(1)
+	}
 
 	if displayVersion {
 		runtimeCfg := config.CurrentRuntime()
 		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
 	}
 
-	runtime := cli.NewClientRuntime(context.Background(), profileFlags, "dgrep")
+	runtime, err := cli.NewClientRuntime(context.Background(), profileFlags, "dgrep")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unable to initialize dgrep runtime: %v\n", err)
+		os.Exit(1)
+	}
 
 	if grep != "" {
 		args.RegexStr = grep
@@ -81,8 +93,9 @@ func main() {
 
 	client, err := clients.NewGrepClient(args)
 	if err != nil {
-		runtime.Stop()
+		dlog.Client.Error("Unable to create dgrep client", err)
 		fmt.Fprintf(os.Stderr, "unable to create dgrep client: %v\n", err)
+		runtime.Stop()
 		os.Exit(1)
 	}
 

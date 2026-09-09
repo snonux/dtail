@@ -1,11 +1,11 @@
 package clients
 
 import (
+	"fmt"
 	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -27,7 +27,9 @@ func NewTailClient(args config.Args) (*TailClient, error) {
 		},
 	}
 
-	c.init()
+	if err := c.init(); err != nil {
+		return nil, fmt.Errorf("initialize tail client: %w", err)
+	}
 	if err := c.makeConnections(c); err != nil {
 		return nil, err
 	}
@@ -40,16 +42,4 @@ func (c TailClient) makeHandler(server string) handlers.Handler {
 
 func (c TailClient) makeSessionSpec() (SessionSpec, error) {
 	return NewSessionSpec(c.Args), nil
-}
-
-func (c TailClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build tail session spec", err)
-	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build tail commands from session spec", err)
-	}
-	return commands
 }

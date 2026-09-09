@@ -35,13 +35,20 @@ func main() {
 		version.PrintAndExit(false)
 	}
 
-	config.Setup(source.HealthCheck, &args, flag.Args())
+	if err := config.Setup(source.HealthCheck, &args, flag.Args()); err != nil {
+		fmt.Fprintf(os.Stderr, "CRITICAL: unable to configure dtailhealth: %v\n", err)
+		os.Exit(2)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var wg sync.WaitGroup
 	wg.Add(1)
-	dlog.Start(ctx, &wg, source.HealthCheck)
+	if err := dlog.Start(ctx, &wg, source.HealthCheck); err != nil {
+		wg.Done()
+		fmt.Fprintf(os.Stderr, "CRITICAL: unable to initialize dtailhealth logger: %v\n", err)
+		os.Exit(2)
+	}
 
 	var pprofServer *cli.PProfServer
 	if pprof != "" {

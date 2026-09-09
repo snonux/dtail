@@ -2,7 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,13 +14,31 @@ import (
 	"github.com/mimecast/dtail/internal/source"
 )
 
+func TestNewClientRuntimeReturnsLoggerStartError(t *testing.T) {
+	var loggerCtx context.Context
+	runtime, err := newClientRuntime(context.Background(), profiling.Flags{}, "test",
+		func(ctx context.Context, wg *sync.WaitGroup, process source.Source) error {
+			loggerCtx = ctx
+			return errors.New("logger setup failed")
+		})
+	if runtime != nil {
+		t.Fatalf("runtime = %#v, want nil", runtime)
+	}
+	if err == nil || !strings.Contains(err.Error(), "logger setup failed") {
+		t.Fatalf("newClientRuntime error = %v, want wrapped logger failure", err)
+	}
+	if loggerCtx == nil || loggerCtx.Err() == nil {
+		t.Fatal("logger context was not canceled after startup failure")
+	}
+}
+
 func TestClientRuntimeKeepsLoggerAliveUntilStop(t *testing.T) {
 	parent, cancelParent := context.WithCancel(context.Background())
 	loggerCtxCh := make(chan context.Context, 1)
 	loggerStopped := make(chan struct{})
 	loggerMessages := make(chan string, 1)
 	var logged string
-	startLogger := func(ctx context.Context, wg *sync.WaitGroup, process source.Source) {
+	startLogger := func(ctx context.Context, wg *sync.WaitGroup, process source.Source) error {
 		if process != source.Client {
 			t.Errorf("logger process = %v, want client", process)
 		}
@@ -42,8 +62,12 @@ func TestClientRuntimeKeepsLoggerAliveUntilStop(t *testing.T) {
 				}
 			}
 		}()
+		return nil
 	}
-	runtime := newClientRuntime(parent, profiling.Flags{}, "test", startLogger)
+	runtime, err := newClientRuntime(parent, profiling.Flags{}, "test", startLogger)
+	if err != nil {
+		t.Fatalf("new client runtime: %v", err)
+	}
 	loggerCtx := <-loggerCtxCh
 
 	cancelParent()

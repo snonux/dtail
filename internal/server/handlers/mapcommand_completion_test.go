@@ -62,8 +62,12 @@ func newMapTestHandler(t *testing.T) *ServerHandler {
 		MapreduceLogFormat: "default",
 		AuthKeyEnabled:     true,
 	}
-	return NewServerHandler(user, make(chan struct{}, 4), make(chan struct{}, 4),
+	handler, err := NewServerHandler(user, make(chan struct{}, 4), make(chan struct{}, 4),
 		serverCfg, sshserver.NewAuthKeyStore(time.Hour, 5))
+	if err != nil {
+		t.Fatalf("NewServerHandler: %v", err)
+	}
+	return handler
 }
 
 // wrapHandlerCommandsForJoin wraps every registered command handler so the

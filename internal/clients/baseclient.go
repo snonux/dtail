@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"math/rand"
 	"sync"
@@ -58,7 +59,7 @@ type baseClient struct {
 	Regex regex.Regex
 }
 
-func (c *baseClient) init() {
+func (c *baseClient) init() error {
 	dlog.Client.Debug("Initiating base client", c.Args.String())
 	if c.runtime == nil {
 		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime())
@@ -68,18 +69,19 @@ func (c *baseClient) init() {
 	if c.Args.RegexInvert {
 		flag = regex.Invert
 	}
-	regex, err := regex.New(c.Args.RegexStr, flag)
+	compiledRegex, err := regex.New(c.Args.RegexStr, flag)
 	if err != nil {
-		dlog.Client.FatalPanic(c.Regex, "Invalid regex!", err, regex)
+		return fmt.Errorf("compile regular expression %q: %w", c.Args.RegexStr, err)
 	}
-	c.Regex = regex
+	c.Regex = compiledRegex
 
 	if c.Args.Serverless {
-		return
+		return nil
 	}
 	c.sshAuthMethods, c.hostKeyCallback, c.authCloser = client.InitSSHAuthMethods(
 		c.Args.SSHAuthMethods, c.Args.SSHHostKeyCallback, c.Args.TrustAllHosts,
 		c.Args.SSHPrivateKeyFilePath, c.Args.SSHAgentKeyIndex)
+	return nil
 }
 
 func (c *baseClient) makeConnections(maker maker) error {
@@ -87,7 +89,10 @@ func (c *baseClient) makeConnections(maker maker) error {
 	if builder, ok := maker.(sessionSpecMaker); ok {
 		sessionSpec, err := builder.makeSessionSpec()
 		if err != nil {
-			dlog.Client.FatalPanic("unable to build session specification", err)
+			return fmt.Errorf("build session specification: %w", err)
+		}
+		if _, err := sessionSpec.Commands(); err != nil {
+			return fmt.Errorf("build session commands: %w", err)
 		}
 		c.sessionSpec = sessionSpec
 	}
@@ -97,8 +102,11 @@ func (c *baseClient) makeConnections(maker maker) error {
 		return err
 	}
 	for _, server := range discoveryService.ServerList() {
-		c.connections = append(c.connections, c.makeConnection(server,
-			c.sshAuthMethods, c.hostKeyCallback))
+		connection, err := c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
+		if err != nil {
+			return fmt.Errorf("create connection for %q: %w", server, err)
+		}
+		c.connections = append(c.connections, connection)
 	}
 
 	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause())
@@ -186,7 +194,16 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 		}
 
 		retryDelay = nextRetryDelay(retryDelay)
-		conn = c.makeConnection(conn.Server(), c.sshAuthMethods, c.hostKeyCallback)
+		server := conn.Server()
+		var err error
+		conn, err = c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
+		if err != nil {
+			dlog.Client.Error(server, "Unable to recreate connection", err)
+			if status == 0 {
+				status = 1
+			}
+			return
+		}
 		c.replaceConnection(i, conn)
 	}
 }
@@ -243,23 +260,27 @@ func newRetryRandom(seedOffset int) *rand.Rand {
 }
 
 func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMethod,
-	hostKeyCallback client.HostKeyCallback) connectors.Connector {
+	hostKeyCallback client.HostKeyCallback) (connectors.Connector, error) {
 	args, sessionSpec := c.snapshotConnectionState()
 	return c.makeConnectionWithState(server, sshAuthMethods, hostKeyCallback, args, sessionSpec)
 }
 
 func (c *baseClient) makeConnectionWithState(server string, sshAuthMethods []gossh.AuthMethod,
-	hostKeyCallback client.HostKeyCallback, args config.Args, sessionSpec SessionSpec) connectors.Connector {
+	hostKeyCallback client.HostKeyCallback, args config.Args, sessionSpec SessionSpec) (connectors.Connector, error) {
 	if c.connectionFactory != nil {
 		return c.connectionFactory(server, sshAuthMethods, hostKeyCallback,
-			sessionSpec, args.InteractiveQuery)
+			sessionSpec, args.InteractiveQuery), nil
+	}
+	commands, err := sessionSpec.Commands()
+	if err != nil {
+		return nil, fmt.Errorf("build commands for %q: %w", server, err)
 	}
 	if args.Serverless {
 		return connectors.NewServerless(c.UserName, c.maker.makeHandler(server),
-			c.maker.makeCommands(), sessionSpec, args.InteractiveQuery, c.runtime)
+			commands, sessionSpec, args.InteractiveQuery, c.runtime), nil
 	}
 	return connectors.NewServerConnection(server, c.UserName, sshAuthMethods,
-		hostKeyCallback, c.maker.makeHandler(server), c.maker.makeCommands(),
+		hostKeyCallback, c.maker.makeHandler(server), commands,
 		sessionSpec, args.InteractiveQuery, args.SSHPrivateKeyFilePath,
 		args.NoAuthKey, c.runtime)
 }

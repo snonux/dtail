@@ -125,7 +125,7 @@ func TestSendAuthKeyRegistrationCommand(t *testing.T) {
 func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
 	resetClientLogger(t)
 
-	conn := NewServerConnection(
+	conn, err := NewServerConnection(
 		"srv1",
 		"user",
 		nil,
@@ -138,6 +138,9 @@ func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
 		false,
 		testSSHSettings{port: 3022, timeout: 5 * time.Second},
 	)
+	if err != nil {
+		t.Fatalf("NewServerConnection: %v", err)
+	}
 
 	if conn.hostname != "srv1" {
 		t.Fatalf("Expected hostname srv1, got %q", conn.hostname)
@@ -153,7 +156,7 @@ func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
 func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
 	resetClientLogger(t)
 
-	conn := NewServerConnection(
+	conn, err := NewServerConnection(
 		"srv1",
 		"user",
 		nil,
@@ -166,12 +169,39 @@ func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
 		false,
 		testSSHSettings{},
 	)
+	if err != nil {
+		t.Fatalf("NewServerConnection: %v", err)
+	}
 
 	if conn.port != defaultSSHPort {
 		t.Fatalf("Expected default port %d, got %d", defaultSSHPort, conn.port)
 	}
 	if conn.config.Timeout != defaultSSHConnectTimeout {
 		t.Fatalf("Expected default timeout %v, got %v", defaultSSHConnectTimeout, conn.config.Timeout)
+	}
+}
+
+func TestNewServerConnectionReturnsInvalidPortError(t *testing.T) {
+	resetClientLogger(t)
+
+	conn, err := NewServerConnection(
+		"srv1:not-a-port",
+		"user",
+		nil,
+		testHostKeyCallback{},
+		&mockHandler{},
+		nil,
+		sessionspec.Spec{},
+		false,
+		"",
+		false,
+		nil,
+	)
+	if conn != nil {
+		t.Fatalf("connection = %#v, want nil", conn)
+	}
+	if err == nil || !strings.Contains(err.Error(), "srv1:not-a-port") {
+		t.Fatalf("NewServerConnection error = %v, want address and port parse error", err)
 	}
 }
 

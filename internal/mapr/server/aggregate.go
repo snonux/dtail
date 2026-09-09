@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,7 +128,7 @@ func NewAggregate(queryStr string, defaultLogFormat string) (*Aggregate, error) 
 
 	fqdn, err := config.Hostname()
 	if err != nil {
-		dlog.Server.Error(err)
+		return nil, fmt.Errorf("resolve aggregate hostname: %w", err)
 	}
 	s := strings.Split(fqdn, ".")
 
@@ -141,7 +142,7 @@ func NewAggregate(queryStr string, defaultLogFormat string) (*Aggregate, error) 
 	if err != nil {
 		dlog.Server.Error("Could not create log format parser. Falling back to 'generic'", err)
 		if logParser, err = logformat.NewParser("generic", query); err != nil {
-			dlog.Server.FatalPanic("Could not create log format parser", err)
+			return nil, fmt.Errorf("create fallback generic log format parser: %w", err)
 		}
 	}
 

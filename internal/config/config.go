@@ -1,6 +1,10 @@
 package config
 
-import "github.com/mimecast/dtail/internal/source"
+import (
+	"fmt"
+
+	"github.com/mimecast/dtail/internal/source"
+)
 
 const (
 	// DefaultMaxCommandFrameSize is the default maximum number of bytes that
@@ -53,21 +57,22 @@ func IsPasswordOnlyUser(userName string) bool {
 }
 
 // Setup the DTail configuration.
-func Setup(sourceProcess source.Source, args *Args, additionalArgs []string) {
+func Setup(sourceProcess source.Source, args *Args, additionalArgs []string) error {
 	initializer := initializer{
 		Common: newDefaultCommonConfig(),
 		Server: newDefaultServerConfig(),
 		Client: newDefaultClientConfig(),
 	}
 	if err := initializer.parseConfig(args); err != nil {
-		panic(err)
+		return fmt.Errorf("load configuration: %w", err)
 	}
 	if err := initializer.transformConfig(sourceProcess, args, additionalArgs); err != nil {
-		panic(err)
+		return fmt.Errorf("prepare configuration: %w", err)
 	}
 
 	// Make config accessible globally
 	Server = initializer.Server
 	Client = initializer.Client
 	Common = initializer.Common
+	return nil
 }

@@ -29,10 +29,7 @@ func InterruptChWithCancel(ctx context.Context, cancel context.CancelFunc) <-cha
 					case <-sigIntCh:
 						cancel()
 						// Wait longer to allow MapReduce cleanup, then force exit if still running
-						go func() {
-							time.Sleep(5 * time.Second)
-							os.Exit(0)
-						}()
+						go forceExitAfter(time.After(5*time.Second), os.Exit)
 					case <-time.After(time.Second * time.Duration(config.InterruptTimeoutS)):
 					}
 				default:
@@ -42,10 +39,7 @@ func InterruptChWithCancel(ctx context.Context, cancel context.CancelFunc) <-cha
 				// Cancel context to allow graceful shutdown (MapReduce outfile cleanup, etc.)
 				cancel()
 				// Wait longer to allow MapReduce cleanup, then force exit if still running
-				go func() {
-					time.Sleep(5 * time.Second)
-					os.Exit(0)
-				}()
+				go forceExitAfter(time.After(5*time.Second), os.Exit)
 			case <-ctx.Done():
 				return
 			}
@@ -71,20 +65,29 @@ func InterruptCh(ctx context.Context) <-chan string {
 				case statsCh <- "Hint: Hit Ctrl+C again to exit":
 					select {
 					case <-sigIntCh:
-						os.Exit(0)
+						forceExit(os.Exit)
 					case <-time.After(time.Second * time.Duration(config.InterruptTimeoutS)):
 					}
 				default:
 					// Stats already printed.
 				}
 			case <-sigOtherCh:
-				os.Exit(0)
+				forceExit(os.Exit)
 			case <-ctx.Done():
 				return
 			}
 		}
 	}()
 	return statsCh
+}
+
+func forceExitAfter(wait <-chan time.Time, exit func(int)) {
+	<-wait
+	forceExit(exit)
+}
+
+func forceExit(exit func(int)) {
+	exit(1)
 }
 
 // NoCh doesn't listen on a signal.

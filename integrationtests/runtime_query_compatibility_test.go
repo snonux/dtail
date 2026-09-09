@@ -167,9 +167,13 @@ func openSSHSession(ctx context.Context, t *testing.T, address string) (*gossh.C
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	userName, err := user.Name()
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("look up SSH test user: %w", err)
+	}
 
 	clientConfig := &gossh.ClientConfig{
-		User:            user.Name(),
+		User:            userName,
 		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
 		Timeout:         5 * time.Second,

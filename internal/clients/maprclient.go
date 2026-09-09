@@ -47,7 +47,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 
 	query, err := mapr.NewQuery(args.QueryStr)
 	if err != nil {
-		dlog.Client.FatalPanic(args.QueryStr, "Can't parse mapr query", err)
+		return nil, fmt.Errorf("parse mapreduce query %q: %w", args.QueryStr, err)
 	}
 
 	// Warn once, at plan time, about $-variables the selected parser cannot
@@ -73,7 +73,9 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 	dlog.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
 	c.setRegexForQuery(query)
-	c.baseClient.init()
+	if err := c.baseClient.init(); err != nil {
+		return nil, fmt.Errorf("initialize mapreduce client: %w", err)
+	}
 	if err := c.baseClient.makeConnections(&c); err != nil {
 		return nil, err
 	}
@@ -111,18 +113,6 @@ func (c *MaprClient) makeSessionSpec() (SessionSpec, error) {
 		sessionSpec.Query = snapshot.Query.RawQuery
 	}
 	return sessionSpec, nil
-}
-
-func (c *MaprClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build map session spec", err)
-	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build map commands from session spec", err)
-	}
-	return commands
 }
 
 func (c *MaprClient) periodicReportResults(ctx context.Context) {

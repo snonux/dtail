@@ -20,6 +20,8 @@ type initializer struct {
 
 type transformCb func(*initializer, *Args, []string) error
 
+var userHomeDirectory = os.UserHomeDir
+
 func (in *initializer) parseConfig(args *Args) error {
 	if strings.ToLower(args.ConfigFile) == "none" {
 		return nil
@@ -29,7 +31,7 @@ func (in *initializer) parseConfig(args *Args) error {
 		return in.parseSpecificConfig(args.ConfigFile)
 	}
 
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := userHomeDirectory()
 	if err == nil && homeDir != "" {
 		// Search candidate paths in priority order. The first existing file
 		// wins: ~/.config/dtail/dtail.conf takes precedence over ~/.dtail.conf.
@@ -183,7 +185,9 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 		args.ConnectionsPerCPU = DefaultConnectionsPerCPU
 	}
 
-	setupLogDirectory(in)
+	if err := setupLogDirectory(in); err != nil {
+		return err
+	}
 	if err := sourceCb(in, args, additionalArgs); err != nil {
 		return err
 	}
@@ -197,16 +201,17 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 	return nil
 }
 
-func setupLogDirectory(in *initializer) {
+func setupLogDirectory(in *initializer) error {
 	// Setup log directory.
 	if strings.Contains(in.Common.LogDir, "~/") {
-		homeDir, err := os.UserHomeDir()
+		homeDir, err := userHomeDirectory()
 		if err != nil {
-			panic(err)
+			return fmt.Errorf("resolve home directory for log path %q: %w", in.Common.LogDir, err)
 		}
 		in.Common.LogDir = strings.ReplaceAll(in.Common.LogDir, "~/",
 			fmt.Sprintf("%s/", homeDir))
 	}
+	return nil
 }
 
 func setupPlainMode(in *initializer, args *Args) {

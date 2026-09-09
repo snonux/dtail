@@ -33,7 +33,10 @@ func ensureTestDeps(t *testing.T) {
 		t.Cleanup(cancel)
 		var wg sync.WaitGroup
 		wg.Add(1)
-		dlog.Start(ctx, &wg, source.Server)
+		if err := dlog.Start(ctx, &wg, source.Server); err != nil {
+			wg.Done()
+			t.Fatalf("start test logger: %v", err)
+		}
 	}
 }
 

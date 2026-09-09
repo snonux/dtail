@@ -229,7 +229,10 @@ func ensureClientStdoutLogger(t *testing.T) {
 		t.Cleanup(cancel)
 		var wg sync.WaitGroup
 		wg.Add(1)
-		dlog.Start(ctx, &wg, source.Client)
+		if err := dlog.Start(ctx, &wg, source.Client); err != nil {
+			wg.Done()
+			t.Fatalf("start test logger: %v", err)
+		}
 	}
 }
 

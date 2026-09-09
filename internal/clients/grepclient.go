@@ -2,11 +2,11 @@ package clients
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -33,7 +33,9 @@ func NewGrepClient(args config.Args) (*GrepClient, error) {
 		},
 	}
 
-	c.init()
+	if err := c.init(); err != nil {
+		return nil, fmt.Errorf("initialize grep client: %w", err)
+	}
 	if err := c.makeConnections(c); err != nil {
 		return nil, err
 	}
@@ -46,16 +48,4 @@ func (c GrepClient) makeHandler(server string) handlers.Handler {
 
 func (c GrepClient) makeSessionSpec() (SessionSpec, error) {
 	return NewSessionSpec(c.Args), nil
-}
-
-func (c GrepClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build grep session spec", err)
-	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build grep commands from session spec", err)
-	}
-	return commands
 }

@@ -79,7 +79,7 @@ var _ Connector = (*ServerConnection)(nil)
 func NewServerConnection(server string, userName string,
 	authMethods []ssh.AuthMethod, hostKeyCallback client.HostKeyCallback,
 	handler handlers.Handler, commands []string, sessionSpec sessionspec.Spec,
-	interactive bool, authKeyPath string, authKeyDisabled bool, settings SSHSettings) *ServerConnection {
+	interactive bool, authKeyPath string, authKeyDisabled bool, settings SSHSettings) (*ServerConnection, error) {
 
 	dlog.Client.Debug(server, "Creating new connection", server, handler, commands)
 	sshConnectTimeout := defaultSSHConnectTimeout
@@ -113,8 +113,10 @@ func NewServerConnection(server string, userName string,
 		},
 	}
 
-	c.initServerPort(defaultPort)
-	return &c
+	if err := c.initServerPort(defaultPort); err != nil {
+		return nil, err
+	}
+	return &c, nil
 }
 
 // Server returns the server hostname connected to.
@@ -154,21 +156,28 @@ func (c *ServerConnection) RestoreCommittedSession(spec sessionspec.Spec, genera
 }
 
 // Attempt to parse the server port address from the provided server FQDN.
-func (c *ServerConnection) initServerPort(defaultPort int) {
-	parts := strings.Split(c.server, ":")
-	if len(parts) == 1 {
+func (c *ServerConnection) initServerPort(defaultPort int) error {
+	hostname, portText, hasPort := strings.Cut(c.server, ":")
+	if !hasPort {
 		c.hostname = c.server
 		c.port = defaultPort
-		return
+		return nil
 	}
 
-	dlog.Client.Debug("Parsing port from hostname", parts)
-	port, err := strconv.Atoi(parts[1])
+	dlog.Client.Debug("Parsing port from hostname", c.server)
+	port, err := strconv.Atoi(portText)
 	if err != nil {
-		dlog.Client.FatalPanic("Unable to parse client port", c.server, parts, err)
+		return fmt.Errorf("parse port in server address %q: %w", c.server, err)
 	}
-	c.hostname = parts[0]
+	if hostname == "" {
+		return fmt.Errorf("parse server address %q: hostname is empty", c.server)
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("parse port in server address %q: port must be between 1 and 65535", c.server)
+	}
+	c.hostname = hostname
 	c.port = port
+	return nil
 }
 
 // Start the connection to the server.

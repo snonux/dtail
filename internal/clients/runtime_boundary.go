@@ -70,7 +70,7 @@ func (r *clientRuntimeBoundary) NewServerlessHandler(userName string) (serverHan
 
 	switch userName {
 	case config.HealthUser:
-		return serverHandlers.NewHealthHandler(serverUser), nil
+		return serverHandlers.NewHealthHandler(serverUser)
 	default:
 		if r.serverCfg == nil {
 			return nil, fmt.Errorf("missing serverless server config")
@@ -88,7 +88,7 @@ func (r *clientRuntimeBoundary) NewServerlessHandler(userName string) (serverHan
 			make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentTails, 50)),
 			r.serverCfg,
 			keyStore,
-		), nil
+		)
 	}
 }
 

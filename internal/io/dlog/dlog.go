@@ -46,26 +46,36 @@ type DLog struct {
 }
 
 // new creates a new DTail logger.
-func new(sourceProcess, sourcePackage source.Source) *DLog {
+func new(sourceProcess, sourcePackage source.Source) (*DLog, error) {
+	if config.Common == nil {
+		return nil, fmt.Errorf("logger configuration is unavailable")
+	}
 	hostname, err := config.Hostname()
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("resolve logger hostname: %w", err)
 	}
 	logRotation := loggers.NewStrategy(config.Common.LogRotation)
 	loggerName := config.Common.Logger
-	level := newLevel(config.Common.LogLevel)
+	level, err := newLevel(config.Common.LogLevel)
+	if err != nil {
+		return nil, err
+	}
+	logger, err := loggers.Factory(sourceProcess.String(), loggerName, logRotation)
+	if err != nil {
+		return nil, err
+	}
 
 	return &DLog{
-		logger:        loggers.Factory(sourceProcess.String(), loggerName, logRotation),
+		logger:        logger,
 		sourceProcess: sourceProcess,
 		sourcePackage: sourcePackage,
 		maxLevel:      level,
 		hostname:      hostname,
-	}
+	}, nil
 }
 
 // Start logger(s).
-func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source) {
+func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -73,8 +83,16 @@ func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source)
 		Common.FatalPanic("Logger already started")
 	}
 
-	Client = new(sourceProcess, source.Client)
-	Server = new(sourceProcess, source.Server)
+	clientLogger, err := new(sourceProcess, source.Client)
+	if err != nil {
+		return fmt.Errorf("create client logger: %w", err)
+	}
+	serverLogger, err := new(sourceProcess, source.Server)
+	if err != nil {
+		return fmt.Errorf("create server logger: %w", err)
+	}
+	Client = clientLogger
+	Server = serverLogger
 	Common = Client
 	if sourceProcess == source.Server {
 		Common = Server
@@ -92,6 +110,7 @@ func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source)
 	}()
 
 	started = true
+	return nil
 }
 
 func (d *DLog) start(ctx context.Context, wg *sync.WaitGroup) {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -22,14 +23,14 @@ type ClientRuntime struct {
 }
 
 // NewClientRuntime starts logging and profiling for a client command.
-func NewClientRuntime(parent context.Context, profileFlags profiling.Flags, profileName string) *ClientRuntime {
+func NewClientRuntime(parent context.Context, profileFlags profiling.Flags, profileName string) (*ClientRuntime, error) {
 	return newClientRuntime(parent, profileFlags, profileName, dlog.Start)
 }
 
-type clientLoggerStarter func(context.Context, *sync.WaitGroup, source.Source)
+type clientLoggerStarter func(context.Context, *sync.WaitGroup, source.Source) error
 
 func newClientRuntime(parent context.Context, profileFlags profiling.Flags, profileName string,
-	startLogger clientLoggerStarter) *ClientRuntime {
+	startLogger clientLoggerStarter) (*ClientRuntime, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
@@ -48,8 +49,13 @@ func newClientRuntime(parent context.Context, profileFlags profiling.Flags, prof
 	}
 
 	runtime.wg.Add(1)
-	startLogger(loggerCtx, &runtime.wg, source.Client)
-	return runtime
+	if err := startLogger(loggerCtx, &runtime.wg, source.Client); err != nil {
+		runtime.wg.Done()
+		cancel()
+		loggerCancel()
+		return nil, fmt.Errorf("start client logger: %w", err)
+	}
+	return runtime, nil
 }
 
 // Context returns the runtime context.

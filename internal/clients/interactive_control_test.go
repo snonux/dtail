@@ -543,7 +543,7 @@ func (interactiveReloadHostKeyCallback) PromptAddHosts(context.Context) {}
 func newInteractiveReloadServerConnection(t *testing.T, server string, handler handlers.Handler, spec SessionSpec) *connectors.ServerConnection {
 	t.Helper()
 
-	conn := connectors.NewServerConnection(
+	conn, err := connectors.NewServerConnection(
 		server,
 		"user",
 		nil,
@@ -556,6 +556,9 @@ func newInteractiveReloadServerConnection(t *testing.T, server string, handler h
 		false,
 		nil,
 	)
+	if err != nil {
+		t.Fatalf("NewServerConnection: %v", err)
+	}
 	conn.RestoreCommittedSession(spec, 4, true)
 	return conn
 }
@@ -629,8 +632,6 @@ type interactiveReloadCommit struct {
 }
 
 func (*interactiveReloadMaker) makeHandler(string) handlers.Handler { return nil }
-
-func (*interactiveReloadMaker) makeCommands() []string { return nil }
 
 func (m *interactiveReloadMaker) commitSessionSpec(spec SessionSpec, generation uint64) error {
 	m.commits = append(m.commits, interactiveReloadCommit{

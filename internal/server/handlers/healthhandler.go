@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/mimecast/dtail/internal"
@@ -18,8 +19,11 @@ type HealthHandler struct {
 }
 
 // NewHealthHandler returns the server handler.
-func NewHealthHandler(user *user.User) *HealthHandler {
+func NewHealthHandler(user *user.User) (*HealthHandler, error) {
 	dlog.Server.Debug(user, "Creating new server health handler")
+	if user == nil {
+		return nil, fmt.Errorf("create health handler: user must not be nil")
+	}
 
 	// Read the frame-size limit from the global server config when available.
 	// The global config may be nil in tests that exercise the health handler in
@@ -44,13 +48,13 @@ func NewHealthHandler(user *user.User) *HealthHandler {
 	}
 	h.handleCommandCb = h.handleHealthCommand
 
-	fqdn, err := config.Hostname()
+	fqdn, err := handlerHostname()
 	if err != nil {
-		dlog.Server.FatalPanic(err)
+		return nil, fmt.Errorf("create health handler: resolve hostname: %w", err)
 	}
 	s := strings.Split(fqdn, ".")
 	h.hostname = s[0]
-	return &h
+	return &h, nil
 }
 
 func (h *HealthHandler) handleHealthCommand(ctx context.Context,

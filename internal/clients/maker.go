@@ -9,7 +9,6 @@ import (
 // and send different commands to the DTail server.
 type maker interface {
 	makeHandler(server string) handlers.Handler
-	makeCommands() (commands []string)
 }
 
 type sessionSpecMaker interface {

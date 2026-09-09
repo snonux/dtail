@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -43,19 +44,23 @@ var _ Handler = (*ServerHandler)(nil)
 
 var serverJournalCapabilityAvailable = detectJournalCapabilityAvailable()
 var advertisedServerCapabilities = serverCapabilities(runtime.GOOS, serverJournalCapabilityAvailable)
+var handlerHostname = config.Hostname
 
 // NewServerHandler returns the server handler.
 func NewServerHandler(user *user.User, catLimiter,
 	tailLimiter chan struct{}, serverCfg *config.ServerConfig,
-	authKeyStore *sshserver.AuthKeyStore) *ServerHandler {
+	authKeyStore *sshserver.AuthKeyStore) (*ServerHandler, error) {
 
 	dlog.Server.Debug(user, "Creating new server handler")
+	if user == nil {
+		return nil, fmt.Errorf("create server handler: user must not be nil")
+	}
 	if serverCfg == nil {
-		dlog.Server.FatalPanic("Missing server config in NewServerHandler")
+		return nil, fmt.Errorf("create server handler: server config must not be nil")
 	}
 
 	if authKeyStore == nil {
-		dlog.Server.FatalPanic("NewServerHandler: authKeyStore must not be nil")
+		return nil, fmt.Errorf("create server handler: auth-key store must not be nil")
 	}
 
 	h := ServerHandler{
@@ -82,16 +87,16 @@ func NewServerHandler(user *user.User, catLimiter,
 	h.output.configure(h.outputManagerConfig())
 	h.baseHandler.activeGeneration = h.sessionState.currentGeneration
 
-	fqdn, err := config.Hostname()
+	fqdn, err := handlerHostname()
 	if err != nil {
-		dlog.Server.FatalPanic(err)
+		return nil, fmt.Errorf("create server handler: resolve hostname: %w", err)
 	}
 
 	s := strings.Split(fqdn, ".")
 	h.hostname = s[0]
 	h.send(h.serverMessages, protocol.HiddenCapabilitiesPrefix+advertisedServerCapabilities)
 
-	return &h
+	return &h, nil
 }
 
 func detectJournalCapabilityAvailable() bool {

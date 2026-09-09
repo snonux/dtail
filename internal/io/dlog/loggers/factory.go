@@ -10,7 +10,7 @@ var factoryMap map[string]Logger
 var factoryMutex sync.Mutex
 
 // Factory is there to retrieve a logger based on various settings.
-func Factory(sourceName, loggerName string, logRotation Strategy) Logger {
+func Factory(sourceName, loggerName string, logRotation Strategy) (Logger, error) {
 	factoryMutex.Lock()
 	defer factoryMutex.Unlock()
 
@@ -35,10 +35,10 @@ func Factory(sourceName, loggerName string, logRotation Strategy) Logger {
 			singleton = newFout(logRotation)
 			factoryMap[id] = singleton
 		default:
-			panic(fmt.Sprintf("Unsupported logger type '%s'", loggerName))
+			return nil, fmt.Errorf("unsupported logger type %q", loggerName)
 		}
 	}
-	return singleton
+	return singleton, nil
 }
 
 // FactoryRotate invokes a log rotation of all loggers.

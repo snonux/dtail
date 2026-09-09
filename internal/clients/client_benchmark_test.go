@@ -76,7 +76,10 @@ func benchmarkDGrepWithSize(b *testing.B, lines int) {
 	defer cancel()
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
-	dlog.Start(ctx, wg, source.Client)
+	if err := dlog.Start(ctx, wg, source.Client); err != nil {
+		wg.Done()
+		b.Fatalf("start benchmark logger: %v", err)
+	}
 
 	// Create test data
 	testFile := setupBenchmarkData(b, lines)

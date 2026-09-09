@@ -263,17 +263,28 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 
 	// Create the appropriate handler based on user type
 	var handler handlers.Handler
+	var err error
 	switch user.Name {
 	case config.HealthUser:
-		handler = handlers.NewHealthHandler(user)
+		handler, err = handlers.NewHealthHandler(user)
 	default:
-		handler = handlers.NewServerHandler(
+		handler, err = handlers.NewServerHandler(
 			user,
 			s.catLimiter,
 			s.tailLimiter,
 			s.cfg.Server,
 			s.authKeyStore,
 		)
+	}
+	if err != nil {
+		dlog.Server.Error(user, "Unable to create session handler", err)
+		if replyErr := req.Reply(false, nil); replyErr != nil {
+			dlog.Server.Trace(user, fmt.Errorf("reply(false): %w", replyErr))
+		}
+		if closeErr := sshConn.Close(); closeErr != nil {
+			dlog.Server.Trace(user, fmt.Errorf("close failed session connection: %w", closeErr))
+		}
+		return
 	}
 
 	terminate := func() {

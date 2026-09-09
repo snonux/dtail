@@ -11,6 +11,7 @@ import (
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/profiling"
@@ -32,7 +33,11 @@ func main() {
 	var shutdownAfter int
 	var profileFlags profiling.Flags
 
-	userName := user.Name()
+	userName, err := user.Name()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unable to determine dtail user: %v\n", err)
+		os.Exit(1)
+	}
 
 	flag.BoolVar(&args.NoColor, "noColor", false, "Disable ANSII terminal colors")
 	flag.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")
@@ -80,7 +85,10 @@ func main() {
 	if grep != "" {
 		args.RegexStr = grep
 	}
-	config.Setup(source.Client, &args, flag.Args())
+	if err := config.Setup(source.Client, &args, flag.Args()); err != nil {
+		fmt.Fprintf(os.Stderr, "unable to configure dtail: %v\n", err)
+		os.Exit(1)
+	}
 	if displayVersion {
 		runtimeCfg := config.CurrentRuntime()
 		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
@@ -96,11 +104,17 @@ func main() {
 
 	baseCtx, timeoutCancel := applyClientDeadlines(context.Background(), shutdownAfter, args.Timeout)
 
-	runtime := cli.NewClientRuntime(baseCtx, profileFlags, "dtail")
+	runtime, err := cli.NewClientRuntime(baseCtx, profileFlags, "dtail")
+	if err != nil {
+		timeoutCancel()
+		fmt.Fprintf(os.Stderr, "unable to initialize dtail runtime: %v\n", err)
+		os.Exit(1)
+	}
 	exitWithError := func(err error) {
+		dlog.Client.Error("Unable to initialize dtail client", err)
+		fmt.Fprintf(os.Stderr, "unable to initialize dtail client: %v\n", err)
 		runtime.Stop()
 		timeoutCancel()
-		fmt.Fprintf(os.Stderr, "unable to initialize dtail client: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -116,7 +130,6 @@ func main() {
 	runtime.LogStartupMetrics()
 
 	var client clients.Client
-	var err error
 	args.Mode = omode.TailClient
 
 	switch args.QueryStr {

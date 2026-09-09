@@ -1,10 +1,41 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/source"
 )
+
+func TestSetupReturnsConfigDecodeError(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "invalid.conf")
+	writeTestConfig(t, configPath, `{not-json`)
+
+	err := Setup(source.Client, &Args{ConfigFile: configPath}, nil)
+	if err == nil {
+		t.Fatal("Setup succeeded with invalid JSON")
+	}
+	for _, want := range []string{"load configuration", "parse config file", configPath} {
+		if !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(want)) {
+			t.Fatalf("Setup error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestSetupLogDirectoryReturnsHomeLookupError(t *testing.T) {
+	original := userHomeDirectory
+	userHomeDirectory = func() (string, error) { return "", errors.New("lookup failed") }
+	t.Cleanup(func() { userHomeDirectory = original })
+
+	in := initializer{Common: &CommonConfig{LogDir: "~/logs"}}
+	err := setupLogDirectory(&in)
+	if err == nil || !strings.Contains(err.Error(), "lookup failed") {
+		t.Fatalf("setupLogDirectory error = %v, want wrapped lookup failure", err)
+	}
+}
 
 func TestParseConfigLoadsDefaultXDGConfig(t *testing.T) {
 	home := t.TempDir()

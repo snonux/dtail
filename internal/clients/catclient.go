@@ -2,11 +2,11 @@ package clients
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -32,7 +32,9 @@ func NewCatClient(args config.Args) (*CatClient, error) {
 		},
 	}
 
-	c.init()
+	if err := c.init(); err != nil {
+		return nil, fmt.Errorf("initialize cat client: %w", err)
+	}
 	if err := c.makeConnections(c); err != nil {
 		return nil, err
 	}
@@ -45,16 +47,4 @@ func (c CatClient) makeHandler(server string) handlers.Handler {
 
 func (c CatClient) makeSessionSpec() (SessionSpec, error) {
 	return NewSessionSpec(c.Args), nil
-}
-
-func (c CatClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build cat session spec", err)
-	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build cat commands from session spec", err)
-	}
-	return commands
 }
