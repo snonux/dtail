@@ -14,6 +14,7 @@ import (
 type ClientRuntime struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
+	loggerCancel   context.CancelFunc
 	wg             sync.WaitGroup
 	pprofServer    *PProfServer
 	profiler       *profiling.Profiler
@@ -22,19 +23,32 @@ type ClientRuntime struct {
 
 // NewClientRuntime starts logging and profiling for a client command.
 func NewClientRuntime(parent context.Context, profileFlags profiling.Flags, profileName string) *ClientRuntime {
+	return newClientRuntime(parent, profileFlags, profileName, dlog.Start)
+}
+
+type clientLoggerStarter func(context.Context, *sync.WaitGroup, source.Source)
+
+func newClientRuntime(parent context.Context, profileFlags profiling.Flags, profileName string,
+	startLogger clientLoggerStarter) *ClientRuntime {
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
+	// The work context may be canceled by a timeout or signal before clients
+	// finish their teardown reporting. Keep the logger alive until Stop so
+	// MaprClient's final aggregate and shutdown diagnostics can still be queued
+	// and flushed by every logger implementation.
+	loggerCtx, loggerCancel := context.WithCancel(context.WithoutCancel(parent))
 	runtime := &ClientRuntime{
 		ctx:            ctx,
 		cancel:         cancel,
+		loggerCancel:   loggerCancel,
 		profiler:       profiling.NewProfiler(profileFlags.ToConfig(profileName)),
 		profileEnabled: profileFlags.Enabled(),
 	}
 
 	runtime.wg.Add(1)
-	dlog.Start(ctx, &runtime.wg, source.Client)
+	startLogger(loggerCtx, &runtime.wg, source.Client)
 	return runtime
 }
 
@@ -86,6 +100,9 @@ func (r *ClientRuntime) Stop() {
 	r.profiler.Stop()
 	r.stopPProf()
 	r.cancel()
+	if r.loggerCancel != nil {
+		r.loggerCancel()
+	}
 	r.wg.Wait()
 }
 

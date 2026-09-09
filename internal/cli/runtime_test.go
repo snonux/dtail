@@ -3,12 +3,66 @@ package cli
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/profiling"
+	"github.com/mimecast/dtail/internal/source"
 )
+
+func TestClientRuntimeKeepsLoggerAliveUntilStop(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	loggerCtxCh := make(chan context.Context, 1)
+	loggerStopped := make(chan struct{})
+	loggerMessages := make(chan string, 1)
+	var logged string
+	startLogger := func(ctx context.Context, wg *sync.WaitGroup, process source.Source) {
+		if process != source.Client {
+			t.Errorf("logger process = %v, want client", process)
+		}
+		loggerCtxCh <- ctx
+		go func() {
+			defer wg.Done()
+			defer close(loggerStopped)
+			for {
+				select {
+				case message := <-loggerMessages:
+					logged += message
+				case <-ctx.Done():
+					for {
+						select {
+						case message := <-loggerMessages:
+							logged += message
+						default:
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+	runtime := newClientRuntime(parent, profiling.Flags{}, "test", startLogger)
+	loggerCtx := <-loggerCtxCh
+
+	cancelParent()
+	<-runtime.Context().Done()
+	if err := loggerCtx.Err(); err != nil {
+		t.Fatalf("logger stopped with work context: %v", err)
+	}
+
+	loggerMessages <- "final aggregate"
+	runtime.Stop()
+	select {
+	case <-loggerStopped:
+	default:
+		t.Fatal("runtime Stop returned before logger shutdown completed")
+	}
+	if logged != "final aggregate" {
+		t.Fatalf("post-cancellation logger output = %q, want final aggregate", logged)
+	}
+}
 
 func TestClientRuntimeStopShutsDownPProf(t *testing.T) {
 	prevClient := dlog.Client
