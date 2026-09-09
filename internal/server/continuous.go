@@ -13,13 +13,13 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-type continuousClient interface {
+type backgroundClient interface {
 	Start(context.Context, <-chan string) int
 }
 
 type continuous struct {
 	cfg              config.RuntimeConfig
-	newMaprClient    func(config.Args, clients.MaprClientMode) (continuousClient, error)
+	newMaprClient    func(config.Args, clients.MaprClientMode) (backgroundClient, error)
 	dayChangeWatcher func(context.Context) bool
 	retryInterval    time.Duration
 	now              func() time.Time
@@ -34,7 +34,7 @@ func newContinuous(cfg config.RuntimeConfig) *continuous {
 		ticker := time.NewTicker(d)
 		return ticker.C, ticker.Stop
 	}
-	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (continuousClient, error) {
+	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
 		return clients.NewMaprClient(args, mode)
 	}
 	c.dayChangeWatcher = c.waitForDayChange
@@ -87,6 +87,7 @@ func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 		ServersStr:        servers,
 		What:              files,
 		Mode:              omode.TailClient,
+		NoAuthKey:         true,
 		UserName:          config.ContinuousUser,
 	}
 

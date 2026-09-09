@@ -36,6 +36,10 @@ func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
 func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
 	authKeyEnabled bool, cacheDir string, keyStore *AuthKeyStore) (*gossh.Permissions, error) {
 
+	if config.IsPasswordOnlyUser(c.User()) {
+		return nil, fmt.Errorf("user %s does not support public key authentication", c.User())
+	}
+
 	user, err := user.New(c.User(), c.RemoteAddr().String(), nil)
 	if err != nil {
 		return nil, err

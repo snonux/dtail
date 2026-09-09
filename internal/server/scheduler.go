@@ -17,11 +17,17 @@ import (
 )
 
 type scheduler struct {
-	cfg config.RuntimeConfig
+	cfg           config.RuntimeConfig
+	newMaprClient func(config.Args, clients.MaprClientMode) (backgroundClient, error)
 }
 
 func newScheduler(cfg config.RuntimeConfig) *scheduler {
-	return &scheduler{cfg: cfg}
+	return &scheduler{
+		cfg: cfg,
+		newMaprClient: func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
+			return clients.NewMaprClient(args, mode)
+		},
+	}
 }
 
 func (s *scheduler) start(ctx context.Context) {
@@ -81,12 +87,13 @@ func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
 		ServersStr:        servers,
 		What:              files,
 		Mode:              omode.MapClient,
+		NoAuthKey:         true,
 		UserName:          config.ScheduleUser,
 	}
 
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(job.Name))
 	args.QueryStr = fmt.Sprintf("%s outfile %s", job.Query, outfile)
-	client, err := clients.NewMaprClient(args, clients.CumulativeMode)
+	client, err := s.newMaprClient(args, clients.CumulativeMode)
 	if err != nil {
 		dlog.Server.Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
 		return

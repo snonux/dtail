@@ -3,16 +3,35 @@ package server
 import (
 	"bytes"
 	"errors"
+	"net"
 	"os"
 	goUser "os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/config"
 	serveruser "github.com/mimecast/dtail/internal/user/server"
 
 	gossh "golang.org/x/crypto/ssh"
 )
+
+type testConnMetadata struct {
+	user string
+}
+
+type testAddr string
+
+func (m testConnMetadata) User() string          { return m.user }
+func (m testConnMetadata) SessionID() []byte     { return nil }
+func (m testConnMetadata) ClientVersion() []byte { return nil }
+func (m testConnMetadata) ServerVersion() []byte { return nil }
+func (m testConnMetadata) RemoteAddr() net.Addr  { return testAddr("remote") }
+func (m testConnMetadata) LocalAddr() net.Addr   { return testAddr("local") }
+
+func (a testAddr) Network() string { return "tcp" }
+func (a testAddr) String() string  { return string(a) }
 
 func TestAuthKeyStorePermissions(t *testing.T) {
 	// Create an isolated store for this test — there is no package-level global.
@@ -41,6 +60,28 @@ func TestAuthKeyStorePermissions(t *testing.T) {
 	unknownKey := testPublicKey(t, 22)
 	if permissions := authKeyStorePermissions(store, "alice", unknownKey); permissions != nil {
 		t.Fatalf("Expected nil permissions for unknown key")
+	}
+}
+
+func TestPublicKeyCallbackRejectsPasswordOnlyUsers(t *testing.T) {
+	store := NewAuthKeyStore(time.Hour, 5)
+	key := testPublicKey(t, 23)
+
+	for _, userName := range []string{config.HealthUser, config.ScheduleUser, config.ContinuousUser} {
+		t.Run(userName, func(t *testing.T) {
+			store.Add(userName, key)
+
+			permissions, err := publicKeyCallback(testConnMetadata{user: userName}, key, true, t.TempDir(), store)
+			if err == nil {
+				t.Fatal("Expected public key authentication to be rejected")
+			}
+			if permissions != nil {
+				t.Fatalf("Expected nil permissions, got %#v", permissions)
+			}
+			if !strings.Contains(err.Error(), "does not support public key authentication") {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
 	}
 }
 

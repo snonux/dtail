@@ -11,6 +11,8 @@ import (
 	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
+type immediateBackgroundClient struct{}
+
 func TestSameCalendarDay(t *testing.T) {
 	t.Parallel()
 
@@ -51,6 +53,34 @@ func TestSameCalendarDay(t *testing.T) {
 	}
 }
 
+func TestContinuousRunJobDisablesAuthKeyRegistration(t *testing.T) {
+	dlog.Server = &dlog.DLog{}
+
+	c := newContinuous(config.RuntimeConfig{
+		Server: &config.ServerConfig{SSHBindAddress: "127.0.0.1"},
+	})
+	var capturedArgs config.Args
+	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
+		capturedArgs = args
+		if mode != clients.NonCumulativeMode {
+			t.Fatalf("Unexpected client mode: %v", mode)
+		}
+		return immediateBackgroundClient{}, nil
+	}
+
+	job := config.Continuous{}
+	job.Name = "continuous-job"
+	job.Query = "select count(*)"
+	c.runJob(context.Background(), &job)
+
+	if !capturedArgs.NoAuthKey {
+		t.Fatal("Expected continuous client to disable AUTHKEY registration")
+	}
+	if capturedArgs.UserName != config.ContinuousUser {
+		t.Fatalf("Unexpected user name: %q", capturedArgs.UserName)
+	}
+}
+
 func TestContinuousRunJobsReleasesDayChangeWatcherAcrossRetries(t *testing.T) {
 	dlog.Server = &dlog.DLog{}
 
@@ -65,7 +95,7 @@ func TestContinuousRunJobsReleasesDayChangeWatcherAcrossRetries(t *testing.T) {
 	var watcherExits int32
 	started := make(chan struct{}, 1)
 	release := make(chan struct{}, 1)
-	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (continuousClient, error) {
+	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
 		return blockingContinuousClient{
 			started: started,
 			release: release,
@@ -171,6 +201,10 @@ func TestContinuousWaitForDayChangeDetectsMonthBoundary(t *testing.T) {
 type blockingContinuousClient struct {
 	started chan<- struct{}
 	release <-chan struct{}
+}
+
+func (immediateBackgroundClient) Start(context.Context, <-chan string) int {
+	return 0
 }
 
 func (f blockingContinuousClient) Start(context.Context, <-chan string) int {

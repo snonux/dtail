@@ -41,6 +41,17 @@ var Server *ServerConfig
 // Common holds configuration common to both client and server.
 var Common *CommonConfig
 
+// IsPasswordOnlyUser reports whether userName identifies an internal account
+// whose authorization depends on a password and server-side policy checks.
+func IsPasswordOnlyUser(userName string) bool {
+	switch userName {
+	case HealthUser, ScheduleUser, ContinuousUser:
+		return true
+	default:
+		return false
+	}
+}
+
 // Setup the DTail configuration.
 func Setup(sourceProcess source.Source, args *Args, additionalArgs []string) {
 	initializer := initializer{

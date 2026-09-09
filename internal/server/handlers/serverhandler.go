@@ -214,6 +214,11 @@ func (h *ServerHandler) handleAuthKeyCommand(_ context.Context, _ lcontext.LCont
 		return
 	}
 
+	if config.IsPasswordOnlyUser(h.user.Name) {
+		h.sendln(h.serverMessages, "AUTHKEY ERR unsupported user")
+		return
+	}
+
 	if argc < 2 || strings.TrimSpace(args[1]) == "" {
 		h.sendln(h.serverMessages, "AUTHKEY ERR missing public key")
 		return

@@ -55,6 +55,36 @@ func TestHandleAuthKeyCommandFeatureDisabled(t *testing.T) {
 	}
 }
 
+func TestHandleAuthKeyCommandRejectsPasswordOnlyUsers(t *testing.T) {
+	key := handlerTestPublicKey(t, 33)
+	keyArg := base64.StdEncoding.EncodeToString(key.Marshal())
+
+	tests := []struct {
+		name     string
+		userName string
+	}{
+		{name: "health", userName: config.HealthUser},
+		{name: "schedule", userName: config.ScheduleUser},
+		{name: "continuous", userName: config.ContinuousUser},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := newAuthKeyTestHandler(tt.userName, true)
+
+			handler.handleAuthKeyCommand(context.Background(), lcontext.LContext{}, 2,
+				[]string{"AUTHKEY", keyArg}, func() {})
+
+			if message := readServerMessage(t, handler.serverMessages); message != "AUTHKEY ERR unsupported user\n" {
+				t.Fatalf("Unexpected response: %q", message)
+			}
+			if handler.authKeyStore.Has(tt.userName, key) {
+				t.Fatal("Expected no key to be stored for password-only user")
+			}
+		})
+	}
+}
+
 func TestHandleAuthKeyCommandInvalidPayload(t *testing.T) {
 	handler := newAuthKeyTestHandler("authkey-invalid-user", true)
 
