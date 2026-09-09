@@ -163,6 +163,22 @@ func TestResolveSSHKeyPath(t *testing.T) {
 	}
 }
 
+func TestIntegrationSSHPrivateKeyPath(t *testing.T) {
+	t.Run("Environment", func(t *testing.T) {
+		t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/integration/id_rsa")
+		if got := IntegrationSSHPrivateKeyPath(); got != "/tmp/integration/id_rsa" {
+			t.Fatalf("IntegrationSSHPrivateKeyPath() = %q, want environment path", got)
+		}
+	})
+
+	t.Run("LegacyFallback", func(t *testing.T) {
+		t.Setenv("DTAIL_AUTH_KEY_PATH", "")
+		if got := IntegrationSSHPrivateKeyPath(); got != "./id_rsa" {
+			t.Fatalf("IntegrationSSHPrivateKeyPath() = %q, want ./id_rsa", got)
+		}
+	})
+}
+
 // TestProcessEnvVarsAuthKeyPathTakesPrecedence is a negative/regression test
 // that confirms the bug described in task k6 is fixed: when both
 // DTAIL_AUTH_KEY_PATH and DTAIL_SSH_PRIVATE_KEYFILE_PATH are set,

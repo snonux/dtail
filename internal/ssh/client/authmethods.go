@@ -61,9 +61,8 @@ func initKnownHostsAuthMethods(trustAllHosts bool,
 
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		if privateKeyPath == "" {
-			privateKeyPath = "./id_rsa"
+			privateKeyPath = config.IntegrationSSHPrivateKeyPath()
 		}
-		GeneratePrivatePublicKeyPairIfNotExists(privateKeyPath, 4096)
 	}
 
 	sshAuthMethods, agentCloser := collectKnownHostsAuthMethods(privateKeyPath, agentKeyIndex)
@@ -94,7 +93,7 @@ func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int) ([]gossh
 		home + "/.ssh/id_ed25519",
 	}
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		defaultPrivateKeyPaths = append([]string{"./id_rsa"}, defaultPrivateKeyPaths...)
+		defaultPrivateKeyPaths = append([]string{config.IntegrationSSHPrivateKeyPath()}, defaultPrivateKeyPaths...)
 	}
 
 	if privateKeyPath == "" {

@@ -198,6 +198,32 @@ func TestFindAuthorizedKeysPathUsesCacheDirWhenPresent(t *testing.T) {
 	}
 }
 
+func TestAuthorizedKeysPathForUserUsesIntegrationAuthKeyPath(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/dtail-integration-key/id_rsa")
+
+	path, err := authorizedKeysPathForUser(testServerUser(t, "alice"), "")
+	if err != nil {
+		t.Fatalf("authorizedKeysPathForUser failed: %v", err)
+	}
+	if got, want := path.Path(), "/tmp/dtail-integration-key/id_rsa.pub"; got != want {
+		t.Fatalf("authorizedKeysPathForUser returned %q, want %q", got, want)
+	}
+}
+
+func TestAuthorizedKeysPathForUserUsesLegacyIntegrationFallback(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "")
+
+	path, err := authorizedKeysPathForUser(testServerUser(t, "alice"), "")
+	if err != nil {
+		t.Fatalf("authorizedKeysPathForUser failed: %v", err)
+	}
+	if got, want := path.Path(), "./id_rsa.pub"; got != want {
+		t.Fatalf("authorizedKeysPathForUser returned %q, want %q", got, want)
+	}
+}
+
 func TestFindAuthorizedKeysPathIgnoresCwdForAbsoluteCacheDir(t *testing.T) {
 	// An absolute cache dir (e.g. /var/run/dserver/cache on the BSD
 	// packages) must resolve independently of the CWD dserver was

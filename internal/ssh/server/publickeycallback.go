@@ -138,8 +138,7 @@ type userLookupFunc func(string) (*goUser.User, error)
 
 func authorizedKeysPathForUser(user *user.User, cacheDir string) (fs.RootedPath, error) {
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		// In this case, we expect a pub key in the current directory.
-		return fs.NewRootedPath("./id_rsa.pub")
+		return fs.NewRootedPath(config.IntegrationSSHPrivateKeyPath() + ".pub")
 	}
 
 	cwd, err := os.Getwd()

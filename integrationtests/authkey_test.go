@@ -1,6 +1,7 @@
 package integrationtests
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	dtailssh "github.com/mimecast/dtail/internal/ssh"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -24,32 +26,24 @@ const (
 	dcatExpectedFirstOutput = "1 Sat  2 Oct 13:46:45 EEST 2021"
 )
 
-type ownedAuthKeyFile struct {
-	path string
-	info os.FileInfo
-}
-
-type authKeyPairOwnership struct {
-	privateKey *ownedAuthKeyFile
-	publicKey  *ownedAuthKeyFile
+type suiteAuthKey struct {
+	privateKeyPath string
+	tempDir        string
 }
 
 func TestMain(m *testing.M) {
-	var suiteAuthKeyPair authKeyPairOwnership
+	var authKey suiteAuthKey
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		var err error
-		suiteAuthKeyPair, err = ensureSuiteAuthKeyPair()
+		authKey, err = prepareSuiteAuthKey(generateAuthKeyPair)
 		if err != nil {
 			_, _ = fmt.Fprintf(os.Stderr, "Unable to prepare integration SSH key pair: %v\n", err)
-			if cleanupErr := suiteAuthKeyPair.cleanup(); cleanupErr != nil {
-				_, _ = fmt.Fprintf(os.Stderr, "Unable to remove incomplete generated integration SSH key pair: %v\n", cleanupErr)
-			}
 			os.Exit(1)
 		}
 	}
 
 	exitCode := m.Run()
-	if err := suiteAuthKeyPair.cleanup(); err != nil {
+	if err := authKey.cleanup(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "Unable to remove generated integration SSH key pair: %v\n", err)
 		exitCode = 1
 	}
@@ -67,209 +61,141 @@ func TestAuthKeyFastReconnectIntegration(t *testing.T) {
 	t.Run("PassphraseProtectedKey", testPassphraseKeyAuthKeyRegistrationAndFastReconnect)
 }
 
-func TestEnsureAuthKeyPair(t *testing.T) {
-	writePair := func(keyPath string) (authKeyPairOwnership, error) {
-		return writeAuthKeyPairFiles(keyPath, []byte("private key"), []byte("public key"))
-	}
+func TestPrepareSuiteAuthKeyCreatesPrivateTemporaryPair(t *testing.T) {
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "")
 
-	t.Run("Absent", func(t *testing.T) {
-		keyPath := filepath.Join(t.TempDir(), "id_rsa")
-		ownership, err := ensureAuthKeyPair(keyPath, writePair)
-		if err != nil {
-			t.Fatalf("Unable to ensure absent key pair: %v", err)
-		}
-		if ownership.privateKey == nil || ownership.publicKey == nil {
-			t.Fatalf("Expected ownership of both generated files, got %#v", ownership)
-		}
-		assertAuthKeyFile(t, keyPath, "private key")
-		assertAuthKeyFile(t, keyPath+".pub", "public key")
-		if err := ownership.cleanup(); err != nil {
-			t.Fatalf("Unable to clean up generated pair: %v", err)
-		}
-		assertAuthKeyPathMissing(t, keyPath)
-		assertAuthKeyPathMissing(t, keyPath+".pub")
-	})
-
-	t.Run("Existing", func(t *testing.T) {
-		keyPath := filepath.Join(t.TempDir(), "id_rsa")
-		writeTestFile(t, keyPath, "existing private")
-		writeTestFile(t, keyPath+".pub", "existing public")
-		writerCalled := false
-
-		ownership, err := ensureAuthKeyPair(keyPath, func(string) (authKeyPairOwnership, error) {
-			writerCalled = true
-			return authKeyPairOwnership{}, errors.New("unexpected writer call")
-		})
-		if err != nil {
-			t.Fatalf("Unable to preserve existing key pair: %v", err)
-		}
-		if writerCalled {
-			t.Fatal("Expected existing key pair to bypass generation")
-		}
-		if ownership.privateKey != nil || ownership.publicKey != nil {
-			t.Fatalf("Expected no ownership of existing files, got %#v", ownership)
-		}
-		assertAuthKeyFile(t, keyPath, "existing private")
-		assertAuthKeyFile(t, keyPath+".pub", "existing public")
-	})
-
-	for _, testCase := range []struct {
-		name         string
-		existingFile string
-	}{
-		{name: "PartialPrivate", existingFile: "private"},
-		{name: "PartialPublic", existingFile: "public"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			keyPath := filepath.Join(t.TempDir(), "id_rsa")
-			existingPath := keyPath
-			if testCase.existingFile == "public" {
-				existingPath += ".pub"
-			}
-			writeTestFile(t, existingPath, "existing")
-
-			ownership, err := ensureAuthKeyPair(keyPath, writePair)
-			if err == nil || !strings.Contains(err.Error(), "incomplete integration SSH key pair") {
-				t.Fatalf("Expected incomplete-pair error, got ownership=%#v err=%v", ownership, err)
-			}
-			if ownership.privateKey != nil || ownership.publicKey != nil {
-				t.Fatalf("Expected no ownership of partial existing pair, got %#v", ownership)
-			}
-			assertAuthKeyFile(t, existingPath, "existing")
-		})
-	}
-}
-
-func TestEnsureAuthKeyPairRejectsDanglingSymlinks(t *testing.T) {
-	for _, testCase := range []struct {
-		name       string
-		linkedFile string
-	}{
-		{name: "Private", linkedFile: "private"},
-		{name: "Public", linkedFile: "public"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			dir := t.TempDir()
-			keyPath := filepath.Join(dir, "id_rsa")
-			linkPath := keyPath
-			if testCase.linkedFile == "public" {
-				linkPath += ".pub"
-			}
-			targetPath := filepath.Join(dir, "outside-key")
-			if err := os.Symlink(targetPath, linkPath); err != nil {
-				t.Fatalf("Unable to create dangling symlink: %v", err)
-			}
-
-			ownership, err := ensureAuthKeyPair(keyPath, func(keyPath string) (authKeyPairOwnership, error) {
-				return writeAuthKeyPairFiles(keyPath, []byte("private"), []byte("public"))
-			})
-			if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-				t.Fatalf("Expected symlink rejection, got ownership=%#v err=%v", ownership, err)
-			}
-			if ownership.privateKey != nil || ownership.publicKey != nil {
-				t.Fatalf("Expected no ownership after symlink rejection, got %#v", ownership)
-			}
-			info, lstatErr := os.Lstat(linkPath)
-			if lstatErr != nil || info.Mode()&os.ModeSymlink == 0 {
-				t.Fatalf("Expected dangling symlink to remain, info=%v err=%v", info, lstatErr)
-			}
-			assertAuthKeyPathMissing(t, targetPath)
-		})
-	}
-}
-
-func TestEnsureAuthKeyPairRejectsNonRegularEntries(t *testing.T) {
-	for _, testCase := range []struct {
-		name          string
-		directoryFile string
-	}{
-		{name: "Private", directoryFile: "private"},
-		{name: "Public", directoryFile: "public"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			keyPath := filepath.Join(t.TempDir(), "id_rsa")
-			directoryPath := keyPath
-			if testCase.directoryFile == "public" {
-				directoryPath += ".pub"
-			}
-			if err := os.Mkdir(directoryPath, 0700); err != nil {
-				t.Fatalf("Unable to create directory at key path: %v", err)
-			}
-
-			ownership, err := ensureAuthKeyPair(keyPath, func(keyPath string) (authKeyPairOwnership, error) {
-				return writeAuthKeyPairFiles(keyPath, []byte("private"), []byte("public"))
-			})
-			if err == nil || !strings.Contains(err.Error(), "not a regular file") {
-				t.Fatalf("Expected non-regular entry rejection, got ownership=%#v err=%v", ownership, err)
-			}
-			if ownership.privateKey != nil || ownership.publicKey != nil {
-				t.Fatalf("Expected no ownership after directory rejection, got %#v", ownership)
-			}
-			info, lstatErr := os.Lstat(directoryPath)
-			if lstatErr != nil || !info.IsDir() {
-				t.Fatalf("Expected directory to remain, info=%v err=%v", info, lstatErr)
-			}
-		})
-	}
-}
-
-func TestEnsureAuthKeyPairHandlesCreateCollisions(t *testing.T) {
-	t.Run("Private", func(t *testing.T) {
-		keyPath := filepath.Join(t.TempDir(), "id_rsa")
-		ownership, err := ensureAuthKeyPair(keyPath, func(keyPath string) (authKeyPairOwnership, error) {
-			writeTestFile(t, keyPath, "colliding private")
-			return writeAuthKeyPairFiles(keyPath, []byte("generated private"), []byte("generated public"))
-		})
-		if err == nil || !errors.Is(err, os.ErrExist) {
-			t.Fatalf("Expected private-key collision, got ownership=%#v err=%v", ownership, err)
-		}
-		if ownership.privateKey != nil || ownership.publicKey != nil {
-			t.Fatalf("Expected no ownership of colliding private key, got %#v", ownership)
-		}
-		assertAuthKeyFile(t, keyPath, "colliding private")
-		assertAuthKeyPathMissing(t, keyPath+".pub")
-	})
-
-	t.Run("Public", func(t *testing.T) {
-		keyPath := filepath.Join(t.TempDir(), "id_rsa")
-		ownership, err := ensureAuthKeyPair(keyPath, func(keyPath string) (authKeyPairOwnership, error) {
-			writeTestFile(t, keyPath+".pub", "colliding public")
-			return writeAuthKeyPairFiles(keyPath, []byte("generated private"), []byte("generated public"))
-		})
-		if err == nil || !errors.Is(err, os.ErrExist) {
-			t.Fatalf("Expected public-key collision, got ownership=%#v err=%v", ownership, err)
-		}
-		if ownership.privateKey == nil || ownership.publicKey != nil {
-			t.Fatalf("Expected ownership of only generated private key, got %#v", ownership)
-		}
-		if cleanupErr := ownership.cleanup(); cleanupErr != nil {
-			t.Fatalf("Unable to clean up partially generated pair: %v", cleanupErr)
-		}
-		assertAuthKeyPathMissing(t, keyPath)
-		assertAuthKeyFile(t, keyPath+".pub", "colliding public")
-	})
-}
-
-func TestAuthKeyPairCleanupPreservesReplacement(t *testing.T) {
-	dir := t.TempDir()
-	keyPath := filepath.Join(dir, "id_rsa")
-	replacementPath := filepath.Join(dir, "replacement")
-	writeTestFile(t, replacementPath, "replacement private")
-
-	ownership, err := writeAuthKeyPairFiles(keyPath, []byte("generated private"), []byte("generated public"))
+	authKey, err := prepareSuiteAuthKey(generateAuthKeyPair)
 	if err != nil {
-		t.Fatalf("Unable to create owned key pair: %v", err)
+		t.Fatalf("prepare suite auth key: %v", err)
 	}
-	if err := os.Rename(replacementPath, keyPath); err != nil {
-		t.Fatalf("Unable to replace owned private key: %v", err)
+	if authKey.tempDir == "" || filepath.Dir(authKey.privateKeyPath) != authKey.tempDir {
+		t.Fatalf("Expected process-private key directory, got %#v", authKey)
+	}
+	if got := os.Getenv("DTAIL_AUTH_KEY_PATH"); got != authKey.privateKeyPath {
+		t.Fatalf("DTAIL_AUTH_KEY_PATH = %q, want %q", got, authKey.privateKeyPath)
+	}
+	assertFileMode(t, authKey.tempDir, 0700)
+	assertFileMode(t, authKey.privateKeyPath, 0600)
+	assertFileMode(t, authKey.privateKeyPath+".pub", 0600)
+	if err := validateAuthKeyPair(authKey.privateKeyPath); err != nil {
+		t.Fatalf("generated suite auth key is invalid: %v", err)
 	}
 
-	err = ownership.cleanup()
-	if err == nil || !strings.Contains(err.Error(), "no longer refers to the generated file") {
-		t.Fatalf("Expected replacement identity error, got %v", err)
+	if err := authKey.cleanup(); err != nil {
+		t.Fatalf("clean up suite auth key: %v", err)
 	}
-	assertAuthKeyFile(t, keyPath, "replacement private")
-	assertAuthKeyPathMissing(t, keyPath+".pub")
+	assertAuthKeyPathMissing(t, authKey.tempDir)
+	if got := os.Getenv("DTAIL_AUTH_KEY_PATH"); got != "" {
+		t.Fatalf("DTAIL_AUTH_KEY_PATH remained %q after cleanup", got)
+	}
+}
+
+func TestPrepareSuiteAuthKeyPreservesConfiguredPair(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "configured-id_rsa")
+	createAuthKeyPairAtPath(t, keyPath)
+	wantPrivate, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatalf("read configured private key: %v", err)
+	}
+	wantPublic, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		t.Fatalf("read configured public key: %v", err)
+	}
+	t.Setenv("DTAIL_AUTH_KEY_PATH", keyPath)
+
+	authKey, err := prepareSuiteAuthKey(func(string) error {
+		return errors.New("generator must not be called for configured key")
+	})
+	if err != nil {
+		t.Fatalf("prepare configured suite auth key: %v", err)
+	}
+	if authKey.privateKeyPath != keyPath || authKey.tempDir != "" {
+		t.Fatalf("Expected unowned configured key, got %#v", authKey)
+	}
+	if err := authKey.cleanup(); err != nil {
+		t.Fatalf("clean up configured suite auth key: %v", err)
+	}
+	assertFileContents(t, keyPath, wantPrivate)
+	assertFileContents(t, keyPath+".pub", wantPublic)
+	if got := os.Getenv("DTAIL_AUTH_KEY_PATH"); got != keyPath {
+		t.Fatalf("Configured DTAIL_AUTH_KEY_PATH changed to %q", got)
+	}
+}
+
+func TestPrepareSuiteAuthKeyRejectsInvalidConfiguredPair(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, string)
+	}{
+		{name: "Missing", setup: func(*testing.T, string) {}},
+		{name: "PrivateOnly", setup: func(t *testing.T, path string) {
+			writeTestFile(t, path, "not a private key")
+		}},
+		{name: "PublicOnly", setup: func(t *testing.T, path string) {
+			writeTestFile(t, path+".pub", "not a public key")
+		}},
+		{name: "InvalidPrivate", setup: func(t *testing.T, path string) {
+			createAuthKeyPairAtPath(t, path)
+			writeTestFile(t, path, "not a private key")
+		}},
+		{name: "InvalidPublic", setup: func(t *testing.T, path string) {
+			createAuthKeyPairAtPath(t, path)
+			writeTestFile(t, path+".pub", "not a public key")
+		}},
+		{name: "Mismatched", setup: func(t *testing.T, path string) {
+			createAuthKeyPairAtPath(t, path)
+			otherPath := filepath.Join(t.TempDir(), "other-id_rsa")
+			createAuthKeyPairAtPath(t, otherPath)
+			otherPublic, err := os.ReadFile(otherPath + ".pub")
+			if err != nil {
+				t.Fatalf("read other public key: %v", err)
+			}
+			if err := os.WriteFile(path+".pub", otherPublic, 0600); err != nil {
+				t.Fatalf("replace public key: %v", err)
+			}
+		}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			keyPath := filepath.Join(t.TempDir(), "configured-id_rsa")
+			test.setup(t, keyPath)
+			t.Setenv("DTAIL_AUTH_KEY_PATH", keyPath)
+
+			authKey, err := prepareSuiteAuthKey(func(string) error {
+				return errors.New("generator must not be called for configured key")
+			})
+			if err == nil || !strings.Contains(err.Error(), "configured integration SSH key pair") {
+				t.Fatalf("Expected configured-pair validation error, got key=%#v err=%v", authKey, err)
+			}
+			if authKey.tempDir != "" {
+				t.Fatalf("Invalid configured key unexpectedly became owned: %#v", authKey)
+			}
+		})
+	}
+}
+
+func TestPrepareSuiteAuthKeyCleansPartialGenerationFailure(t *testing.T) {
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "")
+	var generatedPath string
+
+	authKey, err := prepareSuiteAuthKey(func(keyPath string) error {
+		generatedPath = keyPath
+		if writeErr := os.WriteFile(keyPath, []byte("partial private key"), 0600); writeErr != nil {
+			return writeErr
+		}
+		return errors.New("forced key-generation write failure")
+	})
+	if err == nil || !strings.Contains(err.Error(), "forced key-generation write failure") {
+		t.Fatalf("Expected generation failure, got key=%#v err=%v", authKey, err)
+	}
+	if generatedPath == "" {
+		t.Fatal("Expected generator to receive a private-key path")
+	}
+	assertAuthKeyPathMissing(t, filepath.Dir(generatedPath))
+	if got := os.Getenv("DTAIL_AUTH_KEY_PATH"); got != "" {
+		t.Fatalf("DTAIL_AUTH_KEY_PATH changed to %q after failed generation", got)
+	}
 }
 
 func testAuthKeyRegistrationFastPathAndFallback(t *testing.T) {
@@ -627,50 +553,89 @@ func writeAuthKeyServerConfig(t *testing.T, ttlSeconds, maxPerUser int) string {
 	return cfgPath
 }
 
-func ensureSuiteAuthKeyPair() (authKeyPairOwnership, error) {
-	const keyPath = "id_rsa"
-	return ensureAuthKeyPair(keyPath, generateAuthKeyPair)
-}
-
-func ensureAuthKeyPair(keyPath string,
-	writePair func(string) (authKeyPairOwnership, error)) (authKeyPairOwnership, error) {
-	publicKeyPath := keyPath + ".pub"
-	privateKeyExists, err := inspectAuthKeyFile(keyPath)
-	if err != nil {
-		return authKeyPairOwnership{}, err
-	}
-	publicKeyExists, err := inspectAuthKeyFile(publicKeyPath)
-	if err != nil {
-		return authKeyPairOwnership{}, err
-	}
-
-	if privateKeyExists != publicKeyExists {
-		return authKeyPairOwnership{}, fmt.Errorf("incomplete integration SSH key pair: %s exists=%t, %s exists=%t",
-			keyPath, privateKeyExists, publicKeyPath, publicKeyExists)
-	}
-	if privateKeyExists {
-		return authKeyPairOwnership{}, nil
-	}
-
-	ownership, err := writePair(keyPath)
-	if err != nil {
-		return ownership, fmt.Errorf("generate integration SSH key pair: %w", err)
-	}
-	return ownership, nil
-}
-
-func inspectAuthKeyFile(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err == nil {
-		if !info.Mode().IsRegular() {
-			return false, fmt.Errorf("integration SSH key %s is not a regular file (mode %s)", path, info.Mode())
+func prepareSuiteAuthKey(generateKeyPair func(string) error) (suiteAuthKey, error) {
+	if configuredPath := os.Getenv("DTAIL_AUTH_KEY_PATH"); configuredPath != "" {
+		if err := validateAuthKeyPair(configuredPath); err != nil {
+			return suiteAuthKey{}, fmt.Errorf("validate configured integration SSH key pair: %w", err)
 		}
-		return true, nil
+		return suiteAuthKey{privateKeyPath: configuredPath}, nil
 	}
-	if os.IsNotExist(err) {
-		return false, nil
+
+	tempDir, err := os.MkdirTemp("", "dtail-integration-auth-key-")
+	if err != nil {
+		return suiteAuthKey{}, fmt.Errorf("create integration SSH key directory: %w", err)
 	}
-	return false, fmt.Errorf("inspect integration SSH key %s: %w", path, err)
+	keyPath := filepath.Join(tempDir, "id_rsa")
+	if err := generateKeyPair(keyPath); err != nil {
+		cleanupErr := os.RemoveAll(tempDir)
+		return suiteAuthKey{}, errors.Join(
+			fmt.Errorf("generate integration SSH key pair: %w", err),
+			wrapTempDirCleanupError(tempDir, cleanupErr),
+		)
+	}
+	if err := os.Setenv("DTAIL_AUTH_KEY_PATH", keyPath); err != nil {
+		cleanupErr := os.RemoveAll(tempDir)
+		return suiteAuthKey{}, errors.Join(
+			fmt.Errorf("set DTAIL_AUTH_KEY_PATH: %w", err),
+			wrapTempDirCleanupError(tempDir, cleanupErr),
+		)
+	}
+
+	return suiteAuthKey{privateKeyPath: keyPath, tempDir: tempDir}, nil
+}
+
+func validateAuthKeyPair(keyPath string) error {
+	for _, path := range []string{keyPath, keyPath + ".pub"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("integration SSH key %s is not a regular file (mode %s)", path, info.Mode())
+		}
+	}
+
+	privateSigner, err := dtailssh.PrivateKeySigner(keyPath)
+	if err != nil {
+		return fmt.Errorf("parse private key %s: %w", keyPath, err)
+	}
+	publicKeyBytes, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		return fmt.Errorf("read public key %s.pub: %w", keyPath, err)
+	}
+	publicKey, _, _, rest, err := gossh.ParseAuthorizedKey(publicKeyBytes)
+	if err != nil {
+		return fmt.Errorf("parse public key %s.pub: %w", keyPath, err)
+	}
+	if len(bytes.TrimSpace(rest)) != 0 {
+		return fmt.Errorf("public key %s.pub contains more than one key", keyPath)
+	}
+	if !bytes.Equal(privateSigner.PublicKey().Marshal(), publicKey.Marshal()) {
+		return fmt.Errorf("private and public keys do not match for %s", keyPath)
+	}
+	return nil
+}
+
+func wrapTempDirCleanupError(path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("remove integration SSH key directory %s: %w", path, err)
+}
+
+func (k suiteAuthKey) cleanup() error {
+	if k.tempDir == "" {
+		return nil
+	}
+
+	var unsetErr error
+	if os.Getenv("DTAIL_AUTH_KEY_PATH") == k.privateKeyPath {
+		if err := os.Unsetenv("DTAIL_AUTH_KEY_PATH"); err != nil {
+			unsetErr = fmt.Errorf("unset DTAIL_AUTH_KEY_PATH: %w", err)
+		}
+	}
+	removeErr := wrapTempDirCleanupError(k.tempDir, os.RemoveAll(k.tempDir))
+	return errors.Join(unsetErr, removeErr)
 }
 
 func createAuthKeyPair(t *testing.T, keyName string) string {
@@ -684,17 +649,15 @@ func createAuthKeyPair(t *testing.T, keyName string) string {
 func createAuthKeyPairAtPath(t *testing.T, keyPath string) {
 	t.Helper()
 
-	ownership, err := generateAuthKeyPair(keyPath)
-	if err != nil {
-		cleanupErr := ownership.cleanup()
-		t.Fatalf("Unable to create auth-key pair: %v", errors.Join(err, cleanupErr))
+	if err := generateAuthKeyPair(keyPath); err != nil {
+		t.Fatalf("Unable to create auth-key pair: %v", err)
 	}
 }
 
-func generateAuthKeyPair(keyPath string) (authKeyPairOwnership, error) {
+func generateAuthKeyPair(keyPath string) error {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return authKeyPairOwnership{}, fmt.Errorf("generate private key: %w", err)
+		return fmt.Errorf("generate private key: %w", err)
 	}
 
 	privateKeyBytes := pem.EncodeToMemory(&pem.Block{
@@ -717,101 +680,29 @@ func createPassphraseAuthKeyPair(t *testing.T, keyName, passphrase string) strin
 	if err != nil {
 		t.Fatalf("Unable to marshal encrypted private key: %v", err)
 	}
-	ownership, err := writeAuthKeyPair(keyPath, pem.EncodeToMemory(privateKeyBlock), &privateKey.PublicKey)
-	if err != nil {
-		cleanupErr := ownership.cleanup()
-		t.Fatalf("Unable to write auth-key pair: %v", errors.Join(err, cleanupErr))
+	if err := writeAuthKeyPair(keyPath, pem.EncodeToMemory(privateKeyBlock), &privateKey.PublicKey); err != nil {
+		t.Fatalf("Unable to write auth-key pair: %v", err)
 	}
 
 	return keyPath
 }
 
 func writeAuthKeyPair(keyPath string, privateKeyBytes []byte,
-	publicKey *rsa.PublicKey) (authKeyPairOwnership, error) {
+	publicKey *rsa.PublicKey) error {
 	sshPublicKey, err := gossh.NewPublicKey(publicKey)
 	if err != nil {
-		return authKeyPairOwnership{}, fmt.Errorf("generate public key: %w", err)
+		return fmt.Errorf("generate public key: %w", err)
 	}
-	return writeAuthKeyPairFiles(keyPath, privateKeyBytes, gossh.MarshalAuthorizedKey(sshPublicKey))
+	return writeAuthKeyBytes(keyPath, privateKeyBytes, gossh.MarshalAuthorizedKey(sshPublicKey))
 }
 
-func writeAuthKeyPairFiles(keyPath string, privateKeyBytes,
-	publicKeyBytes []byte) (authKeyPairOwnership, error) {
-	var ownership authKeyPairOwnership
-	privateKey, err := writeAuthKeyFile(keyPath, privateKeyBytes)
-	if err != nil {
-		return ownership, fmt.Errorf("write private key: %w", err)
+func writeAuthKeyBytes(keyPath string, privateKeyBytes,
+	publicKeyBytes []byte) error {
+	if err := os.WriteFile(keyPath, privateKeyBytes, 0600); err != nil {
+		return fmt.Errorf("write private key %s: %w", keyPath, err)
 	}
-	ownership.privateKey = privateKey
-
-	publicKey, err := writeAuthKeyFile(keyPath+".pub", publicKeyBytes)
-	if err != nil {
-		return ownership, fmt.Errorf("write public key: %w", err)
-	}
-	ownership.publicKey = publicKey
-	return ownership, nil
-}
-
-func writeAuthKeyFile(path string, contents []byte) (*ownedAuthKeyFile, error) {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("create %s: %w", path, err)
-	}
-
-	info, statErr := file.Stat()
-	if statErr != nil {
-		closeErr := file.Close()
-		return nil, errors.Join(
-			fmt.Errorf("inspect created %s: %w", path, statErr),
-			wrapAuthKeyCloseError(path, closeErr),
-		)
-	}
-	ownedFile := &ownedAuthKeyFile{path: path, info: info}
-
-	if _, writeErr := file.Write(contents); writeErr != nil {
-		closeErr := file.Close()
-		return ownedFile, errors.Join(
-			fmt.Errorf("write %s: %w", path, writeErr),
-			wrapAuthKeyCloseError(path, closeErr),
-		)
-	}
-	if err := file.Close(); err != nil {
-		return ownedFile, fmt.Errorf("close %s: %w", path, err)
-	}
-	return ownedFile, nil
-}
-
-func wrapAuthKeyCloseError(path string, err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("close %s: %w", path, err)
-}
-
-func (o authKeyPairOwnership) cleanup() error {
-	return errors.Join(
-		removeOwnedAuthKeyFile(o.privateKey),
-		removeOwnedAuthKeyFile(o.publicKey),
-	)
-}
-
-func removeOwnedAuthKeyFile(ownedFile *ownedAuthKeyFile) error {
-	if ownedFile == nil {
-		return nil
-	}
-
-	currentInfo, err := os.Lstat(ownedFile.path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("inspect generated %s before removal: %w", ownedFile.path, err)
-	}
-	if !currentInfo.Mode().IsRegular() || !os.SameFile(ownedFile.info, currentInfo) {
-		return fmt.Errorf("refusing to remove %s: path no longer refers to the generated file", ownedFile.path)
-	}
-	if err := os.Remove(ownedFile.path); err != nil {
-		return fmt.Errorf("remove %s: %w", ownedFile.path, err)
+	if err := os.WriteFile(keyPath+".pub", publicKeyBytes, 0600); err != nil {
+		return fmt.Errorf("write public key %s.pub: %w", keyPath, err)
 	}
 	return nil
 }
@@ -823,24 +714,27 @@ func writeTestFile(t *testing.T, path, contents string) {
 	}
 }
 
-func assertAuthKeyFile(t *testing.T, path, expectedContents string) {
+func assertFileMode(t *testing.T, path string, expected os.FileMode) {
 	t.Helper()
-	info, err := os.Lstat(path)
+
+	info, err := os.Stat(path)
 	if err != nil {
-		t.Fatalf("Unable to inspect auth-key file %s: %v", path, err)
+		t.Fatalf("Unable to inspect %s: %v", path, err)
 	}
-	if !info.Mode().IsRegular() {
-		t.Fatalf("Expected %s to be a regular file, mode=%s", path, info.Mode())
+	if got := info.Mode().Perm(); got != expected {
+		t.Fatalf("Permissions for %s = %04o, want %04o", path, got, expected)
 	}
-	if info.Mode().Perm()&0077 != 0 {
-		t.Fatalf("Expected %s permissions to exclude group/other access, mode=%s", path, info.Mode())
-	}
+}
+
+func assertFileContents(t *testing.T, path string, expected []byte) {
+	t.Helper()
+
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("Unable to read auth-key file %s: %v", path, err)
+		t.Fatalf("Unable to read %s: %v", path, err)
 	}
-	if string(contents) != expectedContents {
-		t.Fatalf("Unexpected contents for %s: got %q want %q", path, contents, expectedContents)
+	if !bytes.Equal(contents, expected) {
+		t.Fatalf("Unexpected contents for %s", path)
 	}
 }
 

@@ -2,9 +2,22 @@ package config
 
 import "os"
 
+const legacyIntegrationSSHPrivateKeyPath = "./id_rsa"
+
 // Env returns true when a given environment variable is set to "yes".
 func Env(env string) bool {
 	return "yes" == os.Getenv(env)
+}
+
+// IntegrationSSHPrivateKeyPath returns the private key used to bootstrap
+// integration-test SSH connections. TestMain normally provides a process-local
+// key through DTAIL_AUTH_KEY_PATH; the relative path preserves compatibility
+// with older integration harnesses that provide ./id_rsa themselves.
+func IntegrationSSHPrivateKeyPath() string {
+	if path := os.Getenv("DTAIL_AUTH_KEY_PATH"); path != "" {
+		return path
+	}
+	return legacyIntegrationSSHPrivateKeyPath
 }
 
 // Hostname returns the current hostname. It can be overriden with
@@ -16,13 +29,13 @@ func Hostname() (string, error) {
 	if Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		return "integrationtest", nil
 	}
-	
+
 	// Check for manual hostname override
 	hostname := os.Getenv("DTAIL_HOSTNAME_OVERRIDE")
 	if len(hostname) > 0 {
 		return hostname, nil
 	}
-	
+
 	// Return actual hostname
 	return os.Hostname()
 }

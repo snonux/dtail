@@ -573,17 +573,12 @@ func currentUsername(t *testing.T) string {
 func readIntegrationPublicKey(t *testing.T) []byte {
 	t.Helper()
 
-	for _, path := range []string{"id_rsa.pub", "../id_rsa.pub"} {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			return data
-		}
-		if !os.IsNotExist(err) {
-			t.Fatalf("read integration public key %s: %v", path, err)
-		}
+	path := config.IntegrationSSHPrivateKeyPath() + ".pub"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read integration public key %s: %v", path, err)
 	}
-	t.Fatal("integration public key id_rsa.pub not found")
-	return nil
+	return data
 }
 
 type dJournalExtendedServer struct {

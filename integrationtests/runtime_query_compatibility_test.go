@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/user"
 
@@ -192,19 +193,17 @@ func openSSHSession(ctx context.Context, t *testing.T, address string) (*gossh.C
 }
 
 func loadTestSigner() (gossh.Signer, error) {
-	for _, path := range []string{"id_rsa", "../id_rsa"} {
-		keyBytes, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-
-		signer, err := gossh.ParsePrivateKey(keyBytes)
-		if err == nil {
-			return signer, nil
-		}
+	path := config.IntegrationSSHPrivateKeyPath()
+	keyBytes, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read test ssh private key %s: %w", path, err)
 	}
 
-	return nil, fmt.Errorf("unable to load test ssh private key from id_rsa")
+	signer, err := gossh.ParsePrivateKey(keyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse test ssh private key %s: %w", path, err)
+	}
+	return signer, nil
 }
 
 func waitForSSHOutputContains(ctx context.Context, session *gossh.Session, lines <-chan string, needle string) (string, bool) {

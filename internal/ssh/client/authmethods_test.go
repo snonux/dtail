@@ -192,3 +192,60 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 		t.Fatalf("Unexpected auth method call order.\nexpected: %v\ngot:      %v", expectedOrder, callOrder)
 	}
 }
+
+func TestCollectKnownHostsSignersIncludesIntegrationFallbackForExplicitKey(t *testing.T) {
+	homeDir := "/tmp/dtail-auth-integration-fallback"
+	suiteKeyPath := "/tmp/dtail-suite-auth/id_rsa"
+	explicitKeyPath := "/tmp/dtail-explicit-auth/id_rsa"
+	t.Setenv("HOME", homeDir)
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", suiteKeyPath)
+
+	originalPrivateKeySigner := privateKeySigner
+	originalAgentSigners := agentSigners
+	originalLogger := dlog.Client
+	dlog.Client = &dlog.DLog{}
+	t.Cleanup(func() {
+		privateKeySigner = originalPrivateKeySigner
+		agentSigners = originalAgentSigners
+		dlog.Client = originalLogger
+	})
+
+	var callOrder []string
+	privateKeySigner = func(path string) (gossh.Signer, error) {
+		callOrder = append(callOrder, "private:"+path)
+		switch path {
+		case explicitKeyPath:
+			return newMockSigner("explicit"), nil
+		case suiteKeyPath:
+			return newMockSigner("suite"), nil
+		default:
+			return nil, fmt.Errorf("missing private key: %s", path)
+		}
+	}
+	agentSigners = func(keyIndex int) ([]gossh.Signer, io.Closer, error) {
+		callOrder = append(callOrder, fmt.Sprintf("agent:%d", keyIndex))
+		return nil, noAuthCloser, nil
+	}
+
+	signers, closer := collectKnownHostsSigners(explicitKeyPath, 4)
+	if len(signers) != 2 {
+		t.Fatalf("Expected explicit and integration fallback signers, got %d", len(signers))
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("close signer resources: %v", err)
+	}
+
+	wantOrder := []string{
+		"private:" + explicitKeyPath,
+		"agent:4",
+		"private:" + suiteKeyPath,
+		"private:" + homeDir + "/.ssh/id_rsa",
+		"private:" + homeDir + "/.ssh/id_dsa",
+		"private:" + homeDir + "/.ssh/id_ecdsa",
+		"private:" + homeDir + "/.ssh/id_ed25519",
+	}
+	if !reflect.DeepEqual(callOrder, wantOrder) {
+		t.Fatalf("Unexpected auth method call order.\nexpected: %v\ngot:      %v", wantOrder, callOrder)
+	}
+}
