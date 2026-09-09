@@ -31,6 +31,8 @@ type stdout struct {
 }
 
 var _ Logger = (*stdout)(nil)
+var _ Starter = (*stdout)(nil)
+var _ Pauser = (*stdout)(nil)
 
 func newStdout() *stdout {
 	return newStdoutWriter(os.Stdout)
@@ -133,10 +135,6 @@ func (s *stdout) Flush() {
 	// bufio.Flush is a no-op when nothing is buffered, so calling this on every
 	// idle tick is cheap.
 	_ = s.writer.Flush()
-}
-
-func (s *stdout) Rotate() {
-	// This is empty because it isn't doing anything but has to satisfy the interface.
 }
 
 func (*stdout) SupportsColors() bool { return true }

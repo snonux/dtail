@@ -9,11 +9,31 @@ import (
 var factoryMap map[string]Logger
 var factoryMutex sync.Mutex
 
+type loggerConstructor func(Strategy) Logger
+
+var loggerRegistry = map[string]loggerConstructor{
+	"none": func(Strategy) Logger { return none{} },
+	"stdout": func(Strategy) Logger {
+		return newStdout()
+	},
+	"file": func(strategy Strategy) Logger {
+		return newFile(strategy)
+	},
+	"fout": func(strategy Strategy) Logger {
+		return newFout(strategy)
+	},
+}
+
 // Factory is there to retrieve a logger based on various settings.
 func Factory(sourceName, loggerName string, logRotation Strategy) (Logger, error) {
 	factoryMutex.Lock()
 	defer factoryMutex.Unlock()
 
+	loggerName = strings.ToLower(loggerName)
+	constructor, ok := loggerRegistry[loggerName]
+	if !ok {
+		return nil, fmt.Errorf("unsupported logger type %q", loggerName)
+	}
 	id := fmt.Sprintf("sourceName:%s,fileBase:%s,loggerName:%s", sourceName,
 		logRotation.FileBase, loggerName)
 	if factoryMap == nil {
@@ -22,21 +42,8 @@ func Factory(sourceName, loggerName string, logRotation Strategy) (Logger, error
 
 	singleton, ok := factoryMap[id]
 	if !ok {
-		switch strings.ToLower(loggerName) {
-		case "none":
-			singleton = none{}
-		case "stdout":
-			singleton = newStdout()
-			factoryMap[id] = singleton
-		case "file":
-			singleton = newFile(logRotation)
-			factoryMap[id] = singleton
-		case "fout":
-			singleton = newFout(logRotation)
-			factoryMap[id] = singleton
-		default:
-			return nil, fmt.Errorf("unsupported logger type %q", loggerName)
-		}
+		singleton = constructor(logRotation)
+		factoryMap[id] = singleton
 	}
 	return singleton, nil
 }
@@ -49,6 +56,8 @@ func FactoryRotate() {
 		return
 	}
 	for _, logger := range factoryMap {
-		logger.Rotate()
+		if rotator, ok := logger.(Rotator); ok {
+			rotator.Rotate()
+		}
 	}
 }

@@ -42,12 +42,8 @@ func (r *recordingSink) RawWithColors(now time.Time, message, colored string) {
 	r.Raw(now, message)
 }
 
-func (r *recordingSink) Start(ctx context.Context, wg *sync.WaitGroup) { wg.Done() }
-func (r *recordingSink) Flush()                                        {}
-func (r *recordingSink) Pause()                                        {}
-func (r *recordingSink) Resume()                                       {}
-func (r *recordingSink) Rotate()                                       {}
-func (r *recordingSink) SupportsColors() bool                          { return false }
+func (r *recordingSink) Flush()               {}
+func (r *recordingSink) SupportsColors() bool { return false }
 
 func (r *recordingSink) logCount() int {
 	r.mutex.Lock()
@@ -62,6 +58,20 @@ func (r *recordingSink) rawCount() int {
 }
 
 var _ Logger = (*recordingSink)(nil)
+
+func TestFoutAcceptsSinksWithOnlyCoreLoggerMethods(t *testing.T) {
+	f := newFoutWithSinks(&recordingSink{}, &recordingSink{}, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	f.Start(ctx, &wg)
+	f.Pause()
+	f.Resume()
+	f.Rotate()
+	cancel()
+	wg.Wait()
+}
 
 // TestFoutDefaultKeepsPayloadOutOfFile proves the footgun fix: with LogPayload
 // disabled (the default), diagnostics reach the file sink but retrieved payload

@@ -2,6 +2,7 @@ package loggers
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -140,6 +141,125 @@ func TestFileLoggerWriteReturnsBufferedWriteError(t *testing.T) {
 	err := f.write(&fileMessageBuf{message: "payload", nl: true})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("write error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestFileLoggerCreateFailuresAreReportedAndMessagesDropped(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*testing.T) (string, string)
+		wantError string
+	}{
+		{
+			name: "mkdir",
+			configure: func(t *testing.T) (string, string) {
+				t.Helper()
+				tmp := t.TempDir()
+				blocker := filepath.Join(tmp, "not-a-directory")
+				if err := os.WriteFile(blocker, []byte("block log directory creation"), 0o600); err != nil {
+					t.Fatalf("create directory blocker: %v", err)
+				}
+				return filepath.Join(blocker, "logs"), "failure-test"
+			},
+			wantError: "create log directory",
+		},
+		{
+			name: "open",
+			configure: func(t *testing.T) (string, string) {
+				t.Helper()
+				return t.TempDir(), filepath.Join("missing", "failure-test")
+			},
+			wantError: "open log file",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logDir, fileBase := tt.configure(t)
+			prev := config.Common
+			config.Common = &config.CommonConfig{LogDir: logDir}
+			t.Cleanup(func() { config.Common = prev })
+
+			f := newFile(Strategy{Rotation: SignalRotation, FileBase: fileBase})
+			var stderr bytes.Buffer
+			f.errorWriter = &stderr
+			stop := startFileLogger(t, f)
+
+			f.Log(time.Now(), "must-be-dropped")
+			f.Flush()
+			stop()
+
+			if got := stderr.String(); !strings.Contains(got, tt.wantError) {
+				t.Fatalf("stderr = %q, want %q", got, tt.wantError)
+			}
+			if f.fd != nil || f.writer != nil {
+				t.Fatal("file logger opened output after output creation failed")
+			}
+		})
+	}
+}
+
+func TestFileLoggerFailedRotationPreservesCurrentWriter(t *testing.T) {
+	dir := withTempLogDir(t)
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "current"})
+
+	current, openErr := f.getWriter("current")
+	if openErr != nil {
+		t.Fatalf("open current writer: %v", openErr)
+	}
+	if _, writeErr := current.WriteString("before\n"); writeErr != nil {
+		t.Fatalf("write before failed rotation: %v", writeErr)
+	}
+
+	blocker := filepath.Join(dir, "not-a-directory")
+	if writeErr := os.WriteFile(blocker, []byte("block rotated log directory"), 0o600); writeErr != nil {
+		t.Fatalf("create rotation blocker: %v", writeErr)
+	}
+	config.Common.LogDir = filepath.Join(blocker, "logs")
+	f.lastFileName = "" // The logger goroutine consumed a Rotate signal.
+	var stderr bytes.Buffer
+	f.errorWriter = &stderr
+	rotationErr := f.write(&fileMessageBuf{now: time.Now(), message: "dropped", nl: true})
+	f.reportError("write log message", rotationErr)
+
+	if rotationErr == nil || !strings.Contains(rotationErr.Error(), "create log directory") {
+		t.Fatalf("rotation error = %v, want create log directory error", rotationErr)
+	}
+	if got := stderr.String(); !strings.Contains(got, "create log directory") {
+		t.Fatalf("stderr = %q, want rotation failure", got)
+	}
+	if f.writer != current {
+		t.Fatal("failed rotation replaced the active writer")
+	}
+	if _, err := current.WriteString("after\n"); err != nil {
+		t.Fatalf("current writer unusable after failed rotation: %v", err)
+	}
+	if err := current.Flush(); err != nil {
+		t.Fatalf("flush current writer: %v", err)
+	}
+	if err := f.fd.Close(); err != nil {
+		t.Fatalf("close current writer: %v", err)
+	}
+	config.Common.LogDir = dir
+
+	if got := readLogFile(t, dir, "current"); got != "before\nafter\n" {
+		t.Fatalf("current log contents = %q, want writes before and after failed rotation", got)
+	}
+}
+
+func TestFileLoggerColorMethodsWritePlainMessages(t *testing.T) {
+	dir := withTempLogDir(t)
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "colors"})
+	stop := startFileLogger(t, f)
+
+	now := time.Now()
+	f.LogWithColors(now, "plain diagnostic", "\x1b[31mcolored diagnostic\x1b[0m")
+	f.RawWithColors(now, "plain payload", "\x1b[31mcolored payload\x1b[0m")
+	f.Flush()
+	stop()
+
+	if got := readLogFile(t, dir, "colors"); got != "plain diagnostic\nplain payload" {
+		t.Fatalf("file contents = %q, want uncolored diagnostic and payload", got)
 	}
 }
 

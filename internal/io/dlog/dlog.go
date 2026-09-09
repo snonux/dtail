@@ -116,8 +116,10 @@ func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source)
 func (d *DLog) start(ctx context.Context, wg *sync.WaitGroup) {
 	defer wg.Done()
 	var wg2 sync.WaitGroup
-	wg2.Add(1)
-	d.logger.Start(ctx, &wg2)
+	if starter, ok := d.logger.(loggers.Starter); ok {
+		wg2.Add(1)
+		starter.Start(ctx, &wg2)
+	}
 	<-ctx.Done()
 	wg2.Wait()
 }
@@ -304,11 +306,19 @@ func (d *DLog) Mapreduce(table string, data map[string]interface{}) string {
 // Flush the log buffers.
 func (d *DLog) Flush() { d.logger.Flush() }
 
-// Pause the logging.
-func (d *DLog) Pause() { d.logger.Pause() }
+// Pause the logging when the configured sink writes to an interactive terminal.
+func (d *DLog) Pause() {
+	if pauser, ok := d.logger.(loggers.Pauser); ok {
+		pauser.Pause()
+	}
+}
 
-// Resume the logging.
-func (d *DLog) Resume() { d.logger.Resume() }
+// Resume the logging when the configured sink writes to an interactive terminal.
+func (d *DLog) Resume() {
+	if pauser, ok := d.logger.(loggers.Pauser); ok {
+		pauser.Resume()
+	}
+}
 
 func (d *DLog) log(level level, args []interface{}) string {
 	if d.maxLevel < level {

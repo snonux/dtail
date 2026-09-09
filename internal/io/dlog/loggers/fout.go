@@ -25,6 +25,11 @@ type fout struct {
 	logPayload bool
 }
 
+var _ Logger = (*fout)(nil)
+var _ Starter = (*fout)(nil)
+var _ Pauser = (*fout)(nil)
+var _ Rotator = (*fout)(nil)
+
 // newFout builds the default client logger. Whether retrieved payload is teed
 // to the file is decided once at construction from the client config.
 func newFout(strategy Strategy) *fout {
@@ -52,11 +57,19 @@ func (f *fout) Start(ctx context.Context, wg *sync.WaitGroup) {
 		defer wg.Done()
 
 		var wg2 sync.WaitGroup
-		wg2.Add(2)
-		f.file.Start(ctx, &wg2)
-		f.stdout.Start(ctx, &wg2)
+		startLogger(ctx, &wg2, f.file)
+		startLogger(ctx, &wg2, f.stdout)
 		wg2.Wait()
 	}()
+}
+
+func startLogger(ctx context.Context, wg *sync.WaitGroup, logger Logger) {
+	starter, ok := logger.(Starter)
+	if !ok {
+		return
+	}
+	wg.Add(1)
+	starter.Start(ctx, wg)
 }
 
 func (f *fout) Log(now time.Time, message string) {
@@ -66,9 +79,7 @@ func (f *fout) Log(now time.Time, message string) {
 
 func (f *fout) LogWithColors(now time.Time, message, coloredMessage string) {
 	f.stdout.LogWithColors(now, "", coloredMessage)
-	// The file logger does not support colors, so write the plain message via
-	// Log (its LogWithColors would route to RawWithColors, which panics).
-	f.file.Log(now, message)
+	f.file.LogWithColors(now, message, coloredMessage)
 }
 
 // Raw writes retrieved payload. It always reaches stdout/terminal; it is teed
@@ -85,7 +96,7 @@ func (f *fout) RawWithColors(now time.Time, message, coloredMessage string) {
 	f.stdout.RawWithColors(now, "", coloredMessage)
 	// Same opt-in gate as Raw; the file gets the plain (uncolored) payload.
 	if f.logPayload {
-		f.file.Raw(now, message)
+		f.file.RawWithColors(now, message, coloredMessage)
 	}
 }
 
@@ -104,9 +115,28 @@ func (f *fout) RawFileOnly(now time.Time, message string) {
 	}
 }
 
-func (f *fout) Flush()  { f.stdout.Flush(); f.file.Flush() }
-func (f *fout) Pause()  { f.stdout.Pause(); f.file.Pause() }
-func (f *fout) Resume() { f.stdout.Resume(); f.file.Resume() }
-func (f *fout) Rotate() { f.file.Rotate() }
+func (f *fout) Flush() { f.stdout.Flush(); f.file.Flush() }
+
+func (f *fout) Pause() {
+	for _, logger := range []Logger{f.stdout, f.file} {
+		if pauser, ok := logger.(Pauser); ok {
+			pauser.Pause()
+		}
+	}
+}
+
+func (f *fout) Resume() {
+	for _, logger := range []Logger{f.stdout, f.file} {
+		if pauser, ok := logger.(Pauser); ok {
+			pauser.Resume()
+		}
+	}
+}
+
+func (f *fout) Rotate() {
+	if rotator, ok := f.file.(Rotator); ok {
+		rotator.Rotate()
+	}
+}
 
 func (fout) SupportsColors() bool { return true }

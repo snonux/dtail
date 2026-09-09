@@ -33,14 +33,33 @@ func (r *recordingLogger) Raw(now time.Time, message string) {
 	r.raws = append(r.raws, message)
 }
 func (r *recordingLogger) RawWithColors(now time.Time, message, colored string) { r.Raw(now, message) }
-func (r *recordingLogger) Start(ctx context.Context, wg *sync.WaitGroup)        { wg.Done() }
 func (r *recordingLogger) Flush()                                               {}
-func (r *recordingLogger) Pause()                                               {}
-func (r *recordingLogger) Resume()                                              {}
-func (r *recordingLogger) Rotate()                                              {}
 func (r *recordingLogger) SupportsColors() bool                                 { return false }
 
 var _ loggers.Logger = (*recordingLogger)(nil)
+
+func TestDLogAcceptsLoggerWithoutOptionalLifecycleCapabilities(t *testing.T) {
+	d := &DLog{logger: &recordingLogger{}}
+	d.Pause()
+	d.Resume()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go d.start(ctx, &wg)
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("DLog with a core-only logger did not stop after cancellation")
+	}
+}
 
 // TestRawLogUsesDiagnosticSink is the regression guard for the ReportServerError
 // footgun: a server-error audit line must go through the diagnostic (Log) sink,
