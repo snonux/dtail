@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -12,6 +13,11 @@ import (
 
 // Aggregate mapreduce data on the DTail client side.
 type Aggregate struct {
+	// mu protects the complete local aggregation transaction: generation
+	// validation, group mutation, merge, and reset. Aggregate runs on the
+	// connection's stdout-copy goroutine while Flush may run concurrently
+	// during shutdown.
+	mu sync.Mutex
 	// This represents aggregated data of a single remote server.
 	group *mapr.GroupSet
 	// Shared per-client session state.
@@ -39,6 +45,9 @@ func NewAggregate(server string, session *SessionState) *Aggregate {
 
 // Aggregate data from mapr log line into local (and global) group sets.
 func (a *Aggregate) Aggregate(message string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	if a.session == nil {
 		return fmt.Errorf("missing client mapreduce session state")
 	}
@@ -96,6 +105,9 @@ func (a *Aggregate) Aggregate(message string) error {
 // The normal hot path uses MergeNoblock to avoid stalling on the global merge lock.
 // During shutdown we need a blocking flush so the last local batch is not lost.
 func (a *Aggregate) Flush() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	if a.session == nil {
 		return fmt.Errorf("missing client mapreduce session state")
 	}

@@ -1,7 +1,9 @@
 package client
 
 import (
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/mapr"
@@ -80,6 +82,68 @@ func TestAggregateFlushMergesPendingLocalState(t *testing.T) {
 	}
 	if !strings.Contains(result, "3") {
 		t.Fatalf("expected flushed aggregate row, got %q", result)
+	}
+}
+
+func TestAggregateAndFlushAreSafeConcurrently(t *testing.T) {
+	query := mustSessionStateQuery(t, "select status,count(status) from stats group by status")
+	state := NewSessionState(query)
+	aggregate := NewAggregate("srv1", state)
+	countStorage := aggregateCountStorage(t, query)
+
+	const messageCount = 1000
+	message := strings.Join([]string{
+		"ERROR",
+		"1",
+		countStorage + protocol.AggregateKVDelimiter + "1",
+		"",
+	}, protocol.AggregateDelimiter)
+
+	start := make(chan struct{})
+	errors := make(chan error, 2)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		for range messageCount {
+			if err := aggregate.Aggregate(message); err != nil {
+				errors <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for range messageCount {
+			if err := aggregate.Flush(); err != nil {
+				errors <- err
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		t.Fatalf("concurrent aggregate operation failed: %v", err)
+	}
+	if err := aggregate.Flush(); err != nil {
+		t.Fatalf("final Flush() error = %v", err)
+	}
+
+	result, numRows, err := state.Snapshot().GlobalGroup.Result(query, 10, nil)
+	if err != nil {
+		t.Fatalf("Result() error = %v", err)
+	}
+	if numRows != 1 {
+		t.Fatalf("numRows = %d, want 1", numRows)
+	}
+	fields := strings.Fields(result)
+	if got, want := fields[len(fields)-1], strconv.Itoa(messageCount); got != want {
+		t.Fatalf("aggregate count = %s, want %s; result:\n%s", got, want, result)
 	}
 }
 
