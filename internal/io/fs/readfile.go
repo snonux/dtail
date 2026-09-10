@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -51,6 +52,8 @@ type readFile struct {
 	// cancellation and ownership contract can be tested without replacing the
 	// process-wide stdin descriptor.
 	pipeInput *os.File
+	// truncateCheck is an optional test seam for the periodic child goroutine.
+	truncateCheck func(context.Context, chan<- struct{})
 }
 
 // String returns the string representation of the readFile
@@ -158,6 +161,28 @@ func (f *readFile) periodicTruncateCheck(ctx context.Context, truncate chan<- st
 			return
 		}
 	}
+}
+
+func (f *readFile) startPeriodicTruncateCheck(ctx context.Context, cancel context.CancelFunc,
+	truncate chan<- struct{}) <-chan error {
+	done := make(chan error, 1)
+	check := f.periodicTruncateCheck
+	if f.truncateCheck != nil {
+		check = f.truncateCheck
+	}
+	go func() {
+		var childErr error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				childErr = fmt.Errorf("%w: truncate checker: %v", ErrReaderWorkerPanic, recovered)
+				logging.OrNop(f.logger).Error(f.filePath, childErr, "stack", string(debug.Stack()))
+				cancel()
+			}
+			done <- childErr
+		}()
+		check(ctx, truncate)
+	}()
+	return done
 }
 
 func (f *readFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {

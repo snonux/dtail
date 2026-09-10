@@ -8,6 +8,7 @@ import (
 	"net/http/pprof"
 	"runtime"
 	"sync"
+	"time"
 
 	"github.com/mimecast/dtail/internal/io/dlog"
 )
@@ -25,8 +26,9 @@ import (
 // active and the EOF-ack drops it back to 1s polling. Documented here so the
 // locking design is not re-litigated.
 const (
-	mutexProfileFraction  = 5
-	blockProfileRateNanos = 100000
+	mutexProfileFraction   = 5
+	blockProfileRateNanos  = 100000
+	pprofReadHeaderTimeout = 5 * time.Second
 )
 
 // PProfServer owns a dedicated pprof HTTP server lifecycle.
@@ -46,7 +48,8 @@ func NewPProfServer(address string) (*PProfServer, error) {
 	return &PProfServer{
 		listener: listener,
 		server: &http.Server{
-			Handler: newPProfServeMux(),
+			Handler:           newPProfServeMux(),
+			ReadHeaderTimeout: pprofReadHeaderTimeout,
 		},
 		done: make(chan struct{}),
 	}, nil

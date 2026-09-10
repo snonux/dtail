@@ -57,7 +57,15 @@ func (s *epochOrderTestServer) DirectOutputActive() bool { return true }
 func (s *epochOrderTestServer) EnableDirectOutput() bool { return false }
 func (s *epochOrderTestServer) HasOutputEOF() bool       { return true }
 
-func (s *epochOrderTestServer) GetOutputChannel() chan []byte { return s.outputLines }
+func (s *epochOrderTestServer) EnqueueOutput(ctx context.Context, generation uint64, payload []byte,
+	activeGeneration func() uint64) error {
+	select {
+	case s.outputLines <- encodeGeneratedBytes(generation, payload):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
 
 // OutputEpoch returns a sentinel value so the test can also verify that the
 // captured epoch is the one passed through to SignalOutputEOF.

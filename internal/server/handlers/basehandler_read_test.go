@@ -176,7 +176,7 @@ func TestBaseHandlerReadDrainsRemainderBeforeOutputData(t *testing.T) {
 		t.Fatal("expected output enable to switch output mode on")
 	}
 	outputPayload := []byte("output payload data")
-	handler.output.channel() <- outputPayload
+	mustEnqueueOutput(t, &handler.output, 0, outputPayload)
 
 	total := want.Len() + len(outputPayload)
 	got = append(got, readExactly(t, &handler, 16, total-len(got))...)

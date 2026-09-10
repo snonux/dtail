@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -85,6 +86,7 @@ type Aggregate struct {
 	// context-insensitive Shutdown behavior.
 	finalizationCtx        context.Context
 	finalizationCancelable bool
+	serializationLoopHook  func()
 }
 
 type aggregateTerminalState uint8
@@ -278,12 +280,22 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 	defer a.stopSerializeTicker()
 
 	loopDone := make(chan struct{})
+	loopPanic := make(chan any, 1)
 	go func() {
 		defer close(loopDone)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				a.logger.Error("Recovered panic in aggregate serialization goroutine",
+					"panic", recovered, "stack", string(debug.Stack()))
+				a.abort()
+				loopPanic <- recovered
+			}
+		}()
 		a.serializationLoop(ctx)
 	}()
 
 	shouldFinalize := false
+	var recovered any
 	select {
 	case <-ctx.Done():
 		shouldFinalize = !a.abort()
@@ -297,6 +309,8 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 		// session's active-command count nonzero — a circular wait that hung
 		// the client forever even though all results had been transmitted.
 		shouldFinalize = true
+	case recovered = <-loopPanic:
+		a.abort()
 	}
 	if shouldFinalize {
 		// Shutdown owns the final processor join and serialization. Waiting here
@@ -310,6 +324,15 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 	// side of the channel right after Start returns.
 	a.done.Shutdown()
 	<-loopDone
+	if recovered == nil {
+		select {
+		case recovered = <-loopPanic:
+		default:
+		}
+	}
+	if recovered != nil {
+		panic(recovered)
+	}
 }
 
 // PrepareOutput publishes the serialization destination before Start is
@@ -492,6 +515,9 @@ func (a *Aggregate) aggregate(fields map[string]string) {
 
 // serializationLoop handles periodic serialization.
 func (a *Aggregate) serializationLoop(ctx context.Context) {
+	if a.serializationLoopHook != nil {
+		a.serializationLoopHook()
+	}
 	// Start stores serializeTicker before launching this goroutine, so the load
 	// is ordered-after that store and never nil here. The ticker pointer is
 	// never replaced after Start, so loading it once is sufficient.
@@ -690,12 +716,16 @@ func (p *AggregateProcessor) Flush() error {
 
 // Close flushes any remaining data.
 func (p *AggregateProcessor) Close() error {
-	err := p.Flush()
+	var err error
 	p.closeOnce.Do(func() {
 		if p.registered {
-			p.aggregate.activeProcessors.Add(-1)
-			p.aggregate.processorsWg.Done()
+			// Register accounting release before Flush. If batch processing
+			// panics, aggregate abort/shutdown must still be able to join every
+			// processor rather than waiting forever on a leaked reservation.
+			defer p.aggregate.processorsWg.Done()
+			defer p.aggregate.activeProcessors.Add(-1)
 		}
+		err = p.Flush()
 	})
 	return err
 }

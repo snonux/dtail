@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"reflect"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/io/fs"
 	journaltest "github.com/mimecast/dtail/internal/io/journal/testhelper"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -56,6 +58,25 @@ func (p errorProcessor) Flush() error {
 func (p errorProcessor) Close() error {
 	return nil
 }
+
+type panickingProcessor struct {
+	flushes     int
+	beforePanic func()
+}
+
+func (p *panickingProcessor) ProcessLine(*bytes.Buffer, uint64, string) error {
+	if p.beforePanic != nil {
+		p.beforePanic()
+	}
+	panic("processor failed while scanning stdout")
+}
+
+func (p *panickingProcessor) Flush() error {
+	p.flushes++
+	return nil
+}
+
+func (*panickingProcessor) Close() error { return nil }
 
 // nonRecyclingErrorProcessor returns an error without recycling the buffer, so a
 // test can observe whether processorSink.Emit wrongly recycles a buffer it does
@@ -304,6 +325,204 @@ func TestStartSurfacesStderrAsServerMessages(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected stderr server message")
+	}
+}
+
+func TestStartPropagatesStderrForwarderPanic(t *testing.T) {
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{HoldOpen: true},
+	})
+	reader, err := NewReader(nil, "journal-id", false, nil)
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+	reader.forwardStderrHook = func(context.Context, io.Reader) error {
+		// Let the child process finish its startup before forcing the stderr
+		// worker failure, so the test can also verify that cancellation reaps it.
+		time.Sleep(50 * time.Millisecond)
+		panic("stderr child failed")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+			&captureProcessor{}, regex.NewNoop())
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, fs.ErrReaderWorkerPanic) || !strings.Contains(err.Error(), "stderr child failed") {
+			t.Fatalf("reader error = %v, want propagated stderr child panic", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader did not stop after stderr child panic")
+	}
+	pid := mockPID(t, mock)
+	if processExists(pid) {
+		t.Fatalf("journalctl process %d survived stderr child panic", pid)
+	}
+}
+
+func TestRunPrioritizesStderrWorkerPanicOverParentCancellation(t *testing.T) {
+	journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{HoldOpen: true},
+	})
+	reader, err := NewReader(nil, "journal-id", false, nil)
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+
+	stderrStarted := make(chan struct{})
+	releaseStderr := make(chan struct{})
+	reader.forwardStderrHook = func(context.Context, io.Reader) error {
+		close(stderrStarted)
+		<-releaseStderr
+		panic("stderr child failed after cancellation")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.StartWithProcessorOptimized(ctx, lcontext.LContext{},
+			&captureProcessor{}, regex.NewNoop())
+	}()
+
+	select {
+	case <-stderrStarted:
+	case <-time.After(time.Second):
+		t.Fatal("stderr worker did not start")
+	}
+	cancel()
+	close(releaseStderr)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, fs.ErrReaderWorkerPanic) ||
+			!strings.Contains(err.Error(), "stderr child failed after cancellation") {
+			t.Fatalf("reader error = %v, want stderr worker panic despite cancellation", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader did not stop after cancellation and stderr panic")
+	}
+}
+
+func TestRunJoinsProcessorFailureWithWaitWorkerPanic(t *testing.T) {
+	journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{Lines: []string{"line"}},
+	})
+	reader, err := NewReader(nil, "journal-id", false, nil)
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+	reader.waitCommandHook = func(cmd *exec.Cmd) error {
+		_ = cmd.Wait()
+		panic("wait child failed after scan")
+	}
+
+	processorErr := errors.New("processor failed")
+	err = reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+		errorProcessor{err: processorErr}, regex.NewNoop())
+	if !errors.Is(err, processorErr) {
+		t.Fatalf("reader error = %v, want processor failure in joined chain", err)
+	}
+	if !errors.Is(err, fs.ErrReaderWorkerPanic) || !strings.Contains(err.Error(), "wait child failed after scan") {
+		t.Fatalf("reader error = %v, want wait worker panic in joined chain", err)
+	}
+}
+
+func TestRunKillsAndReapsTermIgnoringChildWhenWaitPanicsBeforeWait(t *testing.T) {
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines:         []string{"line"},
+			HoldOpen:      true,
+			IgnoreSIGTERM: true,
+		},
+	})
+	reader, err := NewReader(nil, "journal-id", false, nil)
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+	reader.waitCommandHook = func(*exec.Cmd) error {
+		panic("wait child failed before reaping")
+	}
+
+	processorErr := errors.New("processor failed")
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+			errorProcessor{err: processorErr}, regex.NewNoop())
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, processorErr) {
+			t.Fatalf("reader error = %v, want processor failure in joined chain", err)
+		}
+		if !errors.Is(err, fs.ErrReaderWorkerPanic) ||
+			!strings.Contains(err.Error(), "wait child failed before reaping") {
+			t.Fatalf("reader error = %v, want fatal wait worker panic", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader hung after pre-Wait panic with SIGTERM-ignoring child")
+	}
+
+	pid := mockPID(t, mock)
+	if processExists(pid) {
+		t.Fatalf("journalctl process %d survived or remained unreaped after wait panic", pid)
+	}
+}
+
+func TestRunRecoversScanProcessorPanicAndReapsTermIgnoringChild(t *testing.T) {
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines:         []string{"line"},
+			HoldOpen:      true,
+			IgnoreSIGTERM: true,
+		},
+	})
+	reader, err := NewReader(nil, "journal-id", false, nil)
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	processor := &panickingProcessor{beforePanic: cancel}
+
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.StartWithProcessorOptimized(ctx, lcontext.LContext{},
+			processor, regex.NewNoop())
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, fs.ErrReaderWorkerPanic) ||
+			!strings.Contains(err.Error(), "stdout scanning") ||
+			!strings.Contains(err.Error(), "processor failed while scanning stdout") {
+			t.Fatalf("reader error = %v, want fatal stdout processor panic", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader hung after processor panic with SIGTERM-ignoring child")
+	}
+
+	if elapsed := time.Since(started); elapsed < processTerminateGrace {
+		t.Fatalf("reader returned before SIGTERM grace and kill/reap: %s", elapsed)
+	}
+	if processor.flushes != 1 {
+		t.Fatalf("terminal processor flushes = %d, want 1 after recovered scan panic", processor.flushes)
+	}
+	pid := mockPID(t, mock)
+	if processExists(pid) {
+		t.Fatalf("journalctl process %d survived or remained unreaped after processor panic", pid)
+	}
+}
+
+func TestWaitForJournalctlRecoversWaitChildPanic(t *testing.T) {
+	err := waitForJournalctlWith(&exec.Cmd{}, true, func() error {
+		panic("wait child failed")
+	})
+	if !errors.Is(err, fs.ErrReaderWorkerPanic) || !strings.Contains(err.Error(), "wait child failed") {
+		t.Fatalf("wait error = %v, want propagated child panic", err)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients"
@@ -175,6 +176,9 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 }
 
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
+	defer s.recoverGoroutinePanic("SSH connection", conn.RemoteAddr(), nil)
+	defer func() { _ = conn.Close() }()
+
 	s.log().Info("Handling connection")
 
 	// The caller (listenerLoop) already reserved a pre-auth slot via
@@ -187,6 +191,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 			preAuthReleased = true
 		}
 	}
+	defer releasePreAuth()
 
 	// Prevent slow clients from holding connections open indefinitely before SSH handshake completes.
 	if deadlineErr := conn.SetDeadline(time.Now().Add(sshHandshakeTimeout)); deadlineErr != nil {
@@ -196,7 +201,8 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	sshConn, chans, reqs, err := gossh.NewServerConn(conn, s.sshServerConfig)
+	activeConn := newActivityConn(conn)
+	sshConn, chans, reqs, err := gossh.NewServerConn(activeConn, s.sshServerConfig)
 	if err != nil {
 		// Handshake failed (auth error, timeout, or connection reset).
 		// Release the pre-auth slot so the limit accurately reflects reality.
@@ -205,11 +211,15 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	// Handshake succeeded; remove deadline so active sessions are not cut off by the handshake timeout.
-	if deadlineErr := conn.SetDeadline(time.Time{}); deadlineErr != nil {
-		s.log().Error("Failed to clear SSH handshake deadline", deadlineErr)
+	// Handshake succeeded. Replace the fixed handshake deadline with a rolling
+	// inactivity deadline that successful reads and writes refresh.
+	idleTimeout := time.Duration(s.cfg.Server.IdleSessionTimeoutS) * time.Second
+	if idleTimeout <= 0 {
+		idleTimeout = time.Duration(config.DefaultIdleSessionTimeoutS) * time.Second
+	}
+	if deadlineErr := activeConn.enable(idleTimeout); deadlineErr != nil {
+		s.log().Error("Failed to set SSH idle session deadline", deadlineErr)
 		_ = sshConn.Close()
-		releasePreAuth()
 		return
 	}
 
@@ -220,7 +230,10 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	preAuthReleased = true // pre-auth slot was consumed by promote; guard is no longer needed
 	defer s.stats.decrementConnections()
 
-	go gossh.DiscardRequests(reqs)
+	go func() {
+		defer s.recoverGoroutinePanic("SSH global request", sshConn.RemoteAddr(), func() { _ = sshConn.Close() })
+		gossh.DiscardRequests(reqs)
+	}()
 	for newChannel := range chans {
 		go s.handleChannel(ctx, sshConn, newChannel)
 	}
@@ -228,6 +241,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 func (s *Server) handleChannel(ctx context.Context, sshConn gossh.Conn,
 	newChannel gossh.NewChannel) {
+	defer s.recoverGoroutinePanic("SSH channel", sshConn.RemoteAddr(), func() { _ = sshConn.Close() })
 
 	serverUser, userErr := user.New(sshConn.User(), sshConn.RemoteAddr().String(), s.cfg.Server.UserPermissions, s.log())
 	if userErr != nil {
@@ -317,16 +331,23 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 		return
 	}
 
+	var terminateOnce sync.Once
 	terminate := func() {
-		handler.Shutdown()
-		if closeErr := sshConn.Close(); closeErr != nil {
-			s.log().Trace(user, fmt.Errorf("close session connection: %w", closeErr))
-		}
+		defer s.recoverGoroutinePanic("session termination", user, func() { _ = sshConn.Close() })
+		terminateOnce.Do(func() {
+			defer func() {
+				if closeErr := sshConn.Close(); closeErr != nil {
+					s.log().Trace(user, fmt.Errorf("close session connection: %w", closeErr))
+				}
+			}()
+			handler.Shutdown()
+		})
 	}
 
 	// Start goroutine to copy data from channel to handler
 	go func() {
 		defer terminate()
+		defer s.recoverGoroutinePanic("session input", user, func() { _ = sshConn.Close() })
 		if _, copyErr := io.Copy(channel, handler); copyErr != nil {
 			s.log().Trace(user, fmt.Errorf("channel->handler: %w", copyErr))
 		}
@@ -335,6 +356,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	// Start goroutine to copy data from handler to channel
 	go func() {
 		defer terminate()
+		defer s.recoverGoroutinePanic("session output", user, func() { _ = sshConn.Close() })
 		if _, copyErr := io.Copy(handler, channel); copyErr != nil {
 			s.log().Trace(user, fmt.Errorf("handler->channel: %w", copyErr))
 		}
@@ -342,11 +364,12 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 
 	// Start goroutine to handle context or handler completion
 	go func() {
+		defer terminate()
+		defer s.recoverGoroutinePanic("session lifecycle", user, func() { _ = sshConn.Close() })
 		select {
 		case <-ctx.Done():
 		case <-handler.Done():
 		}
-		terminate()
 	}()
 
 	// Start goroutine to handle connection lifecycle and cleanup.
@@ -354,11 +377,12 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	// handleConnection via defer, not here, so that the counter is balanced
 	// 1:1 per TCP connection regardless of how many shell requests are opened.
 	go func() {
+		defer terminate()
+		defer s.recoverGoroutinePanic("session connection wait", user, func() { _ = sshConn.Close() })
 		if waitErr := sshConn.Wait(); waitErr != nil && !errors.Is(waitErr, io.EOF) {
 			s.log().Error(user, waitErr)
 		}
 		s.log().Info(user, "Good bye Mister!")
-		terminate()
 	}()
 
 	// Reply to indicate shell request was accepted

@@ -1,15 +1,22 @@
 package handlers
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/protocol"
 	user "github.com/mimecast/dtail/internal/user/server"
 )
 
 const (
-	defaultOutputChannelBufferSize = 1000
+	defaultOutputBufferMaxBytes    = config.DefaultOutputBufferMaxBytes
+	outputQueueEntryBudgetBytes    = 64
 	defaultOutputFlushTimeout      = 2 * time.Second
 	defaultOutputFlushPollInterval = 10 * time.Millisecond
 	defaultOutputReadRetryInterval = time.Millisecond
@@ -18,23 +25,32 @@ const (
 )
 
 type outputManagerConfig struct {
-	channelBufferSize int
+	bufferMaxBytes    int
 	flushTimeout      time.Duration
 	flushPollInterval time.Duration
 	readRetryInterval time.Duration
 	eofAckQuietPeriod time.Duration
 }
 
+type generatedOutput struct {
+	generation       uint64
+	payload          []byte
+	mustFinishRecord bool
+	// retainedBytes is the full backing allocation charged to the session.
+	// It deliberately remains unchanged while payload is sliced during a
+	// partial read, because the unread suffix still retains that allocation.
+	retainedBytes int
+}
+
+var errOutputPayloadTooLarge = errors.New("output payload exceeds session buffer limit")
+
 // outputManager coordinates output-mode state between command goroutines
 // (enable/signalEOF/flush/waitForEOFAck, spawned per command by the server
 // handler) and the session output goroutine (io.Copy -> baseHandler.Read ->
 // tryRead). These run concurrently, so all mutable state is guarded by mu:
-// mode, lines, buffer, eof, eofAck, eofEmptySince and epoch must only be
-// accessed while holding mu. Channel *operations* (send/receive/close/len)
-// are safe on a snapshot taken under mu; only the field reads/writes need
-// the lock.
-//
-// The configuration fields (channelBufferSize, flushTimeout, ...) are
+// mode, queue, buffer, eof, eofAck, eofEmptySince and epoch must only be
+// accessed while holding mu. The configuration fields (bufferMaxBytes,
+// flushTimeout, ...) are
 // deliberately not guarded: configure() runs exactly once from the handler
 // constructor before any goroutine can touch the manager, so goroutine
 // creation establishes the necessary happens-before edge.
@@ -42,8 +58,8 @@ type outputManager struct {
 	logger logging.Logger
 	mu     sync.Mutex
 	mode   bool
-	lines  chan []byte
-	buffer []byte
+	queue  []generatedOutput
+	buffer generatedOutput
 	eof    chan struct{}
 	eofAck chan struct{}
 
@@ -54,7 +70,11 @@ type outputManager struct {
 	// the newcomer's output (see signalEOF for the full protocol).
 	epoch uint64
 
-	channelBufferSize int
+	bufferMaxBytes    int
+	bufferedBytes     int
+	retainedBytes     int
+	bufferedEntries   int
+	spaceAvailable    chan struct{}
 	flushTimeout      time.Duration
 	flushPollInterval time.Duration
 	readRetryInterval time.Duration
@@ -68,8 +88,8 @@ type outputManager struct {
 // for why the config fields need no locking.
 func (t *outputManager) configure(cfg outputManagerConfig, logger logging.Logger) {
 	t.logger = logging.OrNop(logger)
-	if cfg.channelBufferSize > 0 {
-		t.channelBufferSize = cfg.channelBufferSize
+	if cfg.bufferMaxBytes > 0 {
+		t.bufferMaxBytes = cfg.bufferMaxBytes
 	}
 	if cfg.flushTimeout > 0 {
 		t.flushTimeout = cfg.flushTimeout
@@ -92,11 +112,19 @@ func (t *outputManager) log() logging.Logger {
 	return t.logger
 }
 
-func (t *outputManager) resolvedChannelBufferSize() int {
-	if t.channelBufferSize > 0 {
-		return t.channelBufferSize
+func (t *outputManager) resolvedBufferMaxBytes() int {
+	if t.bufferMaxBytes > 0 {
+		return t.bufferMaxBytes
 	}
-	return defaultOutputChannelBufferSize
+	return defaultOutputBufferMaxBytes
+}
+
+func (t *outputManager) resolvedMaxQueueEntries() int {
+	entries := t.resolvedBufferMaxBytes() / outputQueueEntryBudgetBytes
+	if entries < 16 {
+		return 16
+	}
+	return entries
 }
 
 func (t *outputManager) resolvedFlushTimeout() time.Duration {
@@ -131,14 +159,13 @@ func (t *outputManager) resolvedEOFAckQuietPeriod() time.Duration {
 // transitioned from disabled to enabled and false when output mode was already
 // active. Fresh EOF/EOF-ack channels are created on the off->on transition,
 // so a concurrent (or repeated) enable can never yank a live EOF channel out
-// from under an in-flight batch. The lines channel is created once and then
-// reused for the lifetime of the session.
+// from under an in-flight batch.
 //
 // One already-enabled case still refreshes the handshake channels: when the
 // previous batch signaled EOF but the reader never acknowledged it (e.g.
 // WaitForOutputEOFAck timed out on a slow client), t.eof is already closed.
 // A new batch inheriting that closed channel would be disabled by
-// maybeAckEOFLocked as soon as the lines channel is briefly empty, stranding
+// maybeAckEOFLocked as soon as the output buffer is briefly empty, stranding
 // the batch's remaining output. Refreshing is safe: the old eofAck is closed
 // first, so a goroutine still blocked on it (e.g. the previous batch mid
 // quiet-period) is released immediately instead of stalling until its
@@ -164,8 +191,8 @@ func (t *outputManager) enable() bool {
 		return false
 	}
 	t.mode = true
-	if t.lines == nil {
-		t.lines = make(chan []byte, t.resolvedChannelBufferSize())
+	if t.spaceAvailable == nil {
+		t.spaceAvailable = make(chan struct{})
 	}
 	// New batch of files: new EOF handshake channels.
 	t.resetEOFHandshakeLocked()
@@ -306,47 +333,165 @@ func (t *outputManager) waitForEOFAck(timeout time.Duration) bool {
 	}
 }
 
-func (t *outputManager) channel() chan []byte {
+// enqueue adds payload to the session queue without allowing queued and
+// partially-read payload bytes to exceed the configured limit. Admission is
+// atomic per logical writer payload: an oversized payload is rejected before
+// any prefix can reach the client.
+func (t *outputManager) enqueue(ctx context.Context, generation uint64, payload []byte,
+	activeGeneration func() uint64) error {
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if len(payload) == 0 {
+		return nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !shouldWriteGeneration(generation, activeGeneration) {
+			return nil
+		}
+
+		t.mu.Lock()
+		maxBytes := t.resolvedBufferMaxBytes()
+		if len(payload) > maxBytes {
+			t.mu.Unlock()
+			return fmt.Errorf("%w: size %d bytes, limit %d bytes",
+				errOutputPayloadTooLarge, len(payload), maxBytes)
+		}
+		if t.tryEnqueueLocked(generation, payload, maxBytes) {
+			t.mu.Unlock()
+			return nil
+		}
+
+		spaceAvailable := t.spaceAvailableLocked()
+		retryInterval := t.resolvedReadRetryInterval()
+		t.mu.Unlock()
+
+		timer := time.NewTimer(retryInterval)
+		select {
+		case <-ctx.Done():
+			stopTimer(timer)
+			return ctx.Err()
+		case <-spaceAvailable:
+			stopTimer(timer)
+		case <-timer.C:
+		}
+	}
+
+}
+
+// tryEnqueueLocked admits a complete logical payload while bounding both the
+// unread bytes and the payload backing allocations retained by queue/buffer.
+// Adjacent payloads from the same generation share a descriptor. Geometric
+// growth avoids copying every preceding tiny write, and all spare capacity is
+// charged immediately.
+func (t *outputManager) tryEnqueueLocked(generation uint64, payload []byte, maxBytes int) bool {
+	last := len(t.queue) - 1
+	if last >= 0 && t.queue[last].generation == generation {
+		entry := &t.queue[last]
+		neededLength := len(entry.payload) + len(payload)
+		if neededLength > entry.retainedBytes {
+			available := maxBytes - t.retainedBytes
+			minimumGrowth := neededLength - entry.retainedBytes
+			if minimumGrowth > available {
+				return false
+			}
+
+			targetCapacity := entry.retainedBytes * 2
+			if targetCapacity < neededLength {
+				targetCapacity = neededLength
+			}
+			if maximumCapacity := entry.retainedBytes + available; targetCapacity > maximumCapacity {
+				targetCapacity = maximumCapacity
+			}
+			grown := make([]byte, len(entry.payload), targetCapacity)
+			copy(grown, entry.payload)
+			entry.payload = grown
+			t.retainedBytes += targetCapacity - entry.retainedBytes
+			entry.retainedBytes = targetCapacity
+		}
+		entry.payload = append(entry.payload, payload...)
+		t.bufferedBytes += len(payload)
+		return true
+	}
+
+	if t.bufferedEntries >= t.resolvedMaxQueueEntries() || t.retainedBytes+len(payload) > maxBytes {
+		return false
+	}
+	queuedPayload := make([]byte, len(payload))
+	copy(queuedPayload, payload)
+	t.queue = append(t.queue, generatedOutput{
+		generation:    generation,
+		payload:       queuedPayload,
+		retainedBytes: len(queuedPayload),
+	})
+	t.bufferedBytes += len(payload)
+	t.retainedBytes += len(queuedPayload)
+	t.bufferedEntries++
+	return true
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C:
+	default:
+	}
+}
+
+func (t *outputManager) bufferedLen() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return t.lines
+	return t.bufferedBytes
 }
 
-func (t *outputManager) channelLen() int {
-	t.mu.Lock()
-	lines := t.lines
-	t.mu.Unlock()
-
-	if lines == nil {
-		return 0
+func (t *outputManager) spaceAvailableLocked() <-chan struct{} {
+	if t.spaceAvailable == nil {
+		t.spaceAvailable = make(chan struct{})
 	}
-	return len(lines)
+	return t.spaceAvailable
 }
 
-// flush waits until the output lines channel drains or the flush timeout hits.
-// It polls on a snapshot of the channel taken under the lock (the channel is
-// never replaced once created), so the reader goroutine is never blocked by a
-// flusher holding the lock across sleeps.
-func (t *outputManager) flush(user *user.User) {
-	t.mu.Lock()
-	lines := t.lines
-	t.mu.Unlock()
-
-	if lines == nil {
+func (t *outputManager) releaseOutputLocked(payloadBytes, retainedBytes int, entry bool) {
+	if payloadBytes <= 0 && retainedBytes <= 0 && !entry {
 		return
 	}
 
-	t.log().Debug(user, "Flushing output data", "channelLen", len(lines))
+	t.bufferedBytes -= payloadBytes
+	if t.bufferedBytes < 0 {
+		t.bufferedBytes = 0
+	}
+	t.retainedBytes -= retainedBytes
+	if t.retainedBytes < 0 {
+		t.retainedBytes = 0
+	}
+	if entry && t.bufferedEntries > 0 {
+		t.bufferedEntries--
+	}
+	if (retainedBytes > 0 || entry) && t.spaceAvailable != nil {
+		close(t.spaceAvailable)
+		t.spaceAvailable = make(chan struct{})
+	}
+}
+
+// flush waits until all buffered output bytes drain or the flush timeout hits.
+func (t *outputManager) flush(user *user.User) {
+	t.log().Debug(user, "Flushing output data", "bufferedBytes", t.bufferedLen())
 
 	timeout := time.After(t.resolvedFlushTimeout())
 	for {
 		select {
 		case <-timeout:
-			t.log().Warn(user, "Timeout while flushing output data", "remaining", len(lines))
+			t.log().Warn(user, "Timeout while flushing output data", "remainingBytes", t.bufferedLen())
 			return
 		default:
-			if len(lines) == 0 {
-				t.log().Debug(user, "Output channel drained successfully")
+			if t.bufferedLen() == 0 {
+				t.log().Debug(user, "Output buffer drained successfully")
 				return
 			}
 			// Give the reader time to process.
@@ -359,9 +504,8 @@ func (t *outputManager) flush(user *user.User) {
 // Returns handled=false when caller should continue with normal path.
 //
 // It runs on the session output goroutine and holds t.mu for its entire
-// duration except during the short retry sleep, so command goroutines calling
-// enable/signalEOF/channelLen never observe torn state (e.g. mode=true with
-// uninitialized channels).
+// duration, so command goroutines calling enable/signalEOF/bufferedLen never
+// observe torn state.
 //
 // Lock ordering: the shouldDropGeneration callback is invoked (via
 // consumeLocked) while t.mu is held and itself acquires sessionState.mu
@@ -380,123 +524,135 @@ func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Drain buffered remainder data first, regardless of mode: it belongs to a
-	// payload that was already accepted for delivery. This is defensive — with
-	// the current code the combination buffer-nonempty + mode-off cannot arise
-	// (only maybeAckEOFLocked clears mode, and it runs only after the buffer
-	// has been drained) — but draining first keeps delivery correct should
-	// that invariant ever change.
-	if len(t.buffer) > 0 {
-		if traceEnabled {
-			t.log().Trace(user, "baseHandler.Read", "using buffered output data", "bufferedLen", len(t.buffer))
+	// Drain buffered remainder data first. On a generation change, complete
+	// only a protocol record whose prefix was already sent; later complete
+	// records in the same writer batch are stale and are discarded.
+	if len(t.buffer.payload) > 0 {
+		if shouldDropGeneration != nil && shouldDropGeneration(t.buffer.generation) {
+			if !t.buffer.mustFinishRecord {
+				t.releaseOutputLocked(len(t.buffer.payload), t.buffer.retainedBytes, true)
+				t.buffer = generatedOutput{}
+			} else if delimiter := bytes.IndexByte(t.buffer.payload, protocol.MessageDelimiter); delimiter >= 0 {
+				commitLength := delimiter + 1
+				n = copy(p, t.buffer.payload[:commitLength])
+				t.buffer.payload = t.buffer.payload[n:]
+				t.releaseOutputLocked(n, 0, false)
+				if n == commitLength {
+					t.releaseOutputLocked(len(t.buffer.payload), t.buffer.retainedBytes, true)
+					t.buffer = generatedOutput{}
+				}
+				return n, true
+			}
 		}
-		n = copy(p, t.buffer)
-		t.buffer = t.buffer[n:]
-		if traceEnabled {
-			t.log().Trace(user, "baseHandler.Read", "after buffer read", "copied", n, "remaining", len(t.buffer))
+
+		if len(t.buffer.payload) == 0 {
+			// A stale remainder was dropped at a record boundary. Continue so
+			// current-generation queued output can use this Read call.
+		} else {
+			if traceEnabled {
+				t.log().Trace(user, "baseHandler.Read", "using committed output remainder",
+					"generation", t.buffer.generation, "bufferedLen", len(t.buffer.payload))
+			}
+			n = copy(p, t.buffer.payload)
+			t.buffer.payload = t.buffer.payload[n:]
+			retainedBytes := 0
+			entryFinished := len(t.buffer.payload) == 0
+			if entryFinished {
+				retainedBytes = t.buffer.retainedBytes
+			}
+			t.releaseOutputLocked(n, retainedBytes, entryFinished)
+			if len(t.buffer.payload) == 0 {
+				t.buffer = generatedOutput{}
+			} else if n > 0 {
+				t.buffer.mustFinishRecord = p[n-1] != protocol.MessageDelimiter
+			}
+			if traceEnabled {
+				t.log().Trace(user, "baseHandler.Read", "after buffer read", "copied", n, "remaining", len(t.buffer.payload))
+			}
+			return n, true
 		}
-		return n, true
 	}
 
 	if !t.mode {
 		return 0, false
 	}
 
-	if t.lines == nil {
-		return 0, false
+	if traceEnabled {
+		t.log().Trace(user, "baseHandler.Read", "checking output buffer", "bufferedBytes", t.bufferedBytes)
 	}
+
+	for len(t.queue) > 0 {
+		outputData := t.dequeueLocked()
+		if n, delivered := t.consumeLocked(p, outputData, user, traceEnabled, shouldDropGeneration); delivered {
+			return n, true
+		}
+	}
+
+	t.maybeAckEOFLocked(user)
 
 	if traceEnabled {
-		t.log().Trace(user, "baseHandler.Read", "checking outputLines channel", "channelLen", len(t.lines))
+		t.log().Trace(user, "baseHandler.Read", "no data in output buffer, falling through")
 	}
-
-	for {
-		select {
-		case outputData := <-t.lines:
-			if n, delivered := t.consumeLocked(p, outputData, user, traceEnabled, shouldDropGeneration); delivered {
-				return n, true
-			}
-			continue
-		default:
-		}
-
-		// Recompute per iteration: after draining stale-generation entries the
-		// channel may be empty, in which case the retry sleep is pointless.
-		if len(t.lines) > 0 {
-			if outputData, received := t.retryReceiveLocked(user, traceEnabled); received {
-				if n, delivered := t.consumeLocked(p, outputData, user, traceEnabled, shouldDropGeneration); delivered {
-					if traceEnabled {
-						t.log().Trace(user, "baseHandler.Read", "got data after wait")
-					}
-					return n, true
-				}
-				continue
-			}
-		}
-
-		t.maybeAckEOFLocked(user)
-
-		if traceEnabled {
-			t.log().Trace(user, "baseHandler.Read", "no data in outputLines, falling through")
-		}
-		return 0, false
-	}
+	return 0, false
 }
 
-// retryReceiveLocked waits one retry interval for slow producers and then
-// attempts a non-blocking receive from the lines channel. The lock is released
-// during the sleep so command goroutines (enable, signalEOF, flush, ...) are
-// not stalled by the reader's retry backoff; the lines channel is never
-// replaced once created, so re-checking it after re-locking is safe. The
-// caller must hold t.mu; it is held again on return.
-func (t *outputManager) retryReceiveLocked(user *user.User, traceEnabled bool) (outputData []byte, received bool) {
-	if traceEnabled {
-		t.log().Trace(user, "baseHandler.Read", "channel has data but not available, waiting")
+// dequeueLocked removes the oldest descriptor and periodically compacts the
+// backing slice. Entries move to the partial buffer without releasing their
+// metadata budget until delivery or a generation drop completes.
+func (t *outputManager) dequeueLocked() generatedOutput {
+	outputData := t.queue[0]
+	t.queue[0] = generatedOutput{}
+	t.queue = t.queue[1:]
+	if len(t.queue) == 0 {
+		t.queue = nil
+	} else if len(t.queue)*4 <= cap(t.queue) {
+		compacted := make([]generatedOutput, len(t.queue))
+		copy(compacted, t.queue)
+		t.queue = compacted
 	}
-
-	retryInterval := t.resolvedReadRetryInterval()
-	t.mu.Unlock()
-	time.Sleep(retryInterval)
-	t.mu.Lock()
-
-	select {
-	case outputData = <-t.lines:
-		return outputData, true
-	default:
-		// Still no data.
-		return nil, false
-	}
+	return outputData
 }
 
-// consumeLocked decodes a output payload, drops it when its generation is
-// stale, and otherwise copies it into p, buffering any remainder for the next
-// read. Returns delivered=false when the payload was dropped. The caller must
-// hold t.mu.
-func (t *outputManager) consumeLocked(p, outputData []byte, user *user.User,
+// consumeLocked drops stale-generation output and otherwise copies it into p,
+// buffering any remainder for the next read. Returns delivered=false when the
+// payload was dropped. The caller must hold t.mu.
+func (t *outputManager) consumeLocked(p []byte, outputData generatedOutput, user *user.User,
 	traceEnabled bool, shouldDropGeneration func(uint64) bool) (n int, delivered bool) {
 
-	generation, decodedData := decodeGeneratedBytes(outputData)
-	if shouldDropGeneration != nil && shouldDropGeneration(generation) {
+	if shouldDropGeneration != nil && shouldDropGeneration(outputData.generation) {
 		t.eofEmptySince = time.Time{}
+		t.releaseOutputLocked(len(outputData.payload), outputData.retainedBytes, true)
 		return 0, false
 	}
 
 	if traceEnabled {
-		t.log().Trace(user, "baseHandler.Read", "got data from outputLines", "dataLen", len(decodedData))
+		t.log().Trace(user, "baseHandler.Read", "got data from output buffer", "dataLen", len(outputData.payload))
 	}
 	t.eofEmptySince = time.Time{}
-	n = copy(p, decodedData)
-	if n < len(decodedData) {
-		t.buffer = decodedData[n:]
+	n = copy(p, outputData.payload)
+	entryFinished := n == len(outputData.payload)
+	retainedBytes := 0
+	if entryFinished {
+		retainedBytes = outputData.retainedBytes
+	}
+	t.releaseOutputLocked(n, retainedBytes, entryFinished)
+	if n < len(outputData.payload) {
+		t.buffer = generatedOutput{
+			generation:       outputData.generation,
+			payload:          outputData.payload[n:],
+			mustFinishRecord: n > 0 && p[n-1] != protocol.MessageDelimiter,
+			retainedBytes:    outputData.retainedBytes,
+		}
 		if traceEnabled {
-			t.log().Trace(user, "baseHandler.Read", "buffering remaining data", "bufferedLen", len(t.buffer))
+			t.log().Trace(user, "baseHandler.Read", "committing remaining data",
+				"generation", outputData.generation, "bufferedLen", len(t.buffer.payload))
 		}
 	}
 	return n, true
 }
 
 // maybeAckEOFLocked disables output mode and acknowledges the EOF once EOF has
-// been signaled and the lines channel has stayed empty for the quiet period.
+// been signaled and the output buffer has stayed empty for the quiet period.
 // The caller must hold t.mu.
 func (t *outputManager) maybeAckEOFLocked(user *user.User) {
 	if t.eof == nil {
@@ -509,7 +665,7 @@ func (t *outputManager) maybeAckEOFLocked(user *user.User) {
 		return
 	}
 
-	if len(t.lines) > 0 {
+	if t.bufferedBytes > 0 {
 		t.eofEmptySince = time.Time{}
 		return
 	}

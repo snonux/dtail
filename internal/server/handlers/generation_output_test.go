@@ -114,12 +114,9 @@ func TestBaseHandlerReadDropsStaleLine(t *testing.T) {
 
 func TestOutputManagerTryReadDropsStaleGeneration(t *testing.T) {
 
-	manager := outputManager{
-		mode:  true,
-		lines: make(chan []byte, 2),
-	}
-	manager.lines <- encodeGeneratedBytes(1, []byte("stale"))
-	manager.lines <- encodeGeneratedBytes(2, []byte("fresh"))
+	manager := outputManager{mode: true}
+	mustEnqueueOutput(t, &manager, 1, []byte("stale"))
+	mustEnqueueOutput(t, &manager, 2, []byte("fresh"))
 
 	buf := make([]byte, 32)
 	n, handled := manager.tryRead(buf, &userserver.User{Name: "output-test"}, func(generation uint64) bool {

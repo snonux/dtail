@@ -7,6 +7,14 @@ import (
 )
 
 const (
+	// DefaultIdleSessionTimeoutS is the rolling inactivity timeout applied to an
+	// authenticated SSH connection. Successful network reads and writes refresh it.
+	DefaultIdleSessionTimeoutS int = 15 * 60
+
+	// DefaultOutputBufferMaxBytes bounds payload bytes waiting to be written to a
+	// single SSH session.
+	DefaultOutputBufferMaxBytes int = 2 << 20 // 2 MiB
+
 	// DefaultMaxCommandFrameSize is the default maximum number of bytes that
 	// may be buffered between two ';' delimiters in the command protocol.
 	// Frames exceeding this limit cause the session to be closed immediately to

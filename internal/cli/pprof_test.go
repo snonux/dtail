@@ -5,6 +5,18 @@ import (
 	"testing"
 )
 
+func TestNewPProfServerSetsReadHeaderTimeout(t *testing.T) {
+	server, err := NewPProfServer("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewPProfServer: %v", err)
+	}
+	defer func() { _ = server.listener.Close() }()
+
+	if got := server.server.ReadHeaderTimeout; got != pprofReadHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", got, pprofReadHeaderTimeout)
+	}
+}
+
 // TestEnableProfilingRatesSetsMutexFraction verifies that EnableProfilingRates
 // actually turns on mutex profiling. Without this the /debug/pprof/mutex
 // endpoint reports an empty profile. runtime.SetMutexProfileFraction(-1) reads

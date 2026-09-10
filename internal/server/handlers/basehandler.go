@@ -571,11 +571,11 @@ func (h *baseHandler) newCommandContext(parent context.Context) (context.Context
 		commandDone = h.commandDone.Done()
 	}
 	go func() {
+		defer recoverHandlerPanic(h.Logger(), h.user, "command cancellation watcher", h.abortAfterPanic)
+		defer cancel()
 		select {
 		case <-commandDone:
-			cancel()
 		case <-h.done.Done():
-			cancel()
 		case <-ctx.Done():
 		}
 	}()
@@ -649,9 +649,9 @@ func (h *baseHandler) flush() {
 		lineCount := len(h.lines)
 		serverCount := len(h.serverMessages)
 		maprCount := len(h.maprMessages)
-		outputCount := h.output.channelLen()
-		h.Logger().Trace(h.user, "flush", "lines", lineCount, "server", serverCount, "mapr", maprCount, "output", outputCount)
-		return lineCount + serverCount + maprCount + outputCount
+		outputBytes := h.output.bufferedLen()
+		h.Logger().Trace(h.user, "flush", "lines", lineCount, "server", serverCount, "mapr", maprCount, "outputBytes", outputBytes)
+		return lineCount + serverCount + maprCount + outputBytes
 	}
 
 	// Use atomic accessors to avoid a data race with handleMapCommand, which
@@ -703,6 +703,7 @@ func (h *baseHandler) shutdown() {
 	h.flush()
 
 	go func() {
+		defer recoverHandlerPanic(h.Logger(), h.user, "shutdown acknowledgement sender", h.abortAfterPanic)
 		select {
 		case h.serverMessages <- ".syn close connection":
 		case <-h.done.Done():
@@ -765,6 +766,29 @@ func (h *baseHandler) cancelCommandWork() {
 	h.commandMu.Unlock()
 }
 
+// abortAfterPanic signals every session-owned producer and consumer to stop.
+// It deliberately does not wait: panic recovery often runs from a command
+// goroutine which is itself included in commandWg.
+func (h *baseHandler) abortAfterPanic() {
+	h.commandMu.Lock()
+	h.stopping = true
+	h.aborting = true
+	if h.outputAbort != nil {
+		h.outputAbort.Shutdown()
+	}
+	if h.commandDone != nil {
+		h.commandDone.Shutdown()
+	}
+	aggregate := h.getAggregate()
+	h.commandMu.Unlock()
+	if aggregate != nil {
+		aggregate.Abort()
+	}
+	if h.done != nil {
+		h.done.Shutdown()
+	}
+}
+
 func (h *baseHandler) outputAbortDone() <-chan struct{} {
 	if h.outputAbort == nil {
 		return nil
@@ -809,14 +833,15 @@ func (h *baseHandler) flushOutput() {
 	h.output.flush(h.user)
 }
 
-// GetOutputChannel returns the output lines channel for direct writing
-func (h *baseHandler) GetOutputChannel() chan []byte {
-	return h.output.channel()
+// EnqueueOutput adds generated payload to the byte-bounded session output buffer.
+func (h *baseHandler) EnqueueOutput(ctx context.Context, generation uint64, payload []byte,
+	activeGeneration func() uint64) error {
+	return h.output.enqueue(ctx, generation, payload, activeGeneration)
 }
 
-// OutputChannelLen returns current output channel buffered size.
-func (h *baseHandler) OutputChannelLen() int {
-	return h.output.channelLen()
+// OutputBufferBytes returns the number of payload bytes awaiting delivery.
+func (h *baseHandler) OutputBufferBytes() int {
+	return h.output.bufferedLen()
 }
 
 // WaitForOutputEOFAck waits until output reader acknowledges EOF or timeout.

@@ -26,6 +26,63 @@ func ensureTestServerConfig(t *testing.T) {
 	}
 }
 
+type aggregatePanicLogger struct {
+	logging.NopLogger
+	mu       sync.Mutex
+	messages []string
+}
+
+func (l *aggregatePanicLogger) Error(args ...any) string {
+	message := fmt.Sprint(args...)
+	l.mu.Lock()
+	l.messages = append(l.messages, message)
+	l.mu.Unlock()
+	return message
+}
+
+func (l *aggregatePanicLogger) output() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.messages, "\n")
+}
+
+func TestAggregateSerializationChildPanicPropagatesToStart(t *testing.T) {
+	ensureTestServerConfig(t)
+	logger := &aggregatePanicLogger{}
+	aggregate, err := NewAggregate(
+		`from STATS select count($time),$time group by $time interval 3600`,
+		config.Server.MapreduceLogFormat, logger,
+	)
+	if err != nil {
+		t.Fatalf("NewAggregate: %v", err)
+	}
+	aggregate.serializationLoopHook = func() { panic("serialize child failed") }
+
+	result := make(chan any, 1)
+	go func() {
+		defer func() { result <- recover() }()
+		aggregate.Start(context.Background(), make(chan string, 1))
+	}()
+
+	select {
+	case recovered := <-result:
+		if recovered != "serialize child failed" {
+			t.Fatalf("Start panic = %v, want propagated child panic", recovered)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not stop after serialization child panic")
+	}
+	if !aggregate.stopping() {
+		t.Fatal("aggregate was not aborted after serialization child panic")
+	}
+	logOutput := logger.output()
+	for _, want := range []string{"Recovered panic", "serialize child failed", "goroutine"} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("panic log %q does not contain %q", logOutput, want)
+		}
+	}
+}
+
 // TestAggregateDoSerializeReMergesOnCtxCancel verifies that when a
 // serialize is cancelled after the live map has already advanced, the
 // canceled snapshot is merged back without overwriting newer overwrite-style
@@ -561,6 +618,39 @@ func TestAggregateProcessorCountsFlushOnce(t *testing.T) {
 	}
 	if got := aggregate.activeProcessors.Load(); got != 0 {
 		t.Fatalf("expected activeProcessors to be 0, got %d", got)
+	}
+}
+
+func TestAggregateProcessorCloseReleasesAccountingWhenFlushPanics(t *testing.T) {
+	aggregate := &Aggregate{
+		done:      internal.NewDone(),
+		batchSize: 1,
+		// A nil parser makes real batch processing panic inside Flush.
+		batch: []rawLine{{content: bytes.NewBufferString("trigger flush panic")}},
+	}
+	processor := NewAggregateProcessor(aggregate, "test")
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		_ = processor.Close()
+	}()
+	if recovered == nil {
+		t.Fatal("Close did not propagate the injected Flush panic")
+	}
+	if got := aggregate.activeProcessors.Load(); got != 0 {
+		t.Fatalf("active processors after Flush panic = %d, want 0", got)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		aggregate.AbortAndWait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("AbortAndWait hung after AggregateProcessor Flush panic")
 	}
 }
 

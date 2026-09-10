@@ -130,12 +130,18 @@ func (s *journalReadTestServer) OutputEpoch() uint64 { return 0 }
 
 func (s *journalReadTestServer) SignalOutputEOF(epoch uint64) {}
 
-func (s *journalReadTestServer) GetOutputChannel() chan []byte {
-	return s.outputLines
+func (s *journalReadTestServer) EnqueueOutput(ctx context.Context, generation uint64, payload []byte,
+	activeGeneration func() uint64) error {
+	select {
+	case s.outputLines <- encodeGeneratedBytes(generation, payload):
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
-func (s *journalReadTestServer) OutputChannelLen() int {
-	return 0
+func (s *journalReadTestServer) OutputBufferBytes() int {
+	return len(s.outputLines)
 }
 
 func (s *journalReadTestServer) WaitForOutputEOFAck(time.Duration) bool {

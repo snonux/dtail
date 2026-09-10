@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/mimecast/dtail/internal"
@@ -81,6 +82,9 @@ func NewServerHandler(user *user.User, catLimiter,
 	if authKeyStore == nil {
 		return nil, fmt.Errorf("create server handler: auth-key store must not be nil")
 	}
+	if err := validateOutputBufferConfig(serverCfg); err != nil {
+		return nil, err
+	}
 
 	h := ServerHandler{
 		baseHandler: baseHandler{
@@ -120,6 +124,21 @@ func NewServerHandler(user *user.User, catLimiter,
 	h.send(h.serverMessages, protocol.HiddenCapabilitiesPrefix+advertisedServerCapabilities)
 
 	return &h, nil
+}
+
+// validateOutputBufferConfig prevents a valid maximum-length line from being
+// rejected after protocol framing. A flush can contain the tail of the normal
+// 64 KiB writer batch plus that line, so reserve another full batch as bounded
+// framing/path overhead. Zero values use the safe defaults.
+func validateOutputBufferConfig(serverCfg *config.ServerConfig) error {
+	maxLineLength := positiveIntOrDefault(serverCfg.MaxLineLength, 1024*1024)
+	bufferMaxBytes := positiveIntOrDefault(serverCfg.OutputBufferMaxBytes, defaultOutputBufferMaxBytes)
+	minimum := maxLineLength + 2*networkWriterBufferSize
+	if bufferMaxBytes < minimum {
+		return fmt.Errorf("create server handler: OutputBufferMaxBytes %d must be at least %d for MaxLineLength %d",
+			bufferMaxBytes, minimum, maxLineLength)
+	}
+	return nil
 }
 
 func detectJournalCapabilityAvailable() bool {
@@ -170,27 +189,35 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	if strings.EqualFold(commandName, "SESSION") {
 		ctx = withSessionCommandAdmission(ctx)
 	}
-	defer h.finishCommandInitialization()
+	var commandFinishOnce sync.Once
 	commandFinished := func() {
-		defer h.finishCommand()
-		activeCommands := h.decrementActiveCommands()
-		pendingFiles := atomic.LoadInt32(&h.pendingFiles)
-		h.Logger().Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
+		commandFinishOnce.Do(func() {
+			defer h.finishCommand()
+			activeCommands := h.decrementActiveCommands()
+			pendingFiles := atomic.LoadInt32(&h.pendingFiles)
+			h.Logger().Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
 
-		// Release the per-command context + watcher goroutine created for
-		// this invocation (see baseHandler.handleCommand). In the session
-		// dispatch path ctx carries no command cancel and this is a no-op;
-		// the session state owns cancellation there.
-		cancelCommandContext(ctx)
+			// Release the per-command context + watcher goroutine created for
+			// this invocation (see baseHandler.handleCommand). In the session
+			// dispatch path ctx carries no command cancel and this is a no-op;
+			// the session state owns cancellation there.
+			cancelCommandContext(ctx)
 
-		// Only shutdown if no active commands AND no pending files.
-		// AUTHKEY is a session-side effect command and should not terminate the shell
-		// because user commands may still follow in the same session.
-		if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 &&
-			!h.sessionState.keepAlive() && !h.isStopping() {
-			h.triggerIdleShutdown()
-		}
+			// Only shutdown if no active commands AND no pending files.
+			// AUTHKEY is a session-side effect command and should not terminate the shell
+			// because user commands may still follow in the same session.
+			if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 &&
+				!h.sessionState.keepAlive() && !h.isStopping() {
+				h.triggerIdleShutdown()
+			}
+		})
 	}
+	defer recoverHandlerPanic(h.Logger(), h.user, "command dispatch cleanup", h.abortAfterPanic)
+	defer h.finishCommandInitialization()
+	defer recoverHandlerPanic(h.Logger(), h.user, "command dispatch", func() {
+		defer h.abortAfterPanic()
+		commandFinished()
+	})
 
 	handler, found := h.commands[commandName]
 	if !found {
@@ -230,7 +257,10 @@ func (h *ServerHandler) finishCommandBatch(batch *commandBatch) {
 		// The marker is processed by the sole client-to-server writer. Run the
 		// close handshake separately so that writer remains free to deliver its
 		// acknowledgement.
-		go h.triggerIdleShutdown()
+		go func() {
+			defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
+			h.triggerIdleShutdown()
+		}()
 	}
 }
 
@@ -315,9 +345,11 @@ func (h *ServerHandler) makeReadCommandHandler(mode omode.Mode, tailBackoff int)
 			command.shutdownCoordinator.inputBatchOwned = command.inputBatchRead.tracked
 		}
 		go func() {
+			defer recoverHandlerPanic(h.Logger(), h.user, "read command cleanup", h.abortAfterPanic)
+			defer commandFinished()
+			defer command.completeInputBatch()
+			defer recoverHandlerPanic(h.Logger(), h.user, "read command", h.abortAfterPanic)
 			command.Start(ctx, ltx, argc, args, tailBackoff)
-			command.completeInputBatch()
-			commandFinished()
 		}()
 	}
 }
@@ -341,9 +373,11 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 	// and resetSessionAggregates are race-free.
 	h.setAggregate(aggregate)
 	go func() {
+		defer recoverHandlerPanic(h.Logger(), h.user, "map command cleanup", h.abortAfterPanic)
+		defer commandFinished()
+		defer closeMaprMessages()
+		defer recoverHandlerPanic(h.Logger(), h.user, "map command", h.abortAfterPanic)
 		command.Start(ctx, maprMessages)
-		closeMaprMessages()
-		commandFinished()
 	}()
 }
 
@@ -397,6 +431,7 @@ func (h *ServerHandler) newGeneratedMaprMessagesChannel(generation uint64) (chan
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer recoverHandlerPanic(h.Logger(), h.user, "map output forwarding", h.abortAfterPanic)
 		for {
 			select {
 			case message, ok := <-maprMessages:
@@ -441,8 +476,9 @@ func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
 	}
 	initializationDone := make(chan struct{})
 	go func() {
+		defer close(initializationDone)
+		defer recoverHandlerPanic(h.Logger(), h.user, "command initialization wait", h.abortAfterPanic)
 		h.commandInitWg.Wait()
-		close(initializationDone)
 	}()
 	select {
 	case <-initializationDone:
@@ -471,8 +507,9 @@ func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
 
 	commandsDone := make(chan struct{})
 	go func() {
+		defer close(commandsDone)
+		defer recoverHandlerPanic(h.Logger(), h.user, "command completion wait", h.abortAfterPanic)
 		h.commandWg.Wait()
-		close(commandsDone)
 	}()
 	select {
 	case <-commandsDone:

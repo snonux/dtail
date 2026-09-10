@@ -21,7 +21,10 @@ import (
 func (f *readFile) StartWithProcessor(ctx context.Context, ltx lcontext.LContext,
 	processor line.Processor, re regex.Regex) error {
 
-	reader, fd, decompressor, err := f.makeReader(ctx)
+	truncateCtx, cancelTruncate := context.WithCancel(ctx)
+	defer cancelTruncate()
+
+	reader, fd, decompressor, err := f.makeReader(truncateCtx)
 	if fd != nil {
 		defer func() { _ = fd.Close() }()
 	}
@@ -36,16 +39,16 @@ func (f *readFile) StartWithProcessor(ctx context.Context, ltx lcontext.LContext
 		return err
 	}
 
-	truncateCtx, cancelTruncate := context.WithCancel(ctx)
-	defer cancelTruncate()
-
 	truncate := make(chan struct{})
-
-	go f.periodicTruncateCheck(truncateCtx, truncate)
+	truncateDone := f.startPeriodicTruncateCheck(truncateCtx, cancelTruncate, truncate)
 
 	// Process file with direct callbacks instead of channels
-	err = f.readWithProcessor(ctx, fd, reader, truncate, ltx, processor, re)
-	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+	err = f.readWithProcessor(truncateCtx, fd, reader, truncate, ltx, processor, re)
+	cancelTruncate()
+	truncateErr := <-truncateDone
+	if truncateErr != nil {
+		err = errors.Join(err, truncateErr)
+	} else if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 		err = nil
 	}
 

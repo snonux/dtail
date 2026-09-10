@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -37,11 +38,13 @@ var ErrJournalctlNotFound = errors.New("journalctl not found")
 
 // Reader reads journal entries by executing journalctl.
 type Reader struct {
-	journalctlPath string
-	args           []string
-	sourceID       string
-	serverMessages chan<- string
-	follow         bool
+	journalctlPath    string
+	args              []string
+	sourceID          string
+	serverMessages    chan<- string
+	follow            bool
+	forwardStderrHook func(context.Context, io.Reader) error
+	waitCommandHook   func(*exec.Cmd) error
 }
 
 var _ fs.FileReader = (*Reader)(nil)
@@ -121,7 +124,9 @@ func (r *Reader) runWithProcessor(ctx context.Context, ltx lcontext.LContext,
 func (r *Reader) run(ctx context.Context, ltx lcontext.LContext, sink journalSink,
 	re regex.Regex, flushLine func() error) error {
 
-	cmd := r.command(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cmd := r.command(runCtx)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -136,27 +141,69 @@ func (r *Reader) run(ctx context.Context, ltx lcontext.LContext, sink journalSin
 	}
 
 	stderrDone := make(chan error, 1)
+	forwardStderr := r.forwardStderr
+	if r.forwardStderrHook != nil {
+		forwardStderr = r.forwardStderrHook
+	}
 	go func() {
-		stderrDone <- r.forwardStderr(ctx, stderr)
+		stderrErr := runJournalChild("stderr forwarding", func() error {
+			return forwardStderr(runCtx, stderr)
+		})
+		if stderrErr != nil {
+			cancel()
+		}
+		stderrDone <- stderrErr
 	}()
 
 	filter := newJournalFilter(ltx, sink, re, r.sourceID)
-	scanErr := r.scanStdout(ctx, stdout, filter, flushLine)
-	waitErr := waitForJournalctl(cmd, scanErr != nil)
+	scanErr := runJournalChild("stdout scanning", func() error {
+		return r.scanStdout(runCtx, stdout, filter, flushLine)
+	})
+	waitCommand := cmd.Wait
+	if r.waitCommandHook != nil {
+		waitCommand = func() error { return r.waitCommandHook(cmd) }
+	}
+	waitErr := waitForJournalctlWith(cmd, scanErr != nil, waitCommand)
+	if errors.Is(waitErr, fs.ErrReaderWorkerPanic) {
+		cancel()
+	}
 	stderrErr := <-stderrDone
 	filter.Close()
+
+	// A recovered child panic is a fatal reader failure even when it races
+	// with parent cancellation or a scanner/processor failure. Inspect both
+	// child results only after they have completed, and keep the scan error in
+	// the chain when it provides additional context.
+	workerPanicErr := errors.Join(
+		journalWorkerPanic(scanErr),
+		journalWorkerPanic(stderrErr),
+		journalWorkerPanic(waitErr),
+	)
+	if workerPanicErr != nil {
+		if errors.Is(scanErr, fs.ErrReaderWorkerPanic) {
+			scanErr = nil
+		}
+		return errors.Join(scanErr, workerPanicErr)
+	}
 
 	if ctx.Err() != nil || errors.Is(scanErr, errStopReading) {
 		return nil
 	}
-	if scanErr != nil {
-		return scanErr
-	}
 	if stderrErr != nil {
 		return stderrErr
 	}
+	if scanErr != nil {
+		return scanErr
+	}
 	if waitErr != nil {
 		return fmt.Errorf("journalctl failed: %w", waitErr)
+	}
+	return nil
+}
+
+func journalWorkerPanic(err error) error {
+	if errors.Is(err, fs.ErrReaderWorkerPanic) {
+		return err
 	}
 	return nil
 }
@@ -194,28 +241,56 @@ func killProcess(process *os.Process) {
 	_ = process.Kill()
 }
 
-func waitForJournalctl(cmd *exec.Cmd, earlyStop bool) error {
+func waitForJournalctlWith(cmd *exec.Cmd, earlyStop bool, wait func() error) error {
 	if !earlyStop {
-		return cmd.Wait()
+		return cleanupJournalWaitPanic(cmd, runJournalChild("journalctl wait", wait))
 	}
 
 	terminateProcess(cmd.Process)
 
 	waitDone := make(chan error, 1)
 	go func() {
-		waitDone <- cmd.Wait()
+		waitDone <- runJournalChild("journalctl wait", wait)
 	}()
 
 	timer := time.NewTimer(processTerminateGrace)
 	defer timer.Stop()
 
+	var waitErr error
 	select {
 	case err := <-waitDone:
-		return err
+		waitErr = err
 	case <-timer.C:
 		killProcess(cmd.Process)
-		return <-waitDone
+		waitErr = <-waitDone
 	}
+	return cleanupJournalWaitPanic(cmd, waitErr)
+}
+
+func cleanupJournalWaitPanic(cmd *exec.Cmd, waitErr error) error {
+	if !errors.Is(waitErr, fs.ErrReaderWorkerPanic) {
+		return waitErr
+	}
+
+	// The injected/underlying wait callback may have panicked before calling
+	// cmd.Wait. Kill the process and synchronously reap it before run joins the
+	// stderr worker; otherwise a SIGTERM-ignoring child can hold stderr open
+	// forever or remain as a zombie.
+	killProcess(cmd.Process)
+	reapErr := runJournalChild("journalctl reap after wait panic", cmd.Wait)
+	if errors.Is(reapErr, fs.ErrReaderWorkerPanic) {
+		return errors.Join(waitErr, reapErr)
+	}
+	return waitErr
+}
+
+func runJournalChild(scope string, child func() error) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("%w: journal %s: %v\n%s", fs.ErrReaderWorkerPanic, scope, recovered, debug.Stack())
+		}
+	}()
+	return child()
 }
 
 func (r *Reader) scanStdout(ctx context.Context, stdout io.Reader, filter *journalFilter,

@@ -66,6 +66,92 @@ func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
 	}
 }
 
+func TestProcessorVariantsPropagateTruncateChildPanic(t *testing.T) {
+	filePath := writeProcessorTestFile(t, "alpha\n")
+	tests := []struct {
+		name  string
+		start func(*readFile) error
+	}{
+		{
+			name: "standard",
+			start: func(reader *readFile) error {
+				return reader.StartWithProcessor(context.Background(), lcontext.LContext{},
+					&captureProcessor{}, regex.NewNoop())
+			},
+		},
+		{
+			name: "optimized",
+			start: func(reader *readFile) error {
+				return reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+					&captureProcessor{}, regex.NewNoop())
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
+			cat.truncateCheck = func(context.Context, chan<- struct{}) {
+				panic("truncate child failed")
+			}
+			err := test.start(&cat.readFile)
+			if !errors.Is(err, ErrReaderWorkerPanic) || !strings.Contains(err.Error(), "truncate child failed") {
+				t.Fatalf("reader error = %v, want propagated truncate child panic", err)
+			}
+		})
+	}
+}
+
+func TestProcessorVariantsTruncateChildPanicUnblocksPipeRead(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(*readFile) error
+	}{
+		{
+			name: "standard",
+			start: func(reader *readFile) error {
+				return reader.StartWithProcessor(context.Background(), lcontext.LContext{},
+					&captureProcessor{}, regex.NewNoop())
+			},
+		},
+		{
+			name: "optimized",
+			start: func(reader *readFile) error {
+				return reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+					&captureProcessor{}, regex.NewNoop())
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input, writer, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("create input pipe: %v", err)
+			}
+			defer func() { _ = input.Close() }()
+			defer func() { _ = writer.Close() }()
+
+			reader := NewCatFile("", "-", make(chan string, 1), defaultMaxLineLength, testLogger)
+			reader.pipeInput = input
+			reader.truncateCheck = func(context.Context, chan<- struct{}) {
+				panic("truncate child failed while pipe blocked")
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- test.start(&reader.readFile) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, ErrReaderWorkerPanic) {
+					t.Fatalf("reader error = %v, want worker panic", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("worker panic did not unblock pipe read")
+			}
+		})
+	}
+}
+
 func TestServerlessPipeReadReturnsOnCancellationWithoutClosingInput(t *testing.T) {
 	input, writer, err := os.Pipe()
 	if err != nil {

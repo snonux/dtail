@@ -43,6 +43,8 @@ type ServerConfig struct {
 	SSHBindAddress string
 	// The max amount of concurrent user connection allowed to connect to the server.
 	MaxConnections int
+	// Rolling inactivity timeout for authenticated SSH sessions, in seconds.
+	IdleSessionTimeoutS int `json:",omitempty"`
 	// The max amount of concurrent cats per server.
 	MaxConcurrentCats int
 	// The max amount of concurrent tails per server.
@@ -85,8 +87,8 @@ type ServerConfig struct {
 	OutputEOFWaitPerFileMs int `json:",omitempty"`
 	// Maximum output EOF wait duration in milliseconds.
 	OutputEOFWaitMaxMs int `json:",omitempty"`
-	// Output channel buffer size.
-	OutputChannelBufferSize int `json:",omitempty"`
+	// Maximum payload backing memory retained by the output buffer per SSH session.
+	OutputBufferMaxBytes int `json:",omitempty"`
 	// Output channel flush timeout in milliseconds.
 	OutputFlushTimeoutMs int `json:",omitempty"`
 	// Output channel flush poll interval in milliseconds.
@@ -118,14 +120,15 @@ func newDefaultServerConfig() *ServerConfig {
 	defaultPermissions := []string{"^/.*"}
 	defaultBindAddress := "0.0.0.0"
 	return &ServerConfig{
-		HostKeyBits:        4096,
-		HostKeyFile:        "./cache/ssh_host_key",
-		MapreduceLogFormat: "default",
-		MaxConcurrentCats:  2,
-		MaxConcurrentTails: 50,
-		MaxConnections:     10,
-		MaxLineLength:      1024 * 1024,
-		SSHBindAddress:     defaultBindAddress,
+		HostKeyBits:         4096,
+		HostKeyFile:         "./cache/ssh_host_key",
+		MapreduceLogFormat:  "default",
+		MaxConcurrentCats:   2,
+		MaxConcurrentTails:  50,
+		MaxConnections:      10,
+		IdleSessionTimeoutS: DefaultIdleSessionTimeoutS,
+		MaxLineLength:       1024 * 1024,
+		SSHBindAddress:      defaultBindAddress,
 		Permissions: Permissions{
 			Default: defaultPermissions,
 		},
@@ -138,7 +141,7 @@ func newDefaultServerConfig() *ServerConfig {
 		OutputEOFWaitBaseMs:           500,
 		OutputEOFWaitPerFileMs:        10,
 		OutputEOFWaitMaxMs:            2000,
-		OutputChannelBufferSize:       1000,
+		OutputBufferMaxBytes:          DefaultOutputBufferMaxBytes,
 		OutputFlushTimeoutMs:          2000,
 		OutputFlushPollIntervalMs:     10,
 		OutputReadRetryIntervalMs:     1,

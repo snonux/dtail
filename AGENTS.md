@@ -285,11 +285,18 @@ The output path timing and buffer knobs live in the `Output*` / `Shutdown*` conf
 namespace (formerly `Turbo*Ms` / `TurboChannelBufferSize` /
 `ShutdownTurboSerializeWaitMs`). See `internal/config/server.go` for the current
 fields: `OutputTransmissionDelayMs`, `OutputEOFWaitBaseMs`,
-`OutputEOFWaitPerFileMs`, `OutputEOFWaitMaxMs`, `OutputChannelBufferSize`,
+`OutputEOFWaitPerFileMs`, `OutputEOFWaitMaxMs`, `OutputBufferMaxBytes`,
 `OutputFlushTimeoutMs`, `OutputFlushPollIntervalMs`, `OutputReadRetryIntervalMs`,
 `OutputEOFAckTimeoutMs`, and `ShutdownOutputSerializeWaitMs`. All are optional
 (`omitempty`) internal tuning knobs with sensible defaults; the old `Turbo*` keys
 are gone, so a config that still sets them reverts silently to the defaults.
+
+Authenticated connections use the rolling `IdleSessionTimeoutS` timeout (default
+900 seconds). Successful network reads or writes refresh the deadline, so active
+follow sessions stay connected while clients with no SSH activity are closed.
+Per-session payload backing memory waiting on a slow client is capped by
+`OutputBufferMaxBytes` (default 2 MiB); producers apply backpressure when the cap is reached. The
+configured cap must leave room for one maximum-length formatted line.
 
 **Best Practices for High-Concurrency MapReduce:**
 1. Increase MaxConcurrentCats in the server configuration to match workload

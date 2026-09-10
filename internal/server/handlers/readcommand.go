@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -384,7 +385,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 						r.server.LogContext(),
 						"Timeout waiting for output EOF acknowledgement",
 						"timeout", timeout,
-						"remaining", r.server.OutputChannelLen(),
+						"remainingBytes", r.server.OutputBufferBytes(),
 					)
 				}
 			}
@@ -424,10 +425,12 @@ func (r *readCommand) releasePendingInputReservation() {
 func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LContext,
 	wg *sync.WaitGroup, path, glob string, re regex.Regex) {
 
+	defer recoverHandlerPanic(r.server.Logger(), r.server.LogContext(), "file read cleanup", r.abortAfterPanic)
 	defer wg.Done()
 	defer func() {
 		r.shutdownCoordinator.onFileProcessed(path)
 	}()
+	defer recoverHandlerPanic(r.server.Logger(), r.server.LogContext(), "file read", r.abortAfterPanic)
 
 	globID := r.makeGlobID(ctx, path, glob)
 	target, ok := r.server.PrepareReadTarget(path)
@@ -564,6 +567,9 @@ func (r *readCommand) executeReadLoop(ctx context.Context, ltx lcontext.LContext
 	for {
 		if err := strategy(ctx, ltx, reader, re); err != nil {
 			r.server.Logger().Error(r.server.LogContext(), path, globID, err)
+			if errors.Is(err, fs.ErrReaderWorkerPanic) {
+				panic(err)
+			}
 		}
 
 		select {
@@ -588,20 +594,29 @@ func (r *readCommand) readViaProcessor(path, globID string, writer LineWriter) r
 
 		processor := r.makeProcessor(path, globID, writer)
 
-		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> about to start")
-		startErr := reader.StartWithProcessorOptimized(ctx, ltx, processor, re)
-		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> completed")
+		startErr := func() error {
+			// Register cleanup before entering reader code. A panic in either the
+			// reader or Flush must still close an AggregateProcessor and release
+			// its processorsWg reservation. LIFO order preserves Flush-before-Close.
+			defer func() {
+				closeErr := processor.Close()
+				if closeErr != nil {
+					r.server.Logger().Error(r.server.LogContext(), path, globID, "close error", closeErr)
+				}
+				r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> processor closed")
+			}()
+			defer func() {
+				r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> flushing processor")
+				if flushErr := processor.Flush(); flushErr != nil {
+					r.server.Logger().Error(r.server.LogContext(), path, globID, "flush error", flushErr)
+				}
+			}()
 
-		// Ensure we flush and close the processor before retry checks.
-		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> flushing processor")
-		if flushErr := processor.Flush(); flushErr != nil {
-			r.server.Logger().Error(r.server.LogContext(), path, globID, "flush error", flushErr)
-		}
-		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> closing processor")
-		if closeErr := processor.Close(); closeErr != nil {
-			r.server.Logger().Error(r.server.LogContext(), path, globID, "close error", closeErr)
-		}
-		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> processor closed")
+			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> about to start")
+			err := reader.StartWithProcessorOptimized(ctx, ltx, processor, re)
+			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> completed")
+			return err
+		}()
 
 		// Give time for data to be transmitted.
 		// This is crucial for integration tests to ensure all data is sent
@@ -640,10 +655,12 @@ func (r *readCommand) makeWriter(ctx context.Context) LineWriter {
 	// sent every line as its own output-channel payload (one SSH packet + one
 	// write syscall per line), making server-mode output output far slower than
 	// it should be.
-	return NewNetworkWriter(ctx, r.server.GetOutputChannel(),
+	writer := NewNetworkWriter(ctx, nil,
 		r.server.ServerMessagesChannel(), r.server.Hostname(),
 		r.server.PlainOutput(), r.server.Serverless(), r.generation,
 		r.server.ActiveSessionGeneration, r.server.Logger())
+	writer.enqueueOutput = r.server.EnqueueOutput
+	return writer
 }
 
 func (r *readCommand) makeProcessor(path, globID string, writer LineWriter) readProcessor {
@@ -708,6 +725,7 @@ func (r *readCommand) newGeneratedServerMessagesChannel(ctx context.Context) (ch
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer recoverHandlerPanic(r.server.Logger(), r.server.LogContext(), "server message forwarding", r.abortAfterPanic)
 		for {
 			select {
 			case message, ok := <-serverMessages:
@@ -727,6 +745,12 @@ func (r *readCommand) newGeneratedServerMessagesChannel(ctx context.Context) (ch
 	return serverMessages, func() {
 		close(serverMessages)
 		<-done
+	}
+}
+
+func (r *readCommand) abortAfterPanic() {
+	if aborter, ok := r.server.(interface{ abortAfterPanic() }); ok {
+		aborter.abortAfterPanic()
 	}
 }
 

@@ -15,6 +15,8 @@ import (
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
+const networkWriterBufferSize = 64 * 1024
+
 // LineWriter defines the interface for direct writing in output mode
 type LineWriter interface {
 	// WriteLineData writes formatted line data directly to output
@@ -373,6 +375,7 @@ func (w *ChannelWriter) Stats() (linesWritten, bytesWritten uint64) {
 type NetworkWriter struct {
 	logger         logging.Logger
 	outputLines    chan<- []byte
+	enqueueOutput  func(context.Context, uint64, []byte, func() uint64) error
 	serverMessages chan<- string
 	hostname       string
 	plain          bool
@@ -423,7 +426,7 @@ func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
 		serverless:       serverless,
 		generation:       generation,
 		ctx:              ctx,
-		bufSize:          64 * 1024, // 64KB buffer, matching the sibling output writers.
+		bufSize:          networkWriterBufferSize,
 		sendStateCh:      make(chan struct{}),
 		activeGeneration: activeGeneration,
 	}
@@ -548,13 +551,6 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 	// is off. Cheaper and keeps the send loop tight.
 	traceEnabled := w.log().TraceEnabled()
 
-	if w.outputLines == nil {
-		if traceEnabled {
-			writerTrace(w.log(), "NetworkWriter.sendToChannel", "outputLines channel is nil")
-		}
-		return nil
-	}
-
 	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
 		if traceEnabled {
 			writerTrace(w.log(), "NetworkWriter.sendToChannel", "generation became stale before send")
@@ -562,11 +558,21 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 		return nil
 	}
 
-	encoded := encodeGeneratedBytes(w.generation, data)
 	ctx := w.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if w.enqueueOutput != nil {
+		return w.enqueueOutput(ctx, w.generation, data, w.activeGeneration)
+	}
+	if w.outputLines == nil {
+		if traceEnabled {
+			writerTrace(w.log(), "NetworkWriter.sendToChannel", "outputLines channel is nil")
+		}
+		return nil
+	}
+
+	encoded := encodeGeneratedBytes(w.generation, data)
 	retryDelay := defaultOutputReadRetryInterval
 
 	if traceEnabled {

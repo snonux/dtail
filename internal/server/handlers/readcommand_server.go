@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"io"
 	"os"
 	"sync/atomic"
@@ -56,8 +57,8 @@ type readCommandOutput interface {
 	OutputEpoch() uint64
 	// SignalOutputEOF drops the signal when the epoch is no longer current.
 	SignalOutputEOF(epoch uint64)
-	GetOutputChannel() chan []byte
-	OutputChannelLen() int
+	EnqueueOutput(context.Context, uint64, []byte, func() uint64) error
+	OutputBufferBytes() int
 	WaitForOutputEOFAck(timeout time.Duration) bool
 }
 
@@ -259,7 +260,7 @@ func (h *ServerHandler) MaxGlobTargets() int {
 
 func (h *ServerHandler) outputManagerConfig() outputManagerConfig {
 	return outputManagerConfig{
-		channelBufferSize: positiveIntOrDefault(h.serverCfg.OutputChannelBufferSize, defaultOutputChannelBufferSize),
+		bufferMaxBytes:    positiveIntOrDefault(h.serverCfg.OutputBufferMaxBytes, defaultOutputBufferMaxBytes),
 		flushTimeout:      durationFromMilliseconds(h.serverCfg.OutputFlushTimeoutMs, defaultOutputFlushTimeout),
 		flushPollInterval: durationFromMilliseconds(h.serverCfg.OutputFlushPollIntervalMs, defaultOutputFlushPollInterval),
 		readRetryInterval: durationFromMilliseconds(h.serverCfg.OutputReadRetryIntervalMs, defaultOutputReadRetryInterval),

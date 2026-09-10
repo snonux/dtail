@@ -197,7 +197,10 @@ func (f *readFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEO
 func (f *readFile) StartWithProcessorOptimized(ctx context.Context, ltx lcontext.LContext,
 	processor line.Processor, re regex.Regex) error {
 
-	reader, fd, decompressor, err := f.makeReader(ctx)
+	truncateCtx, cancelTruncate := context.WithCancel(ctx)
+	defer cancelTruncate()
+
+	reader, fd, decompressor, err := f.makeReader(truncateCtx)
 	if fd != nil {
 		defer func() { _ = fd.Close() }()
 	}
@@ -212,22 +215,22 @@ func (f *readFile) StartWithProcessorOptimized(ctx context.Context, ltx lcontext
 		return err
 	}
 
-	// Create a cancelable context for the truncate check goroutine
-	truncateCtx, cancelTruncate := context.WithCancel(ctx)
-	defer cancelTruncate()
-
 	truncate := make(chan struct{})
-
-	go f.periodicTruncateCheck(truncateCtx, truncate)
+	truncateDone := f.startPeriodicTruncateCheck(truncateCtx, cancelTruncate, truncate)
 
 	// For tail mode, we need to handle continuous reading
 	if f.seekEOF {
-		return f.tailWithProcessorOptimized(ctx, fd, reader, truncate, ltx, processor, re)
+		err = f.tailWithProcessorOptimized(truncateCtx, fd, reader, truncate, ltx, processor, re)
+	} else {
+		// For cat/grep mode, just read once
+		err = f.readWithProcessorOptimized(truncateCtx, fd, reader, truncate, ltx, processor, re)
 	}
 
-	// For cat/grep mode, just read once
-	err = f.readWithProcessorOptimized(ctx, fd, reader, truncate, ltx, processor, re)
-	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+	cancelTruncate()
+	truncateErr := <-truncateDone
+	if truncateErr != nil {
+		err = errors.Join(err, truncateErr)
+	} else if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 		err = nil
 	}
 

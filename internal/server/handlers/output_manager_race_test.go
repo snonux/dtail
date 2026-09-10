@@ -1,7 +1,7 @@
 package handlers
 
 // Race and behavior tests for outputManager: command goroutines (enable,
-// signalEOF, flush, channelLen, waitForEOFAck) run concurrently with the
+// signalEOF, flush, bufferedLen, waitForEOFAck) run concurrently with the
 // session output goroutine (baseHandler.Read -> tryRead). Before outputManager
 // state was guarded by a mutex this was a data race on mode, the channel
 // fields, buffer and eofEmptySince. Run with `go test -race` to exercise it.
@@ -10,6 +10,7 @@ package handlers
 // TestOutputManagerTryReadDropsStaleGeneration in generation_output_test.go.
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -44,6 +45,13 @@ func newHandshakeTestManager() *outputManager {
 		eofAckQuietPeriod: time.Millisecond,
 	}, handlerTestLogger)
 	return manager
+}
+
+func mustEnqueueOutput(t *testing.T, manager *outputManager, generation uint64, payload []byte) {
+	t.Helper()
+	if err := manager.enqueue(context.Background(), generation, payload, nil); err != nil {
+		t.Fatalf("enqueue output: %v", err)
+	}
 }
 
 // driveReaderUntilDisabled pumps tryRead (as the session output goroutine
@@ -85,14 +93,14 @@ func TestOutputManagerConcurrentEnableAndTryRead(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 200; i++ {
 			manager.enable()
-			select {
-			case manager.channel() <- encodeGeneratedBytes(0, []byte("payload")):
-			default:
+			if err := manager.enqueue(context.Background(), 0, []byte("payload"), nil); err != nil {
+				t.Errorf("enqueue output: %v", err)
+				return
 			}
 			manager.flush(testUser)
 			manager.signalEOF(manager.currentEpoch())
 			manager.waitForEOFAck(50 * time.Millisecond)
-			manager.channelLen()
+			manager.bufferedLen()
 			manager.hasEOF()
 		}
 		close(done)
@@ -152,7 +160,7 @@ func TestOutputManagerEOFHandshakeEndToEnd(t *testing.T) {
 	if !manager.enable() {
 		t.Fatal("enable must report the off->on transition")
 	}
-	manager.channel() <- encodeGeneratedBytes(0, []byte("payload"))
+	mustEnqueueOutput(t, manager, 0, []byte("payload"))
 
 	buf := make([]byte, 64)
 	n, handled := manager.tryRead(buf, testUser, nil)
@@ -236,7 +244,7 @@ func TestOutputManagerEnableRefreshesUnackedEOFHandshake(t *testing.T) {
 	}
 
 	// Batch B's own handshake still completes normally.
-	manager.channel() <- encodeGeneratedBytes(0, []byte("batch-b"))
+	mustEnqueueOutput(t, manager, 0, []byte("batch-b"))
 	n, handled := manager.tryRead(buf, testUser, nil)
 	if !handled || string(buf[:n]) != "batch-b" {
 		t.Fatalf("expected batch B payload, got handled=%v data=%q", handled, buf[:n])
@@ -289,7 +297,7 @@ func TestOutputManagerStaleEpochSignalEOFIsDropped(t *testing.T) {
 	}
 
 	// B's own current-epoch signal completes the handshake normally.
-	manager.channel() <- encodeGeneratedBytes(0, []byte("batch-b"))
+	mustEnqueueOutput(t, manager, 0, []byte("batch-b"))
 	n, handled := manager.tryRead(buf, testUser, nil)
 	if !handled || string(buf[:n]) != "batch-b" {
 		t.Fatalf("expected batch B payload, got handled=%v data=%q", handled, buf[:n])
@@ -370,7 +378,7 @@ func TestOutputManagerNeverSignalingJoinerBoundsDegradation(t *testing.T) {
 	}
 
 	// No data loss: output produced after the join is still delivered.
-	manager.channel() <- encodeGeneratedBytes(0, []byte("joiner-data"))
+	mustEnqueueOutput(t, manager, 0, []byte("joiner-data"))
 	buf := make([]byte, 64)
 	n, handled := manager.tryRead(buf, testUser, nil)
 	if !handled || string(buf[:n]) != "joiner-data" {
@@ -394,7 +402,10 @@ func TestOutputManagerTryReadDrainsBufferWhenModeOff(t *testing.T) {
 
 	manager.mu.Lock()
 	manager.mode = false
-	manager.buffer = []byte("rest")
+	manager.buffer = generatedOutput{generation: 7, payload: []byte("rest"), retainedBytes: len("rest")}
+	manager.bufferedBytes = len(manager.buffer.payload)
+	manager.retainedBytes = len(manager.buffer.payload)
+	manager.bufferedEntries = 1
 	manager.mu.Unlock()
 
 	buf := make([]byte, 64)
@@ -413,7 +424,7 @@ func TestOutputManagerTryReadBuffersRemainder(t *testing.T) {
 	testUser := &userserver.User{Name: "output-remainder-test"}
 
 	manager.enable()
-	manager.channel() <- encodeGeneratedBytes(0, []byte("abcdefgh"))
+	mustEnqueueOutput(t, manager, 0, []byte("abcdefgh"))
 
 	buf := make([]byte, 4)
 	n, handled := manager.tryRead(buf, testUser, nil)
