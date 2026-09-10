@@ -441,7 +441,7 @@ func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning
 		serverMessages: make(chan string),
 		retry:          true,
 		canSkipLines:   true,
-		seekEOF:        false,
+		follow:         true,
 		maxLineLength:  1,
 	}
 
@@ -895,6 +895,170 @@ func (p recyclingErrorProcessor) ProcessLine(b *bytes.Buffer, _ uint64, _ string
 func (p recyclingErrorProcessor) Flush() error { return nil }
 
 func (p recyclingErrorProcessor) Close() error { return nil }
+
+type panickingContextProcessor struct {
+	transferred *bytes.Buffer
+}
+
+func (p *panickingContextProcessor) ProcessLine(buf *bytes.Buffer, _ uint64, _ string) error {
+	p.transferred = buf
+	panic("before-context processor panic")
+}
+
+func (p *panickingContextProcessor) Flush() error { return nil }
+
+func (p *panickingContextProcessor) Close() error { return nil }
+
+type recyclingPanickingProcessor struct {
+	recycle     func(*bytes.Buffer)
+	transferred *bytes.Buffer
+}
+
+func (p *recyclingPanickingProcessor) ProcessLine(buf *bytes.Buffer, _ uint64, _ string) error {
+	p.transferred = buf
+	p.recycle(buf)
+	panic("reader processor panic")
+}
+
+func (p *recyclingPanickingProcessor) Flush() error { return nil }
+
+func (p *recyclingPanickingProcessor) Close() error { return nil }
+
+func TestReadWithProcessorTransfersCurrentBufferBeforeContextPanic(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		maxLineLength int
+		pattern       string
+	}{
+		{
+			name:          "newline",
+			input:         "old before\nMATCH\n",
+			maxLineLength: defaultMaxLineLength,
+			pattern:       "MATCH",
+		},
+		{
+			name:          "forced long line",
+			input:         "x\nMATC",
+			maxLineLength: 4,
+			pattern:       "MATC",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			re, err := regex.New(test.pattern, regex.Default)
+			if err != nil {
+				t.Fatalf("compile regex: %v", err)
+			}
+
+			rf := readFile{
+				logger:        testLogger,
+				filePath:      "memory.log",
+				globID:        "glob-id",
+				maxLineLength: test.maxLineLength,
+			}
+			recycleCount := make(map[*bytes.Buffer]int)
+			rf.bufferRecycleObserver = func(buf *bytes.Buffer) {
+				recycleCount[buf]++
+			}
+			processor := &recyclingPanickingProcessor{recycle: rf.recycleBytesBuffer}
+
+			var recovered any
+			func() {
+				defer func() {
+					recovered = recover()
+				}()
+				_ = rf.readWithProcessor(
+					context.Background(),
+					nil,
+					bufio.NewReader(strings.NewReader(test.input)),
+					nil,
+					lcontext.LContext{BeforeContext: 1},
+					processor,
+					re,
+				)
+			}()
+
+			if recovered != "reader processor panic" {
+				t.Fatalf("recovered panic = %v, want reader processor panic", recovered)
+			}
+			if processor.transferred == nil {
+				t.Fatal("processor did not receive buffered before-context")
+			}
+			if got := recycleCount[processor.transferred]; got != 1 {
+				t.Fatalf("transferred before-context recycle count = %d, want 1", got)
+			}
+			if len(recycleCount) != 2 {
+				t.Fatalf("distinct recycled buffers = %d, want before-context and current line", len(recycleCount))
+			}
+			for buf, count := range recycleCount {
+				if count != 1 {
+					t.Fatalf("buffer %p recycle count = %d, want exactly 1", buf, count)
+				}
+			}
+		})
+	}
+}
+
+func TestFilteringProcessorRecyclesOwnedBuffersOnBeforeContextPanic(t *testing.T) {
+	transferredBefore := pool.BytesBuffer.Get().(*bytes.Buffer)
+	transferredBefore.Reset()
+	transferredBefore.WriteString("first before")
+	// Ownership transfers to the panicking processor, which deliberately does
+	// not recycle its input so the test can verify the filtering processor did
+	// not reclaim a transferred buffer.
+	defer pool.RecycleBytesBuffer(transferredBefore)
+
+	remainingBefore := pool.BytesBuffer.Get().(*bytes.Buffer)
+	remainingBefore.Reset()
+	remainingBefore.WriteString("second before")
+	matchingRaw := pool.BytesBuffer.Get().(*bytes.Buffer)
+	matchingRaw.Reset()
+	matchingRaw.WriteString("matching line")
+
+	processor := &panickingContextProcessor{}
+	var st stats
+	fp := &filteringProcessor{
+		processor: processor,
+		re:        regex.NewNoop(),
+		ltx:       lcontext.LContext{BeforeContext: 2},
+		stats:     &st,
+		globID:    "glob-id",
+		beforeBuf: []*bytes.Buffer{transferredBefore, remainingBefore},
+	}
+
+	var recovered any
+	func() {
+		// Reader entry points own generation cleanup. Mimic that scope here so
+		// the panic test covers both the current raw line and queued context.
+		defer fp.resetGeneration()
+		defer func() {
+			recovered = recover()
+		}()
+		_ = fp.processWithContext(matchingRaw, 3)
+	}()
+
+	if recovered != "before-context processor panic" {
+		t.Fatalf("recovered panic = %v, want before-context processor panic", recovered)
+	}
+	if processor.transferred != transferredBefore {
+		t.Fatalf("processor received buffer %p, want first before-context buffer %p",
+			processor.transferred, transferredBefore)
+	}
+	if got := transferredBefore.String(); got != "first before" {
+		t.Fatalf("transferred buffer was recycled: got %q", got)
+	}
+	if matchingRaw.Len() != 0 {
+		t.Fatalf("locally owned matching buffer length = %d, want 0 after recycle", matchingRaw.Len())
+	}
+	if remainingBefore.Len() != 0 {
+		t.Fatalf("locally owned before-context buffer length = %d, want 0 after cleanup", remainingBefore.Len())
+	}
+	if len(fp.beforeBuf) != 0 {
+		t.Fatalf("before-context buffers = %d, want 0 after cleanup", len(fp.beforeBuf))
+	}
+}
 
 // TestFilteringProcessorDoesNotDoubleRecycleOnError is the regression guard for
 // the yu0 production data race on the FILE read path (dcat/dgrep/dtail), the same

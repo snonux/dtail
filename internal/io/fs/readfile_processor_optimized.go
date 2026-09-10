@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -29,6 +30,7 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		stats:     &f.stats,
 		globID:    f.globID,
 	}
+	defer filterProcessor.resetGeneration()
 
 	// Compute the local-context predicate once. When no context is requested we
 	// can take the zero-copy fast path (match before copy); when it is, every
@@ -112,7 +114,7 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	// Check for scanner errors
 	if err := scanner.Err(); err != nil {
 		// Handle EOF specially for tailing
-		if errors.Is(err, io.EOF) && f.seekEOF {
+		if errors.Is(err, io.EOF) && f.follow {
 			// For tail mode, we want to keep reading
 			return nil
 		}
@@ -219,7 +221,7 @@ func (f *readFile) StartWithProcessorOptimized(ctx context.Context, ltx lcontext
 	truncateDone := f.startPeriodicTruncateCheck(truncateCtx, cancelTruncate, truncate)
 
 	// For tail mode, we need to handle continuous reading
-	if f.seekEOF {
+	if f.follow {
 		err = f.tailWithProcessorOptimized(truncateCtx, fd, reader, truncate, ltx, processor, re)
 	} else {
 		// For cat/grep mode, just read once
@@ -254,6 +256,7 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		stats:     &f.stats,
 		globID:    f.globID,
 	}
+	defer filterProcessor.resetGeneration()
 
 	// Compute the local-context predicate once (see readWithProcessorOptimized):
 	// without context we take the zero-copy match-before-copy fast path.
@@ -355,21 +358,38 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 				return readErr
 			}
 
-			waitForMoreData := true
-
-			// EOF handling
+			// Check on every follow EOF rather than waiting for the three-second
+			// background cadence. This keeps the copytruncate observation window
+			// bounded by the 100ms follow poll and detects replacements by identity.
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-truncate:
-				if isTruncated, err := f.truncated(fd); isTruncated {
-					return err
+			default:
+			}
+			if isTruncated, err := f.truncated(fd); isTruncated {
+				f.warnedAboutLongLine = false
+				if errors.Is(err, errFileTruncated) {
+					if _, seekErr := fd.Seek(0, io.SeekStart); seekErr != nil {
+						return fmt.Errorf("rewind truncated file %s: %w", f.FilePath(), seekErr)
+					}
+					reader.Reset(fd)
+					partialLine.Reset()
+					filterProcessor.resetGeneration()
+					f.logger.Info(f.FilePath(), "File got truncated, reading from beginning")
+					continue
 				}
-				waitForMoreData = false
+				return err
+			}
+
+			// Drain a periodic notification if one is waiting. The optimized
+			// follow path already checked above; consuming the signal keeps the
+			// shared checker responsive without doing a duplicate stat.
+			select {
+			case <-truncate:
 			default:
 			}
 
-			if waitForMoreData && !ctxutil.Sleep(ctx, 100*time.Millisecond) {
+			if !ctxutil.Sleep(ctx, 100*time.Millisecond) {
 				return nil
 			}
 		}

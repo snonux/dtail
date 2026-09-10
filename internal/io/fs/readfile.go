@@ -2,6 +2,7 @@ package fs
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -24,6 +25,11 @@ const (
 	defaultMaxLineLength            = 1024 * 1024
 )
 
+var (
+	errFileTruncated = errors.New("file got truncated")
+	errFileRotated   = errors.New("file got rotated")
+)
+
 // Used to tail and filter a local log file.
 type readFile struct {
 	// Logger for filesystem diagnostics.
@@ -42,8 +48,10 @@ type readFile struct {
 	retry bool
 	// Can I skip messages when there are too many?
 	canSkipLines bool
-	// Seek to the EOF before processing file?
-	seekEOF bool
+	// Keep reading when the current file reaches EOF?
+	follow bool
+	// Seek past existing data on the first successful file open?
+	seekInitialEOF bool
 	// Warned already about a long line.
 	warnedAboutLongLine bool
 	// Maximum line length before a line is split.
@@ -54,17 +62,21 @@ type readFile struct {
 	pipeInput *os.File
 	// truncateCheck is an optional test seam for the periodic child goroutine.
 	truncateCheck func(context.Context, chan<- struct{})
+	// bufferRecycleObserver is an optional test seam for asserting buffer
+	// ownership without relying on sync.Pool retrieval order.
+	bufferRecycleObserver func(*bytes.Buffer)
 }
 
 // String returns the string representation of the readFile
 func (f *readFile) String() string {
 	return fmt.Sprintf(
-		"readFile(filePath:%s,globID:%s,retry:%v,canSkipLines:%v,seekEOF:%v)",
+		"readFile(filePath:%s,globID:%s,retry:%v,canSkipLines:%v,follow:%v,seekInitialEOF:%v)",
 		f.filePath,
 		f.globID,
 		f.retry,
 		f.canSkipLines,
-		f.seekEOF)
+		f.follow,
+		f.seekInitialEOF)
 }
 
 // FilePath returns the full file path.
@@ -116,13 +128,16 @@ func (f *readFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompre
 		return
 	}
 
-	if f.seekEOF {
+	if f.seekInitialEOF {
 		if _, err = fd.Seek(0, io.SeekEnd); err != nil {
 			return
 		}
 	}
 
 	reader, decompressor, err = f.makeCompressedFileReader(fd)
+	if err == nil {
+		f.seekInitialEOF = false
+	}
 	return
 }
 
@@ -206,7 +221,9 @@ func (f *readFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, 
 	return
 }
 
-// Check wether log file is truncated. Returns nil if not.
+// truncated reports whether the open file was truncated in place or replaced
+// at its path. A replacement must be detected by identity, because its size can
+// equal or exceed the current read offset.
 func (f *readFile) truncated(fd *os.File) (bool, error) {
 	if fd == nil {
 		return false, nil
@@ -219,20 +236,41 @@ func (f *readFile) truncated(fd *os.File) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	// Can not open file at original path.
-	pathFd, err := f.openFile()
+	openInfo, err := fd.Stat()
 	if err != nil {
 		return true, err
 	}
-	defer func() { _ = pathFd.Close() }()
 
-	// Can not seek file at original path.
-	pathPosition, err := pathFd.Seek(0, io.SeekEnd)
+	pathInfo, err := f.pathInfo()
 	if err != nil {
 		return true, err
 	}
-	if currentPosition > pathPosition {
-		return true, errors.New("file got truncated")
+	if !os.SameFile(openInfo, pathInfo) {
+		return true, errFileRotated
+	}
+	if currentPosition > pathInfo.Size() {
+		return true, errFileTruncated
 	}
 	return false, nil
+}
+
+func (f *readFile) pathInfo() (os.FileInfo, error) {
+	if f.validatedTarget == nil {
+		info, err := os.Stat(f.filePath)
+		if err != nil {
+			return nil, fmt.Errorf("stat read path %s: %w", f.filePath, err)
+		}
+		return info, nil
+	}
+
+	info, err := os.Lstat(f.validatedTarget.resolvedPath)
+	if err != nil {
+		return nil, fmt.Errorf("lstat validated read path %s: %w",
+			f.validatedTarget.resolvedPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("validated read target is no longer a regular file: %s",
+			f.validatedTarget.resolvedPath)
+	}
+	return info, nil
 }
