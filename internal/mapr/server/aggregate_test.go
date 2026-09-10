@@ -83,6 +83,195 @@ func TestAggregateSerializationChildPanicPropagatesToStart(t *testing.T) {
 	}
 }
 
+func TestAggregateSerializationLoopTickProgressesWithPendingRequest(t *testing.T) {
+	ensureTestServerConfig(t)
+
+	aggregate, err := NewAggregate(
+		`from STATS select count($time),$time group by $time interval 3600`,
+		config.Server.MapreduceLogFormat, logging.NopLogger{},
+	)
+	if err != nil {
+		t.Fatalf("NewAggregate: %v", err)
+	}
+	aggregate.PrepareOutput(make(chan string, 1))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ticker := time.NewTicker(time.Millisecond)
+	aggregate.serializeTicker.Store(ticker)
+	firstTick := make(chan struct{})
+	releaseFirstTick := make(chan struct{})
+	secondTick := make(chan struct{})
+	tickCount := 0
+	aggregate.serializationTickHook = func() {
+		tickCount++
+		switch tickCount {
+		case 1:
+			close(firstTick)
+			<-releaseFirstTick
+		case 2:
+			close(secondTick)
+		}
+	}
+
+	loopDone := make(chan struct{})
+	go func() {
+		aggregate.serializationLoop(ctx)
+		close(loopDone)
+	}()
+
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseFirstTick) }) }
+	defer func() {
+		release()
+		cancel()
+		ticker.Stop()
+		select {
+		case <-loopDone:
+		case <-time.After(time.Second):
+			t.Error("serialization loop goroutine did not exit")
+		}
+	}()
+
+	select {
+	case <-firstTick:
+	case <-time.After(time.Second):
+		t.Fatal("serialization loop did not select the first tick")
+	}
+
+	// Queue an external request after the loop has selected the ticker case but
+	// before it performs the periodic serialization. The old loop called
+	// Serialize here and blocked trying to send behind this pending token.
+	aggregate.Serialize(ctx)
+	if got := len(aggregate.serialize); got != 1 {
+		t.Fatalf("pending serialization requests = %d, want 1", got)
+	}
+	release()
+
+	select {
+	case <-secondTick:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("serialization loop did not progress past a tick with a pending request")
+	}
+}
+
+func TestAggregateSerializeCoalescesAndHonorsTermination(t *testing.T) {
+	ensureTestServerConfig(t)
+
+	newAggregate := func(t *testing.T) *Aggregate {
+		t.Helper()
+		aggregate, err := NewAggregate(
+			`from STATS select count($time),$time group by $time interval 3600`,
+			config.Server.MapreduceLogFormat, logging.NopLogger{},
+		)
+		if err != nil {
+			t.Fatalf("NewAggregate: %v", err)
+		}
+		return aggregate
+	}
+
+	t.Run("pending request", func(t *testing.T) {
+		aggregate := newAggregate(t)
+		aggregate.serialize <- struct{}{}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		returned := make(chan struct{})
+		go func() {
+			aggregate.Serialize(ctx)
+			close(returned)
+		}()
+		select {
+		case <-returned:
+		case <-time.After(250 * time.Millisecond):
+			cancel()
+			<-returned
+			t.Fatal("Serialize blocked behind a pending request")
+		}
+		if got := len(aggregate.serialize); got != 1 {
+			t.Fatalf("coalesced serialization requests = %d, want 1", got)
+		}
+	})
+
+	t.Run("canceled context", func(t *testing.T) {
+		aggregate := newAggregate(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		aggregate.Serialize(ctx)
+		if got := len(aggregate.serialize); got != 0 {
+			t.Fatalf("requests queued after context cancellation = %d, want 0", got)
+		}
+	})
+
+	t.Run("aggregate stopped", func(t *testing.T) {
+		aggregate := newAggregate(t)
+		aggregate.serialize <- struct{}{}
+		aggregate.done.Shutdown()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		returned := make(chan struct{})
+		go func() {
+			aggregate.Serialize(ctx)
+			close(returned)
+		}()
+		select {
+		case <-returned:
+		case <-time.After(250 * time.Millisecond):
+			cancel()
+			<-returned
+			t.Fatal("Serialize did not return promptly after aggregate shutdown")
+		}
+		if got := len(aggregate.serialize); got != 1 {
+			t.Fatalf("pending requests after aggregate shutdown = %d, want 1", got)
+		}
+
+		<-aggregate.serialize
+		aggregate.Serialize(context.Background())
+		if got := len(aggregate.serialize); got != 0 {
+			t.Fatalf("requests queued after aggregate shutdown = %d, want 0", got)
+		}
+	})
+}
+
+func TestAggregateShutdownSerializesWithPendingRequest(t *testing.T) {
+	ensureTestServerConfig(t)
+
+	aggregate, err := NewAggregate(
+		`from STATS select count($time),$time from - group by $time`,
+		config.Server.MapreduceLogFormat, logging.NopLogger{},
+	)
+	if err != nil {
+		t.Fatalf("NewAggregate: %v", err)
+	}
+	messages := make(chan string, 10)
+	aggregate.PrepareOutput(messages)
+
+	processor := NewAggregateProcessor(aggregate, "test")
+	line := "INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|MAPREDUCE:STATS|currentConnections=0|lifetimeConnections=1"
+	if err := processor.ProcessLine(bytes.NewBufferString(line), 1, "test"); err != nil {
+		t.Fatalf("ProcessLine: %v", err)
+	}
+	if err := processor.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	aggregate.Serialize(context.Background())
+	if got := len(aggregate.serialize); got != 1 {
+		t.Fatalf("pending serialization requests = %d, want 1", got)
+	}
+	aggregate.Shutdown()
+
+	select {
+	case result := <-messages:
+		if !strings.Contains(result, "count($time)≔1") {
+			t.Fatalf("unexpected final aggregate result: %q", result)
+		}
+	default:
+		t.Fatal("shutdown lost final serialization behind a pending request")
+	}
+}
+
 // TestAggregateDoSerializeReMergesOnCtxCancel verifies that when a
 // serialize is cancelled after the live map has already advanced, the
 // canceled snapshot is merged back without overwriting newer overwrite-style

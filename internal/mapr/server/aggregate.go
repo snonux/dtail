@@ -87,6 +87,7 @@ type Aggregate struct {
 	finalizationCtx        context.Context
 	finalizationCancelable bool
 	serializationLoopHook  func()
+	serializationTickHook  func()
 }
 
 type aggregateTerminalState uint8
@@ -519,30 +520,53 @@ func (a *Aggregate) serializationLoop(ctx context.Context) {
 		a.serializationLoopHook()
 	}
 	// Start stores serializeTicker before launching this goroutine, so the load
-	// is ordered-after that store and never nil here. The ticker pointer is
-	// never replaced after Start, so loading it once is sufficient.
+	// is ordered-after that store and never nil here. Tests also publish their
+	// controlled ticker before launching the loop.
 	ticker := a.serializeTicker.Load()
 	for {
+		// Prefer termination over work that was already ready when the loop
+		// reached its select. Shutdown performs its own final serialization.
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.done.Done():
+			return
+		default:
+		}
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-a.done.Done():
 			return
 		case <-ticker.C:
-			a.Serialize(ctx)
+			if a.serializationTickHook != nil {
+				a.serializationTickHook()
+			}
+			a.doSerialize(ctx)
 		case <-a.serialize:
 			a.doSerialize(ctx)
 		}
 	}
 }
 
-// Serialize triggers serialization of all aggregated data.
+// Serialize requests serialization of all aggregated data. Requests coalesce
+// while one is already pending; that pending pass will observe all data added
+// before it acquires the aggregate locks.
 func (a *Aggregate) Serialize(ctx context.Context) {
 	select {
-	case a.serialize <- struct{}{}:
-	case <-time.After(time.Minute):
-		a.logger.Warn("Starting to serialize mapreduce data takes over a minute")
 	case <-ctx.Done():
+		return
+	case <-a.done.Done():
+		return
+	default:
+	}
+
+	select {
+	case a.serialize <- struct{}{}:
+	case <-ctx.Done():
+	case <-a.done.Done():
+	default:
 	}
 }
 
