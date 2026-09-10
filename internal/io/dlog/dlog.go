@@ -105,8 +105,8 @@ func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source)
 	wg2.Add(2)
 	go Client.start(ctx, &wg2)
 	go Server.start(ctx, &wg2)
+	startRotation(ctx, &wg2, sourceProcess, loggers.FactoryRotate)
 
-	go rotation(ctx)
 	go func() {
 		wg2.Wait()
 		wg.Done()
