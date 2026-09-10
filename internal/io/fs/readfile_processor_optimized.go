@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/ctxutil"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -205,7 +204,7 @@ func (f *readFile) StartWithProcessorOptimized(ctx context.Context, ltx lcontext
 	if decompressor != nil {
 		defer func() {
 			if closeErr := decompressor.Close(); closeErr != nil {
-				dlog.Common.Warn(f.filePath, "Unable to close compressed reader", closeErr)
+				f.logger.Warn(f.filePath, "Unable to close compressed reader", closeErr)
 			}
 		}()
 	}

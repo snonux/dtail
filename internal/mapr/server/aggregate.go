@@ -12,8 +12,8 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/pool"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/mapr/logformat"
 )
@@ -21,7 +21,8 @@ import (
 // Aggregate is a high-performance aggregator for MapReduce operations.
 // It processes lines directly without channels for maximum throughput.
 type Aggregate struct {
-	done *internal.Done
+	logger logging.Logger
+	done   *internal.Done
 	// inputFinished is signaled via FinishInput once all one-shot input file
 	// reads (cat/grep style) feeding this aggregate have drained. Start then
 	// emits a final serialization and returns instead of blocking until
@@ -121,8 +122,9 @@ func (a *Aggregate) stopSerializeTicker() {
 }
 
 // NewAggregate returns a new aggregator.
-func NewAggregate(queryStr string, defaultLogFormat string) (*Aggregate, error) {
-	query, err := mapr.NewQuery(queryStr)
+func NewAggregate(queryStr string, defaultLogFormat string, logger logging.Logger) (*Aggregate, error) {
+	logger = logging.OrNop(logger)
+	query, err := mapr.NewQuery(queryStr, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -135,19 +137,20 @@ func NewAggregate(queryStr string, defaultLogFormat string) (*Aggregate, error) 
 
 	parserName := resolveParserName(query, defaultLogFormat)
 
-	dlog.Server.Info("Creating log format parser",
+	logger.Info("Creating log format parser",
 		"parserName", parserName,
 		"queryTable", query.Table,
 		"queryLogFormat", query.LogFormat)
 	logParser, err := logformat.NewParser(parserName, query)
 	if err != nil {
-		dlog.Server.Error("Could not create log format parser. Falling back to 'generic'", err)
+		logger.Error("Could not create log format parser. Falling back to 'generic'", err)
 		if logParser, err = logformat.NewParser("generic", query); err != nil {
 			return nil, fmt.Errorf("create fallback generic log format parser: %w", err)
 		}
 	}
 
 	return &Aggregate{
+		logger:        logger,
 		done:          internal.NewDone(),
 		inputFinished: internal.NewDone(),
 		serialize:     make(chan struct{}, 1), // Buffered to avoid blocking
@@ -425,7 +428,7 @@ func (a *Aggregate) processRawBatch(batch []rawLine) {
 	for i := range batch {
 		if err := a.processLine(batch[i].content, batch[i].sourceID); err != nil {
 			a.errors.Add(1)
-			dlog.Server.Error("Error processing line:", err, "lineIndex", i)
+			a.logger.Error("Error processing line:", err, "lineIndex", i)
 		}
 		if batch[i].content != nil {
 			pool.RecycleBytesBuffer(batch[i].content)
@@ -486,7 +489,7 @@ func (a *Aggregate) aggregate(fields map[string]string) {
 			}
 		}
 		if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
-			dlog.Server.Error("Aggregate aggregation error", err, "field", sc.Field, "operation", sc.Operation)
+			a.logger.Error("Aggregate aggregation error", err, "field", sc.Field, "operation", sc.Operation)
 			continue
 		}
 		addedSample = true
@@ -522,7 +525,7 @@ func (a *Aggregate) Serialize(ctx context.Context) {
 	select {
 	case a.serialize <- struct{}{}:
 	case <-time.After(time.Minute):
-		dlog.Server.Warn("Starting to serialize mapreduce data takes over a minute")
+		a.logger.Warn("Starting to serialize mapreduce data takes over a minute")
 	case <-ctx.Done():
 	}
 }
@@ -544,7 +547,7 @@ func (a *Aggregate) doSerializeCancelable(ctx context.Context) {
 
 	a.processBatchAndWait()
 	if a.maprMessages == nil {
-		dlog.Server.Error("Aggregate maprMessages channel is nil")
+		a.logger.Error("Aggregate maprMessages channel is nil")
 		return
 	}
 
@@ -553,7 +556,7 @@ func (a *Aggregate) doSerializeCancelable(ctx context.Context) {
 		return
 	}
 
-	group := mapr.NewGroupSet()
+	group := mapr.NewGroupSet(a.logger)
 	for groupKey, aggregateSet := range snapshot {
 		groupSet := group.GetSet(groupKey)
 		*groupSet = *aggregateSet
@@ -583,13 +586,14 @@ func (a *Aggregate) mergeRemainingLocked(remaining map[string]*mapr.AggregateSet
 			a.groupSets[key] = set
 			continue
 		}
-		mergeCancelledSnapshot(a.query, existing, set)
+		mergeCancelledSnapshot(a.query, existing, set, a.logger)
 	}
-	dlog.Server.Warn("Aggregate serialize interrupted; re-merged unsent groups",
+	a.logger.Warn("Aggregate serialize interrupted; re-merged unsent groups",
 		"remaining", len(remaining))
 }
 
-func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet) {
+func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet,
+	logger logging.Logger) {
 	live.Samples += snapshot.Samples
 	for _, sc := range query.Select {
 		storage := sc.FieldStorage
@@ -628,7 +632,7 @@ func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet
 				}
 			}
 		default:
-			dlog.Server.Error("Aggregate re-merge encountered unsupported aggregation",
+			logger.Error("Aggregate re-merge encountered unsupported aggregation",
 				"operation", sc.Operation, "storage", storage)
 		}
 	}

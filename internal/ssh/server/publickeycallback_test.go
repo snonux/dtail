@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/logging"
 	serveruser "github.com/mimecast/dtail/internal/user/server"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -71,7 +72,8 @@ func TestPublicKeyCallbackRejectsPasswordOnlyUsers(t *testing.T) {
 		t.Run(userName, func(t *testing.T) {
 			store.Add(userName, key)
 
-			permissions, err := publicKeyCallback(testConnMetadata{user: userName}, key, true, t.TempDir(), store)
+			permissions, err := publicKeyCallback(testConnMetadata{user: userName}, key, true,
+				t.TempDir(), store, logging.NopLogger{})
 			if err == nil {
 				t.Fatal("Expected public key authentication to be rejected")
 			}
@@ -108,7 +110,8 @@ func TestVerifyAuthorizedKeysSkipsMalformedLineWithoutParserProgress(t *testing.
 		}
 	}
 
-	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey, parser)
+	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey,
+		parser, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("verifyAuthorizedKeysWithParser failed: %v", err)
 	}
@@ -149,7 +152,8 @@ func TestVerifyAuthorizedKeysSkipsMalformedLineWithRealParser(t *testing.T) {
 		return authorizedPubKey, comment, options, rest, nil
 	}
 
-	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey, parseAuthorizedKeyLineByLine)
+	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey,
+		parseAuthorizedKeyLineByLine, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("verifyAuthorizedKeysWithParser failed: %v", err)
 	}

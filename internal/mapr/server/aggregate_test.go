@@ -11,40 +11,17 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
-	"github.com/mimecast/dtail/internal/source"
 )
 
 // ensureTestServerConfig initialises the minimum globals required by
 // aggregate tests. Safe to call from multiple tests; it is idempotent.
 func ensureTestServerConfig(t *testing.T) {
 	t.Helper()
-	if config.Common == nil {
-		config.Common = &config.CommonConfig{
-			Logger:   "none",
-			LogLevel: "error",
-		}
-	}
 	if config.Server == nil {
 		config.Server = &config.ServerConfig{
 			MapreduceLogFormat: "default",
-		}
-	}
-	// dlog.Server.Error touches config.Client (TermColorsEnable) when it logs,
-	// e.g. the nil-maprMessages branch in doSerialize. Provide a minimal client
-	// config so those log calls do not nil-panic under test.
-	if config.Client == nil {
-		config.Client = &config.ClientConfig{TermColorsEnable: false}
-	}
-	if dlog.Server == nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		if err := dlog.Start(ctx, &wg, source.Server); err != nil {
-			wg.Done()
-			t.Fatalf("start test logger: %v", err)
 		}
 	}
 }
@@ -58,7 +35,7 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),last($message),len($message) from - group by $service`
-	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewAggregate failed: %v", err)
 	}
@@ -161,28 +138,7 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 // server.Aggregate; that regular aggregate was deleted once this aggregate
 // became the only aggregate path (task hv0), so only this subtest remains.
 func TestAggregateProducesResults(t *testing.T) {
-	// Initialize minimal config and logging
-	if config.Common == nil {
-		config.Common = &config.CommonConfig{
-			Logger:   "none",
-			LogLevel: "error",
-		}
-	}
-	if config.Server == nil {
-		config.Server = &config.ServerConfig{
-			MapreduceLogFormat: "default",
-		}
-	}
-	if dlog.Server == nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		var wg sync.WaitGroup
-		wg.Add(1)
-		if err := dlog.Start(ctx, &wg, source.Server); err != nil {
-			wg.Done()
-			t.Fatalf("start test logger: %v", err)
-		}
-	}
+	ensureTestServerConfig(t)
 
 	// Test query
 	queryStr := `from STATS select count($time),$time,avg($goroutines) from - group by $time order by $time`
@@ -198,7 +154,7 @@ func TestAggregateProducesResults(t *testing.T) {
 
 	t.Run("Aggregate", func(t *testing.T) {
 		// Create aggregate
-		agg, aggregateErr := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+		agg, aggregateErr := NewAggregate(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
 		if aggregateErr != nil {
 			t.Fatalf("Failed to create aggregate: %v", aggregateErr)
 		}
@@ -287,33 +243,12 @@ func TestAggregateProducesResults(t *testing.T) {
 
 // TestAggregateConcurrency tests aggregate with concurrent file processing
 func TestAggregateConcurrency(t *testing.T) {
-	// Initialize minimal config and logging
-	if config.Common == nil {
-		config.Common = &config.CommonConfig{
-			Logger:   "none",
-			LogLevel: "error",
-		}
-	}
-	if config.Server == nil {
-		config.Server = &config.ServerConfig{
-			MapreduceLogFormat: "default",
-		}
-	}
-	if dlog.Server == nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		var wg sync.WaitGroup
-		wg.Add(1)
-		if err := dlog.Start(ctx, &wg, source.Server); err != nil {
-			wg.Done()
-			t.Fatalf("start test logger: %v", err)
-		}
-	}
+	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),$time from - group by $time`
 
 	// Create aggregate
-	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Failed to create aggregate: %v", err)
 	}
@@ -534,7 +469,7 @@ func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
 
 	aggregate, err := NewAggregate(
 		`from STATS select count($time),$time group by $time interval 3600`,
-		config.Server.MapreduceLogFormat,
+		config.Server.MapreduceLogFormat, logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("NewAggregate failed: %v", err)
@@ -639,7 +574,7 @@ func TestAggregateFinishInputTerminatesStart(t *testing.T) {
 	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),$time from - group by $time`
-	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewAggregate failed: %v", err)
 	}
@@ -711,7 +646,7 @@ func TestAggregateStreamingContinuesWithoutFinishInput(t *testing.T) {
 	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),$time from - group by $time`
-	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+	agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewAggregate failed: %v", err)
 	}
@@ -795,7 +730,7 @@ func TestAggregateStartDoSerializeFieldRace(t *testing.T) {
 	const iterations = 500
 
 	for i := 0; i < iterations; i++ {
-		agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+		agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
 		if err != nil {
 			t.Fatalf("NewAggregate failed: %v", err)
 		}
@@ -852,7 +787,7 @@ func TestAggregateStartStopTickerFieldRace(t *testing.T) {
 	const iterations = 500
 
 	for i := 0; i < iterations; i++ {
-		agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat)
+		agg, err := NewAggregate(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
 		if err != nil {
 			t.Fatalf("NewAggregate failed: %v", err)
 		}
@@ -911,7 +846,7 @@ func newBufferedTestAggregate(t *testing.T) (*Aggregate, chan string, <-chan str
 
 	aggregate, err := NewAggregate(
 		`from STATS select count($time),$time group by $time interval 3600`,
-		config.Server.MapreduceLogFormat,
+		config.Server.MapreduceLogFormat, logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("NewAggregate failed: %v", err)

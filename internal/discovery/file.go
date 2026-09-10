@@ -4,13 +4,11 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-
-	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
 // ServerListFromFILE retrieves a list of servers from a file.
 func (d *Discovery) ServerListFromFILE() (servers []string, retErr error) {
-	dlog.Common.Debug("Retrieving server list from file", d.server)
+	d.logger.Debug("Retrieving server list from file", d.server)
 
 	file, err := os.Open(d.server)
 	if err != nil {

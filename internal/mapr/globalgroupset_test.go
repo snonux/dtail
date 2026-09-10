@@ -3,6 +3,8 @@ package mapr
 import (
 	"testing"
 	"time"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // TestMergeNoblockSemaphoreReleasedOnPanic verifies that MergeNoblock releases
@@ -10,11 +12,12 @@ import (
 // Without the fix (using defer), the semaphore would be leaked and subsequent
 // calls like NumSets would deadlock forever.
 func TestMergeNoblockSemaphoreReleasedOnPanic(t *testing.T) {
-	g := NewGlobalGroupSet()
+	g := NewGlobalGroupSet(logging.NopLogger{})
 
 	// Calling MergeNoblock with a nil *GroupSet causes a nil-pointer dereference
 	// inside g.merge when it iterates over group.sets. We catch the panic in a
 	// goroutine and verify that the GlobalGroupSet is still usable afterwards.
+
 	done := make(chan struct{})
 	go func() {
 		defer func() {
@@ -58,10 +61,11 @@ func TestMergeNoblockSemaphoreReleasedOnPanic(t *testing.T) {
 // correctly: a successful merge returns (true, nil) and NumSets reflects the
 // merged data.
 func TestMergeNoblockNormalOperation(t *testing.T) {
-	g := NewGlobalGroupSet()
-	group := NewGroupSet()
+	g := NewGlobalGroupSet(logging.NopLogger{})
+	group := NewGroupSet(logging.NopLogger{})
 
 	// Populate the group set with one entry so there is something to merge.
+
 	set := NewAggregateSet()
 	set.FValues["count"] = 1
 	group.sets["key1"] = set

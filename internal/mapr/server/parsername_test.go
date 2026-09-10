@@ -3,6 +3,7 @@ package server
 import (
 	"testing"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -49,7 +50,7 @@ func TestResolveParserName(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			query, err := mapr.NewQuery(tc.query)
+			query, err := mapr.NewQuery(tc.query, logging.NopLogger{})
 			if err != nil {
 				t.Fatalf("NewQuery(%q) failed: %v", tc.query, err)
 			}

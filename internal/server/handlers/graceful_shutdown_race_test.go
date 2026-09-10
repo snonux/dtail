@@ -10,6 +10,7 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/session"
@@ -248,7 +249,7 @@ func newPopulatedTestAggregate(t *testing.T, groups int) *maprserver.Aggregate {
 
 	aggregate, err := maprserver.NewAggregate(
 		"from STATS select count($time),$time from - group by $time interval 3600",
-		"default",
+		"default", logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("create aggregate: %v", err)

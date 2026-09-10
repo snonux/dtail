@@ -9,19 +9,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
 )
 
 func TestValidatedCatFileStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
-	resetCommonLogger(t)
-
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	target := mustValidatedReadTarget(t, filePath)
 	re := regex.NewNoop()
 
-	cat := NewValidatedCatFile(filePath, target, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := NewValidatedCatFile(filePath, target, "glob-id", make(chan string, 1),
+		defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 
 	if err := cat.StartWithProcessorOptimized(
@@ -40,8 +38,6 @@ func TestValidatedCatFileStartWithProcessorOptimizedReadsAllLines(t *testing.T) 
 }
 
 func TestValidatedReadTargetOpenRejectsEscapingSymlinkSwap(t *testing.T) {
-	resetCommonLogger(t)
-
 	baseDir := t.TempDir()
 	rootDir := filepath.Join(baseDir, "root")
 	outsideDir := filepath.Join(baseDir, "outside")
@@ -80,8 +76,6 @@ func TestValidatedReadTargetOpenRejectsEscapingSymlinkSwap(t *testing.T) {
 }
 
 func TestValidatedReadTargetOpenRejectsSameRootSymlinkSwap(t *testing.T) {
-	resetCommonLogger(t)
-
 	baseDir := t.TempDir()
 	filePath := filepath.Join(baseDir, "app.log")
 	if err := os.WriteFile(filePath, []byte("alpha\n"), 0600); err != nil {
@@ -163,12 +157,11 @@ func TestNewValidatedJournalTargetAcceptsLiteralShellMetacharacters(t *testing.T
 }
 
 func TestValidatedTailFileTruncatedReopenDetectsTruncation(t *testing.T) {
-	resetCommonLogger(t)
-
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	target := mustValidatedReadTarget(t, filePath)
 
-	tail := NewValidatedTailFile(filePath, target, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	tail := NewValidatedTailFile(filePath, target, "glob-id", make(chan string, 1),
+		defaultMaxLineLength, testLogger)
 	fd, openErr := target.Open()
 	if openErr != nil {
 		t.Fatalf("open validated target: %v", openErr)
@@ -209,14 +202,4 @@ func mustValidatedReadTarget(t *testing.T, path string) ValidatedReadTarget {
 	}
 
 	return target
-}
-
-func resetCommonLogger(t *testing.T) {
-	t.Helper()
-
-	originalLogger := dlog.Common
-	dlog.Common = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Common = originalLogger
-	})
 }

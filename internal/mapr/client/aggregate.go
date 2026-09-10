@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -26,20 +26,22 @@ type Aggregate struct {
 	generation uint64
 	// The server we aggregate the data for (logging and debugging purposes only)
 	server string
+	logger logging.Logger
 }
 
 // NewAggregate create new client aggregator.
-func NewAggregate(server string, session *SessionState) *Aggregate {
+func NewAggregate(server string, session *SessionState, logger logging.Logger) *Aggregate {
 	generation := uint64(0)
 	if session != nil {
 		generation = session.Snapshot().Generation
 	}
 
 	return &Aggregate{
-		group:      mapr.NewGroupSet(),
+		group:      mapr.NewGroupSet(logger),
 		session:    session,
 		generation: generation,
 		server:     server,
+		logger:     logging.OrNop(logger),
 	}
 }
 
@@ -79,7 +81,7 @@ func (a *Aggregate) Aggregate(message string) error {
 	for _, sc := range snapshot.Query.Select {
 		if val, ok := fields[sc.FieldStorage]; ok {
 			if aggregateErr := set.Aggregate(sc.FieldStorage, sc.Operation, val, true); aggregateErr != nil {
-				dlog.Client.Error(aggregateErr)
+				a.logger.Error(aggregateErr)
 				continue
 			}
 			addedSamples = true

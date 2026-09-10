@@ -121,7 +121,7 @@ func (u *User) validateJournalReadTarget(spec, permissionType string) (fs.Valida
 
 func (u *User) hasFilePermission(cleanPath, permissionType string) (bool, error) {
 	// First check file system Linux/UNIX permission.
-	if _, err := permissions.ToRead(u.Name, cleanPath); err != nil {
+	if _, err := permissions.ToRead(u.Name, cleanPath, dlog.Server); err != nil {
 		return false, fmt.Errorf("User without OS file system permissions to read path: %w", err)
 	}
 	dlog.Server.Info(u, cleanPath, permissionType,

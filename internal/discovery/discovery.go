@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // ServerOrder to specify how to sort the server list.
@@ -32,10 +32,12 @@ type Discovery struct {
 	regex *regexp.Regexp
 	// How to order the server list.
 	order ServerOrder
+	// Logger for discovery diagnostics.
+	logger logging.Logger
 }
 
 // New returns a new discovery method.
-func New(method, server string, order ServerOrder) (*Discovery, error) {
+func New(method, server string, order ServerOrder, logger logging.Logger) (*Discovery, error) {
 	module := method
 	options := ""
 
@@ -53,6 +55,7 @@ func New(method, server string, order ServerOrder) (*Discovery, error) {
 		options: options,
 		server:  server,
 		order:   order,
+		logger:  logging.OrNop(logger),
 	}
 	if d.module != "" {
 		methodName := fmt.Sprintf("ServerListFrom%s", d.module)
@@ -80,7 +83,7 @@ func (d *Discovery) initRegex() error {
 	}
 
 	regexStr := string(runes)
-	dlog.Common.Debug("Using filter regex", regexStr)
+	d.logger.Debug("Using filter regex", regexStr)
 	regex, err := regexp.Compile(regexStr)
 	if err != nil {
 		return fmt.Errorf("compile server discovery regex %q: %w", regexStr, err)
@@ -106,7 +109,7 @@ func (d *Discovery) ServerList() ([]string, error) {
 		servers = d.shuffleList(servers)
 	}
 
-	dlog.Common.Debug("Discovered servers", len(servers), servers)
+	d.logger.Debug("Discovered servers", len(servers), servers)
 	return servers, nil
 }
 
@@ -159,7 +162,7 @@ func (d *Discovery) serverListFromReflectedModule() ([]string, error) {
 
 // Filter server list based on a regexp.
 func (d *Discovery) filterList(servers []string) (filtered []string) {
-	dlog.Common.Debug("Filtering server list")
+	d.logger.Debug("Filtering server list")
 	for _, server := range servers {
 		if d.regex.MatchString(server) {
 			filtered = append(filtered, server)
@@ -177,7 +180,7 @@ func (d *Discovery) dedupList(servers []string) (deduped []string) {
 			deduped = append(deduped, server)
 		}
 	}
-	dlog.Common.Debug("Deduped server list", len(servers), len(deduped))
+	d.logger.Debug("Deduped server list", len(servers), len(deduped))
 	return
 }
 
@@ -186,7 +189,7 @@ func (d *Discovery) dedupList(servers []string) (deduped []string) {
 // two callers started within the same wall-clock second still get different
 // shuffle orders, which is important for client-side load spreading.
 func (d *Discovery) shuffleList(servers []string) []string {
-	dlog.Common.Debug("Shuffling server list")
+	d.logger.Debug("Shuffling server list")
 
 	// Copy to avoid mutating the caller's backing array.
 	shuffled := append([]string(nil), servers...)

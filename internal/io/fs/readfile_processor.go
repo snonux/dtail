@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/ctxutil"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -29,7 +28,7 @@ func (f *readFile) StartWithProcessor(ctx context.Context, ltx lcontext.LContext
 	if decompressor != nil {
 		defer func() {
 			if closeErr := decompressor.Close(); closeErr != nil {
-				dlog.Common.Warn(f.filePath, "Unable to close compressed reader", closeErr)
+				f.logger.Warn(f.filePath, "Unable to close compressed reader", closeErr)
 			}
 		}()
 	}
@@ -171,7 +170,7 @@ func (f *readFile) handleReadErrorProcessor(ctx context.Context, err error, fd *
 	}
 
 	if !f.seekEOF {
-		dlog.Common.Info(f.FilePath(), "End of file reached")
+		f.logger.Info(f.FilePath(), "End of file reached")
 		message := *messagePtr
 		if len(message.Bytes()) > 0 {
 			// Process the last line if it doesn't end with newline.

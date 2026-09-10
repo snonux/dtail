@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -24,14 +25,17 @@ type SessionState struct {
 	global     *mapr.GlobalGroupSet
 	lastResult string
 	changedCh  chan struct{}
+	logger     logging.Logger
 }
 
 // NewSessionState returns a new shared mapreduce session state.
-func NewSessionState(query *mapr.Query) *SessionState {
+func NewSessionState(query *mapr.Query, logger logging.Logger) *SessionState {
+	logger = logging.OrNop(logger)
 	return &SessionState{
 		query:     query,
-		global:    mapr.NewGlobalGroupSet(),
+		global:    mapr.NewGlobalGroupSet(logger),
 		changedCh: make(chan struct{}, 1),
+		logger:    logger,
 	}
 }
 
@@ -55,7 +59,7 @@ func (s *SessionState) Changes() <-chan struct{} {
 
 // CommitQuery resets the shared aggregation state for a newly accepted query generation.
 func (s *SessionState) CommitQuery(rawQuery string, generation uint64) (*mapr.Query, error) {
-	query, err := mapr.NewQuery(rawQuery)
+	query, err := mapr.NewQuery(rawQuery, s.logger)
 	if err != nil {
 		return nil, fmt.Errorf("parse session query: %w", err)
 	}
@@ -63,7 +67,7 @@ func (s *SessionState) CommitQuery(rawQuery string, generation uint64) (*mapr.Qu
 	s.mu.Lock()
 	s.generation = generation
 	s.query = query
-	s.global = mapr.NewGlobalGroupSet()
+	s.global = mapr.NewGlobalGroupSet(s.logger)
 	s.lastResult = ""
 	s.mu.Unlock()
 

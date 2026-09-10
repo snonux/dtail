@@ -6,14 +6,15 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
 func TestAggregateResetsPendingLocalStateOnGenerationChange(t *testing.T) {
 	query := mustSessionStateQuery(t, "select status,count(status) from stats group by status")
-	state := NewSessionState(query)
-	aggregate := NewAggregate("srv1", state)
+	state := NewSessionState(query, logging.NopLogger{})
+	aggregate := NewAggregate("srv1", state, logging.NopLogger{})
 	countStorage := aggregateCountStorage(t, query)
 
 	oldSet := aggregate.group.GetSet("ERROR")
@@ -51,8 +52,8 @@ func TestAggregateResetsPendingLocalStateOnGenerationChange(t *testing.T) {
 
 func TestAggregateRejectsMalformedMessage(t *testing.T) {
 	query := mustSessionStateQuery(t, "select count(status) from stats group by status")
-	state := NewSessionState(query)
-	aggregate := NewAggregate("srv1", state)
+	state := NewSessionState(query, logging.NopLogger{})
+	aggregate := NewAggregate("srv1", state, logging.NopLogger{})
 
 	if err := aggregate.Aggregate("broken"); err == nil {
 		t.Fatalf("expected Aggregate() to reject malformed messages")
@@ -61,8 +62,8 @@ func TestAggregateRejectsMalformedMessage(t *testing.T) {
 
 func TestAggregateFlushMergesPendingLocalState(t *testing.T) {
 	query := mustSessionStateQuery(t, "select status,count(status) from stats group by status")
-	state := NewSessionState(query)
-	aggregate := NewAggregate("srv1", state)
+	state := NewSessionState(query, logging.NopLogger{})
+	aggregate := NewAggregate("srv1", state, logging.NopLogger{})
 	countStorage := aggregateCountStorage(t, query)
 
 	set := aggregate.group.GetSet("ERROR")
@@ -87,8 +88,8 @@ func TestAggregateFlushMergesPendingLocalState(t *testing.T) {
 
 func TestAggregateAndFlushAreSafeConcurrently(t *testing.T) {
 	query := mustSessionStateQuery(t, "select status,count(status) from stats group by status")
-	state := NewSessionState(query)
-	aggregate := NewAggregate("srv1", state)
+	state := NewSessionState(query, logging.NopLogger{})
+	aggregate := NewAggregate("srv1", state, logging.NopLogger{})
 	countStorage := aggregateCountStorage(t, query)
 
 	const messageCount = 1000

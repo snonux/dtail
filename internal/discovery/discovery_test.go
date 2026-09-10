@@ -6,13 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
-func TestMain(m *testing.M) {
-	dlog.Common = &dlog.DLog{}
-	m.Run()
-}
+var testLogger logging.NopLogger
 
 // TestShuffleListDoesNotMutateInput verifies that shuffleList never writes
 // back into the caller's backing array, and that repeated calls within the
@@ -21,7 +18,7 @@ func TestMain(m *testing.M) {
 func TestShuffleListDoesNotMutateInput(t *testing.T) {
 	t.Parallel()
 
-	d := &Discovery{}
+	d := &Discovery{logger: testLogger}
 
 	// Build a stable reference slice.
 	original := make([]string, 20)
@@ -101,7 +98,7 @@ func TestNewParsesModuleOptionsWithAdditionalColons(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := New(tt.method, "server", Shuffle)
+			got, err := New(tt.method, "server", Shuffle, testLogger)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("New(%q) error = nil, want error", tt.method)
@@ -153,7 +150,7 @@ func TestServerListIgnoresEmptyServerEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := New(tt.method, tt.server, ServerOrder(99))
+			got, err := New(tt.method, tt.server, ServerOrder(99), testLogger)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("New(%q, %q) error = nil, want error", tt.method, tt.server)
@@ -193,7 +190,7 @@ func TestNewReturnsDiscoveryInputErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := New(tt.method, tt.server, Shuffle)
+			_, err := New(tt.method, tt.server, Shuffle, testLogger)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("New(%q, %q) error = %v, want %q", tt.method, tt.server, err, tt.want)
 			}
@@ -203,7 +200,7 @@ func TestNewReturnsDiscoveryInputErrors(t *testing.T) {
 
 func TestServerListReturnsFileReadError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
-	discovery, err := New("file", missing, Shuffle)
+	discovery, err := New("file", missing, Shuffle, testLogger)
 	if err != nil {
 		t.Fatalf("New file discovery: %v", err)
 	}

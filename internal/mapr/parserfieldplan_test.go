@@ -1,11 +1,15 @@
 package mapr
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/mimecast/dtail/internal/logging"
+)
 
 func TestParserFieldPlan(t *testing.T) {
 	q, err := NewQuery(
-		"select count($derived) from STATS where $goroutines > 10 " +
-			"set $derived = md5sum(foo), $other = $derived group by $derived",
+		"select count($derived) from STATS where $goroutines > 10 "+
+			"set $derived = md5sum(foo), $other = $derived group by $derived", logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("Unable to create query: %s", err.Error())

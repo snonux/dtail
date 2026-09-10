@@ -6,8 +6,8 @@ import (
 	iofs "io/fs"
 
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/ssh"
 )
 
@@ -17,7 +17,8 @@ const (
 )
 
 // PrivateHostKey retrieves the private server RSA host key.
-func PrivateHostKey(hostKeyFile string, hostKeyBits int) ([]byte, error) {
+func PrivateHostKey(hostKeyFile string, hostKeyBits int, logger logging.Logger) ([]byte, error) {
+	logger = logging.OrNop(logger)
 	if hostKeyFile == "" {
 		hostKeyFile = defaultHostKeyFile
 	}
@@ -36,13 +37,13 @@ func PrivateHostKey(hostKeyFile string, hostKeyBits int) ([]byte, error) {
 	if err != nil {
 		// os.IsNotExist does not unwrap fmt.Errorf chains from RootedPath.Stat; use errors.Is.
 		if errors.Is(err, iofs.ErrNotExist) {
-			dlog.Server.Info("Generating private server RSA host key")
+			logger.Info("Generating private server RSA host key")
 			pem, genErr := generatePrivateHostKey(hostKeyBits)
 			if genErr != nil {
 				return nil, fmt.Errorf("generate private server RSA host key: %w", genErr)
 			}
 			if storeErr := storePrivateHostKey(hostKeyPath, pem); storeErr != nil {
-				dlog.Server.Error("Unable to write private server RSA host key to file",
+				logger.Error("Unable to write private server RSA host key to file",
 					hostKeyFile, storeErr)
 			}
 			return pem, nil
@@ -50,7 +51,7 @@ func PrivateHostKey(hostKeyFile string, hostKeyBits int) ([]byte, error) {
 		return nil, fmt.Errorf("stat private server RSA host key path %q: %w", hostKeyFile, err)
 	}
 
-	dlog.Server.Info("Reading private server RSA host key from file", hostKeyFile)
+	logger.Info("Reading private server RSA host key from file", hostKeyFile)
 	pem, err := readPrivateHostKey(hostKeyPath)
 	if err != nil {
 		return nil, fmt.Errorf("load private server RSA host key from %q: %w", hostKeyFile, err)

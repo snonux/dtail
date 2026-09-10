@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/omode"
@@ -19,13 +20,13 @@ func TestMaprClientCommitSessionSpecResetsSharedState(t *testing.T) {
 			mu:   newBaseClientMu(),
 			Args: config.Args{Mode: omode.MapClient},
 		},
-		session: maprclient.NewSessionState(query),
+		session: maprclient.NewSessionState(query, logging.NopLogger{}),
 		mode:    DefaultMode,
 	}
 	client.setRegexForQuery(query)
 
 	initial := client.session.Snapshot()
-	group := mapr.NewGroupSet()
+	group := mapr.NewGroupSet(logging.NopLogger{})
 	set := group.GetSet("ERROR")
 	set.Samples = 1
 	set.FValues[query.Select[0].FieldStorage] = 1
@@ -76,7 +77,7 @@ func TestMaprClientCommitSessionSpecRejectsMissingQuery(t *testing.T) {
 			mu:   newBaseClientMu(),
 			Args: config.Args{Mode: omode.MapClient},
 		},
-		session: maprclient.NewSessionState(query),
+		session: maprclient.NewSessionState(query, logging.NopLogger{}),
 		mode:    DefaultMode,
 	}
 
@@ -100,7 +101,7 @@ func TestMaprClientReportDelayUsesRampUpAndSteadyIntervals(t *testing.T) {
 func mustMaprClientQuery(t *testing.T, queryStr string) *mapr.Query {
 	t.Helper()
 
-	query, err := mapr.NewQuery(queryStr)
+	query, err := mapr.NewQuery(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewQuery(%q) error = %v", queryStr, err)
 	}

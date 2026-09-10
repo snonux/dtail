@@ -2,11 +2,13 @@ package server
 
 import (
 	"bytes"
-	"github.com/mimecast/dtail/internal/io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/io/fs"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 func TestPrivateHostKeyGeneratesAndReloadsExistingKey(t *testing.T) {
@@ -44,7 +46,7 @@ func TestPrivateHostKeyReturnsConfiguredPathError(t *testing.T) {
 		t.Fatalf("write parent file: %v", err)
 	}
 
-	_, err := PrivateHostKey(filepath.Join(parent, "ssh_host_key"), 1024)
+	_, err := PrivateHostKey(filepath.Join(parent, "ssh_host_key"), 1024, logging.NopLogger{})
 	if err == nil || !strings.Contains(err.Error(), "private server RSA host key") {
 		t.Fatalf("PrivateHostKey error = %v, want configured path error", err)
 	}

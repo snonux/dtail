@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -100,7 +101,7 @@ func TestDefaultLogFormat(t *testing.T) {
 }
 
 func TestDefaultLogFormatQuerySpecificFields(t *testing.T) {
-	q, err := mapr.NewQuery(`select count(foo) from STATS where $hostname eq "testhost"`)
+	q, err := mapr.NewQuery(`select count(foo) from STATS where $hostname eq "testhost"`, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Unable to create query: %s", err.Error())
 	}

@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/prompt"
+	"github.com/mimecast/dtail/internal/logging"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -51,12 +51,14 @@ type KnownHostsCallback struct {
 	trustAllOnce   sync.Once
 	untrustedHosts map[string]bool
 	mutex          *sync.Mutex
+	logger         logging.Logger
 }
 
 var _ HostKeyCallback = (*KnownHostsCallback)(nil)
 
 // NewKnownHostsCallback returns a new wrapper.
-func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool) (HostKeyCallback, error) {
+func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
+	logger logging.Logger) (HostKeyCallback, error) {
 
 	knownHostsFile, err := fs.NewRootedPath(knownHostsPath)
 	if err != nil {
@@ -72,6 +74,7 @@ func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool) (HostKeyCa
 		trustAllHostsCh: make(chan struct{}),
 		untrustedHosts:  untrustedHosts,
 		mutex:           &sync.Mutex{},
+		logger:          logging.OrNop(logger),
 	}
 	if trustAllHosts {
 		// Use the same sync.Once path so both the constructor and the
@@ -135,7 +138,7 @@ func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 		}
 		// Keep host trust discovery diagnostics out of normal command output.
 		// In trust-all and plain modes this warning can corrupt tool output.
-		dlog.Client.Debug("Encountered unknown host", unknown.server, unknown.remote.String())
+		c.logger.Debug("Encountered unknown host", unknown.server, unknown.remote.String())
 		// Notify user that there is an unknown host. Honour ctx cancellation
 		// so we do not block forever when PromptAddHosts has already exited.
 		select {
@@ -185,7 +188,7 @@ func (c *KnownHostsCallback) PromptAddHosts(ctx context.Context) {
 				hosts = []unknownHost{}
 			}
 		case <-ctx.Done():
-			dlog.Client.Debug("Stopping goroutine prompting new hosts...")
+			c.logger.Debug("Stopping goroutine prompting new hosts...")
 			return
 		}
 	}
@@ -200,9 +203,9 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	select {
 	case <-c.trustAllHostsCh:
 		// Trust-all mode is non-interactive; avoid warning-level noise on stdout.
-		dlog.Client.Debug("Trusting host keys of servers", servers)
+		c.logger.Debug("Trusting host keys of servers", servers)
 		if err := c.trustHosts(hosts); err != nil {
-			dlog.Client.Error("Unable to update known hosts file", c.knownHostsPath, err)
+			c.logger.Error("Unable to update known hosts file", c.knownHostsPath, err)
 			c.dontTrustHosts(hosts)
 		}
 		return
@@ -221,11 +224,11 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 		Short: "y",
 		Callback: func() {
 			if err := c.trustHosts(hosts); err != nil {
-				dlog.Client.Error("Unable to update known hosts file", c.knownHostsPath, err)
+				c.logger.Error("Unable to update known hosts file", c.knownHostsPath, err)
 				c.dontTrustHosts(hosts)
 				return
 			}
-			dlog.Client.Info("Added hosts to known hosts file", c.knownHostsPath)
+			c.logger.Info("Added hosts to known hosts file", c.knownHostsPath)
 		},
 	}
 	p.Add(a)
@@ -235,14 +238,14 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 		Short: "a",
 		Callback: func() {
 			if err := c.trustHosts(hosts); err != nil {
-				dlog.Client.Error("Unable to update known hosts file", c.knownHostsPath, err)
+				c.logger.Error("Unable to update known hosts file", c.knownHostsPath, err)
 				c.dontTrustHosts(hosts)
 				return
 			}
 			// Mark trust-all atomically so that concurrent "all" callbacks
 			// from other batches do not double-close the channel.
 			c.closeTrustAllHostsCh()
-			dlog.Client.Info("Added hosts to known hosts file", c.knownHostsPath)
+			c.logger.Info("Added hosts to known hosts file", c.knownHostsPath)
 		},
 	}
 	p.Add(a)
@@ -254,7 +257,7 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 			c.dontTrustHosts(hosts)
 		},
 		EndCallback: func() {
-			dlog.Client.Info("Didn't add hosts to known hosts file", c.knownHostsPath)
+			c.logger.Info("Didn't add hosts to known hosts file", c.knownHostsPath)
 		},
 	}
 	p.Add(a)
@@ -286,7 +289,7 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 	tmpKnownHostsPath := fmt.Sprintf("%s.tmp", c.knownHostsPath)
 	cleanupTmp := func() {
 		if removeErr := root.Remove(tmpKnownHostsName); removeErr != nil && !os.IsNotExist(removeErr) {
-			dlog.Client.Debug("Unable to remove temporary known hosts file", tmpKnownHostsPath, removeErr)
+			c.logger.Debug("Unable to remove temporary known hosts file", tmpKnownHostsPath, removeErr)
 		}
 	}
 

@@ -81,7 +81,7 @@ func (c *baseClient) init() error {
 	}
 	sshAuthMethods, hostKeyCallback, authCloser, err := client.InitSSHAuthMethods(
 		c.SSHAuthMethods, c.SSHHostKeyCallback, c.TrustAllHosts,
-		c.SSHPrivateKeyFilePath, c.SSHAgentKeyIndex)
+		c.SSHPrivateKeyFilePath, c.SSHAgentKeyIndex, dlog.Client)
 	if err != nil {
 		return fmt.Errorf("initialize SSH authentication: %w", err)
 	}
@@ -126,7 +126,7 @@ func (c *baseClient) makeConnections(maker maker) error {
 		c.sessionSpec = sessionSpec
 	}
 
-	discoveryService, err := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle)
+	discoveryService, err := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle, dlog.Client)
 	if err != nil {
 		return fmt.Errorf("configure server discovery: %w", err)
 	}

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 const (
@@ -40,6 +42,7 @@ type Query struct {
 	RawQuery     string
 	tokens       []token
 	LogFormat    string
+	logger       logging.Logger
 }
 
 // String returns the string representation of Query.
@@ -64,7 +67,7 @@ func (q *Query) String() string {
 }
 
 // NewQuery returns a new mapreduce query.
-func NewQuery(queryStr string) (*Query, error) {
+func NewQuery(queryStr string, logger logging.Logger) (*Query, error) {
 	if queryStr == "" {
 		return nil, nil
 	}
@@ -74,6 +77,7 @@ func NewQuery(queryStr string) (*Query, error) {
 		tokens:   tokens,
 		Interval: time.Second * 5,
 		Limit:    -1,
+		logger:   logging.OrNop(logger),
 	}
 
 	// Parse the query tokens to populate all fields including LogFormat and Table.

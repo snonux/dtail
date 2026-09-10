@@ -3,6 +3,7 @@ package clients
 import (
 	"fmt"
 
+	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -22,7 +23,7 @@ func maprRegexForQuery(query *mapr.Query) string {
 }
 
 func maprRegexFromQueryString(queryStr string) (*mapr.Query, string, error) {
-	query, err := mapr.NewQuery(queryStr)
+	query, err := mapr.NewQuery(queryStr, dlog.Client)
 	if err != nil {
 		return nil, "", err
 	}

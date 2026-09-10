@@ -3,15 +3,17 @@ package mapr
 import (
 	"strings"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 func TestGroupSetResultUsesProvidedRenderer(t *testing.T) {
-	query, queryErr := NewQuery("select host,count(value) from stats group by host order by count(value)")
+	query, queryErr := NewQuery("select host,count(value) from stats group by host order by count(value)", logging.NopLogger{})
 	if queryErr != nil {
 		t.Fatalf("Unable to parse query: %v", queryErr)
 	}
 
-	groupSet := NewGroupSet()
+	groupSet := NewGroupSet(logging.NopLogger{})
 	set := groupSet.GetSet("host-a")
 	if err := set.Aggregate("host", Last, "host-a", false); err != nil {
 		t.Fatalf("Unable to aggregate host field: %v", err)
@@ -49,12 +51,12 @@ func TestGroupSetResultUsesProvidedRenderer(t *testing.T) {
 }
 
 func TestGroupSetResultFallsBackToPlainRenderer(t *testing.T) {
-	query, queryErr := NewQuery("select count(value) from stats")
+	query, queryErr := NewQuery("select count(value) from stats", logging.NopLogger{})
 	if queryErr != nil {
 		t.Fatalf("Unable to parse query: %v", queryErr)
 	}
 
-	groupSet := NewGroupSet()
+	groupSet := NewGroupSet(logging.NopLogger{})
 	set := groupSet.GetSet("")
 	if err := set.Aggregate("count(value)", Count, "", false); err != nil {
 		t.Fatalf("Unable to aggregate count field: %v", err)

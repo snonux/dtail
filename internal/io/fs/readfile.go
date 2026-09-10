@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 type readStatus int
@@ -25,6 +25,8 @@ const (
 
 // Used to tail and filter a local log file.
 type readFile struct {
+	// Logger for filesystem diagnostics.
+	logger logging.Logger
 	// Various statistics (e.g. regex hit percentage, transfer percentage).
 	stats
 	// Path of log file to tail.
@@ -90,7 +92,7 @@ func (f *readFile) warnAboutLongLine(ctx context.Context) bool {
 	}
 
 	select {
-	case f.serverMessages <- dlog.Common.Warn(f.filePath,
+	case f.serverMessages <- f.logger.Warn(f.filePath,
 		"Long log line, splitting into multiple lines") + "\n":
 		f.warnedAboutLongLine = true
 		return true
@@ -163,7 +165,7 @@ func (f *readFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, 
 	case strings.HasSuffix(f.FilePath(), ".gz"):
 		fallthrough
 	case strings.HasSuffix(f.FilePath(), ".gzip"):
-		dlog.Common.Info(f.FilePath(), "Detected gzip compression format")
+		f.logger.Info(f.FilePath(), "Detected gzip compression format")
 		var gzipReader *gzip.Reader
 		gzipReader, err = gzip.NewReader(fd)
 		if err != nil {
@@ -185,7 +187,7 @@ func (f *readFile) truncated(fd *os.File) (bool, error) {
 		return false, nil
 	}
 
-	dlog.Common.Debug(f.filePath, "File truncation check")
+	f.logger.Debug(f.filePath, "File truncation check")
 
 	// Can not seek currently open FD.
 	currentPosition, err := fd.Seek(0, io.SeekCurrent)

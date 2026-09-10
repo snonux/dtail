@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/ssh"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -32,8 +32,9 @@ var (
 // is always non-nil so callers can unconditionally defer closer.Close().
 func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool,
-	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
+	privateKeyPath string, agentKeyIndex int, logger logging.Logger) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
 
+	logger = logging.OrNop(logger)
 	if len(sshAuthMethods) > 0 {
 		simpleCallback, err := NewSimpleCallback()
 		if err != nil {
@@ -41,11 +42,11 @@ func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 		}
 		return sshAuthMethods, simpleCallback, noAuthCloser, nil
 	}
-	return initKnownHostsAuthMethods(trustAllHosts, privateKeyPath, agentKeyIndex)
+	return initKnownHostsAuthMethods(trustAllHosts, privateKeyPath, agentKeyIndex, logger)
 }
 
 func initKnownHostsAuthMethods(trustAllHosts bool,
-	privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
+	privateKeyPath string, agentKeyIndex int, logger logging.Logger) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
 
 	knownHostsFile := fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME"))
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
@@ -53,11 +54,11 @@ func initKnownHostsAuthMethods(trustAllHosts bool,
 		knownHostsFile = "./known_hosts"
 	}
 
-	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts)
+	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts, logger)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("initialize known-hosts callback from %q: %w", knownHostsFile, err)
 	}
-	dlog.Client.Debug("initKnownHostsAuthMethods", "Added known hosts file path", knownHostsFile)
+	logger.Debug("initKnownHostsAuthMethods", "Added known hosts file path", knownHostsFile)
 
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		if privateKeyPath == "" {
@@ -65,7 +66,7 @@ func initKnownHostsAuthMethods(trustAllHosts bool,
 		}
 	}
 
-	sshAuthMethods, agentCloser, err := collectKnownHostsAuthMethods(privateKeyPath, agentKeyIndex)
+	sshAuthMethods, agentCloser, err := collectKnownHostsAuthMethods(privateKeyPath, agentKeyIndex, logger)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -73,8 +74,9 @@ func initKnownHostsAuthMethods(trustAllHosts bool,
 	return sshAuthMethods, knownHostsCallback, agentCloser, nil
 }
 
-func collectKnownHostsAuthMethods(privateKeyPath string, agentKeyIndex int) ([]gossh.AuthMethod, io.Closer, error) {
-	signers, agentCloser := collectKnownHostsSigners(privateKeyPath, agentKeyIndex)
+func collectKnownHostsAuthMethods(privateKeyPath string, agentKeyIndex int,
+	logger logging.Logger) ([]gossh.AuthMethod, io.Closer, error) {
+	signers, agentCloser := collectKnownHostsSigners(privateKeyPath, agentKeyIndex, logger)
 	if len(signers) == 0 {
 		if err := agentCloser.Close(); err != nil {
 			return nil, nil, fmt.Errorf("close SSH agent after authentication setup failure: %w", err)
@@ -87,7 +89,8 @@ func collectKnownHostsAuthMethods(privateKeyPath string, agentKeyIndex int) ([]g
 	return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, agentCloser, nil
 }
 
-func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int) ([]gossh.Signer, io.Closer) {
+func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int,
+	logger logging.Logger) ([]gossh.Signer, io.Closer) {
 	var signers []gossh.Signer
 
 	home := os.Getenv("HOME")
@@ -114,13 +117,13 @@ func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int) ([]gossh
 
 		pubKey := string(signer.PublicKey().Marshal())
 		if addedPublicKeys[pubKey] {
-			dlog.Client.Debug("initKnownHostsAuthMethods", "Skipping duplicate signer", source)
+			logger.Debug("initKnownHostsAuthMethods", "Skipping duplicate signer", source)
 			return
 		}
 
 		addedPublicKeys[pubKey] = true
 		signers = append(signers, signer)
-		dlog.Client.Debug("initKnownHostsAuthMethods", "Added signer", source)
+		logger.Debug("initKnownHostsAuthMethods", "Added signer", source)
 	}
 	addPrivateKeySigner := func(path string) {
 		if path == "" {
@@ -132,7 +135,7 @@ func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int) ([]gossh
 
 		signer, err := privateKeySigner(path)
 		if err != nil {
-			dlog.Client.Debug("initKnownHostsAuthMethods", "Unable to load private key signer", path, err)
+			logger.Debug("initKnownHostsAuthMethods", "Unable to load private key signer", path, err)
 			return
 		}
 
@@ -146,9 +149,9 @@ func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int) ([]gossh
 	// Second, SSH agent (YubiKey-backed keys are typically exposed here).
 	// The agent signers sign lazily over the agent connection, so its
 	// io.Closer must live until the caller is done with the signers.
-	loadedAgentSigners, agentCloser, err := agentSigners(agentKeyIndex)
+	loadedAgentSigners, agentCloser, err := agentSigners(agentKeyIndex, logger)
 	if err != nil {
-		dlog.Client.Debug("initKnownHostsAuthMethods", "Unable to load SSH agent signers", err)
+		logger.Debug("initKnownHostsAuthMethods", "Unable to load SSH agent signers", err)
 	}
 	if agentCloser == nil {
 		agentCloser = noAuthCloser

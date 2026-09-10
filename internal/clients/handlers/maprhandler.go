@@ -5,6 +5,7 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -24,7 +25,7 @@ type MaprHandler struct {
 }
 
 // NewMaprHandler returns a new mapreduce client handler.
-func NewMaprHandler(server string, session *client.SessionState) *MaprHandler {
+func NewMaprHandler(server string, session *client.SessionState, logger logging.Logger) *MaprHandler {
 
 	return &MaprHandler{
 		baseHandler: baseHandler{
@@ -37,7 +38,7 @@ func NewMaprHandler(server string, session *client.SessionState) *MaprHandler {
 			capabilitiesCh: make(chan struct{}),
 			sessionAcks:    make(chan SessionAck, 4),
 		},
-		aggregate: client.NewAggregate(server, session),
+		aggregate: client.NewAggregate(server, session, logger),
 	}
 }
 

@@ -86,9 +86,10 @@ func New(cfg config.RuntimeConfig) (*Server, error) {
 		cfg.Server.AuthKeyEnabled,
 		cfg.Common.CacheDir,
 		s.authKeyStore,
+		dlog.Server,
 	)
 
-	privateKey, err := server.PrivateHostKey(cfg.Server.HostKeyFile, cfg.Server.HostKeyBits)
+	privateKey, err := server.PrivateHostKey(cfg.Server.HostKeyFile, cfg.Server.HostKeyBits, dlog.Server)
 	if err != nil {
 		return nil, fmt.Errorf("load SSH host key: %w", err)
 	}

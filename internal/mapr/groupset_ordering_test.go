@@ -3,6 +3,8 @@ package mapr
 import (
 	"reflect"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // TestGroupSetResultOrderIsDeterministicWithoutOrderBy is a negative test that
@@ -20,15 +22,16 @@ func TestGroupSetResultOrderIsDeterministicWithoutOrderBy(t *testing.T) {
 
 	// Query with no ORDER BY clause — the bug case where map iteration order
 	// was the sole determinant of row order.
-	query, err := NewQuery("select count(line) from logs group by host")
+	query, err := NewQuery("select count(line) from logs group by host", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Unable to parse query: %v", err)
 	}
 
-	groupSet := NewGroupSet()
+	groupSet := NewGroupSet(logging.NopLogger{})
 
 	// Insert keys in reverse lexicographic order to ensure the expected sorted
 	// order cannot coincide with insertion order.
+
 	for _, host := range []string{"host-z", "host-m", "host-a", "host-b"} {
 		set := groupSet.GetSet(host)
 		if err := set.Aggregate("count(line)", Count, "1", false); err != nil {
@@ -82,14 +85,15 @@ func TestGroupSetResultOrderIsDeterministicWithOrderByTies(t *testing.T) {
 
 	// ORDER BY count(line) — all rows will have the same count (1), creating a
 	// full tie that must resolve to lexicographic groupKey order.
-	query, err := NewQuery("select count(line) from logs group by host order by count(line)")
+	query, err := NewQuery("select count(line) from logs group by host order by count(line)", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Unable to parse query: %v", err)
 	}
 
-	groupSet := NewGroupSet()
+	groupSet := NewGroupSet(logging.NopLogger{})
 
 	// All hosts receive the same count value to force a tie.
+
 	for _, host := range []string{"host-z", "host-m", "host-a", "host-b"} {
 		set := groupSet.GetSet(host)
 		if err := set.Aggregate("count(line)", Count, "1", false); err != nil {

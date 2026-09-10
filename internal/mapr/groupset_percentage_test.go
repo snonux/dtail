@@ -3,15 +3,17 @@ package mapr
 import (
 	"strconv"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 func TestGroupSetResultPercentageAndPercentile(t *testing.T) {
-	query, queryErr := NewQuery("select percentage(value),percentile(value) from stats group by host order by percentage(value)")
+	query, queryErr := NewQuery("select percentage(value),percentile(value) from stats group by host order by percentage(value)", logging.NopLogger{})
 	if queryErr != nil {
 		t.Fatalf("Unable to parse query: %v", queryErr)
 	}
 
-	groupSet := NewGroupSet()
+	groupSet := NewGroupSet(logging.NopLogger{})
 
 	setA := groupSet.GetSet("host-a")
 	if err := setA.Aggregate("percentage(value)", Percentage, "10", false); err != nil {
@@ -71,12 +73,12 @@ func TestGroupSetResultPercentageAndPercentile(t *testing.T) {
 }
 
 func TestGroupSetPercentageReturnsZeroWhenTotalIsZero(t *testing.T) {
-	query, queryErr := NewQuery("select percentage(value) from stats group by host")
+	query, queryErr := NewQuery("select percentage(value) from stats group by host", logging.NopLogger{})
 	if queryErr != nil {
 		t.Fatalf("Unable to parse query: %v", queryErr)
 	}
 
-	groupSet := NewGroupSet()
+	groupSet := NewGroupSet(logging.NopLogger{})
 	for _, host := range []string{"host-a", "host-b"} {
 		set := groupSet.GetSet(host)
 		if err := set.Aggregate("percentage(value)", Percentage, "0", false); err != nil {

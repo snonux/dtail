@@ -3,12 +3,14 @@ package mapr
 import (
 	"testing"
 	"time"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 func TestParseQueryOutfile(t *testing.T) {
 	queryStr := "select foo from bar outfile \"baz.csv\""
 
-	q, err := NewQuery(queryStr)
+	q, err := NewQuery(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Errorf("Query parse error: %s\n%v: %v", queryStr, q, err)
 	}
@@ -29,7 +31,7 @@ func TestParseQueryOutfile(t *testing.T) {
 func TestParseQueryOutfileAppend(t *testing.T) {
 	queryStr := "select foo from bar outfile append \"baz.csv\""
 
-	q, err := NewQuery(queryStr)
+	q, err := NewQuery(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Errorf("Query parse error: %s\n%v: %v", queryStr, q, err)
 	}
@@ -79,7 +81,7 @@ func TestParseQuerySimple(t *testing.T) {
 	}
 
 	for _, queryStr := range errorQueries {
-		q, err := NewQuery(queryStr)
+		q, err := NewQuery(queryStr, logging.NopLogger{})
 		if err == nil {
 			t.Errorf("Expected a parse error: %s\n%v", queryStr, q)
 			continue
@@ -87,7 +89,7 @@ func TestParseQuerySimple(t *testing.T) {
 	}
 
 	for _, queryStr := range okQueries {
-		_, err := NewQuery(queryStr)
+		_, err := NewQuery(queryStr, logging.NopLogger{})
 		if err != nil {
 			t.Errorf("%s: %s", err.Error(), queryStr)
 			continue
@@ -107,7 +109,7 @@ func TestParseQueryDeep(t *testing.T) {
 	}
 
 	for _, queryStr := range dialects {
-		q, err := NewQuery(queryStr)
+		q, err := NewQuery(queryStr, logging.NopLogger{})
 		if err != nil {
 			t.Errorf("%s: %s", err.Error(), queryStr)
 		}
@@ -256,7 +258,7 @@ func TestParseQueryDeep(t *testing.T) {
 func TestQuotedSelectCondition(t *testing.T) {
 	queryStr := "select `count($foo)`, foo, $foo, count($foo) logformat csv"
 
-	q, err := NewQuery(queryStr)
+	q, err := NewQuery(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Errorf("Query parse error: %s\n%v: %v", queryStr, q, err)
 	}
@@ -302,7 +304,7 @@ func TestCsvLogformatDefaultTable(t *testing.T) {
 	// meaning "process all lines without file filtering".
 	queryStr := "select foo logformat csv"
 
-	q, err := NewQuery(queryStr)
+	q, err := NewQuery(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Query parse error: %s\n%v: %v", queryStr, q, err)
 	}
@@ -324,7 +326,7 @@ func TestCsvLogformatDefaultTable(t *testing.T) {
 func TestCsvLogformatExplicitTableNotOverridden(t *testing.T) {
 	queryStr := "select foo from myfile logformat csv"
 
-	q, err := NewQuery(queryStr)
+	q, err := NewQuery(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Query parse error: %s\n%v: %v", queryStr, q, err)
 	}
@@ -343,7 +345,7 @@ func TestCsvLogformatExplicitTableNotOverridden(t *testing.T) {
 func TestParseQueryPercentageAndPercentile(t *testing.T) {
 	queryStr := "select percentage($value),percentile($value) from stats group by $host order by percentile($value)"
 
-	q, err := NewQuery(queryStr)
+	q, err := NewQuery(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Errorf("Query parse error: %s\n%v: %v", queryStr, q, err)
 	}

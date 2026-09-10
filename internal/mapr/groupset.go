@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // GroupSet represents a map of aggregate sets. The group sets
@@ -13,7 +15,8 @@ import (
 // E.g. "group by $cid" would create one aggregate set and one map
 // entry per customer id.
 type GroupSet struct {
-	sets map[string]*AggregateSet
+	sets   map[string]*AggregateSet
+	logger logging.Logger
 }
 
 // Internal helper type
@@ -30,8 +33,8 @@ type resultStats struct {
 }
 
 // NewGroupSet returns a new empty group set.
-func NewGroupSet() *GroupSet {
-	g := GroupSet{}
+func NewGroupSet(logger logging.Logger) *GroupSet {
+	g := GroupSet{logger: logging.OrNop(logger)}
 	g.InitSet()
 	return &g
 }
@@ -71,7 +74,7 @@ func (g *GroupSet) Serialize(ctx context.Context, ch chan<- string) map[string]*
 			remaining[groupKey] = set
 			continue
 		}
-		if !set.Serialize(ctx, groupKey, ch) {
+		if !set.Serialize(ctx, groupKey, ch, g.logger) {
 			aborted = true
 			if remaining == nil {
 				remaining = make(map[string]*AggregateSet, len(g.sets))

@@ -3,15 +3,16 @@ package client
 import (
 	"testing"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
 func TestSessionStateCommitQueryResetsGenerationAndResults(t *testing.T) {
 	query := mustSessionStateQuery(t, "select count(status) from stats group by status")
-	state := NewSessionState(query)
+	state := NewSessionState(query, logging.NopLogger{})
 
 	initial := state.Snapshot()
-	group := mapr.NewGroupSet()
+	group := mapr.NewGroupSet(logging.NopLogger{})
 	set := group.GetSet("ERROR")
 	set.Samples = 1
 	set.FValues[query.Select[0].FieldStorage] = 1
@@ -54,7 +55,7 @@ func TestSessionStateCommitQueryResetsGenerationAndResults(t *testing.T) {
 
 func TestSessionStateCommitQueryRejectsInvalidQuery(t *testing.T) {
 	query := mustSessionStateQuery(t, "select count(status) from stats group by status")
-	state := NewSessionState(query)
+	state := NewSessionState(query, logging.NopLogger{})
 	before := state.Snapshot()
 
 	if _, err := state.CommitQuery("select from", 5); err == nil {
@@ -73,7 +74,7 @@ func TestSessionStateCommitQueryRejectsInvalidQuery(t *testing.T) {
 func mustSessionStateQuery(t *testing.T, queryStr string) *mapr.Query {
 	t.Helper()
 
-	query, err := mapr.NewQuery(queryStr)
+	query, err := mapr.NewQuery(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewQuery(%q) error = %v", queryStr, err)
 	}

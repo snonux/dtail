@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
@@ -233,12 +234,12 @@ func TestReadCommandProcessorUsesAggregateCapturedAtAdmission(t *testing.T) {
 	resetCommonLogger(t)
 
 	oldAggregate, err := maprserver.NewAggregate(
-		"from STATS select count($time),$time group by $time interval 3600", "default")
+		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("create old aggregate: %v", err)
 	}
 	replacementAggregate, err := maprserver.NewAggregate(
-		"from STATS select count($time),$time group by $time interval 3600", "default")
+		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("create replacement aggregate: %v", err)
 	}
@@ -425,11 +426,11 @@ func TestSessionCommandBatchContextsKeepOverlappingGenerationsSeparate(t *testin
 	handler.sessionState.mu.Unlock()
 
 	query := "from STATS select count($time),$time group by $time interval 3600"
-	firstAggregate, err := maprserver.NewAggregate(query, "default")
+	firstAggregate, err := maprserver.NewAggregate(query, "default", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("create first aggregate: %v", err)
 	}
-	secondAggregate, err := maprserver.NewAggregate(query, "default")
+	secondAggregate, err := maprserver.NewAggregate(query, "default", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("create second aggregate: %v", err)
 	}

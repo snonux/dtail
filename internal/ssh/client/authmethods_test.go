@@ -6,10 +6,12 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 
 	gossh "golang.org/x/crypto/ssh"
 )
+
+var sshClientTestLogger logging.NopLogger
 
 // testCloser is a sentinel io.Closer used by tests to assert that callers
 // release ssh-agent connections returned by the mocked agentSigners hook.
@@ -65,12 +67,9 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
 	t.Cleanup(func() {
 		privateKeySigner = originalPrivateKeySigner
 		agentSigners = originalAgentSigners
-		dlog.Client = originalLogger
 	})
 
 	var callOrder []string
@@ -89,12 +88,12 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 		return signer, nil
 	}
 	agentCloser := &testCloser{}
-	agentSigners = func(keyIndex int) ([]gossh.Signer, io.Closer, error) {
+	agentSigners = func(keyIndex int, _ logging.Logger) ([]gossh.Signer, io.Closer, error) {
 		callOrder = append(callOrder, fmt.Sprintf("agent:%d", keyIndex))
 		return []gossh.Signer{newMockSigner("agent")}, agentCloser, nil
 	}
 
-	methods, closer, err := collectKnownHostsAuthMethods("/custom/id_fast", 7)
+	methods, closer, err := collectKnownHostsAuthMethods("/custom/id_fast", 7, sshClientTestLogger)
 	if err != nil {
 		t.Fatalf("collectKnownHostsAuthMethods: %v", err)
 	}
@@ -112,7 +111,7 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 	}
 
 	callOrder = nil
-	signers, sCloser := collectKnownHostsSigners("/custom/id_fast", 7)
+	signers, sCloser := collectKnownHostsSigners("/custom/id_fast", 7, sshClientTestLogger)
 	if len(signers) != 4 {
 		t.Fatalf("Expected 4 signers, got %d", len(signers))
 	}
@@ -142,12 +141,9 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
 	t.Cleanup(func() {
 		privateKeySigner = originalPrivateKeySigner
 		agentSigners = originalAgentSigners
-		dlog.Client = originalLogger
 	})
 
 	sharedSigner := newMockSigner("shared")
@@ -160,12 +156,12 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 		return nil, fmt.Errorf("missing private key: %s", path)
 	}
 	agentCloser := &testCloser{}
-	agentSigners = func(keyIndex int) ([]gossh.Signer, io.Closer, error) {
+	agentSigners = func(keyIndex int, _ logging.Logger) ([]gossh.Signer, io.Closer, error) {
 		callOrder = append(callOrder, fmt.Sprintf("agent:%d", keyIndex))
 		return []gossh.Signer{sharedSigner}, agentCloser, nil
 	}
 
-	methods, closer, err := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", 2)
+	methods, closer, err := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", 2, sshClientTestLogger)
 	if err != nil {
 		t.Fatalf("collectKnownHostsAuthMethods: %v", err)
 	}
@@ -178,7 +174,7 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 	_ = closer.Close()
 
 	callOrder = nil
-	signers, sCloser := collectKnownHostsSigners(homeDir+"/.ssh/id_rsa", 2)
+	signers, sCloser := collectKnownHostsSigners(homeDir+"/.ssh/id_rsa", 2, sshClientTestLogger)
 	if len(signers) != 1 {
 		t.Fatalf("Expected duplicate keys to collapse to 1 signer, got %d", len(signers))
 	}
@@ -205,23 +201,20 @@ func TestCollectKnownHostsAuthMethodsReturnsErrorAndClosesAgentWithoutKeys(t *te
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
 	t.Cleanup(func() {
 		privateKeySigner = originalPrivateKeySigner
 		agentSigners = originalAgentSigners
-		dlog.Client = originalLogger
 	})
 
 	privateKeySigner = func(string) (gossh.Signer, error) {
 		return nil, fmt.Errorf("missing key")
 	}
 	agentCloser := &testCloser{}
-	agentSigners = func(int) ([]gossh.Signer, io.Closer, error) {
+	agentSigners = func(int, logging.Logger) ([]gossh.Signer, io.Closer, error) {
 		return nil, agentCloser, nil
 	}
 
-	methods, closer, err := collectKnownHostsAuthMethods("/missing/explicit-key", 0)
+	methods, closer, err := collectKnownHostsAuthMethods("/missing/explicit-key", 0, sshClientTestLogger)
 	if err == nil {
 		t.Fatal("collectKnownHostsAuthMethods succeeded without any usable key")
 	}
@@ -243,12 +236,9 @@ func TestCollectKnownHostsSignersIncludesIntegrationFallbackForExplicitKey(t *te
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
 	t.Cleanup(func() {
 		privateKeySigner = originalPrivateKeySigner
 		agentSigners = originalAgentSigners
-		dlog.Client = originalLogger
 	})
 
 	var callOrder []string
@@ -263,12 +253,12 @@ func TestCollectKnownHostsSignersIncludesIntegrationFallbackForExplicitKey(t *te
 			return nil, fmt.Errorf("missing private key: %s", path)
 		}
 	}
-	agentSigners = func(keyIndex int) ([]gossh.Signer, io.Closer, error) {
+	agentSigners = func(keyIndex int, _ logging.Logger) ([]gossh.Signer, io.Closer, error) {
 		callOrder = append(callOrder, fmt.Sprintf("agent:%d", keyIndex))
 		return nil, noAuthCloser, nil
 	}
 
-	signers, closer := collectKnownHostsSigners(explicitKeyPath, 4)
+	signers, closer := collectKnownHostsSigners(explicitKeyPath, 4, sshClientTestLogger)
 	if len(signers) != 2 {
 		t.Fatalf("Expected explicit and integration fallback signers, got %d", len(signers))
 	}

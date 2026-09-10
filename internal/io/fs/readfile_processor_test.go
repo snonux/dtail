@@ -48,7 +48,7 @@ func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 
 	if err := cat.StartWithProcessorOptimized(
@@ -67,8 +67,6 @@ func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
 }
 
 func TestServerlessPipeReadReturnsOnCancellationWithoutClosingInput(t *testing.T) {
-	resetCommonLogger(t)
-
 	input, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("create input pipe: %v", err)
@@ -79,7 +77,7 @@ func TestServerlessPipeReadReturnsOnCancellationWithoutClosingInput(t *testing.T
 	processed := make(chan string, 1)
 	flushed := make(chan struct{}, 1)
 	processor := &signalingPipeProcessor{processed: processed, flushed: flushed}
-	reader := NewCatFile("", "-", make(chan string, 1), defaultMaxLineLength)
+	reader := NewCatFile("", "-", make(chan string, 1), defaultMaxLineLength, testLogger)
 	reader.pipeInput = input
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -154,8 +152,6 @@ func (*signalingPipeProcessor) Close() error { return nil }
 // state truncated() flags. A signal is pre-loaded on the truncate channel so
 // the very first loop iteration performs the check.
 func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
-	resetCommonLogger(t)
-
 	// The on-disk file is intentionally tiny; the fd is then seeked well past
 	// its end to emulate having read a file that shrank underneath us.
 	filePath := writeProcessorTestFile(t, "short")
@@ -182,6 +178,7 @@ func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
 	truncate <- struct{}{}
 
 	rf := readFile{
+		logger:        testLogger,
 		filePath:      filePath,
 		globID:        "glob-id",
 		maxLineLength: defaultMaxLineLength,
@@ -228,7 +225,7 @@ func TestProcessorVariantsReturnOpenError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cat := NewCatFile(missingFile, "glob-id", make(chan string, 1), defaultMaxLineLength)
+			cat := NewCatFile(missingFile, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 			err := tt.start(&cat.readFile, context.Background(), lcontext.LContext{}, &captureProcessor{}, re)
 			if err == nil {
 				t.Fatalf("expected error for missing file")
@@ -242,7 +239,7 @@ func TestStartWithProcessorOptimizedPropagatesProcessError(t *testing.T) {
 	re := regex.NewNoop()
 	expectedErr := errors.New("processor failure")
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{
 		errAtLine:  1,
 		processErr: expectedErr,
@@ -260,12 +257,10 @@ func TestStartWithProcessorOptimizedPropagatesProcessError(t *testing.T) {
 }
 
 func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
-	resetCommonLogger(t)
-
 	filePath := writeProcessorTestFile(t, "abcdef\n")
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), 3)
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), 3, testLogger)
 	processor := &captureProcessor{}
 
 	if err := cat.StartWithProcessorOptimized(
@@ -284,12 +279,10 @@ func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
 }
 
 func TestStartWithProcessorOptimizedWaitsOnLiveLongLineWarningUntilCanceled(t *testing.T) {
-	resetCommonLogger(t)
-
 	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string), 1)
+	cat := NewCatFile(filePath, "glob-id", make(chan string), 1, testLogger)
 	processor := &captureProcessor{}
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -329,12 +322,10 @@ func TestStartWithProcessorOptimizedWaitsOnLiveLongLineWarningUntilCanceled(t *t
 // historic channel-based Start reader was removed in task iv0, so only the
 // processor variant remains here.
 func TestStartWithProcessorExitsWhenContextCanceledDuringLongLineWarning(t *testing.T) {
-	resetCommonLogger(t)
-
 	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string), 1)
+	cat := NewCatFile(filePath, "glob-id", make(chan string), 1, testLogger)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -354,12 +345,11 @@ func TestStartWithProcessorExitsWhenContextCanceledDuringLongLineWarning(t *test
 }
 
 func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning(t *testing.T) {
-	resetCommonLogger(t)
-
 	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
 	re := regex.NewNoop()
 
 	rf := readFile{
+		logger:         testLogger,
 		filePath:       filePath,
 		globID:         "glob-id",
 		serverMessages: make(chan string),
@@ -423,13 +413,12 @@ func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning
 // (no final newline) makes the bug deterministic because handleReadErrorProcessor
 // also hands the current buffer to ProcessFilteredLine (which recycles it).
 func TestReadWithProcessorNoDoubleRecycle(t *testing.T) {
-	resetCommonLogger(t)
 	drainBytesBufferPool()
 
 	filePath := writeProcessorTestFile(t, "alpha\nbeta")
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 
 	if err := cat.StartWithProcessor(
@@ -526,7 +515,7 @@ func TestReadWithProcessorOptimizedFastPathByteIdentical(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			filePath := writeProcessorTestFile(t, content)
-			cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+			cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 			processor := &captureProcessor{}
 
 			if err := cat.StartWithProcessorOptimized(
@@ -559,7 +548,7 @@ func TestReadWithProcessorOptimizedContextPathUnchanged(t *testing.T) {
 	}
 
 	filePath := writeProcessorTestFile(t, content)
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 
 	// One line of before context and one line of after context around the match.
@@ -629,7 +618,7 @@ func TestProcessorMaxCountEarlyStopNoErrorLeak(t *testing.T) {
 
 	run := func(start func(*readFile, context.Context, lcontext.LContext, *captureProcessor, regex.Regex) error) *captureProcessor {
 		filePath := writeProcessorTestFile(t, content)
-		cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+		cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 		processor := &captureProcessor{}
 		if err := start(&cat.readFile, context.Background(), ltx, processor, re); err != nil {
 			// A non-nil return here is exactly the leaked sentinel the server
@@ -677,7 +666,7 @@ func TestReadWithProcessorOptimizedMaxCountWithContextEarlyStop(t *testing.T) {
 			t.Fatalf("build regex: %v", err)
 		}
 		filePath := writeProcessorTestFile(t, content)
-		cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+		cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 		processor := &captureProcessor{}
 		if err := start(&cat.readFile, context.Background(), ltx, processor, re); err != nil {
 			t.Fatalf("reader returned error; max-count+context sentinel must be swallowed: %v", err)
@@ -712,10 +701,9 @@ func TestReadWithProcessorOptimizedMaxCountWithContextEarlyStop(t *testing.T) {
 // follow loop is deterministic; serverMessages is nil so warnAboutLongLine never
 // blocks (it returns true immediately).
 func TestTailWithProcessorOptimizedMaxCountEarlyStop(t *testing.T) {
-	resetCommonLogger(t)
-
 	newReadFile := func(maxLineLength int) readFile {
 		return readFile{
+			logger:        testLogger,
 			filePath:      "test.log",
 			globID:        "glob-id",
 			maxLineLength: maxLineLength,

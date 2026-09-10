@@ -15,6 +15,7 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog/loggers"
 	"github.com/mimecast/dtail/internal/io/pool"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/source"
 )
@@ -44,6 +45,8 @@ type DLog struct {
 	// Current hostname.
 	hostname string
 }
+
+var _ logging.Logger = (*DLog)(nil)
 
 // new creates a new DTail logger.
 func new(sourceProcess, sourcePackage source.Source) (*DLog, error) {

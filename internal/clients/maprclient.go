@@ -45,7 +45,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 		return nil, errors.New("no mapreduce query specified, use '-query' flag")
 	}
 
-	query, err := mapr.NewQuery(args.QueryStr)
+	query, err := mapr.NewQuery(args.QueryStr, dlog.Client)
 	if err != nil {
 		return nil, fmt.Errorf("parse mapreduce query %q: %w", args.QueryStr, err)
 	}
@@ -67,7 +67,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient
 			retry:      retry,
 			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
 		},
-		session: maprclient.NewSessionState(query),
+		session: maprclient.NewSessionState(query, dlog.Client),
 		mode:    maprClientMode,
 	}
 	dlog.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
@@ -101,7 +101,7 @@ func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status i
 // NEXT: Make this a callback function rather trying to use polymorphism to call
 // this. This applies to all clients. It will make the code easier to read.
 func (c *MaprClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewMaprHandler(server, c.session)
+	return handlers.NewMaprHandler(server, c.session, dlog.Client)
 }
 
 func (c *MaprClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.

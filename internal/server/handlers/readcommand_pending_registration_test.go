@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
 )
@@ -374,7 +375,7 @@ func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
 	resetServerLogger(t)
 	resetCommonLogger(t)
 	aggregate, err := maprserver.NewAggregate(
-		"from STATS select count($time),$time group by $time interval 3600", "default")
+		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("create aggregate: %v", err)
 	}

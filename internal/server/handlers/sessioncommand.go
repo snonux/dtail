@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/omode"
@@ -107,7 +108,7 @@ func validateSessionSpec(spec session.Spec) error {
 		return fmt.Errorf("missing session query")
 	}
 	if spec.Query != "" {
-		if _, err := mapr.NewQuery(spec.Query); err != nil {
+		if _, err := mapr.NewQuery(spec.Query, dlog.Server); err != nil {
 			return fmt.Errorf("invalid session spec")
 		}
 	}

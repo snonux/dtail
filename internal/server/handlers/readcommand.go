@@ -468,10 +468,11 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 			}
 			reader = journalReader
 		case target != nil:
-			catFile := fs.NewValidatedCatFile(path, *target, globID, serverMessages, r.server.MaxLineLength())
+			catFile := fs.NewValidatedCatFile(path, *target, globID, serverMessages,
+				r.server.MaxLineLength(), dlog.Common)
 			reader = &catFile
 		default:
-			catFile := fs.NewCatFile(path, globID, serverMessages, r.server.MaxLineLength())
+			catFile := fs.NewCatFile(path, globID, serverMessages, r.server.MaxLineLength(), dlog.Common)
 			reader = &catFile
 		}
 		limiter = r.server.CatLimiter()
@@ -487,10 +488,11 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 			}
 			reader = journalReader
 		case target != nil:
-			tailFile := fs.NewValidatedTailFile(path, *target, globID, serverMessages, r.server.MaxLineLength())
+			tailFile := fs.NewValidatedTailFile(path, *target, globID, serverMessages,
+				r.server.MaxLineLength(), dlog.Common)
 			reader = &tailFile
 		default:
-			tailFile := fs.NewTailFile(path, globID, serverMessages, r.server.MaxLineLength())
+			tailFile := fs.NewTailFile(path, globID, serverMessages, r.server.MaxLineLength(), dlog.Common)
 			reader = &tailFile
 		}
 		limiter = r.server.TailLimiter()

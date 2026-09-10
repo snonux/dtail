@@ -11,6 +11,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/protocol"
@@ -18,13 +19,13 @@ import (
 )
 
 func TestMaprHandlerShutdownFlushesPendingAggregateState(t *testing.T) {
-	query, queryErr := mapr.NewQuery("select status,count(status) from stats group by status")
+	query, queryErr := mapr.NewQuery("select status,count(status) from stats group by status", logging.NopLogger{})
 	if queryErr != nil {
 		t.Fatalf("NewQuery() error = %v", queryErr)
 	}
 
-	session := maprclient.NewSessionState(query)
-	handler := NewMaprHandler("srv1", session)
+	session := maprclient.NewSessionState(query, logging.NopLogger{})
+	handler := NewMaprHandler("srv1", session, logging.NopLogger{})
 	countStorage := handlerCountStorage(t, query)
 
 	message := strings.Join([]string{
@@ -58,13 +59,13 @@ func TestMaprHandlerWriteEmptyMessageBetweenDelimiters(t *testing.T) {
 		dlog.Client = originalLogger
 	})
 
-	query, queryErr := mapr.NewQuery("select status,count(status) from stats group by status")
+	query, queryErr := mapr.NewQuery("select status,count(status) from stats group by status", logging.NopLogger{})
 	if queryErr != nil {
 		t.Fatalf("NewQuery() error = %v", queryErr)
 	}
 
-	session := maprclient.NewSessionState(query)
-	handler := NewMaprHandler("srv1", session)
+	session := maprclient.NewSessionState(query, logging.NopLogger{})
+	handler := NewMaprHandler("srv1", session, logging.NopLogger{})
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -157,13 +158,13 @@ func TestMaprHandlerClassifiesAuthKeyAckAsControl(t *testing.T) {
 func TestMaprHandlerWriteAuthKeyAckEmitsNoAggregateError(t *testing.T) {
 	ensureClientStdoutLogger(t)
 
-	query, err := mapr.NewQuery("select status,count(status) from stats group by status")
+	query, err := mapr.NewQuery("select status,count(status) from stats group by status", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewQuery() error = %v", err)
 	}
 
-	session := maprclient.NewSessionState(query)
-	handler := NewMaprHandler("srv1", session)
+	session := maprclient.NewSessionState(query, logging.NopLogger{})
+	handler := NewMaprHandler("srv1", session, logging.NopLogger{})
 	countStorage := handlerCountStorage(t, query)
 
 	// A genuine aggregate wire message: AGGREGATE|host|<serialized set>.

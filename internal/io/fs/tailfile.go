@@ -1,5 +1,7 @@
 package fs
 
+import "github.com/mimecast/dtail/internal/logging"
+
 // TailFile is to tail and filter a log file.
 type TailFile struct {
 	readFile
@@ -7,10 +9,11 @@ type TailFile struct {
 
 // NewTailFile returns a new file tailer.
 func NewTailFile(filePath string, globID string, serverMessages chan<- string,
-	maxLineLength int) TailFile {
+	maxLineLength int, logger logging.Logger) TailFile {
 
 	return TailFile{
 		readFile: readFile{
+			logger:         logging.OrNop(logger),
 			filePath:       filePath,
 			globID:         globID,
 			serverMessages: serverMessages,
@@ -24,9 +27,9 @@ func NewTailFile(filePath string, globID string, serverMessages chan<- string,
 
 // NewValidatedTailFile returns a new file tailer backed by a rooted open target.
 func NewValidatedTailFile(filePath string, target ValidatedReadTarget, globID string,
-	serverMessages chan<- string, maxLineLength int) TailFile {
+	serverMessages chan<- string, maxLineLength int, logger logging.Logger) TailFile {
 
-	tail := NewTailFile(filePath, globID, serverMessages, maxLineLength)
+	tail := NewTailFile(filePath, globID, serverMessages, maxLineLength, logger)
 	tail.validatedTarget = &target
 	return tail
 }

@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -114,10 +113,10 @@ func (g *GroupSet) resultWriteFormattedDataEntry(renderer ResultRenderer, sb *st
 	renderer.WriteDataEntry(sb, str)
 }
 
-func (*GroupSet) writeQueryFile(query *Query) error {
+func (g *GroupSet) writeQueryFile(query *Query) error {
 	queryFile := fmt.Sprintf("%s.query", query.Outfile.FilePath)
 	tmpQueryFile := fmt.Sprintf("%s.tmp", queryFile)
-	dlog.Common.Debug("Writing query file", queryFile)
+	g.logger.Debug("Writing query file", queryFile)
 
 	fd, err := os.OpenFile(tmpQueryFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	if err != nil {
@@ -165,22 +164,22 @@ func (g *GroupSet) WriteResult(query *Query, finalResult bool) error {
 	}
 
 	tmpOutfile := fmt.Sprintf("%s.tmp", query.Outfile.FilePath)
-	dlog.Common.Debug("Renaming outfile", tmpOutfile, "to", query.Outfile.FilePath)
+	g.logger.Debug("Renaming outfile", tmpOutfile, "to", query.Outfile.FilePath)
 	if err := closeAndRenameWrittenFile(fd, writeErr, tmpOutfile, query.Outfile.FilePath, os.Rename, os.Remove); err != nil {
 		return fmt.Errorf("commit outfile %q: %w", query.Outfile.FilePath, err)
 	}
-	dlog.Common.Info("Successfully renamed outfile to", query.Outfile.FilePath)
+	g.logger.Info("Successfully renamed outfile to", query.Outfile.FilePath)
 	return nil
 }
 
 func (g *GroupSet) getOutfileFD(query *Query) (*os.File, error) {
 	if !query.Outfile.AppendMode {
-		dlog.Common.Info("Writing to outfile", query.Outfile.FilePath)
+		g.logger.Info("Writing to outfile", query.Outfile.FilePath)
 		tmpOutfile := fmt.Sprintf("%s.tmp", query.Outfile.FilePath)
 		return os.OpenFile(tmpOutfile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0666)
 	}
 
-	dlog.Common.Info("Appending to outfile", query.Outfile.FilePath)
+	g.logger.Info("Appending to outfile", query.Outfile.FilePath)
 	return os.OpenFile(query.Outfile.FilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 }
 
