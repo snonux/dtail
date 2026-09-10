@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 	"time"
@@ -13,9 +14,29 @@ import (
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/source"
 	"github.com/mimecast/dtail/internal/version"
 )
+
+type healthClientFactory func(config.Args, clients.LoggerDependencies) (clients.Client, error)
+
+type pprofShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+type profileServer interface {
+	pprofShutdowner
+	Address() string
+	Start(*sync.WaitGroup)
+}
+
+type healthLifecycleDependencies struct {
+	stderr          io.Writer
+	loggers         clients.LoggerDependencies
+	newPProfServer  func(string) (profileServer, error)
+	newHealthClient healthClientFactory
+}
 
 // The evil begins here.
 func main() {
@@ -45,46 +66,59 @@ func run() int {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	var wg sync.WaitGroup
 	wg.Add(1)
 	if err := dlog.Start(ctx, &wg, source.HealthCheck); err != nil {
 		wg.Done()
+		cancel()
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to initialize dtailhealth logger: %v\n", err)
 		return 2
 	}
 
-	var pprofServer *cli.PProfServer
-	if pprof != "" {
-		var pprofErr error
-		pprofServer, pprofErr = cli.NewPProfServer(pprof)
+	loggers := clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common)
+	return runHealthLifecycle(ctx, cancel, &wg, args, pprof, healthLifecycleDependencies{
+		stderr:  os.Stderr,
+		loggers: loggers,
+		newPProfServer: func(address string) (profileServer, error) {
+			return cli.NewPProfServer(address)
+		},
+		newHealthClient: func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
+			return clients.NewHealthClient(args, loggers)
+		},
+	})
+}
+
+func runHealthLifecycle(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
+	args config.Args, pprofAddress string, deps healthLifecycleDependencies) int {
+	// Register logger cleanup first so pprof shutdown can still report errors.
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+
+	if pprofAddress != "" {
+		pprofServer, pprofErr := deps.newPProfServer(pprofAddress)
 		if pprofErr != nil {
-			dlog.Client.Error("Unable to start PProf", pprofErr)
+			deps.loggers.Client.Error("Unable to start PProf", pprofErr)
 		} else {
-			dlog.Client.Info("Starting PProf", pprofServer.Address())
+			deps.loggers.Client.Info("Starting PProf", pprofServer.Address())
 			pprofServer.Start(nil)
+			defer shutdownPProf(pprofServer, deps.loggers.Client)
 		}
 	}
 
-	healthClient, err := clients.NewHealthClient(args,
-		clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common))
-	status := 0
+	healthClient, err := deps.newHealthClient(args, deps.loggers)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "CRITICAL: unable to create dtailhealth client: %v\n", err)
-		status = 2
-	} else {
-		status = healthClient.Start(ctx, signal.NoCh(ctx))
+		_, _ = fmt.Fprintf(deps.stderr, "CRITICAL: unable to create dtailhealth client: %v\n", err)
+		return 2
 	}
+	return healthClient.Start(ctx, signal.NoCh(ctx))
+}
 
-	if pprofServer != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := pprofServer.Shutdown(shutdownCtx); err != nil {
-			dlog.Client.Error("Unable to stop PProf", err)
-		}
-		shutdownCancel()
+func shutdownPProf(pprofServer pprofShutdowner, logger logging.Logger) {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Unable to stop PProf", err)
 	}
-
-	cancel()
-	wg.Wait()
-	return status
 }

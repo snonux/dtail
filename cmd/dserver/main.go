@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -14,11 +15,37 @@ import (
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/server"
 	"github.com/mimecast/dtail/internal/source"
 	"github.com/mimecast/dtail/internal/user"
 	"github.com/mimecast/dtail/internal/version"
 )
+
+type pprofShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+type profileServer interface {
+	pprofShutdowner
+	Address() string
+	Start(*sync.WaitGroup)
+}
+
+type dserverService interface {
+	Start(context.Context) (int, error)
+}
+
+type notifyContextFunc func(context.Context, ...os.Signal) (context.Context, context.CancelFunc)
+
+type dserverLifecycleDependencies struct {
+	stderr               io.Writer
+	loggers              clients.LoggerDependencies
+	enableProfilingRates func()
+	newPProfServer       func(string) (profileServer, error)
+	newServer            func(config.RuntimeConfig, clients.LoggerDependencies) (dserverService, error)
+	notifyContext        notifyContextFunc
+}
 
 // The evil begins here.
 func main() {
@@ -61,91 +88,89 @@ func run() int {
 	}
 	version.Print(false)
 
-	// rootCtx is always cancelled on exit to ensure the internal goroutine
-	// spawned by context.WithCancel is released. When -shutdownAfter is set,
-	// ctx is replaced by a child WithTimeout context whose own cancel is also
-	// deferred, preventing the lostcancel leak flagged by go vet.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
-	defer rootCancel()
-
-	ctx := rootCtx
-	cancel := context.CancelFunc(rootCancel)
-
-	if shutdownAfter > 0 {
-		// Override ctx with a timeout-bounded child; defer its cancel so the
-		// timeout goroutine is always cleaned up regardless of code path.
-		var timeoutCancel context.CancelFunc
-		ctx, timeoutCancel = context.WithTimeout(rootCtx, time.Duration(shutdownAfter)*time.Second)
-		defer timeoutCancel()
-		// Callers that invoke cancel() (e.g. the signal handler and post-serve
-		// cleanup) should trigger the timeout cancel so the server shuts down
-		// promptly even before the deadline fires.
-		cancel = timeoutCancel
-	}
-
-	sigCh := make(chan os.Signal, 10)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-
-	go func() {
-		select {
-		case <-sigCh:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
 	var wg sync.WaitGroup
 	wg.Add(1)
-	if err := dlog.Start(ctx, &wg, source.Server); err != nil {
+	if err := dlog.Start(rootCtx, &wg, source.Server); err != nil {
 		wg.Done()
+		rootCancel()
 		fmt.Fprintf(os.Stderr, "unable to initialize dserver logger: %v\n", err)
 		return 1
 	}
 
-	var pprofServer *cli.PProfServer
-	if pprof != "" {
+	loggers := clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common)
+	return runDServerLifecycle(rootCtx, rootCancel, &wg, shutdownAfter, pprof,
+		config.CurrentRuntime(), dserverLifecycleDependencies{
+			stderr:               os.Stderr,
+			loggers:              loggers,
+			enableProfilingRates: cli.EnableProfilingRates,
+			newPProfServer: func(address string) (profileServer, error) {
+				return cli.NewPProfServer(address)
+			},
+			newServer: func(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) (dserverService, error) {
+				return server.New(cfg, loggers)
+			},
+			notifyContext: signal.NotifyContext,
+		})
+}
+
+func runDServerLifecycle(parent context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
+	shutdownAfter int, pprofAddress string, cfg config.RuntimeConfig,
+	deps dserverLifecycleDependencies) int {
+	// Register logger cleanup first so logging stays available to every later
+	// teardown step.
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+
+	if pprofAddress != "" {
 		// Enable mutex and block profiling so the /debug/pprof/mutex and
 		// /debug/pprof/block endpoints actually contain samples. These rates
 		// are gated on --pprof so they cost nothing when profiling is off.
-		cli.EnableProfilingRates()
+		deps.enableProfilingRates()
 
-		// Assign to the outer pprofServer with '=' (declaring pprofErr
-		// separately) so it is NOT shadowed: the graceful Shutdown below relies
-		// on the outer var being non-nil to actually stop the pprof server.
-		var pprofErr error
-		pprofServer, pprofErr = cli.NewPProfServer(pprof)
+		pprofServer, pprofErr := deps.newPProfServer(pprofAddress)
 		if pprofErr != nil {
-			dlog.Client.Error("Unable to start PProf", pprofErr)
+			deps.loggers.Client.Error("Unable to start PProf", pprofErr)
 		} else {
-			dlog.Client.Info("Starting PProf", pprofServer.Address())
+			deps.loggers.Client.Info("Starting PProf", pprofServer.Address())
 			pprofServer.Start(nil)
+			defer shutdownPProf(pprofServer, deps.loggers.Client)
 		}
 	}
 
-	serv, err := server.New(config.CurrentRuntime(),
-		clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common))
+	ctx, stopSignals := deps.notifyContext(parent, os.Interrupt, syscall.SIGTERM)
+	timeoutCancel := context.CancelFunc(func() {})
+	if shutdownAfter > 0 {
+		ctx, timeoutCancel = context.WithTimeout(ctx, time.Duration(shutdownAfter)*time.Second)
+	}
+	// Registered last, this runs before pprof shutdown and logger draining so
+	// signal delivery is restored even if either later step blocks.
+	defer func() {
+		stopSignals()
+		timeoutCancel()
+	}()
+
+	serv, err := deps.newServer(cfg, deps.loggers)
 	if err != nil {
-		dlog.Server.Error("Unable to initialize dserver", err)
-		fmt.Fprintf(os.Stderr, "unable to initialize dserver: %v\n", err)
-		cancel()
-		wg.Wait()
+		deps.loggers.Server.Error("Unable to initialize dserver", err)
+		_, _ = fmt.Fprintf(deps.stderr, "unable to initialize dserver: %v\n", err)
 		return 1
 	}
 	status, err := serv.Start(ctx)
 	if err != nil {
-		dlog.Server.Error("Unable to run dserver", err)
-		fmt.Fprintf(os.Stderr, "unable to run dserver: %v\n", err)
+		deps.loggers.Server.Error("Unable to run dserver", err)
+		_, _ = fmt.Fprintf(deps.stderr, "unable to run dserver: %v\n", err)
 		status = 1
 	}
-	cancel()
-	if pprofServer != nil {
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := pprofServer.Shutdown(shutdownCtx); err != nil {
-			dlog.Client.Error("Unable to stop PProf", err)
-		}
-		shutdownCancel()
-	}
-
-	wg.Wait()
 	return status
+}
+
+func shutdownPProf(pprofServer pprofShutdowner, logger logging.Logger) {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := pprofServer.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Unable to stop PProf", err)
+	}
 }
