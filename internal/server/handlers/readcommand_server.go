@@ -159,6 +159,9 @@ func (h *ServerHandler) ActiveSessionGeneration() uint64 {
 
 // TriggerShutdown starts the handler shutdown sequence.
 func (h *ServerHandler) TriggerShutdown() {
+	if h.sessionState.keepAlive() || h.isStopping() {
+		return
+	}
 	h.triggerIdleShutdown()
 }
 

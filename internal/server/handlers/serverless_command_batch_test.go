@@ -26,7 +26,9 @@ func TestServerlessCommandBatchDefersIdleShutdownUntilAllCommandsAreAdmitted(t *
 		commandFinished()
 	}
 
-	handler.BeginCommandBatch()
+	if _, err := handler.Write([]byte(encodeTestCommand(protocol.InputBatchBeginCommand))); err != nil {
+		t.Fatalf("write input-batch begin marker: %v", err)
+	}
 	if _, err := handler.Write([]byte(encodeTestCommand("probe first"))); err != nil {
 		t.Fatalf("write first command: %v", err)
 	}
@@ -43,11 +45,13 @@ func TestServerlessCommandBatchDefersIdleShutdownUntilAllCommandsAreAdmitted(t *
 		t.Fatalf("processed commands = %v, want [first second]", processed)
 	}
 
-	if _, err := handler.Write([]byte(encodeTestCommand(protocol.ServerlessInputCompleteCommand))); err != nil {
+	if _, err := handler.Write([]byte(encodeTestCommand(protocol.InputBatchCompleteCommand))); err != nil {
 		t.Fatalf("write input-complete marker: %v", err)
 	}
-	if message := readServerMessage(t, handler.serverMessages); message != ".syn close connection" {
-		t.Fatalf("shutdown message = %q, want close handshake", message)
+	for {
+		if message := readServerMessage(t, handler.serverMessages); message == ".syn close connection" {
+			break
+		}
 	}
 	handler.handleAckCommand(3, []string{".ack", "close", "connection"})
 
@@ -89,6 +93,21 @@ func TestCommandBatchFinishesAggregateWhenFinalReadCompletesAfterMarker(t *testi
 
 	if ready := batch.completeRead(read); ready != aggregate {
 		t.Fatalf("aggregate ready after final read = %p, want %p", ready, aggregate)
+	}
+}
+
+func TestCommandBatchBeginIsIdempotentWhileReadsAreActive(t *testing.T) {
+	var batch commandBatch
+	aggregate := &maprserver.Aggregate{}
+
+	batch.begin()
+	read := batch.beginRead(omode.CatClient, aggregate)
+	batch.begin()
+	if ready := batch.complete(); len(ready) != 0 {
+		t.Fatalf("duplicate begin discarded active read accounting: %v", ready)
+	}
+	if ready := batch.completeRead(read); ready != aggregate {
+		t.Fatalf("aggregate after idempotent begin = %p, want %p", ready, aggregate)
 	}
 }
 
@@ -273,7 +292,12 @@ func TestServerlessMapBatchAcceptsReadAfterEarlierReadFullyCompletes(t *testing.
 	var writeMu sync.Mutex
 	readerDone := startTestReader(handler, output, &writeMu)
 
-	handler.BeginCommandBatch()
+	writeMu.Lock()
+	_, beginErr := handler.Write([]byte(encodeTestCommand(protocol.InputBatchBeginCommand)))
+	writeMu.Unlock()
+	if beginErr != nil {
+		t.Fatalf("write input-batch begin marker: %v", beginErr)
+	}
 	query := "from STATS select count($time),$time group by $time interval 3600"
 	writeCommand := func(command string) {
 		t.Helper()
@@ -305,8 +329,16 @@ func TestServerlessMapBatchAcceptsReadAfterEarlierReadFullyCompletes(t *testing.
 		time.Sleep(time.Millisecond)
 	}
 
+	writeCommand("cat:invalid-option ignored .")
+	if pending, active := handler.PendingAndActive(); pending != 0 || active != 1 {
+		t.Fatalf("invalid option changed batch state: pending %d, active %d", pending, active)
+	}
+	if aggregate := handler.getAggregate(); aggregate == nil || !handler.commandBatch.ownsAggregate(aggregate) {
+		t.Fatal("invalid option released the earlier read's batch ownership")
+	}
+
 	writeCommand(fmt.Sprintf("cat:plain=true:serverless=true %s .", secondPath))
-	writeCommand(protocol.ServerlessInputCompleteCommand)
+	writeCommand(protocol.InputBatchCompleteCommand)
 
 	select {
 	case <-handler.Done():
@@ -322,5 +354,133 @@ func TestServerlessMapBatchAcceptsReadAfterEarlierReadFullyCompletes(t *testing.
 
 	if got := output.String(); !strings.Contains(got, "count($time)≔3") {
 		t.Fatalf("final aggregate omitted a read admitted after an earlier read completed: %q", got)
+	}
+}
+
+func TestInputBatchKeepsUnclaimedReadFromFinishingBeforeLaterValidRead(t *testing.T) {
+	handler := newMapTestHandler(t)
+	path := writeTestStatsFile(t, 3)
+	readServerMessage(t, handler.serverMessages) // Initial capability advertisement.
+
+	commandWg := wrapHandlerCommandsForJoin(handler)
+	validCat := handler.commands["cat"]
+	handler.commands["cat"] = func(ctx context.Context, ltx lcontext.LContext,
+		argc int, args []string, commandFinished func()) {
+
+		if args[1] == "unclaimed" {
+			commandFinished()
+			return
+		}
+		validCat(ctx, ltx, argc, args, commandFinished)
+	}
+
+	writeCommand := func(command string) {
+		t.Helper()
+		if _, err := handler.Write([]byte(encodeTestCommand(command))); err != nil {
+			t.Fatalf("write %q: %v", command, err)
+		}
+	}
+	writeCommand(protocol.InputBatchBeginCommand)
+	query := "from STATS select count($time),$time group by $time interval 3600"
+	writeCommand("map:plain=true:serverless=true " + query)
+	writeCommand("cat:plain=true:serverless=true unclaimed .")
+
+	aggregate := handler.getAggregate()
+	if aggregate == nil {
+		t.Fatal("map command did not publish its aggregate")
+	}
+	if pending, active := handler.PendingAndActive(); pending != 0 || active != 1 {
+		t.Fatalf("state after unclaimed read = pending %d, active %d; want map only", pending, active)
+	}
+	if !handler.commandBatch.ownsAggregate(aggregate) {
+		t.Fatal("unclaimed read released aggregate ownership before the batch marker")
+	}
+
+	writeCommand(fmt.Sprintf("cat:plain=true:serverless=true %s .", path))
+	writeCommand(protocol.InputBatchCompleteCommand)
+
+	result := readServerMessage(t, handler.maprMessages)
+	if !strings.Contains(result, "count($time)≔3") {
+		t.Fatalf("final aggregate omitted the valid read after an unclaimed read: %q", result)
+	}
+	for {
+		if message := readServerMessage(t, handler.serverMessages); message == ".syn close connection" {
+			break
+		}
+	}
+	handler.handleAckCommand(3, []string{".ack", "close", "connection"})
+	select {
+	case <-handler.Done():
+	case <-time.After(time.Second):
+		t.Fatal("handler did not shut down after input batch completion")
+	}
+	waitForCommandJoin(t, commandWg, 5*time.Second)
+}
+
+func TestSessionCommandBatchContextsKeepOverlappingGenerationsSeparate(t *testing.T) {
+	handler := newMapTestHandler(t)
+	readServerMessage(t, handler.serverMessages) // Initial capability advertisement.
+	handler.sessionState.mu.Lock()
+	handler.sessionState.active = true
+	handler.sessionState.mu.Unlock()
+
+	query := "from STATS select count($time),$time group by $time interval 3600"
+	firstAggregate, err := maprserver.NewAggregate(query, "default")
+	if err != nil {
+		t.Fatalf("create first aggregate: %v", err)
+	}
+	secondAggregate, err := maprserver.NewAggregate(query, "default")
+	if err != nil {
+		t.Fatalf("create second aggregate: %v", err)
+	}
+	t.Cleanup(firstAggregate.Abort)
+	t.Cleanup(secondAggregate.Abort)
+
+	var batches []*commandBatch
+	var aggregates []*maprserver.Aggregate
+	var reads []*readCommand
+	var finishes []func()
+	handler.commands["cat"] = func(ctx context.Context, _ lcontext.LContext,
+		_ int, _ []string, commandFinished func()) {
+
+		reservation := pendingInputReservationFromContext(ctx)
+		batches = append(batches, reservation.inputBatch)
+		aggregates = append(aggregates, reservation.aggregate)
+		command := newReadCommandWithAggregate(handler, omode.CatClient, reservation.aggregate)
+		command.adoptPendingInputReservation(reservation)
+		reads = append(reads, command)
+		finishes = append(finishes, commandFinished)
+	}
+
+	handler.setAggregate(firstAggregate)
+	if err := handler.dispatchSessionCommands(context.Background(), []string{"cat first.log ."}); err != nil {
+		t.Fatalf("dispatch first session generation: %v", err)
+	}
+	handler.setAggregate(secondAggregate)
+	if err := handler.dispatchSessionCommands(context.Background(), []string{"cat second.log ."}); err != nil {
+		t.Fatalf("dispatch second session generation: %v", err)
+	}
+
+	if len(batches) != 2 {
+		t.Fatalf("captured session batch count = %d, want 2", len(batches))
+	}
+	if batches[0] == batches[1] {
+		t.Fatalf("session batch identities = %p, %p; want distinct generation-local batches", batches[0], batches[1])
+	}
+	if len(aggregates) != 2 || aggregates[0] != firstAggregate || aggregates[1] != secondAggregate {
+		t.Fatalf("captured aggregates = %v, want [%p %p]", aggregates, firstAggregate, secondAggregate)
+	}
+	if pending, active := handler.PendingAndActive(); pending != 2 || active != 2 {
+		t.Fatalf("overlapping session state = pending %d, active %d; want 2, 2", pending, active)
+	}
+
+	reads[0].releasePendingInputReservation()
+	reads[0].completeInputBatch()
+	finishes[0]()
+	reads[1].releasePendingInputReservation()
+	reads[1].completeInputBatch()
+	finishes[1]()
+	if pending, active := handler.PendingAndActive(); pending != 0 || active != 0 {
+		t.Fatalf("session batch counters = pending %d, active %d; want zero", pending, active)
 	}
 }

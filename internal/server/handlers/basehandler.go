@@ -23,6 +23,7 @@ import (
 )
 
 type handleCommandCb func(context.Context, lcontext.LContext, int, []string, string)
+type prepareCommandContextCb func(context.Context, string) (context.Context, func())
 
 // commandCancelKeyType is a private key type for stashing a per-command
 // context.CancelFunc inside a context.Context. It is used to hand the cancel
@@ -85,9 +86,10 @@ func cancelCommandContext(ctx context.Context) {
 }
 
 type baseHandler struct {
-	done            *internal.Done
-	handleCommandCb handleCommandCb
-	lines           chan *line.Line
+	done                    *internal.Done
+	handleCommandCb         handleCommandCb
+	prepareCommandContextCb prepareCommandContextCb
+	lines                   chan *line.Line
 
 	// aggregate is written by handleMapCommand on the command-dispatch
 	// goroutine and read concurrently by Shutdown, Aggregate, and
@@ -435,18 +437,29 @@ func (h *baseHandler) dispatchCommand(ctx context.Context, args []string, argc i
 
 	parts := strings.SplitN(args[0], ":", 2)
 	commandName := parts[0]
+	ltx := lcontext.LContext{}
 
-	// Either no options or empty options provided.
-	if len(parts) == 1 || len(parts[1]) == 0 {
-		h.handleCommandCb(ctx, lcontext.LContext{}, argc, args, commandName)
-		return nil
+	if len(parts) == 2 && len(parts[1]) != 0 {
+		options, parsedContext, deserializeErr := config.DeserializeOptions([]string{parts[1]})
+		if deserializeErr != nil {
+			return deserializeErr
+		}
+		h.handleOptions(options)
+		ltx = parsedContext
 	}
 
-	options, ltx, err := config.DeserializeOptions([]string{parts[1]})
-	if err != nil {
-		return err
+	// Reserve read input only after all synchronous parsing succeeds, but
+	// before handleUserCommand can launch an asynchronous command goroutine.
+	// Parse failures never enter command admission and therefore must not own a
+	// pending token or an idle-shutdown transition.
+	if h.prepareCommandContextCb != nil {
+		var cleanup func()
+		ctx, cleanup = h.prepareCommandContextCb(ctx, commandName)
+		if cleanup != nil {
+			defer cleanup()
+		}
 	}
-	h.handleOptions(options)
+
 	h.handleCommandCb(ctx, ltx, argc, args, commandName)
 	return nil
 }

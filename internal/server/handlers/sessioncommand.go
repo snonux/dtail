@@ -247,6 +247,11 @@ func (s *sessionCommandState) reset() {
 }
 
 func (h *ServerHandler) dispatchSessionCommands(ctx context.Context, commands []string) error {
+	batch := &commandBatch{}
+	batch.begin()
+	ctx = withCommandBatch(ctx, batch)
+	defer h.finishCommandBatch(batch)
+
 	for _, command := range commands {
 		commandCtx := ctx
 		var admission *commandAdmissionResult

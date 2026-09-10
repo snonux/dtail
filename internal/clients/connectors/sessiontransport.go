@@ -3,6 +3,7 @@ package connectors
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -189,12 +190,42 @@ func requireJournalCapability(server string, handler handlers.Handler, spec sess
 }
 
 func sendLegacyCommands(handler handlers.Handler, commands []string) error {
+	batched := containsReadCommand(commands)
+	if batched {
+		if err := handler.SendMessage(protocol.InputBatchBeginCommand); err != nil {
+			return err
+		}
+	}
 	for _, command := range commands {
 		if err := handler.SendMessage(command); err != nil {
 			return err
 		}
 	}
+	if batched {
+		if err := handler.SendMessage(protocol.InputBatchCompleteCommand); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+func containsReadCommand(commands []string) bool {
+	for _, command := range commands {
+		fields := strings.Fields(command)
+		if len(fields) == 0 {
+			continue
+		}
+		commandIndex := 0
+		if fields[0] == "timeout" && len(fields) >= 3 {
+			commandIndex = 2
+		}
+		commandName := strings.SplitN(fields[commandIndex], ":", 2)[0]
+		switch commandName {
+		case "cat", "grep", "tail":
+			return true
+		}
+	}
+	return false
 }
 
 func drainSessionAcks(handler handlers.Handler) {

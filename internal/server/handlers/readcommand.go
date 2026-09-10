@@ -21,11 +21,97 @@ import (
 )
 
 type readCommand struct {
+	server               readCommandServer
+	aggregate            *server.Aggregate
+	mode                 omode.Mode
+	generation           uint64
+	pendingInputReserved bool
+	shutdownCoordinator  *shutdownCoordinator
+	inputBatch           *commandBatch
+	inputBatchRead       commandBatchRead
+}
+
+type pendingInputReservationKeyType struct{}
+
+var pendingInputReservationKey pendingInputReservationKeyType
+
+// pendingInputReservation bridges synchronous protocol dispatch and the
+// asynchronously started readCommand. claim and releaseIfUnclaimed are called
+// by the dispatch goroutine before the handler returns; the read goroutine owns
+// the pending counter only after claim succeeds.
+type pendingInputReservation struct {
 	server              readCommandServer
 	aggregate           *server.Aggregate
-	mode                omode.Mode
-	generation          uint64
 	shutdownCoordinator *shutdownCoordinator
+	admission           *commandAdmissionResult
+	inputBatch          *commandBatch
+	inputBatchRead      commandBatchRead
+	claimed             bool
+	released            bool
+}
+
+func newPendingInputReservation(server readCommandServer, mode omode.Mode) *pendingInputReservation {
+	server.AddPendingFiles(1)
+	aggregate := server.Aggregate()
+	oneShotInput := mode == omode.CatClient || mode == omode.GrepClient
+	return &pendingInputReservation{
+		server:              server,
+		aggregate:           aggregate,
+		shutdownCoordinator: newShutdownCoordinator(server, oneShotInput, aggregate),
+	}
+}
+
+func withPendingInputReservation(ctx context.Context, reservation *pendingInputReservation) context.Context {
+	return context.WithValue(ctx, pendingInputReservationKey, reservation)
+}
+
+func pendingInputReservationFromContext(ctx context.Context) *pendingInputReservation {
+	reservation, _ := ctx.Value(pendingInputReservationKey).(*pendingInputReservation)
+	return reservation
+}
+
+func (r *pendingInputReservation) claim() bool {
+	if r == nil || r.claimed || r.released {
+		return false
+	}
+	r.claimed = true
+	return true
+}
+
+func (r *pendingInputReservation) releaseIfUnclaimed() {
+	if r == nil || r.claimed || r.released {
+		return
+	}
+	r.released = true
+	if r.admission != nil && r.admission.admitted {
+		// The admitted command already ran its commandFinished callback while
+		// this reservation kept pending input non-zero. Complete through the
+		// normal read lifecycle so the final zero transition can both finish a
+		// one-shot aggregate and start idle shutdown.
+		r.shutdownCoordinator.onFileProcessed("unclaimed read command")
+		r.completeInputBatch()
+		return
+	}
+
+	remaining, _ := r.server.CompletePendingFile()
+	if remaining == 0 {
+		// Dispatch can reject the command before admission (for example during
+		// graceful shutdown or option parsing). Preserve aggregate completion
+		// for an older read without starting a competing shutdown sequence.
+		r.shutdownCoordinator.maybeFinishAggregateInput()
+	}
+	r.completeInputBatch()
+}
+
+func (r *pendingInputReservation) completeInputBatch() {
+	if r.inputBatch == nil || !r.inputBatchRead.tracked {
+		return
+	}
+	if aggregate := r.inputBatch.completeRead(r.inputBatchRead); aggregate != nil {
+		aggregate.FinishInput()
+	}
+	r.inputBatch = nil
+	r.inputBatchRead = commandBatchRead{}
 }
 
 type readStrategy func(context.Context, lcontext.LContext, fs.FileReader, regex.Regex) error
@@ -55,6 +141,11 @@ func newReadCommandWithAggregate(server readCommandServer, mode omode.Mode, aggr
 
 func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	argc int, args []string, retries int) {
+	// If parsing, glob expansion, retry cancellation, or another early-return
+	// path prevents this command from resolving concrete inputs, release its
+	// dispatch-time reservation here. Once an input is resolved, readPipe or
+	// readFiles transfers the reservation and this becomes a no-op.
+	defer r.releasePendingInputReservation()
 	r.generation = sessionGenerationFromContext(ctx)
 
 	re := regex.NewNoop()
@@ -94,6 +185,28 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	r.readGlob(ctx, ltx, args[1], re, retries)
 }
 
+func (r *readCommand) adoptPendingInputReservation(reservation *pendingInputReservation) {
+	if reservation == nil || !reservation.claim() {
+		r.server.AddPendingFiles(1)
+	} else {
+		r.shutdownCoordinator = reservation.shutdownCoordinator
+		r.inputBatch = reservation.inputBatch
+		r.inputBatchRead = reservation.inputBatchRead
+	}
+	r.pendingInputReserved = true
+}
+
+func (r *readCommand) completeInputBatch() {
+	if r.inputBatch == nil || !r.inputBatchRead.tracked {
+		return
+	}
+	if aggregate := r.inputBatch.completeRead(r.inputBatchRead); aggregate != nil {
+		aggregate.FinishInput()
+	}
+	r.inputBatch = nil
+	r.inputBatchRead = commandBatchRead{}
+}
+
 // readPipe reads the single stdin-pipe input in serverless mode (e.g.
 // `grep foo bar.log | dmap 'from STATS select ...'`). Unlike file/glob/journal
 // reads it does NOT go through readFiles/readFileIfPermissions, so it must
@@ -105,11 +218,11 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 // and never terminates). Previously the pipe fed a regular Aggregate that
 // finalized when its input line channel was closed; the output aggregate has no
 // such channel-close, so the pending-file/onFileProcessed path is the
-// equivalent "input exhausted" signal. The pending accounting also keeps the
-// counter balanced: onFileProcessed unconditionally decrements pendingFiles, so
-// it must be paired with an AddPendingFiles here.
+// equivalent "input exhausted" signal. registerPendingFiles transfers the
+// dispatch-time reservation to the pipe (or creates one for direct unit use),
+// balancing the unconditional decrement in onFileProcessed.
 func (r *readCommand) readPipe(ctx context.Context, ltx lcontext.LContext, re regex.Regex) {
-	r.server.AddPendingFiles(1)
+	r.registerPendingFiles(1)
 	defer r.shutdownCoordinator.onFileProcessed("-")
 	// Empty file path and globID "-" represents reading from the stdin pipe.
 	r.read(ctx, ltx, "", nil, "-", re)
@@ -178,8 +291,11 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 
 	dlog.Server.Info(r.server.LogContext(), "Processing files", "count", len(paths), "glob", glob)
 
-	// Track pending files for this batch
-	totalPending := r.server.AddPendingFiles(int32(len(paths)))
+	// Transfer the dispatch-time reservation to the resolved paths before any
+	// file goroutine can complete. Adding len(paths)-1 preserves a non-zero
+	// count throughout the hand-off. Direct unit callers without a reservation
+	// continue to register the full path count.
+	totalPending := r.registerPendingFiles(len(paths))
 	dlog.Server.Info(r.server.LogContext(), "Added pending files", "count", len(paths), "totalPending", totalPending)
 
 	var wg sync.WaitGroup
@@ -284,6 +400,31 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	// In output mode with aggregate, we don't close the shared channel here
 	// because it will be used across multiple invocations
 	// The aggregate will handle channel closure when it's done
+}
+
+func (r *readCommand) registerPendingFiles(count int) int32 {
+	if count <= 0 {
+		pending, _ := r.server.PendingAndActive()
+		return pending
+	}
+	delta := int32(count)
+	if r.pendingInputReserved {
+		delta--
+		r.pendingInputReserved = false
+	}
+	if delta != 0 {
+		return r.server.AddPendingFiles(delta)
+	}
+	pending, _ := r.server.PendingAndActive()
+	return pending
+}
+
+func (r *readCommand) releasePendingInputReservation() {
+	if !r.pendingInputReserved {
+		return
+	}
+	r.pendingInputReserved = false
+	r.shutdownCoordinator.onFileProcessed("unresolved read command")
 }
 
 func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LContext,

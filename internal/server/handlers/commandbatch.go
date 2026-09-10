@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 
@@ -8,8 +9,21 @@ import (
 	"github.com/mimecast/dtail/internal/omode"
 )
 
-// commandBatch coordinates completion of the initial in-process command
-// stream. Read handlers are launched asynchronously, so the FIFO completion
+type commandBatchContextKeyType struct{}
+
+var commandBatchContextKey commandBatchContextKeyType
+
+func withCommandBatch(ctx context.Context, batch *commandBatch) context.Context {
+	return context.WithValue(ctx, commandBatchContextKey, batch)
+}
+
+func commandBatchFromContext(ctx context.Context) *commandBatch {
+	batch, _ := ctx.Value(commandBatchContextKey).(*commandBatch)
+	return batch
+}
+
+// commandBatch coordinates completion of a bounded command stream. Read
+// handlers are launched asynchronously, so the FIFO completion
 // marker can arrive after every read was admitted but before those reads have
 // registered their files in pendingFiles. Count one-shot read commands at
 // admission time to close that gap.
@@ -27,10 +41,13 @@ type commandBatchRead struct {
 
 func (b *commandBatch) begin() {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.enabled {
+		return
+	}
 	b.enabled = true
 	b.reads = make(map[*maprserver.Aggregate]int)
 	b.open.Store(true)
-	b.mu.Unlock()
 }
 
 func (b *commandBatch) beginRead(mode omode.Mode, aggregate *maprserver.Aggregate) commandBatchRead {
@@ -40,9 +57,8 @@ func (b *commandBatch) beginRead(mode omode.Mode, aggregate *maprserver.Aggregat
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	// The FIFO marker bounds ownership to the initial serverless command
-	// stream. Interactive updates arriving later use the established legacy
-	// coordinator and cannot be confused with an older batch generation.
+	// The FIFO marker or SESSION dispatch scope bounds ownership to commands
+	// admitted while this batch is open.
 	if !b.enabled || !b.open.Load() {
 		return commandBatchRead{}
 	}

@@ -14,7 +14,6 @@ import (
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
-	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	sshserver "github.com/mimecast/dtail/internal/ssh/server"
@@ -86,6 +85,7 @@ func NewServerHandler(user *user.User, catLimiter,
 		regex:        ".",
 	}
 	h.handleCommandCb = h.handleUserCommand
+	h.prepareCommandContextCb = h.prepareCommandContext
 	h.commands = h.newCommandRegistry()
 	h.output.configure(h.outputManagerConfig())
 	h.activeGeneration = h.sessionState.currentGeneration
@@ -127,7 +127,12 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	// after graceful shutdown has sealed command admission, and keep it out of
 	// commandWg so shutdown never waits on its own acknowledgement.
 	if strings.EqualFold(commandName, ".ack") {
-		if isServerlessInputComplete(argc, args) {
+		if isInputBatchBegin(argc, args) {
+			h.BeginCommandBatch()
+			cancelCommandContext(ctx)
+			return
+		}
+		if isInputBatchComplete(argc, args) {
 			h.completeCommandBatch()
 			cancelCommandContext(ctx)
 			return
@@ -136,7 +141,6 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		cancelCommandContext(ctx)
 		return
 	}
-
 	shutdownOnCompletion := shouldShutdownOnCommandCompletion(commandName)
 	if !h.beginCommand(hasSessionCommandAdmission(ctx)) {
 		cancelCommandContext(ctx)
@@ -179,18 +183,26 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	handler(ctx, ltx, argc, args, commandFinished)
 }
 
-func isServerlessInputComplete(argc int, args []string) bool {
+func isInputBatchBegin(argc int, args []string) bool {
+	return argc == 3 && strings.EqualFold(args[1], "input") && strings.EqualFold(args[2], "begin")
+}
+
+func isInputBatchComplete(argc int, args []string) bool {
 	return argc == 3 && strings.EqualFold(args[1], "input") && strings.EqualFold(args[2], "complete")
 }
 
-// BeginCommandBatch prevents a fast initial command from closing an in-process
-// session before the remaining initial commands reach the server handler.
+// BeginCommandBatch prevents a fast command from closing a session or
+// finishing aggregate input before the remaining bounded batch is admitted.
 func (h *ServerHandler) BeginCommandBatch() {
 	h.commandBatch.begin()
 }
 
 func (h *ServerHandler) completeCommandBatch() {
-	for _, aggregate := range h.commandBatch.complete() {
+	h.finishCommandBatch(&h.commandBatch)
+}
+
+func (h *ServerHandler) finishCommandBatch(batch *commandBatch) {
+	for _, aggregate := range batch.complete() {
 		aggregate.FinishInput()
 	}
 	pending, active := h.PendingAndActive()
@@ -209,13 +221,6 @@ func (h *ServerHandler) triggerIdleShutdown() {
 	h.shutdown()
 }
 
-// coordinateAggregateInputCompletion lets the initial serverless batch own
-// aggregate input completion. The legacy pending-file grace remains in use for
-// SSH sessions, which do not have a FIFO end-of-batch marker.
-func (h *ServerHandler) coordinateAggregateInputCompletion(aggregate *maprserver.Aggregate) bool {
-	return h.commandBatch.ownsAggregate(aggregate)
-}
-
 func shouldShutdownOnCommandCompletion(commandName string) bool {
 	switch {
 	case strings.EqualFold(commandName, "AUTHKEY"):
@@ -225,6 +230,35 @@ func shouldShutdownOnCommandCompletion(commandName string) bool {
 	default:
 		return true
 	}
+}
+
+func (h *ServerHandler) prepareCommandContext(ctx context.Context, commandName string) (context.Context, func()) {
+	var mode omode.Mode
+	switch commandName {
+	case "cat":
+		mode = omode.CatClient
+	case "grep":
+		mode = omode.GrepClient
+	case "tail":
+		mode = omode.TailClient
+	default:
+		return ctx, nil
+	}
+	admission, ok := ctx.Value(commandAdmissionResultKey).(*commandAdmissionResult)
+	if !ok {
+		admission = &commandAdmissionResult{}
+		ctx = context.WithValue(ctx, commandAdmissionResultKey, admission)
+	}
+	reservation := newPendingInputReservation(h, mode)
+	reservation.admission = admission
+	batch := commandBatchFromContext(ctx)
+	if batch == nil {
+		batch = &h.commandBatch
+	}
+	reservation.inputBatch = batch
+	reservation.inputBatchRead = batch.beginRead(mode, reservation.aggregate)
+	reservation.shutdownCoordinator.inputBatchOwned = reservation.inputBatchRead.tracked
+	return withPendingInputReservation(ctx, reservation), reservation.releaseIfUnclaimed
 }
 
 func (h *ServerHandler) newCommandRegistry() map[string]commandHandler {
@@ -243,14 +277,26 @@ func (h *ServerHandler) newCommandRegistry() map[string]commandHandler {
 
 func (h *ServerHandler) makeReadCommandHandler(mode omode.Mode, tailBackoff int) commandHandler {
 	return func(ctx context.Context, ltx lcontext.LContext, argc int, args []string, commandFinished func()) {
-		aggregate := h.getAggregate()
-		batchRead := h.commandBatch.beginRead(mode, aggregate)
-		command := newReadCommandWithAggregate(h, mode, aggregate)
+		reservation := pendingInputReservationFromContext(ctx)
+		var command *readCommand
+		if reservation != nil {
+			command = newReadCommandWithAggregate(h, mode, reservation.aggregate)
+		} else {
+			command = newReadCommand(h, mode)
+		}
+		command.adoptPendingInputReservation(reservation)
+		if reservation == nil {
+			batch := commandBatchFromContext(ctx)
+			if batch == nil {
+				batch = &h.commandBatch
+			}
+			command.inputBatch = batch
+			command.inputBatchRead = batch.beginRead(mode, command.aggregate)
+			command.shutdownCoordinator.inputBatchOwned = command.inputBatchRead.tracked
+		}
 		go func() {
 			command.Start(ctx, ltx, argc, args, tailBackoff)
-			if aggregate := h.commandBatch.completeRead(batchRead); aggregate != nil {
-				aggregate.FinishInput()
-			}
+			command.completeInputBatch()
 			commandFinished()
 		}()
 	}
