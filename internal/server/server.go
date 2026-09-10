@@ -73,7 +73,7 @@ func secretsEqual(a, b string) bool {
 func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) (*Server, error) {
 	logger := logging.OrNop(loggers.Server)
 	if cfg.Server == nil || cfg.Common == nil {
-		if fatalLogger, ok := logger.(interface{ FatalPanic(...interface{}) }); ok {
+		if fatalLogger, ok := logger.(interface{ FatalPanic(...any) }); ok {
 			fatalLogger.FatalPanic("Missing runtime server/common configuration")
 		}
 		panic("Missing runtime server/common configuration")
@@ -160,8 +160,8 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 			continue
 		}
 
-		if err := s.stats.serverLimitExceeded(); err != nil {
-			s.log().Error(err)
+		if limitErr := s.stats.serverLimitExceeded(); limitErr != nil {
+			s.log().Error(limitErr)
 			_ = conn.Close()
 			continue
 		}
@@ -189,8 +189,8 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	// Prevent slow clients from holding connections open indefinitely before SSH handshake completes.
-	if err := conn.SetDeadline(time.Now().Add(sshHandshakeTimeout)); err != nil {
-		s.log().Error("Failed to set SSH handshake deadline", err)
+	if deadlineErr := conn.SetDeadline(time.Now().Add(sshHandshakeTimeout)); deadlineErr != nil {
+		s.log().Error("Failed to set SSH handshake deadline", deadlineErr)
 		_ = conn.Close()
 		releasePreAuth()
 		return
@@ -206,8 +206,8 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	// Handshake succeeded; remove deadline so active sessions are not cut off by the handshake timeout.
-	if err := conn.SetDeadline(time.Time{}); err != nil {
-		s.log().Error("Failed to clear SSH handshake deadline", err)
+	if deadlineErr := conn.SetDeadline(time.Time{}); deadlineErr != nil {
+		s.log().Error("Failed to clear SSH handshake deadline", deadlineErr)
 		_ = sshConn.Close()
 		releasePreAuth()
 		return
@@ -319,24 +319,24 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 
 	terminate := func() {
 		handler.Shutdown()
-		if err := sshConn.Close(); err != nil {
-			s.log().Trace(user, fmt.Errorf("close session connection: %w", err))
+		if closeErr := sshConn.Close(); closeErr != nil {
+			s.log().Trace(user, fmt.Errorf("close session connection: %w", closeErr))
 		}
 	}
 
 	// Start goroutine to copy data from channel to handler
 	go func() {
 		defer terminate()
-		if _, err := io.Copy(channel, handler); err != nil {
-			s.log().Trace(user, fmt.Errorf("channel->handler: %w", err))
+		if _, copyErr := io.Copy(channel, handler); copyErr != nil {
+			s.log().Trace(user, fmt.Errorf("channel->handler: %w", copyErr))
 		}
 	}()
 
 	// Start goroutine to copy data from handler to channel
 	go func() {
 		defer terminate()
-		if _, err := io.Copy(handler, channel); err != nil {
-			s.log().Trace(user, fmt.Errorf("handler->channel: %w", err))
+		if _, copyErr := io.Copy(handler, channel); copyErr != nil {
+			s.log().Trace(user, fmt.Errorf("handler->channel: %w", copyErr))
 		}
 	}()
 
@@ -354,16 +354,16 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	// handleConnection via defer, not here, so that the counter is balanced
 	// 1:1 per TCP connection regardless of how many shell requests are opened.
 	go func() {
-		if err := sshConn.Wait(); err != nil && !errors.Is(err, io.EOF) {
-			s.log().Error(user, err)
+		if waitErr := sshConn.Wait(); waitErr != nil && !errors.Is(waitErr, io.EOF) {
+			s.log().Error(user, waitErr)
 		}
 		s.log().Info(user, "Good bye Mister!")
 		terminate()
 	}()
 
 	// Reply to indicate shell request was accepted
-	if err := req.Reply(true, nil); err != nil {
-		s.log().Trace(user, fmt.Errorf("reply(true): %w", err))
+	if replyErr := req.Reply(true, nil); replyErr != nil {
+		s.log().Trace(user, fmt.Errorf("reply(true): %w", replyErr))
 	}
 }
 
@@ -371,7 +371,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 func (s *Server) Callback(c gossh.ConnMetadata,
 	authPayload []byte) (*gossh.Permissions, error) {
 
-	user, err := user.New(c.User(), c.RemoteAddr().String(), s.cfg.Server.UserPermissions, s.log())
+	authenticatedUser, err := user.New(c.User(), c.RemoteAddr().String(), s.cfg.Server.UserPermissions, s.log())
 	if err != nil {
 		return nil, err
 	}
@@ -380,16 +380,16 @@ func (s *Server) Callback(c gossh.ConnMetadata,
 	remoteAddr := c.RemoteAddr().String()
 	remoteIP, _, splitErr := net.SplitHostPort(remoteAddr)
 	if splitErr != nil {
-		s.log().Debug(user, "Unable to split remote address host/port, using raw address",
+		s.log().Debug(authenticatedUser, "Unable to split remote address host/port, using raw address",
 			"remoteAddr", remoteAddr, "error", splitErr)
 		remoteIP = remoteAddr
 	}
 
-	if strategy, found := s.authStrategies[user.Name]; found && strategy(user, authInfo, remoteIP) {
+	if strategy, found := s.authStrategies[authenticatedUser.Name]; found && strategy(authenticatedUser, authInfo, remoteIP) {
 		return nil, nil
 	}
 
-	return nil, fmt.Errorf("user %s not authorized", user)
+	return nil, fmt.Errorf("user %s not authorized", authenticatedUser)
 }
 
 func (s *Server) newAuthStrategies() map[string]authStrategy {

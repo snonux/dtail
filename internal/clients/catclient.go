@@ -27,7 +27,7 @@ func NewCatClient(args config.Args, loggers LoggerDependencies) (*CatClient, err
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
+			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,
 		},
@@ -43,6 +43,6 @@ func (c CatClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewClientHandler(server, c.clientLogger())
 }
 
-func (c CatClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
-	return NewSessionSpec(c.Args), nil
+func (c CatClient) makeSessionSpec() SessionSpec {
+	return NewSessionSpec(c.Args)
 }

@@ -20,7 +20,7 @@ func (nopLineWriter) Flush() error                            { return nil }
 // TestDirectLineProcessorProcessLineNoAllocWhenTraceOff locks in task 1t0: the
 // per-line hot path must not allocate when trace logging is off (the default
 // production/output level). Before the fix, ProcessLine unconditionally built a
-// []interface{} and boxed lineCount/lineNum (runtime.convT64) and sourceID
+// []any and boxed lineCount/lineNum (runtime.convT64) and sourceID
 // (convTstring) on every line even though Trace early-returns — that call
 // site was ~98% of all allocated objects in the output serverless dcat profile.
 // The injected logger's TraceEnabled guard elides all of it.

@@ -70,7 +70,7 @@ func (s *globCapTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarg
 func (s *globCapTestServer) CatLimiter() chan struct{}  { return s.catLimiter }
 func (s *globCapTestServer) TailLimiter() chan struct{} { return s.tailLimiter }
 
-func (s *globCapTestServer) LogContext() interface{}            { return "glob-cap-test" }
+func (s *globCapTestServer) LogContext() any                    { return "glob-cap-test" }
 func (s *globCapTestServer) Logger() logging.Logger             { return logging.NopLogger{} }
 func (s *globCapTestServer) ReaderLogger() logging.Logger       { return logging.NopLogger{} }
 func (s *globCapTestServer) SendServerMessage(msg string)       { s.drainOrStore(msg) }
@@ -151,21 +151,21 @@ func TestGlobCapTruncatesExcessPaths(t *testing.T) {
 
 	const (
 		totalFiles = 20 // files on disk — clearly above the cap
-		cap        = 5  // deliberately low cap to prove truncation
+		maxTargets = 5  // deliberately low cap to prove truncation
 	)
 
 	dir := t.TempDir()
 	glob := createTempFiles(t, dir, totalFiles)
 
-	srv := newGlobCapTestServer(cap)
+	srv := newGlobCapTestServer(maxTargets)
 	cmd := newReadCommand(srv, omode.CatClient)
 
 	// Run readGlob with retries=1 so it finds files immediately.
 	cmd.readGlob(context.Background(), lcontext.LContext{}, glob, regex.NewNoop(), 1)
 
 	got := int(atomic.LoadInt32(&srv.preparedCount))
-	if got > cap {
-		t.Fatalf("glob cap not enforced: dispatched %d paths, expected at most %d", got, cap)
+	if got > maxTargets {
+		t.Fatalf("glob cap not enforced: dispatched %d paths, expected at most %d", got, maxTargets)
 	}
 	if got == 0 {
 		t.Fatal("no paths were dispatched; expected exactly cap paths to be served")
@@ -178,13 +178,13 @@ func TestGlobCapUnderLimitPassesAll(t *testing.T) {
 
 	const (
 		totalFiles = 5
-		cap        = 10 // cap is above totalFiles — nothing should be dropped
+		maxTargets = 10 // cap is above totalFiles — nothing should be dropped
 	)
 
 	dir := t.TempDir()
 	glob := createTempFiles(t, dir, totalFiles)
 
-	srv := newGlobCapTestServer(cap)
+	srv := newGlobCapTestServer(maxTargets)
 	cmd := newReadCommand(srv, omode.CatClient)
 
 	cmd.readGlob(context.Background(), lcontext.LContext{}, glob, regex.NewNoop(), 1)

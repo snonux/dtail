@@ -28,24 +28,24 @@ func NewHealthClient(args config.Args, loggers LoggerDependencies) (*HealthClien
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
+			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,
 		},
 	}
 
-	if err := c.initialize(c); err != nil {
+	if err := c.initialize(&c); err != nil {
 		return nil, fmt.Errorf("initialize health client: %w", err)
 	}
 	return &c, nil
 }
 
-func (c HealthClient) makeHandler(server string) handlers.Handler {
+func (c *HealthClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewHealthHandler(server, c.clientLogger())
 }
 
-func (c HealthClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
-	return NewSessionSpec(c.Args), nil
+func (c *HealthClient) makeSessionSpec() SessionSpec {
+	return NewSessionSpec(c.Args)
 }
 
 // Start the health client.

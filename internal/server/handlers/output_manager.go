@@ -372,7 +372,7 @@ func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration 
 	// tryRead runs on the session output goroutine once per Read (i.e. per output
 	// payload / ~64KB in server mode). Decide trace state once, before taking
 	// the lock, so none of the per-read diagnostics below box their int/string
-	// args or build a []interface{} when trace is off (the default). This also
+	// args or build a []any when trace is off (the default). This also
 	// shortens the t.mu hold time. Locking semantics are unchanged: the guard is
 	// a pure branch and touches no lock. maxLevel is fixed at logger construction.
 	traceEnabled := t.log().TraceEnabled()

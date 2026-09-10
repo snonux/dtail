@@ -7,7 +7,7 @@ import (
 // ScannerBufferPool provides a pool of 1MB buffers for scanner operations
 // to reduce allocation overhead in the direct-output read path
 var ScannerBufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		// 1MB buffer for scanner operations
 		buf := make([]byte, 1024*1024)
 		return &buf
@@ -16,7 +16,7 @@ var ScannerBufferPool = sync.Pool{
 
 // MediumBufferPool provides a pool of 64KB buffers for tail mode reads
 var MediumBufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		// 64KB buffer for medium-sized operations
 		buf := make([]byte, 64*1024)
 		return &buf
@@ -25,7 +25,7 @@ var MediumBufferPool = sync.Pool{
 
 // SmallBufferPool provides a pool of 4KB buffers for small operations
 var SmallBufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		// 4KB buffer for small operations
 		buf := make([]byte, 4*1024)
 		return &buf
@@ -39,13 +39,9 @@ func GetScannerBuffer() *[]byte {
 
 // PutScannerBuffer returns a scanner buffer to the pool
 func PutScannerBuffer(buf *[]byte) {
-	// Clear the buffer before returning to pool to avoid memory leaks
+	// Restore the full length before returning the reusable backing array.
 	if buf != nil && len(*buf) > 0 {
-		// Reset to original capacity but clear contents
 		*buf = (*buf)[:cap(*buf)]
-		for i := range *buf {
-			(*buf)[i] = 0
-		}
 	}
 	ScannerBufferPool.Put(buf)
 }
@@ -57,12 +53,9 @@ func GetMediumBuffer() *[]byte {
 
 // PutMediumBuffer returns a medium buffer to the pool
 func PutMediumBuffer(buf *[]byte) {
-	// Clear the buffer before returning to pool
+	// Restore the full length before returning the reusable backing array.
 	if buf != nil && len(*buf) > 0 {
 		*buf = (*buf)[:cap(*buf)]
-		for i := range *buf {
-			(*buf)[i] = 0
-		}
 	}
 	MediumBufferPool.Put(buf)
 }

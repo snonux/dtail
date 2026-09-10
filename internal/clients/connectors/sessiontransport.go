@@ -149,8 +149,8 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 	}
 
 	drainSessionAcks(handler)
-	if err := handler.SendMessage(command); err != nil {
-		return err
+	if sendErr := handler.SendMessage(command); sendErr != nil {
+		return sendErr
 	}
 
 	ack, ok := handler.WaitForSessionAck(resolveSessionAckTimeout(timeout))

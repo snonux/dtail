@@ -9,7 +9,7 @@ import (
 // lineBuffer is there to optimize memory allocations. DTail otherwise allocates
 // a lot of memory while reading logs.
 var lineBuffer = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return &Line{}
 	},
 }
@@ -46,7 +46,7 @@ func New(content *bytes.Buffer, count uint64, transmittedPerc int, sourceID stri
 }
 
 // Return a human readable representation of the followed line.
-func (l Line) String() string {
+func (l *Line) String() string {
 	return fmt.Sprintf("Line(Content:%s,TransmittedPerc:%v,Count:%v,SourceID:%s)",
 		l.Content.String(),
 		l.TransmittedPerc,

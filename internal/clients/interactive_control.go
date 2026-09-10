@@ -61,9 +61,9 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 		cancel()
 		<-controlErrCh
 		return status
-	case err := <-controlErrCh:
-		if err != nil {
-			c.clientLogger().Warn("Interactive query control stopped", err)
+	case controlErr := <-controlErrCh:
+		if controlErr != nil {
+			c.clientLogger().Warn("Interactive query control stopped", controlErr)
 		}
 		cancel()
 		return <-statusCh
@@ -101,32 +101,32 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 
 		switch command.kind {
 		case "help":
-			if err := c.writeInteractiveHelp(tty); err != nil {
-				return err
+			if helpErr := c.writeInteractiveHelp(tty); helpErr != nil {
+				return helpErr
 			}
 		case "show":
-			if err := c.writeInteractiveState(tty); err != nil {
-				return err
+			if stateErr := c.writeInteractiveState(tty); stateErr != nil {
+				return stateErr
 			}
 		case "quit":
-			if err := writeControlLine(tty, "quitting interactive session"); err != nil {
-				return err
+			if quitErr := writeControlLine(tty, "quitting interactive session"); quitErr != nil {
+				return quitErr
 			}
 			cancel()
 			return nil
 		case "reload":
-			if err := c.applyInteractiveReload(command.next, command.spec); err != nil {
-				if writeErr := writeControlLine(tty, "reload failed: "+err.Error()); writeErr != nil {
+			if reloadErr := c.applyInteractiveReload(command.next, command.spec); reloadErr != nil {
+				if writeErr := writeControlLine(tty, "reload failed: "+reloadErr.Error()); writeErr != nil {
 					return writeErr
 				}
 				continue
 			}
-			if err := writeControlLine(tty, "reload applied successfully"); err != nil {
-				return err
+			if successWriteErr := writeControlLine(tty, "reload applied successfully"); successWriteErr != nil {
+				return successWriteErr
 			}
 		default:
-			if err := writeControlLine(tty, "unsupported command"); err != nil {
-				return err
+			if unsupportedErr := writeControlLine(tty, "unsupported command"); unsupportedErr != nil {
+				return unsupportedErr
 			}
 		}
 	}
@@ -159,9 +159,9 @@ func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec Sessi
 	}
 
 	if committer, ok := c.maker.(sessionCommitter); ok {
-		if err := committer.commitSessionSpec(nextSpec, generation); err != nil {
+		if commitErr := committer.commitSessionSpec(nextSpec, generation); commitErr != nil {
 			return c.rollbackInteractiveReload(applied, prevArgs, prevSpec,
-				fmt.Errorf("commit session state: %w", err))
+				fmt.Errorf("commit session state: %w", commitErr))
 		}
 	}
 
@@ -350,8 +350,8 @@ func buildInteractiveSessionSpec(args config.Args, logger logging.Logger) (Sessi
 	}
 
 	spec := NewSessionSpec(normalizedArgs)
-	if _, err := spec.Commands(); err != nil {
-		return SessionSpec{}, err
+	if _, commandErr := spec.Commands(); commandErr != nil {
+		return SessionSpec{}, commandErr
 	}
 	return spec, nil
 }

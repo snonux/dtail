@@ -106,11 +106,11 @@ func (s *stats) printStatsDueInterrupt(messages []string) {
 }
 
 func (s *stats) statsData(connected, newConnections int,
-	throttle int) map[string]interface{} {
+	throttle int) map[string]any {
 
 	percConnected := percentOf(float64(s.servers), float64(connected))
 
-	data := make(map[string]interface{})
+	data := make(map[string]any)
 	data["connected"] = connected
 	data["servers"] = s.servers
 	data["connected%"] = int(percConnected)

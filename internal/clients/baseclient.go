@@ -125,10 +125,7 @@ func (c *baseClient) closeAuth() error {
 func (c *baseClient) makeConnections(maker maker) error {
 	c.maker = maker
 	if builder, ok := maker.(sessionSpecMaker); ok {
-		sessionSpec, err := builder.makeSessionSpec()
-		if err != nil {
-			return fmt.Errorf("build session specification: %w", err)
-		}
+		sessionSpec := builder.makeSessionSpec()
 		if _, err := sessionSpec.Commands(); err != nil {
 			return fmt.Errorf("build session commands: %w", err)
 		}
@@ -144,9 +141,9 @@ func (c *baseClient) makeConnections(maker maker) error {
 		return fmt.Errorf("discover servers: %w", err)
 	}
 	for _, server := range servers {
-		connection, err := c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
-		if err != nil {
-			return fmt.Errorf("create connection for %q: %w", server, err)
+		connection, connectionErr := c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
+		if connectionErr != nil {
+			return fmt.Errorf("create connection for %q: %w", server, connectionErr)
 		}
 		c.connections = append(c.connections, connection)
 	}

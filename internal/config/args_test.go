@@ -86,9 +86,9 @@ func TestDeserializeOptionsAcceptsRawSerializedBlob(t *testing.T) {
 	}
 }
 
-func lcontextForTest(max, before, after int) lcontext.LContext {
+func lcontextForTest(maxCount, before, after int) lcontext.LContext {
 	return lcontext.LContext{
-		MaxCount:      max,
+		MaxCount:      maxCount,
 		BeforeContext: before,
 		AfterContext:  after,
 	}

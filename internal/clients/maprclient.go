@@ -65,7 +65,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode, loggers Logg
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
+			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      retry,
 			loggers:    loggers,
 		},
@@ -75,8 +75,8 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode, loggers Logg
 	loggers.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
 	c.setRegexForQuery(query)
-	if err := c.initialize(&c); err != nil {
-		return nil, fmt.Errorf("initialize mapreduce client: %w", err)
+	if initErr := c.initialize(&c); initErr != nil {
+		return nil, fmt.Errorf("initialize mapreduce client: %w", initErr)
 	}
 
 	return &c, nil
@@ -106,12 +106,12 @@ func (c *MaprClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewMaprHandler(server, c.session, c.clientLogger())
 }
 
-func (c *MaprClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
+func (c *MaprClient) makeSessionSpec() SessionSpec {
 	sessionSpec := NewSessionSpec(c.Args)
 	if snapshot := c.session.Snapshot(); snapshot.Query != nil {
 		sessionSpec.Query = snapshot.Query.RawQuery
 	}
-	return sessionSpec, nil
+	return sessionSpec
 }
 
 func (c *MaprClient) periodicReportResults(ctx context.Context) {

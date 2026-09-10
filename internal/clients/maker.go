@@ -12,7 +12,7 @@ type maker interface {
 }
 
 type sessionSpecMaker interface {
-	makeSessionSpec() (SessionSpec, error)
+	makeSessionSpec() SessionSpec
 }
 
 type sessionCommitter interface {

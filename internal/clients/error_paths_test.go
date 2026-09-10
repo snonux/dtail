@@ -1,12 +1,12 @@
 package clients
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/omode"
 )
 
 func TestNewGrepClientReturnsInvalidRegexError(t *testing.T) {
@@ -27,11 +27,11 @@ func TestNewMaprClientReturnsInvalidQueryError(t *testing.T) {
 	}
 }
 
-func TestMakeConnectionsReturnsSessionConstructionError(t *testing.T) {
+func TestMakeConnectionsReturnsSessionCommandError(t *testing.T) {
 	client := &baseClient{}
-	err := client.makeConnections(failingSessionMaker{})
-	if err == nil || !strings.Contains(err.Error(), "session construction failed") {
-		t.Fatalf("makeConnections error = %v, want wrapped session error", err)
+	err := client.makeConnections(invalidSessionMaker{})
+	if err == nil || !strings.Contains(err.Error(), "build session commands") {
+		t.Fatalf("makeConnections error = %v, want wrapped session command error", err)
 	}
 }
 
@@ -42,9 +42,9 @@ func TestInitializeClosesAuthenticationResourcesOnConnectionSetupError(t *testin
 		authCloser: closer,
 	}
 
-	err := client.initialize(failingSessionMaker{})
-	if err == nil || !strings.Contains(err.Error(), "session construction failed") {
-		t.Fatalf("initialize error = %v, want wrapped session error", err)
+	err := client.initialize(invalidSessionMaker{})
+	if err == nil || !strings.Contains(err.Error(), "build session commands") {
+		t.Fatalf("initialize error = %v, want wrapped session command error", err)
 	}
 	if closer.calls != 1 {
 		t.Fatalf("authentication closer calls = %d, want 1", closer.calls)
@@ -61,9 +61,9 @@ func (c *recordingCloser) Close() error {
 	return nil
 }
 
-type failingSessionMaker struct{}
+type invalidSessionMaker struct{}
 
-func (failingSessionMaker) makeHandler(string) handlers.Handler { return nil }
-func (failingSessionMaker) makeSessionSpec() (SessionSpec, error) {
-	return SessionSpec{}, errors.New("session construction failed")
+func (invalidSessionMaker) makeHandler(string) handlers.Handler { return nil }
+func (invalidSessionMaker) makeSessionSpec() SessionSpec {
+	return SessionSpec{Mode: omode.Mode(255)}
 }

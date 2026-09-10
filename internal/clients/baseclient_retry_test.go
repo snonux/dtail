@@ -41,13 +41,13 @@ func TestJitterRetryDelayWithinBounds(t *testing.T) {
 	base := 10 * time.Second
 	random := rand.New(rand.NewSource(1))
 
-	min := 8 * time.Second
-	max := 12 * time.Second
+	minDelay := 8 * time.Second
+	maxDelay := 12 * time.Second
 
 	for i := 0; i < 100; i++ {
 		got := jitterRetryDelay(base, random)
-		if got < min || got > max {
-			t.Fatalf("jitterRetryDelay() = %v, expected between %v and %v", got, min, max)
+		if got < minDelay || got > maxDelay {
+			t.Fatalf("jitterRetryDelay() = %v, expected between %v and %v", got, minDelay, maxDelay)
 		}
 	}
 }

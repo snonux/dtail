@@ -146,7 +146,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		defer close(toServer)
 		buf := make([]byte, 32*1024)
 		for {
-			n, err := s.handler.Read(buf)
+			n, readErr := s.handler.Read(buf)
 			if n > 0 {
 				data := make([]byte, n)
 				copy(data, buf[:n])
@@ -156,9 +156,9 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 					return
 				}
 			}
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					errChan <- err
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					errChan <- readErr
 				}
 				return
 			}
@@ -170,8 +170,8 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	go func() {
 		defer ioWg.Done()
 		for data := range toServer {
-			if _, err := serverHandler.Write(data); err != nil {
-				errChan <- err
+			if _, writeErr := serverHandler.Write(data); writeErr != nil {
+				errChan <- writeErr
 				return
 			}
 		}
@@ -188,7 +188,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		defer close(fromServer)
 		buf := make([]byte, 64*1024) // Larger buffer for server responses
 		for {
-			n, err := serverHandler.Read(buf)
+			n, readErr := serverHandler.Read(buf)
 			if n > 0 {
 				data := make([]byte, n)
 				copy(data, buf[:n])
@@ -198,9 +198,9 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 					return
 				}
 			}
-			if err != nil {
-				if !errors.Is(err, io.EOF) {
-					errChan <- err
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					errChan <- readErr
 				}
 				return
 			}
@@ -215,13 +215,13 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		defer close(serverOutputDone)
 		defer close(clientOutputStopped)
 		for data := range fromServer {
-			n, err := s.handler.Write(data)
-			if err == nil && n != len(data) {
-				err = io.ErrShortWrite
+			n, writeErr := s.handler.Write(data)
+			if writeErr == nil && n != len(data) {
+				writeErr = io.ErrShortWrite
 			}
-			if err != nil {
+			if writeErr != nil {
 				cancelOutputDrain()
-				clientOutputErr <- err
+				clientOutputErr <- writeErr
 				return
 			}
 		}
@@ -283,13 +283,13 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		return transferErr
 	}
 	select {
-	case err := <-clientOutputErr:
-		return err
+	case outputErr := <-clientOutputErr:
+		return outputErr
 	default:
 	}
 	select {
-	case err := <-errChan:
-		return err
+	case pendingErr := <-errChan:
+		return pendingErr
 	default:
 	}
 

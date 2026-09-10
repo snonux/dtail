@@ -28,7 +28,7 @@ func NewGrepClient(args config.Args, loggers LoggerDependencies) (*GrepClient, e
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
+			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,
 		},
@@ -44,6 +44,6 @@ func (c GrepClient) makeHandler(server string) handlers.Handler {
 	return handlers.NewClientHandler(server, c.clientLogger())
 }
 
-func (c GrepClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.
-	return NewSessionSpec(c.Args), nil
+func (c GrepClient) makeSessionSpec() SessionSpec {
+	return NewSessionSpec(c.Args)
 }

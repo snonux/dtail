@@ -12,7 +12,7 @@ import (
 )
 
 type readCommandContext interface {
-	LogContext() interface{}
+	LogContext() any
 	Logger() logging.Logger
 	ReaderLogger() logging.Logger
 }
@@ -89,7 +89,7 @@ type readCommandServer interface {
 var _ readCommandServer = (*ServerHandler)(nil)
 
 // LogContext returns the logger context associated with the current user/session.
-func (h *ServerHandler) LogContext() interface{} {
+func (h *ServerHandler) LogContext() any {
 	return h.user
 }
 

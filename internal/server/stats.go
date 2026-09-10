@@ -26,7 +26,7 @@ type stats struct {
 }
 
 type mapreduceLogger interface {
-	Mapreduce(string, map[string]interface{}) string
+	Mapreduce(string, map[string]any) string
 }
 
 func newStats(maxConnections int, logger logging.Logger) stats {
@@ -107,7 +107,7 @@ func (s *stats) logServerStats() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	data := make(map[string]interface{})
+	data := make(map[string]any)
 	data["currentConnections"] = s.currentConnections
 	data["lifetimeConnections"] = s.lifetimeConnections
 	data["preAuthConnections"] = s.preAuthConnections

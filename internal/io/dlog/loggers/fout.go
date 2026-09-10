@@ -139,4 +139,4 @@ func (f *fout) Rotate() {
 	}
 }
 
-func (fout) SupportsColors() bool { return true }
+func (*fout) SupportsColors() bool { return true }

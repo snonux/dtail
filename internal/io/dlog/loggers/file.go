@@ -71,7 +71,7 @@ func newFile(strategy Strategy) *file {
 	// channel because Flush() is synchronous: it must wait for the goroutine to
 	// drain and write before returning.
 	return &file{
-		bufferCh:    make(chan *fileMessageBuf, runtime.NumCPU()*100),
+		bufferCh:    make(chan *fileMessageBuf, runtime.GOMAXPROCS(0)*100),
 		rotateCh:    make(chan struct{}, 1),
 		flushCh:     make(chan chan struct{}),
 		strategy:    strategy,

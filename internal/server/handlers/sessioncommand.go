@@ -83,11 +83,11 @@ func parseSessionCommand(args []string, argc int, logger logging.Logger) (action
 	if err != nil {
 		return "", 0, spec, fmt.Errorf("invalid session payload")
 	}
-	if err := json.Unmarshal(payload, &spec); err != nil {
+	if unmarshalErr := json.Unmarshal(payload, &spec); unmarshalErr != nil {
 		return "", 0, spec, fmt.Errorf("invalid session spec")
 	}
-	if err := validateSessionSpec(spec, logger); err != nil {
-		return "", 0, spec, err
+	if validationErr := validateSessionSpec(spec, logger); validationErr != nil {
+		return "", 0, spec, validationErr
 	}
 
 	return action, generation, spec, nil
@@ -144,10 +144,10 @@ func (s *sessionCommandState) start(parentCtx context.Context, handler *ServerHa
 	ctx = withSessionGeneration(ctx, 1)
 
 	handler.resetSessionAggregates()
-	if err := handler.dispatchSessionCommands(ctx, commands); err != nil {
+	if dispatchErr := handler.dispatchSessionCommands(ctx, commands); dispatchErr != nil {
 		cancel()
 		s.reset()
-		return 0, err
+		return 0, dispatchErr
 	}
 
 	return 1, nil
@@ -181,10 +181,10 @@ func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerH
 	}
 
 	handler.resetSessionAggregates()
-	if err := handler.dispatchSessionCommands(ctx, commands); err != nil {
+	if dispatchErr := handler.dispatchSessionCommands(ctx, commands); dispatchErr != nil {
 		cancel()
 		s.reset()
-		return 0, err
+		return 0, dispatchErr
 	}
 
 	return generation, nil

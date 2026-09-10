@@ -187,7 +187,7 @@ const (
 )
 
 // PrintColored prints colored text to stdout
-func PrintColored(color, format string, args ...interface{}) {
+func PrintColored(color, format string, args ...any) {
 	fmt.Printf(color+format+ColorReset, args...)
 }
 
@@ -198,16 +198,16 @@ func PrintSection(title string) {
 }
 
 // PrintInfo prints an info message
-func PrintInfo(format string, args ...interface{}) {
+func PrintInfo(format string, args ...any) {
 	PrintColored(ColorYellow, format, args...)
 }
 
 // PrintError prints an error message
-func PrintError(format string, args ...interface{}) {
+func PrintError(format string, args ...any) {
 	PrintColored(ColorRed, format, args...)
 }
 
 // PrintSuccess prints a success message
-func PrintSuccess(format string, args ...interface{}) {
+func PrintSuccess(format string, args ...any) {
 	PrintColored(ColorGreen, format, args...)
 }

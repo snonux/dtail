@@ -31,7 +31,7 @@ func OrNop(logger Logger) Logger {
 }
 
 type mapreduceLogger interface {
-	Mapreduce(string, map[string]interface{}) string
+	Mapreduce(string, map[string]any) string
 }
 
 type pauser interface {
@@ -55,7 +55,7 @@ func RawDiagnostic(logger Logger, message string) {
 }
 
 // Mapreduce writes structured client statistics when the logger supports it.
-func Mapreduce(logger logging.Logger, table string, data map[string]interface{}) {
+func Mapreduce(logger logging.Logger, table string, data map[string]any) {
 	if output, ok := logger.(mapreduceLogger); ok {
 		output.Mapreduce(table, data)
 	}

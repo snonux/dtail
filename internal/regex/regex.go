@@ -56,10 +56,10 @@ func New(regexStr string, flag Flag) (Regex, error) {
 	if regexStr == "" || regexStr == "." || regexStr == ".*" {
 		return NewNoop(), nil
 	}
-	return new(regexStr, []Flag{flag})
+	return newRegex(regexStr, []Flag{flag})
 }
 
-func new(regexStr string, flags []Flag) (Regex, error) {
+func newRegex(regexStr string, flags []Flag) (Regex, error) {
 	if len(flags) == 0 {
 		flags = append(flags, Default)
 	}
@@ -223,7 +223,7 @@ func Deserialize(str string) (Regex, error) {
 	}
 
 	// Create the regex with proper literal detection
-	r, err := new(regexStr, flags)
+	r, err := newRegex(regexStr, flags)
 	if err != nil {
 		return r, err
 	}

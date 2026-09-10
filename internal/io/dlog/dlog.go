@@ -48,8 +48,8 @@ type DLog struct {
 
 var _ logging.Logger = (*DLog)(nil)
 
-// new creates a new DTail logger.
-func new(sourceProcess, sourcePackage source.Source) (*DLog, error) {
+// newDLog creates a new DTail logger.
+func newDLog(sourceProcess, sourcePackage source.Source) (*DLog, error) {
 	if config.Common == nil {
 		return nil, fmt.Errorf("logger configuration is unavailable")
 	}
@@ -86,11 +86,11 @@ func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source)
 		Common.FatalPanic("Logger already started")
 	}
 
-	clientLogger, err := new(sourceProcess, source.Client)
+	clientLogger, err := newDLog(sourceProcess, source.Client)
 	if err != nil {
 		return fmt.Errorf("create client logger: %w", err)
 	}
-	serverLogger, err := new(sourceProcess, source.Server)
+	serverLogger, err := newDLog(sourceProcess, source.Server)
 	if err != nil {
 		return fmt.Errorf("create server logger: %w", err)
 	}
@@ -128,7 +128,7 @@ func (d *DLog) start(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 // FatalPanic terminates the process with a fatal error.
-func (d *DLog) FatalPanic(args ...interface{}) {
+func (d *DLog) FatalPanic(args ...any) {
 	d.log(Fatal, args)
 	d.Flush()
 
@@ -138,32 +138,32 @@ func (d *DLog) FatalPanic(args ...interface{}) {
 }
 
 // Fatal logs a fatal error.
-func (d *DLog) Fatal(args ...interface{}) string {
+func (d *DLog) Fatal(args ...any) string {
 	return d.log(Fatal, args)
 }
 
 // Error logging.
-func (d *DLog) Error(args ...interface{}) string {
+func (d *DLog) Error(args ...any) string {
 	return d.log(Error, args)
 }
 
 // Warn logs a warning message.
-func (d *DLog) Warn(args ...interface{}) string {
+func (d *DLog) Warn(args ...any) string {
 	return d.log(Warn, args)
 }
 
 // Info logging.
-func (d *DLog) Info(args ...interface{}) string {
+func (d *DLog) Info(args ...any) string {
 	return d.log(Info, args)
 }
 
 // Verbose logging.
-func (d *DLog) Verbose(args ...interface{}) string {
+func (d *DLog) Verbose(args ...any) string {
 	return d.log(Verbose, args)
 }
 
 // Debug logging.
-func (d *DLog) Debug(args ...interface{}) string {
+func (d *DLog) Debug(args ...any) string {
 	return d.log(Debug, args)
 }
 
@@ -171,7 +171,7 @@ func (d *DLog) Debug(args ...interface{}) string {
 //
 // It performs exactly the same maxLevel comparison as Trace's internal
 // early-return (see below), letting callers on per-line hot paths gate the
-// whole trace call — the variadic []interface{} slice allocation plus the
+// whole trace call — the variadic []any slice allocation plus the
 // interface boxing of every non-pointer argument (uint64 line counts via
 // runtime.convT64, strings via convTstring) — behind one cheap, inlinable,
 // allocation-free branch. Without this guard those args are boxed at the call
@@ -186,7 +186,7 @@ func (d *DLog) TraceEnabled() bool {
 }
 
 // Trace logging.
-func (d *DLog) Trace(args ...interface{}) string {
+func (d *DLog) Trace(args ...any) string {
 	// Early check to avoid expensive runtime.Caller when trace is disabled
 	// This is a critical performance optimization for hot paths. Note that on
 	// per-line hot paths callers should additionally gate with TraceEnabled()
@@ -201,7 +201,7 @@ func (d *DLog) Trace(args ...interface{}) string {
 }
 
 // Devel used for development purpose only logging (e.g. "print" debugging).
-func (d *DLog) Devel(args ...interface{}) string {
+func (d *DLog) Devel(args ...any) string {
 	// Early check to avoid expensive runtime.Caller when devel is disabled
 	if d.maxLevel < Devel {
 		return ""
@@ -262,8 +262,8 @@ func (d *DLog) RawLog(message string) string {
 }
 
 // Mapreduce logging.
-func (d *DLog) Mapreduce(table string, data map[string]interface{}) string {
-	args := make([]interface{}, len(data)+1)
+func (d *DLog) Mapreduce(table string, data map[string]any) string {
+	args := make([]any, len(data)+1)
 
 	if d.sourceProcess == source.Server {
 		// level|date-time|process|caller|cpus|goroutines|cgocalls|loadavg|uptime|MAPREDUCE:TABLE|key=value|...
@@ -323,7 +323,7 @@ func (d *DLog) Resume() {
 	}
 }
 
-func (d *DLog) log(level level, args []interface{}) string {
+func (d *DLog) log(level level, args []any) string {
 	if d.maxLevel < level {
 		return ""
 	}
@@ -356,7 +356,7 @@ func (d *DLog) log(level level, args []interface{}) string {
 	return message
 }
 
-func (d *DLog) writeArgStrings(sb *strings.Builder, args []interface{}) {
+func (d *DLog) writeArgStrings(sb *strings.Builder, args []any) {
 	for i, arg := range args {
 		if i > 0 {
 			sb.WriteString(protocol.FieldDelimiter)

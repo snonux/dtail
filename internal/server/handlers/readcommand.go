@@ -165,31 +165,28 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	// e.g.: grep foo bar.log | dmap 'from STATS select ...'
 	// Only read from pipe if no file argument is provided
 	isPipe := r.isInputFromPipe() && (argc < 2 || args[1] == "" || args[1] == "-")
-
-	if isPipe {
+	switch {
+	case isPipe:
 		r.server.Logger().Debug("Reading data from stdin pipe")
 		r.readPipe(ctx, ltx, re)
-		return
-	}
-
-	if fs.IsJournalSpec(args[1]) {
+	case fs.IsJournalSpec(args[1]):
 		r.server.Logger().Debug("Reading data from journal")
-		r.readJournal(ctx, ltx, args[1], re, retries)
-		return
+		r.readJournal(ctx, ltx, args[1], re)
+	default:
+		r.server.Logger().Debug("Reading data from file(s)")
+		r.readGlob(ctx, ltx, args[1], re, retries)
 	}
-
-	r.server.Logger().Debug("Reading data from file(s)")
-	r.readGlob(ctx, ltx, args[1], re, retries)
 }
 
 func (r *readCommand) adoptPendingInputReservation(reservation *pendingInputReservation) {
 	if reservation == nil || !reservation.claim() {
 		r.server.AddPendingFiles(1)
-	} else {
-		r.shutdownCoordinator = reservation.shutdownCoordinator
-		r.inputBatch = reservation.inputBatch
-		r.inputBatchRead = reservation.inputBatchRead
+		r.pendingInputReserved = true
+		return
 	}
+	r.shutdownCoordinator = reservation.shutdownCoordinator
+	r.inputBatch = reservation.inputBatch
+	r.inputBatchRead = reservation.inputBatchRead
 	r.pendingInputReserved = true
 }
 
@@ -226,7 +223,7 @@ func (r *readCommand) readPipe(ctx context.Context, ltx lcontext.LContext, re re
 }
 
 func (r *readCommand) readJournal(ctx context.Context, ltx lcontext.LContext,
-	spec string, re regex.Regex, _ int) {
+	spec string, re regex.Regex) {
 
 	r.readFiles(ctx, ltx, []string{spec}, spec, re)
 }
@@ -266,13 +263,13 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		// read permission from spawning an unbounded number of goroutines and
 		// exhausting server memory. Excess paths are dropped with a warning so
 		// the partial result is still delivered rather than failing entirely.
-		if cap := r.server.MaxGlobTargets(); len(paths) > cap {
+		if maxTargets := r.server.MaxGlobTargets(); len(paths) > maxTargets {
 			r.server.Logger().Warn(r.server.LogContext(), "Glob expansion exceeded cap, truncating",
-				"glob", glob, "matched", len(paths), "cap", cap)
+				"glob", glob, "matched", len(paths), "cap", maxTargets)
 			r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
 				"Glob expansion exceeded server limit, only first targets served",
-				"limit", cap, "matched", len(paths)))
-			paths = paths[:cap]
+				"limit", maxTargets, "matched", len(paths)))
+			paths = paths[:maxTargets]
 		}
 
 		r.readFiles(ctx, ltx, paths, glob, re)
@@ -662,9 +659,10 @@ func (r *readCommand) logRegexMode(re regex.Regex) {
 	if r.mode != omode.GrepClient {
 		return
 	}
-	if re.IsLiteral() {
+	switch {
+	case re.IsLiteral():
 		r.server.Logger().Info(r.server.LogContext(), "Using optimized literal string matching for pattern:", re.Pattern())
-	} else {
+	default:
 		r.server.Logger().Info(r.server.LogContext(), "Using regex matching for pattern:", re.Pattern())
 	}
 }

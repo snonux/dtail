@@ -322,7 +322,7 @@ func (h *ServerHandler) makeReadCommandHandler(mode omode.Mode, tailBackoff int)
 	}
 }
 
-func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
+func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContext, _ int, args []string, commandFinished func()) {
 	command, aggregate, err := newMapCommand(h, args)
 	if err != nil {
 		h.sendln(h.serverMessages, err.Error())

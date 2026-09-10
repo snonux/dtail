@@ -230,7 +230,7 @@ func (f blockingContinuousClient) Start(ctx context.Context, _ <-chan string) in
 	}
 }
 
-func waitForCounterAtLeast(t *testing.T, current func() int32, min int32) {
+func waitForCounterAtLeast(t *testing.T, current func() int32, minimum int32) {
 	t.Helper()
 
 	deadline := time.NewTimer(2 * time.Second)
@@ -240,13 +240,13 @@ func waitForCounterAtLeast(t *testing.T, current func() int32, min int32) {
 	defer ticker.Stop()
 
 	for {
-		if current() >= min {
+		if current() >= minimum {
 			return
 		}
 
 		select {
 		case <-deadline.C:
-			t.Fatalf("timed out waiting for counter to reach %d, got %d", min, current())
+			t.Fatalf("timed out waiting for counter to reach %d, got %d", minimum, current())
 		case <-ticker.C:
 		}
 	}

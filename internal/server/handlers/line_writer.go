@@ -544,7 +544,7 @@ func (w *NetworkWriter) waitForSendAvailability(ctx context.Context) error {
 // request context is canceled.
 func (w *NetworkWriter) sendToChannel(data []byte) error {
 	// Per-send path (once per 64KB buffer flush): decide once so none of the
-	// diagnostic traces below build a []interface{} or box their args when trace
+	// diagnostic traces below build a []any or box their args when trace
 	// is off. Cheaper and keeps the send loop tight.
 	traceEnabled := w.log().TraceEnabled()
 
@@ -698,7 +698,7 @@ func (w *NetworkWriter) Stats() (linesWritten, bytesWritten uint64) {
 // (DirectLineProcessor.ProcessLine, NetworkWriter.WriteLineData) must wrap
 // their call in an explicit TraceEnabled check so the variadic
 // slice and argument boxing are elided at the call site, not merely here.
-func writerTrace(logger logging.Logger, args ...interface{}) {
+func writerTrace(logger logging.Logger, args ...any) {
 	if !logger.TraceEnabled() {
 		return
 	}
@@ -759,7 +759,7 @@ func (p *DirectLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uin
 	p.lineCount++
 
 	// Per-line hot path: gate the trace so the uint64/string args are not boxed
-	// into a []interface{} on every line when trace logging is off (the default).
+	// into a []any on every line when trace logging is off (the default).
 	// This call site was ~98% of all allocated objects and ~28% of CPU
 	// (convT64+convTstring) in the output serverless dcat profile.
 	if p.logger.TraceEnabled() {

@@ -365,8 +365,8 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	// Create SSH client from the connection components
 	client := ssh.NewClient(sshConn, chans, reqs)
 	defer func() {
-		if err := client.Close(); err != nil {
-			c.log().Trace(err)
+		if closeErr := client.Close(); closeErr != nil {
+			c.log().Trace(closeErr)
 		}
 	}()
 
@@ -406,8 +406,8 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	if err != nil {
 		return preferContextError(ctx, fmt.Errorf("failed to get SSH session stdout pipe for %s: %w", c.server, err))
 	}
-	if err := session.Shell(); err != nil {
-		return preferContextError(ctx, fmt.Errorf("failed to start SSH shell for %s: %w", c.server, err))
+	if shellErr := session.Shell(); shellErr != nil {
+		return preferContextError(ctx, fmt.Errorf("failed to start SSH shell for %s: %w", c.server, shellErr))
 	}
 
 	stdinDone := copyAsync(stdinPipe, c.handler, c.log())
@@ -486,8 +486,8 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	// Closing the SSH stdin pipe also interrupts a write if the peer has stopped
 	// reading. Join both remaining session goroutines before returning so callers
 	// can safely render final results.
-	if err := stdinPipe.Close(); err != nil {
-		c.log().Trace(err)
+	if closeErr := stdinPipe.Close(); closeErr != nil {
+		c.log().Trace(closeErr)
 	}
 	<-stdinDone
 	closeSession()
@@ -564,8 +564,8 @@ func (c *ServerConnection) sendAuthKeyRegistrationCommand() {
 		return
 	}
 
-	if err := c.handler.SendMessage("AUTHKEY " + authKeyBase64); err != nil {
-		c.log().Debug(c.server, "Unable to send AUTHKEY registration command", err)
+	if sendErr := c.handler.SendMessage("AUTHKEY " + authKeyBase64); sendErr != nil {
+		c.log().Debug(c.server, "Unable to send AUTHKEY registration command", sendErr)
 		return
 	}
 	c.log().Debug(c.server, "Sent AUTHKEY registration command", authKeyPubPath)

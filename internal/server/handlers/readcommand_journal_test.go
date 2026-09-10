@@ -40,7 +40,7 @@ func newJournalReadTestServer() *journalReadTestServer {
 	}
 }
 
-func (s *journalReadTestServer) LogContext() interface{} {
+func (s *journalReadTestServer) LogContext() any {
 	return "journal-read-test"
 }
 

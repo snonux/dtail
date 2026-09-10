@@ -432,9 +432,9 @@ func (h *baseHandler) handleCommand(commandStr string) {
 	// the callback is ever invoked we must cancel here to avoid a leak.
 	ctx = withCommandCancel(ctx, cancel)
 
-	if err := h.dispatchCommand(ctx, args, argc); err != nil {
+	if dispatchErr := h.dispatchCommand(ctx, args, argc); dispatchErr != nil {
 		cancel()
-		h.sendln(h.serverMessages, h.Logger().Error(h.user, err))
+		h.sendln(h.serverMessages, h.Logger().Error(h.user, dispatchErr))
 	}
 }
 

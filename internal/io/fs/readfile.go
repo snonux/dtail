@@ -54,7 +54,7 @@ type readFile struct {
 }
 
 // String returns the string representation of the readFile
-func (f readFile) String() string {
+func (f *readFile) String() string {
 	return fmt.Sprintf(
 		"readFile(filePath:%s,globID:%s,retry:%v,canSkipLines:%v,seekEOF:%v)",
 		f.filePath,
@@ -65,12 +65,12 @@ func (f readFile) String() string {
 }
 
 // FilePath returns the full file path.
-func (f readFile) FilePath() string {
+func (f *readFile) FilePath() string {
 	return f.filePath
 }
 
 // Retry reading the file on error?
-func (f readFile) Retry() bool {
+func (f *readFile) Retry() bool {
 	return f.retry
 }
 
