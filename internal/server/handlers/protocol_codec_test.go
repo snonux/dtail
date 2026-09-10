@@ -8,7 +8,7 @@ import (
 )
 
 func TestHandleProtocolVersionUsesSemanticCompatComparison(t *testing.T) {
-	codec := newProtocolCodec(nil)
+	codec := newProtocolCodec(nil, handlerTestLogger)
 
 	args, argc, add, err := codec.handleProtocolVersion([]string{"protocol", "4", "tail", "payload"})
 	if err == nil {

@@ -17,11 +17,12 @@ type GrepClient struct {
 }
 
 // NewGrepClient creates a new grep client.
-func NewGrepClient(args config.Args) (*GrepClient, error) {
+func NewGrepClient(args config.Args, loggers LoggerDependencies) (*GrepClient, error) {
 	if args.RegexStr == "" {
 		return nil, errors.New("no regex specified, use '-regex' flag")
 	}
 	args.Mode = omode.GrepClient
+	loggers = loggers.normalized()
 
 	c := GrepClient{
 		baseClient: baseClient{
@@ -29,7 +30,7 @@ func NewGrepClient(args config.Args) (*GrepClient, error) {
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      false,
-			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
+			loggers:    loggers,
 		},
 	}
 
@@ -40,7 +41,7 @@ func NewGrepClient(args config.Args) (*GrepClient, error) {
 }
 
 func (c GrepClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewClientHandler(server)
+	return handlers.NewClientHandler(server, c.clientLogger())
 }
 
 func (c GrepClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.

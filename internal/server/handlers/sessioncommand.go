@@ -10,8 +10,8 @@ import (
 	"sync"
 
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/session"
@@ -34,7 +34,7 @@ type sessionCommandState struct {
 func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
 	defer commandFinished()
 
-	action, generation, spec, err := parseSessionCommand(args, argc)
+	action, generation, spec, err := parseSessionCommand(args, argc, h.Logger())
 	if err != nil {
 		h.send(h.serverMessages, sessionAckErrorPrefix+err.Error())
 		return
@@ -64,7 +64,7 @@ func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lconte
 	}
 }
 
-func parseSessionCommand(args []string, argc int) (action string, generation uint64, spec session.Spec, err error) {
+func parseSessionCommand(args []string, argc int, logger logging.Logger) (action string, generation uint64, spec session.Spec, err error) {
 	if argc < 3 {
 		return "", 0, spec, fmt.Errorf("invalid SESSION command")
 	}
@@ -86,14 +86,14 @@ func parseSessionCommand(args []string, argc int) (action string, generation uin
 	if err := json.Unmarshal(payload, &spec); err != nil {
 		return "", 0, spec, fmt.Errorf("invalid session spec")
 	}
-	if err := validateSessionSpec(spec); err != nil {
+	if err := validateSessionSpec(spec, logger); err != nil {
 		return "", 0, spec, err
 	}
 
 	return action, generation, spec, nil
 }
 
-func validateSessionSpec(spec session.Spec) error {
+func validateSessionSpec(spec session.Spec, logger logging.Logger) error {
 	switch spec.Mode {
 	case omode.TailClient, omode.CatClient, omode.GrepClient, omode.MapClient, omode.HealthClient:
 	default:
@@ -108,7 +108,7 @@ func validateSessionSpec(spec session.Spec) error {
 		return fmt.Errorf("missing session query")
 	}
 	if spec.Query != "" {
-		if _, err := mapr.NewQuery(spec.Query, dlog.Server); err != nil {
+		if _, err := mapr.NewQuery(spec.Query, logger); err != nil {
 			return fmt.Errorf("invalid session spec")
 		}
 	}

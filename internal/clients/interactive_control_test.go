@@ -10,7 +10,7 @@ import (
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	sessionspec "github.com/mimecast/dtail/internal/session"
@@ -26,7 +26,8 @@ func TestParseInteractiveCommandForGrepReload(t *testing.T) {
 	}
 
 	command, err := parseInteractiveCommand(current,
-		`:reload --grep WARN --before 2 --after 3 --max 4 --invert --files "/tmp/other.log" --plain --quiet --timeout 7`)
+		`:reload --grep WARN --before 2 --after 3 --max 4 --invert --files "/tmp/other.log" --plain --quiet --timeout 7`,
+		logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("parseInteractiveCommand() error = %v", err)
 	}
@@ -59,7 +60,8 @@ func TestParseInteractiveCommandForMapReloadDerivesRegex(t *testing.T) {
 	}
 
 	command, err := parseInteractiveCommand(current,
-		`:reload --query "select count(status) from warnings group by status" --files /tmp/new.log --plain --timeout 9`)
+		`:reload --query "select count(status) from warnings group by status" --files /tmp/new.log --plain --timeout 9`,
+		logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("parseInteractiveCommand() error = %v", err)
 	}
@@ -81,7 +83,8 @@ func TestParseInteractiveCommandRejectsUnterminatedQuotes(t *testing.T) {
 		QueryStr: "select count(status) from stats group by status",
 	}
 
-	if _, err := parseInteractiveCommand(current, `:reload --query "select count(status) from stats`); err == nil {
+	if _, err := parseInteractiveCommand(current,
+		`:reload --query "select count(status) from stats`, logging.NopLogger{}); err == nil {
 		t.Fatalf("expected parseInteractiveCommand() to reject unterminated quoted input")
 	}
 }
@@ -253,8 +256,6 @@ func TestApplyInteractiveReloadRollsBackLateAckFailure(t *testing.T) {
 }
 
 func TestApplyInteractiveReloadRollsBackLateAckFailureWithRealServerConnection(t *testing.T) {
-	resetClientLogger(t)
-
 	oldArgs := config.Args{
 		Mode:     omode.GrepClient,
 		What:     "/var/log/app.log",
@@ -555,22 +556,13 @@ func newInteractiveReloadServerConnection(t *testing.T, server string, handler h
 		"",
 		false,
 		nil,
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("NewServerConnection: %v", err)
 	}
 	conn.RestoreCommittedSession(spec, 4, true)
 	return conn
-}
-
-func resetClientLogger(t *testing.T) {
-	t.Helper()
-
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
 }
 
 func (*interactiveReloadConnector) Start(context.Context, context.CancelFunc, chan struct{}, chan struct{}) {

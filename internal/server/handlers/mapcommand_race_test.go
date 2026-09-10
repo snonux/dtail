@@ -22,7 +22,6 @@ import (
 )
 
 func TestAggregatePointerRaceWithShutdown(t *testing.T) {
-	resetServerLogger(t)
 
 	const iterations = 200
 

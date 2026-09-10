@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/cli"
+	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/server"
@@ -121,7 +122,8 @@ func run() int {
 		}
 	}
 
-	serv, err := server.New(config.CurrentRuntime())
+	serv, err := server.New(config.CurrentRuntime(),
+		clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common))
 	if err != nil {
 		dlog.Server.Error("Unable to initialize dserver", err)
 		fmt.Fprintf(os.Stderr, "unable to initialize dserver: %v\n", err)

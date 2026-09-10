@@ -8,7 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -26,9 +27,11 @@ type stats struct {
 	formatter interruptMessageFormatter
 	// Controls how long interrupt output remains visible.
 	interruptPause time.Duration
+	logger         logging.Logger
 }
 
-func newTailStats(servers int, formatter interruptMessageFormatter, interruptPause time.Duration) *stats {
+func newTailStats(servers int, formatter interruptMessageFormatter, interruptPause time.Duration,
+	logger logging.Logger) *stats {
 	if interruptPause <= 0 {
 		interruptPause = 3 * time.Second
 	}
@@ -38,6 +41,7 @@ func newTailStats(servers int, formatter interruptMessageFormatter, interruptPau
 		connected:        0,
 		formatter:        formatter,
 		interruptPause:   interruptPause,
+		logger:           logging.OrNop(logger),
 	}
 }
 
@@ -78,7 +82,7 @@ func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 			s.printStatsDueInterrupt(messages)
 		default:
 			data := s.statsData(connected, newConnections, throttle)
-			dlog.Client.Mapreduce("STATS", data)
+			clientlog.Mapreduce(s.logger, "STATS", data)
 		}
 
 		connectedLast = connected
@@ -89,7 +93,7 @@ func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 }
 
 func (s *stats) printStatsDueInterrupt(messages []string) {
-	dlog.Client.Pause()
+	clientlog.Pause(s.logger)
 	for i, message := range messages {
 		if s.formatter != nil {
 			fmt.Println(s.formatter.FormatInterruptMessage(i, message))
@@ -98,7 +102,7 @@ func (s *stats) printStatsDueInterrupt(messages []string) {
 		fmt.Printf(" %s\n", message)
 	}
 	time.Sleep(s.interruptPause)
-	dlog.Client.Resume()
+	clientlog.Resume(s.logger)
 }
 
 func (s *stats) statsData(connected, newConnections int,

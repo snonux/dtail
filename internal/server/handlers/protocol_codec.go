@@ -7,17 +7,22 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
 	user "github.com/mimecast/dtail/internal/user/server"
 )
 
 type protocolCodec struct {
-	user *user.User
+	user   *user.User
+	logger logging.Logger
 }
 
-func newProtocolCodec(user *user.User) protocolCodec {
-	return protocolCodec{user: user}
+func newProtocolCodec(user *user.User, logger logging.Logger) protocolCodec {
+	return protocolCodec{user: user, logger: logging.OrNop(logger)}
+}
+
+func (c protocolCodec) log() logging.Logger {
+	return logging.OrNop(c.logger)
 }
 
 func (c protocolCodec) handleProtocolVersion(args []string) ([]string, int, string, error) {
@@ -80,7 +85,7 @@ func (c protocolCodec) handleBase64(args []string, argc int) ([]string, int, err
 
 	args = strings.Split(decodedStr, " ")
 	argc = len(args)
-	dlog.Server.Trace(c.user, "Base64 decoded received command",
+	c.log().Trace(c.user, "Base64 decoded received command",
 		decodedStr, argc, args)
 
 	return args, argc, nil

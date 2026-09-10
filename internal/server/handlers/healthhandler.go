@@ -7,9 +7,9 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	user "github.com/mimecast/dtail/internal/user/server"
 )
 
@@ -19,8 +19,9 @@ type HealthHandler struct {
 }
 
 // NewHealthHandler returns the server handler.
-func NewHealthHandler(user *user.User) (*HealthHandler, error) {
-	dlog.Server.Debug(user, "Creating new server health handler")
+func NewHealthHandler(user *user.User, logger logging.Logger) (*HealthHandler, error) {
+	logger = logging.OrNop(logger)
+	logger.Debug(user, "Creating new server health handler")
 	if user == nil {
 		return nil, fmt.Errorf("create health handler: user must not be nil")
 	}
@@ -36,13 +37,14 @@ func NewHealthHandler(user *user.User) (*HealthHandler, error) {
 
 	h := HealthHandler{
 		baseHandler: baseHandler{
+			logger:              logger,
 			done:                internal.NewDone(),
 			lines:               make(chan *line.Line, 100),
 			serverMessages:      make(chan string, 10),
 			maprMessages:        make(chan string, 10),
 			ackCloseReceived:    make(chan struct{}),
 			user:                user,
-			codec:               newProtocolCodec(user),
+			codec:               newProtocolCodec(user, logger),
 			maxCommandFrameSize: maxFrameSize,
 		},
 	}
@@ -60,14 +62,14 @@ func NewHealthHandler(user *user.User) (*HealthHandler, error) {
 func (h *HealthHandler) handleHealthCommand(ctx context.Context,
 	ltx lcontext.LContext, argc int, args []string, commandName string) {
 
-	dlog.Server.Debug(h.user, "Handling health command", argc, args)
+	h.Logger().Debug(h.user, "Handling health command", argc, args)
 	switch commandName {
 	case "health":
 		h.send(h.serverMessages, "OK")
 	case ".ack":
 		h.handleAckCommand(argc, args)
 	default:
-		h.send(h.serverMessages, dlog.Server.Error(h.user,
+		h.send(h.serverMessages, h.Logger().Error(h.user,
 			"Received unknown health command", commandName, argc, args))
 	}
 	// Release the per-command cancel before shutdown so the watcher

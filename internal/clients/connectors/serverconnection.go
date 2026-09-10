@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
 	sessionspec "github.com/mimecast/dtail/internal/session"
 	"github.com/mimecast/dtail/internal/ssh/client"
@@ -65,6 +65,7 @@ type ServerConnection struct {
 	authKeyPath     string
 	authKeyDisabled bool
 	hostKeyCallback client.HostKeyCallback
+	logger          logging.Logger
 	// dialFn is an optional seam for connection lifecycle tests.
 	dialFn serverDialFunc
 	// throttleReleased ensures the throttle slot is returned to throttleCh
@@ -81,9 +82,11 @@ var _ Connector = (*ServerConnection)(nil)
 func NewServerConnection(server string, userName string,
 	authMethods []ssh.AuthMethod, hostKeyCallback client.HostKeyCallback,
 	handler handlers.Handler, commands []string, sessionSpec sessionspec.Spec,
-	interactive bool, authKeyPath string, authKeyDisabled bool, settings SSHSettings) (*ServerConnection, error) {
+	interactive bool, authKeyPath string, authKeyDisabled bool, settings SSHSettings,
+	logger logging.Logger) (*ServerConnection, error) {
 
-	dlog.Client.Debug(server, "Creating new connection", server, handler, commands)
+	logger = logging.OrNop(logger)
+	logger.Debug(server, "Creating new connection", server, handler, commands)
 	sshConnectTimeout := defaultSSHConnectTimeout
 	defaultPort := defaultSSHPort
 	if settings != nil {
@@ -106,6 +109,7 @@ func NewServerConnection(server string, userName string,
 		interactive:     interactive,
 		authKeyPath:     resolveAuthKeyPath(authKeyPath),
 		authKeyDisabled: authKeyDisabled,
+		logger:          logger,
 		config: &ssh.ClientConfig{
 			User:    userName,
 			Auth:    authMethods,
@@ -124,6 +128,8 @@ func NewServerConnection(server string, userName string,
 // Server returns the server hostname connected to.
 func (c *ServerConnection) Server() string { return c.server }
 
+func (c *ServerConnection) log() logging.Logger { return logging.OrNop(c.logger) }
+
 // Handler returns the handler used for the connection.
 func (c *ServerConnection) Handler() handlers.Handler { return c.handler }
 
@@ -137,13 +143,13 @@ func (c *ServerConnection) SupportsQueryUpdates(timeout time.Duration) bool {
 // ApplySessionSpec starts or updates the interactive session state on the
 // existing SSH connection when runtime query updates are supported.
 func (c *ServerConnection) ApplySessionSpec(spec sessionspec.Spec, timeout time.Duration) error {
-	return applySessionSpec(c.server, c.handler, &c.sessionState, spec, timeout)
+	return applySessionSpec(c.server, c.handler, &c.sessionState, spec, timeout, c.logger)
 }
 
 // ApplySessionSpecWithGeneration starts or updates the interactive session
 // state using an explicit committed generation as the base for the update.
 func (c *ServerConnection) ApplySessionSpecWithGeneration(spec sessionspec.Spec, generation uint64, timeout time.Duration) error {
-	return applySessionSpecWithGeneration(c.server, c.handler, &c.sessionState, spec, generation, false, timeout)
+	return applySessionSpecWithGeneration(c.server, c.handler, &c.sessionState, spec, generation, false, timeout, c.logger)
 }
 
 // CommittedSession returns the last server-acknowledged session state.
@@ -263,17 +269,17 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 	throttleCh, statsCh chan struct{}) {
 
 	// Throttle how many connections can be established concurrently (based on ch length)
-	dlog.Client.Debug(c.server, "Throttling connection", len(throttleCh), cap(throttleCh))
+	c.log().Debug(c.server, "Throttling connection", len(throttleCh), cap(throttleCh))
 
 	select {
 	case throttleCh <- struct{}{}:
 	case <-ctx.Done():
-		dlog.Client.Debug(c.server, "Not establishing connection as context is done",
+		c.log().Debug(c.server, "Not establishing connection as context is done",
 			len(throttleCh), cap(throttleCh))
 		return
 	}
 
-	dlog.Client.Debug(c.server, "Throttling says that the connection can be established",
+	c.log().Debug(c.server, "Throttling says that the connection can be established",
 		len(throttleCh), cap(throttleCh))
 
 	done := make(chan struct{})
@@ -285,7 +291,7 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 			// the drain happens exactly once even if handle() already released
 			// the slot early (the fast path when the session is fully up).
 			c.throttleReleased.Do(func() {
-				dlog.Client.Debug(c.server, "Unthrottling connection (cleanup)",
+				c.log().Debug(c.server, "Unthrottling connection (cleanup)",
 					len(throttleCh), cap(throttleCh))
 				<-throttleCh
 			})
@@ -301,7 +307,7 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 				c.handler.ReportServerError(err.Error())
 			}
 			if c.hostKeyCallback != nil && c.hostKeyCallback.Untrusted(c.server) {
-				dlog.Client.Debug(c.server, "Not trusting host")
+				c.log().Debug(c.server, "Not trusting host")
 			}
 		}
 	}()
@@ -313,15 +319,15 @@ func (c *ServerConnection) Start(ctx context.Context, cancel context.CancelFunc,
 func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	throttleCh, statsCh chan struct{}) error {
 
-	dlog.Client.Debug(c.server, "Incrementing connection stats")
+	c.log().Debug(c.server, "Incrementing connection stats")
 	statsCh <- struct{}{}
 	defer func() {
-		dlog.Client.Debug(c.server, "Decrementing connection stats")
+		c.log().Debug(c.server, "Decrementing connection stats")
 		<-statsCh
 	}()
 
 	address := net.JoinHostPort(c.hostname, strconv.Itoa(c.port))
-	dlog.Client.Debug(c.server, "Dialing into the connection", address)
+	c.log().Debug(c.server, "Dialing into the connection", address)
 
 	// Use context-aware dialing to enable proper cancellation during connection establishment.
 	// TCP KeepAlive (30s) prevents silent connection failures on long-lived connections.
@@ -337,7 +343,7 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	}
 	stopContextClose := context.AfterFunc(ctx, func() {
 		if closeErr := conn.Close(); closeErr != nil {
-			dlog.Client.Trace(closeErr)
+			c.log().Trace(closeErr)
 		}
 	})
 	defer stopContextClose()
@@ -351,7 +357,7 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	sshConn, chans, reqs, err := ssh.NewClientConn(conn, address, &handshakeConfig)
 	if err != nil {
 		if closeErr := conn.Close(); closeErr != nil {
-			dlog.Client.Trace(closeErr)
+			c.log().Trace(closeErr)
 		}
 		return preferContextError(ctx, fmt.Errorf("SSH handshake failed for %s: %w", address, err))
 	}
@@ -360,7 +366,7 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 	client := ssh.NewClient(sshConn, chans, reqs)
 	defer func() {
 		if err := client.Close(); err != nil {
-			dlog.Client.Trace(err)
+			c.log().Trace(err)
 		}
 	}()
 
@@ -371,7 +377,7 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 func (c *ServerConnection) session(ctx context.Context, cancel context.CancelFunc,
 	client *ssh.Client, throttleCh chan struct{}) error {
 
-	dlog.Client.Debug(c.server, "Creating SSH session")
+	c.log().Debug(c.server, "Creating SSH session")
 	session, err := client.NewSession()
 	if err != nil {
 		return preferContextError(ctx, fmt.Errorf("failed to create SSH session for %s: %w", c.server, err))
@@ -385,13 +391,13 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	closeSession := func() {
 		closeSessionOnce.Do(func() {
 			if err := session.Close(); err != nil {
-				dlog.Client.Trace(err)
+				c.log().Trace(err)
 			}
 		})
 	}
 	defer closeSession()
 
-	dlog.Client.Debug(c.server, "Creating handler for SSH session")
+	c.log().Debug(c.server, "Creating handler for SSH session")
 	stdinPipe, err := session.StdinPipe()
 	if err != nil {
 		return preferContextError(ctx, fmt.Errorf("failed to get SSH session stdin pipe for %s: %w", c.server, err))
@@ -404,17 +410,18 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 		return preferContextError(ctx, fmt.Errorf("failed to start SSH shell for %s: %w", c.server, err))
 	}
 
-	stdinDone := copyAsync(stdinPipe, c.handler)
-	stdoutDone := copyAsync(c.handler, stdoutPipe)
-	waitDone := waitSessionAsync(session)
+	stdinDone := copyAsync(stdinPipe, c.handler, c.log())
+	stdoutDone := copyAsync(c.handler, stdoutPipe, c.log())
+	waitDone := waitSessionAsync(session, c.log())
 
 	if c.authKeyDisabled {
-		dlog.Client.Debug(c.server, "Skipping AUTHKEY registration because auth-key is disabled")
+		c.log().Debug(c.server, "Skipping AUTHKEY registration because auth-key is disabled")
 	} else {
 		c.sendAuthKeyRegistrationCommand()
 	}
 
-	dispatchErr := dispatchInitialCommands(c.server, c.handler, c.commands, c.interactive, c.sessionSpec, &c.sessionState)
+	dispatchErr := dispatchInitialCommands(c.server, c.handler, c.commands, c.interactive,
+		c.sessionSpec, &c.sessionState, c.log())
 	if dispatchErr != nil {
 		dispatchErr = preferContextError(ctx, dispatchErr)
 	}
@@ -426,7 +433,7 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	// here), the slot is still returned exactly once.
 	if dispatchErr == nil {
 		c.throttleReleased.Do(func() {
-			dlog.Client.Debug(c.server, "Unthrottling connection (session up)",
+			c.log().Debug(c.server, "Unthrottling connection (session up)",
 				len(throttleCh), cap(throttleCh))
 			<-throttleCh
 		})
@@ -480,7 +487,7 @@ func (c *ServerConnection) handle(ctx context.Context, cancel context.CancelFunc
 	// reading. Join both remaining session goroutines before returning so callers
 	// can safely render final results.
 	if err := stdinPipe.Close(); err != nil {
-		dlog.Client.Trace(err)
+		c.log().Trace(err)
 	}
 	<-stdinDone
 	closeSession()
@@ -505,23 +512,23 @@ func shouldReportConnectionError(ctx context.Context, err error) bool {
 	return ctxErr == nil || !errors.Is(err, ctxErr)
 }
 
-func copyAsync(dst io.Writer, src io.Reader) <-chan struct{} {
+func copyAsync(dst io.Writer, src io.Reader, logger logging.Logger) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		if _, err := io.Copy(dst, src); err != nil {
-			dlog.Client.Trace(err)
+			logger.Trace(err)
 		}
 	}()
 	return done
 }
 
-func waitSessionAsync(session sshSession) <-chan struct{} {
+func waitSessionAsync(session sshSession, logger logging.Logger) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		if err := session.Wait(); err != nil {
-			dlog.Client.Trace(err)
+			logger.Trace(err)
 		}
 	}()
 	return done
@@ -547,21 +554,21 @@ func (c *ServerConnection) sendAuthKeyRegistrationCommand() {
 	authKeyPubPath := c.authKeyPath + ".pub"
 	authKeyPubBytes, err := os.ReadFile(authKeyPubPath)
 	if err != nil {
-		dlog.Client.Debug(c.server, "Skipping AUTHKEY registration, unable to read public key", authKeyPubPath, err)
+		c.log().Debug(c.server, "Skipping AUTHKEY registration, unable to read public key", authKeyPubPath, err)
 		return
 	}
 
 	authKeyBase64, err := extractAuthKeyBase64(authKeyPubBytes)
 	if err != nil {
-		dlog.Client.Debug(c.server, "Skipping AUTHKEY registration, invalid public key file", authKeyPubPath, err)
+		c.log().Debug(c.server, "Skipping AUTHKEY registration, invalid public key file", authKeyPubPath, err)
 		return
 	}
 
 	if err := c.handler.SendMessage("AUTHKEY " + authKeyBase64); err != nil {
-		dlog.Client.Debug(c.server, "Unable to send AUTHKEY registration command", err)
+		c.log().Debug(c.server, "Unable to send AUTHKEY registration command", err)
 		return
 	}
-	dlog.Client.Debug(c.server, "Sent AUTHKEY registration command", authKeyPubPath)
+	c.log().Debug(c.server, "Sent AUTHKEY registration command", authKeyPubPath)
 }
 
 func extractAuthKeyBase64(authKeyPubBytes []byte) (string, error) {

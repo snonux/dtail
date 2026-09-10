@@ -42,7 +42,7 @@ func newHandshakeTestManager() *outputManager {
 	manager.configure(outputManagerConfig{
 		readRetryInterval: time.Microsecond,
 		eofAckQuietPeriod: time.Millisecond,
-	})
+	}, handlerTestLogger)
 	return manager
 }
 
@@ -65,7 +65,6 @@ func driveReaderUntilDisabled(t *testing.T, manager *outputManager, testUser *us
 // same time. The race detector fails this test when outputManager state is
 // accessed without synchronization.
 func TestOutputManagerConcurrentEnableAndTryRead(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := &outputManager{}
 	manager.configure(outputManagerConfig{
@@ -73,7 +72,7 @@ func TestOutputManagerConcurrentEnableAndTryRead(t *testing.T) {
 		// mode transitions quickly.
 		readRetryInterval: time.Microsecond,
 		eofAckQuietPeriod: time.Microsecond,
-	})
+	}, handlerTestLogger)
 
 	testUser := &userserver.User{Name: "output-race-test"}
 	done := make(chan struct{})
@@ -146,7 +145,6 @@ func TestOutputManagerEnableIsIdempotentWhileEnabled(t *testing.T) {
 // delivered, EOF is signaled, the reader observes the quiet period, disables
 // output mode and acknowledges, and waitForEOFAck reports success.
 func TestOutputManagerEOFHandshakeEndToEnd(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := newHandshakeTestManager()
 	testUser := &userserver.User{Name: "output-handshake-test"}
@@ -175,7 +173,6 @@ func TestOutputManagerEOFHandshakeEndToEnd(t *testing.T) {
 // output mode, the next enable must report the transition and create fresh,
 // unclosed handshake channels.
 func TestOutputManagerReenableAfterAckMintsFreshHandshake(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := newHandshakeTestManager()
 	testUser := &userserver.User{Name: "output-reenable-test"}
@@ -204,7 +201,6 @@ func TestOutputManagerReenableAfterAckMintsFreshHandshake(t *testing.T) {
 // handshake, otherwise the new batch would inherit the closed channel and be
 // disabled mid-batch after a brief channel-empty period, stranding its output.
 func TestOutputManagerEnableRefreshesUnackedEOFHandshake(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := newHandshakeTestManager()
 	testUser := &userserver.User{Name: "output-stale-eof-test"}
@@ -260,7 +256,6 @@ func TestOutputManagerEnableRefreshesUnackedEOFHandshake(t *testing.T) {
 // dropped — otherwise B would inherit a closed EOF channel and be disabled
 // mid-batch at the first channel-empty quiet period, stranding its output.
 func TestOutputManagerStaleEpochSignalEOFIsDropped(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := newHandshakeTestManager()
 	testUser := &userserver.User{Name: "output-stale-epoch-test"}
@@ -311,7 +306,6 @@ func TestOutputManagerStaleEpochSignalEOFIsDropped(t *testing.T) {
 // still blocked in waitForEOFAck on the old handshake is released instead of
 // stalling until its timeout.
 func TestOutputManagerStaleHandshakeRefreshReleasesWaiter(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := newHandshakeTestManager()
 
@@ -355,7 +349,6 @@ func TestOutputManagerStaleHandshakeRefreshReleasesWaiter(t *testing.T) {
 // a hang, and without data loss: everything in the lines channel remains
 // deliverable to the reader.
 func TestOutputManagerNeverSignalingJoinerBoundsDegradation(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := newHandshakeTestManager()
 	testUser := &userserver.User{Name: "output-never-signaling-joiner-test"}
@@ -395,7 +388,6 @@ func TestOutputManagerNeverSignalingJoinerBoundsDegradation(t *testing.T) {
 // cannot reach it naturally (maybeAckEOFLocked only clears mode once the
 // buffer is empty).
 func TestOutputManagerTryReadDrainsBufferWhenModeOff(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := &outputManager{}
 	testUser := &userserver.User{Name: "output-buffer-mode-off-test"}
@@ -416,7 +408,6 @@ func TestOutputManagerTryReadDrainsBufferWhenModeOff(t *testing.T) {
 // the read buffer is delivered across multiple tryRead calls via the internal
 // remainder buffer.
 func TestOutputManagerTryReadBuffersRemainder(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := &outputManager{}
 	testUser := &userserver.User{Name: "output-remainder-test"}

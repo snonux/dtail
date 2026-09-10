@@ -18,10 +18,11 @@ type HealthClient struct {
 }
 
 // NewHealthClient returns a new health client.
-func NewHealthClient(args config.Args) (*HealthClient, error) {
+func NewHealthClient(args config.Args, loggers LoggerDependencies) (*HealthClient, error) {
 	args.Mode = omode.HealthClient
 	args.UserName = config.HealthUser
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(config.HealthUser))
+	loggers = loggers.normalized()
 
 	c := HealthClient{
 		baseClient: baseClient{
@@ -29,7 +30,7 @@ func NewHealthClient(args config.Args) (*HealthClient, error) {
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      false,
-			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
+			loggers:    loggers,
 		},
 	}
 
@@ -40,7 +41,7 @@ func NewHealthClient(args config.Args) (*HealthClient, error) {
 }
 
 func (c HealthClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewHealthHandler(server)
+	return handlers.NewHealthHandler(server, c.clientLogger())
 }
 
 func (c HealthClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.

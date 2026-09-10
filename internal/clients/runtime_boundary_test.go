@@ -1,16 +1,34 @@
 package clients
 
 import (
+	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
+type payloadTeeLogger struct {
+	clientlog.NopLogger
+	file bytes.Buffer
+}
+
+type roleLogger struct {
+	logging.NopLogger
+	name string
+}
+
+func (l *payloadTeeLogger) RawPayloadFileTee(message string) {
+	_, _ = l.file.WriteString(message)
+}
+
 func TestNewClientRuntimeBoundaryDefaults(t *testing.T) {
-	runtime := newClientRuntimeBoundary(config.RuntimeConfig{})
+	runtime := newClientRuntimeBoundary(config.RuntimeConfig{}, LoggerDependencies{})
 
 	if runtime.SSHPort() != 2222 {
 		t.Fatalf("Expected default SSH port 2222, got %d", runtime.SSHPort())
@@ -32,13 +50,78 @@ func TestNewClientRuntimeBoundaryUsesConfiguredSSHSettings(t *testing.T) {
 			SSHPort:             4022,
 			SSHConnectTimeoutMs: 4500,
 		},
-	})
+	}, LoggerDependencies{})
 
 	if runtime.SSHPort() != 4022 {
 		t.Fatalf("Expected configured SSH port 4022, got %d", runtime.SSHPort())
 	}
 	if runtime.SSHConnectTimeout() != 4500*time.Millisecond {
 		t.Fatalf("Expected configured timeout 4.5s, got %v", runtime.SSHConnectTimeout())
+	}
+}
+
+func TestServerlessOutputWriterHonorsLogPayload(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		logPayload  bool
+		wantFileTee string
+	}{
+		{name: "disabled", logPayload: false},
+		{name: "enabled", logPayload: true, wantFileTee: "payload\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			logger := &payloadTeeLogger{}
+			runtime := newClientRuntimeBoundary(config.RuntimeConfig{
+				Client: &config.ClientConfig{LogPayload: test.logPayload},
+			}, NewLoggerDependencies(logger, logging.NopLogger{}, logging.NopLogger{}))
+			runtime.stdout = func() io.Writer { return &stdout }
+
+			payload := []byte("payload\n")
+			n, err := runtime.serverlessOutputWriter().Write(payload)
+			if err != nil {
+				t.Fatalf("serverless output write: %v", err)
+			}
+			if n != len(payload) {
+				t.Fatalf("serverless output bytes = %d, want %d", n, len(payload))
+			}
+			if got := stdout.String(); got != string(payload) {
+				t.Fatalf("stdout payload = %q, want %q", got, payload)
+			}
+			if got := logger.file.String(); got != test.wantFileTee {
+				t.Fatalf("file tee payload = %q, want %q", got, test.wantFileTee)
+			}
+		})
+	}
+}
+
+func TestNewServerlessHandlerPreservesLoggerRoles(t *testing.T) {
+	clientLogger := &payloadTeeLogger{}
+	serverLogger := &roleLogger{name: "server"}
+	commonLogger := &roleLogger{name: "common"}
+	runtime := newClientRuntimeBoundary(config.RuntimeConfig{
+		Client: &config.ClientConfig{},
+		Server: &config.ServerConfig{
+			Permissions: config.Permissions{Default: []string{"^/.*"}},
+		},
+	}, NewLoggerDependencies(clientLogger, serverLogger, commonLogger))
+
+	handler, err := runtime.NewServerlessHandler("alice")
+	if err != nil {
+		t.Fatalf("NewServerlessHandler: %v", err)
+	}
+	withLoggers, ok := handler.(interface {
+		Logger() logging.Logger
+		ReaderLogger() logging.Logger
+	})
+	if !ok {
+		t.Fatalf("serverless handler type %T does not expose logger roles", handler)
+	}
+	if got := withLoggers.Logger(); got != serverLogger {
+		t.Fatalf("diagnostics logger = %T(%p), want server logger %p", got, got, serverLogger)
+	}
+	if got := withLoggers.ReaderLogger(); got != commonLogger {
+		t.Fatalf("reader logger = %T(%p), want common logger %p", got, got, commonLogger)
 	}
 }
 

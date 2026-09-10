@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -38,6 +38,7 @@ type baseHandler struct {
 	capabilitiesOk sync.Once
 
 	sessionAcks chan SessionAck
+	logger      clientlog.Logger
 }
 
 // SessionAck is a parsed hidden acknowledgement for SESSION START/UPDATE requests.
@@ -63,6 +64,13 @@ func (h *baseHandler) Server() string {
 
 func (h *baseHandler) Status() int {
 	return h.status
+}
+
+func (h *baseHandler) log() clientlog.Logger {
+	if h.logger == nil {
+		return clientlog.NopLogger{}
+	}
+	return h.logger
 }
 
 func (h *baseHandler) Capabilities() []string {
@@ -95,13 +103,13 @@ func (h *baseHandler) ReportServerError(message string) {
 	// dropping the error from the on-disk audit trail. RawLog keeps it in the
 	// file like other diagnostics while still printing it to stdout. The message
 	// carries no trailing newline; the Log sink appends one.
-	dlog.Client.RawLog(formatServerErrorMessage(h.server, message))
+	clientlog.RawDiagnostic(h.log(), formatServerErrorMessage(h.server, message))
 }
 
 // SendMessage to the server.
 func (h *baseHandler) SendMessage(command string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(command))
-	dlog.Client.Debug("Sending command", h.server, command, encoded)
+	h.log().Debug("Sending command", h.server, command, encoded)
 
 	select {
 	case h.commands <- fmt.Sprintf("protocol %s base64 %v;", protocol.ProtocolCompat, encoded):
@@ -198,9 +206,9 @@ func (h *baseHandler) handleMessage(message string) {
 
 	// Add newline only if the message doesn't already end with one
 	if len(message) > 0 && message[len(message)-1] == '\n' {
-		dlog.Client.Raw(message)
+		clientlog.Raw(h.log(), message)
 	} else {
-		dlog.Client.Raw(message + "\n")
+		clientlog.Raw(h.log(), message+"\n")
 	}
 }
 
@@ -211,16 +219,16 @@ func (h *baseHandler) handleAuthKeyMessage(message string) bool {
 	}
 
 	if authKeyOK {
-		dlog.Client.Debug(h.server, "AUTHKEY registration accepted by server")
+		h.log().Debug(h.server, "AUTHKEY registration accepted by server")
 		return true
 	}
 
 	if authKeyDetail == "" {
-		dlog.Client.Warn(h.server, "AUTHKEY registration failed")
+		h.log().Warn(h.server, "AUTHKEY registration failed")
 		return true
 	}
 
-	dlog.Client.Warn(h.server, "AUTHKEY registration failed", authKeyDetail)
+	h.log().Warn(h.server, "AUTHKEY registration failed", authKeyDetail)
 	return true
 }
 
@@ -258,7 +266,7 @@ func (h *baseHandler) handleHiddenMessage(message string) {
 		h.handleSessionAckMessage(message)
 	case strings.HasPrefix(message, ".syn close connection"):
 		if err := h.SendMessage(".ack close connection"); err != nil {
-			dlog.Client.Debug(h.server, "Unable to acknowledge close connection", err)
+			h.log().Debug(h.server, "Unable to acknowledge close connection", err)
 		}
 		h.Shutdown()
 	}
@@ -352,7 +360,7 @@ func (h *baseHandler) Shutdown() {
 func (h *baseHandler) handleSessionAckMessage(message string) {
 	ack, ok := parseSessionAckMessage(message)
 	if !ok {
-		dlog.Client.Warn(h.server, "Unable to parse session acknowledgement", message)
+		h.log().Warn(h.server, "Unable to parse session acknowledgement", message)
 		return
 	}
 	if h.sessionAcks == nil {
@@ -363,7 +371,7 @@ func (h *baseHandler) handleSessionAckMessage(message string) {
 	case h.sessionAcks <- ack:
 	case <-h.Done():
 	default:
-		dlog.Client.Warn(h.server, "Dropping session acknowledgement because the queue is full", message)
+		h.log().Warn(h.server, "Dropping session acknowledgement because the queue is full", message)
 	}
 }
 

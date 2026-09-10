@@ -8,11 +8,9 @@ import (
 	"testing"
 
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
 func TestNewReturnsMalformedHostKeyError(t *testing.T) {
-	resetServerErrorPathLogger(t)
 	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 	hostKeyFile := filepath.Join(t.TempDir(), "ssh_host_key")
 	if err := os.WriteFile(hostKeyFile, []byte("not a private key"), 0o600); err != nil {
@@ -24,28 +22,20 @@ func TestNewReturnsMalformedHostKeyError(t *testing.T) {
 	_, err := New(config.RuntimeConfig{
 		Server: serverConfig,
 		Common: &config.CommonConfig{SSHPort: 2222, CacheDir: t.TempDir()},
-	})
+	}, serverTestLoggers)
 	if err == nil || !strings.Contains(err.Error(), "parse SSH host key") {
 		t.Fatalf("New error = %v, want malformed host-key error", err)
 	}
 }
 
 func TestStartReturnsListenError(t *testing.T) {
-	resetServerErrorPathLogger(t)
 	server := &Server{cfg: config.RuntimeConfig{
 		Server: &config.ServerConfig{SSHBindAddress: "127.0.0.1"},
 		Common: &config.CommonConfig{SSHPort: 65536},
-	}}
+	}, logger: serverTestLoggers.Server}
 
 	status, err := server.Start(context.Background())
 	if err == nil || status != 1 {
 		t.Fatalf("Start status=%d error=%v, want status 1 listen error", status, err)
 	}
-}
-
-func resetServerErrorPathLogger(t *testing.T) {
-	t.Helper()
-	original := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() { dlog.Server = original })
 }

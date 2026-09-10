@@ -1,15 +1,20 @@
 package handlers
 
 import (
+	"io"
+	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/mimecast/dtail/internal/io/fs"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr/server"
 )
 
 type readCommandContext interface {
 	LogContext() interface{}
+	Logger() logging.Logger
+	ReaderLogger() logging.Logger
 }
 
 type readCommandFiles interface {
@@ -24,6 +29,7 @@ type readCommandMessages interface {
 	Hostname() string
 	PlainOutput() bool
 	Serverless() bool
+	ServerlessOutput() io.Writer
 }
 
 type readCommandAggregates interface {
@@ -125,6 +131,15 @@ func (h *ServerHandler) PlainOutput() bool {
 // Serverless reports whether the current session is running in serverless mode.
 func (h *ServerHandler) Serverless() bool {
 	return h.serverless
+}
+
+// ServerlessOutput returns the output destination supplied by the client
+// composition root. A nil destination preserves the historical stdout path.
+func (h *ServerHandler) ServerlessOutput() io.Writer {
+	if h.serverlessOutput == nil {
+		return os.Stdout
+	}
+	return h.serverlessOutput
 }
 
 // Aggregate returns the MapReduce aggregate if enabled for the session.

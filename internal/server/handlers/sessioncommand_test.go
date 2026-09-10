@@ -13,7 +13,6 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
@@ -26,7 +25,6 @@ import (
 )
 
 func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
-	resetServerLogger(t)
 	store := sshserver.NewAuthKeyStore(time.Hour, 5)
 	serverUser := &userserver.User{Name: "test-user"}
 
@@ -38,7 +36,7 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 		{
 			name: "missing config",
 			new: func() error {
-				_, err := NewServerHandler(serverUser, nil, nil, nil, store)
+				_, err := NewServerHandler(serverUser, nil, nil, nil, store, nil, HandlerLoggers{})
 				return err
 			},
 			want: "server config",
@@ -46,7 +44,7 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 		{
 			name: "missing auth store",
 			new: func() error {
-				_, err := NewServerHandler(serverUser, nil, nil, &config.ServerConfig{}, nil)
+				_, err := NewServerHandler(serverUser, nil, nil, &config.ServerConfig{}, nil, nil, HandlerLoggers{})
 				return err
 			},
 			want: "auth-key store",
@@ -54,7 +52,7 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 		{
 			name: "missing health user",
 			new: func() error {
-				_, err := NewHealthHandler(nil)
+				_, err := NewHealthHandler(nil, handlerTestLogger)
 				return err
 			},
 			want: "user",
@@ -72,26 +70,24 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 }
 
 func TestHandlerConstructorsReturnHostnameError(t *testing.T) {
-	resetServerLogger(t)
 	original := handlerHostname
 	handlerHostname = func() (string, error) { return "", errors.New("hostname unavailable") }
 	t.Cleanup(func() { handlerHostname = original })
 
 	serverUser := &userserver.User{Name: "test-user"}
 	_, err := NewServerHandler(serverUser, nil, nil, &config.ServerConfig{},
-		sshserver.NewAuthKeyStore(time.Hour, 5))
+		sshserver.NewAuthKeyStore(time.Hour, 5), nil, HandlerLoggers{})
 	if err == nil || !strings.Contains(err.Error(), "hostname unavailable") {
 		t.Fatalf("NewServerHandler error = %v, want wrapped hostname error", err)
 	}
 
-	_, err = NewHealthHandler(serverUser)
+	_, err = NewHealthHandler(serverUser, handlerTestLogger)
 	if err == nil || !strings.Contains(err.Error(), "hostname unavailable") {
 		t.Fatalf("NewHealthHandler error = %v, want wrapped hostname error", err)
 	}
 }
 
 func TestNewServerHandlerSendsAdvertisedServerCapabilities(t *testing.T) {
-	resetServerLogger(t)
 
 	originalCapabilities := advertisedServerCapabilities
 	advertisedServerCapabilities = strings.Join([]string{
@@ -108,6 +104,8 @@ func TestNewServerHandlerSendsAdvertisedServerCapabilities(t *testing.T) {
 		make(chan struct{}, 1),
 		&config.ServerConfig{AuthKeyEnabled: true},
 		sshserver.NewAuthKeyStore(time.Hour, 5),
+		nil,
+		HandlerLoggers{Diagnostics: handlerTestLogger, Reader: handlerTestLogger},
 	)
 	if err != nil {
 		t.Fatalf("NewServerHandler: %v", err)
@@ -389,7 +387,6 @@ func TestHandleAckCommandCloseConnectionConcurrentDoesNotPanic(t *testing.T) {
 }
 
 func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testing.T) {
-	resetServerLogger(t)
 
 	handler := newSessionTestHandler("session-query-reset-user")
 	readServerMessage(t, handler.serverMessages)
@@ -467,7 +464,7 @@ func newSessionTestHandler(userName string) *ServerHandler {
 			maprMessages:     make(chan string, 4),
 			ackCloseReceived: make(chan struct{}),
 			user:             &userserver.User{Name: userName},
-			codec:            newProtocolCodec(&userserver.User{Name: userName}),
+			codec:            newProtocolCodec(&userserver.User{Name: userName}, handlerTestLogger),
 		},
 		serverCfg: &config.ServerConfig{
 			AuthKeyEnabled: true,
@@ -584,7 +581,7 @@ func TestParseSessionCommandWithGeneration(t *testing.T) {
 		Regex: "ERROR",
 	}
 
-	action, generation, parsedSpec, err := parseSessionCommand([]string{"SESSION", "UPDATE", "7", mustSessionPayload(t, spec)}, 4)
+	action, generation, parsedSpec, err := parseSessionCommand([]string{"SESSION", "UPDATE", "7", mustSessionPayload(t, spec)}, 4, handlerTestLogger)
 	if err != nil {
 		t.Fatalf("parseSessionCommand error: %v", err)
 	}
@@ -625,14 +622,4 @@ func waitForContextDone(ctx context.Context, t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for context cancellation")
 	}
-}
-
-func resetServerLogger(t *testing.T) {
-	t.Helper()
-
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 }

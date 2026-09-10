@@ -91,7 +91,6 @@ var _ readCommandServer = (*epochOrderTestServer)(nil)
 // Earlier PendingAndActive calls from the per-file phase are recorded too,
 // which is why the assertion checks the trailing four calls.
 func TestReadFilesCapturesEpochBeforePendingCheck(t *testing.T) {
-	resetServerLogger(t)
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "empty.log")

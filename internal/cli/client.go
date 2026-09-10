@@ -26,6 +26,10 @@ type ClientHook func(*config.Args) (handled bool, status int)
 // The returned cancel function is called after the runtime has stopped.
 type ClientContextFactory func(config.Args) (context.Context, context.CancelFunc)
 
+// ClientBuilder constructs a client after its runtime and logger dependencies
+// have been initialized.
+type ClientBuilder func(config.Args, clients.LoggerDependencies) (clients.Client, error)
+
 // ClientRunner owns the shared flags and startup lifecycle of a client command.
 type ClientRunner struct {
 	fs                *flag.FlagSet
@@ -59,6 +63,7 @@ type clientRunDependencies struct {
 	newRuntime      func(context.Context, profiling.Flags, string) (clientRuntime, error)
 	interrupt       func(context.Context, context.CancelFunc) <-chan string
 	logBuildError   func(string, error)
+	loggers         func() clients.LoggerDependencies
 }
 
 // BindCommonClientFlags registers flags shared by the interactive client
@@ -121,7 +126,7 @@ func (r *ClientRunner) WithContext(factory ClientContextFactory) *ClientRunner {
 
 // RunClient parses and configures a client command, owns its runtime, and
 // returns the process exit status.
-func (r *ClientRunner) RunClient(name string, build func(config.Args) (clients.Client, error)) int {
+func (r *ClientRunner) RunClient(name string, build ClientBuilder) int {
 	deps := clientRunDependencies{
 		argv:            os.Args[1:],
 		stderr:          os.Stderr,
@@ -139,12 +144,15 @@ func (r *ClientRunner) RunClient(name string, build func(config.Args) (clients.C
 		logBuildError: func(name string, err error) {
 			dlog.Client.Error("Unable to create "+name+" client", err)
 		},
+		loggers: func() clients.LoggerDependencies {
+			return clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common)
+		},
 	}
 	return r.runClient(name, build, deps)
 }
 
 func (r *ClientRunner) runClient(name string,
-	build func(config.Args) (clients.Client, error), deps clientRunDependencies) int {
+	build ClientBuilder, deps clientRunDependencies) int {
 	if err := r.fs.Parse(deps.argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -207,7 +215,11 @@ func (r *ClientRunner) runClient(name string,
 	runtime.StartPProf(r.pprof)
 	runtime.LogStartupMetrics()
 
-	client, err := build(*r.args)
+	loggers := clients.LoggerDependencies{}
+	if deps.loggers != nil {
+		loggers = deps.loggers()
+	}
+	client, err := build(*r.args, loggers)
 	if err != nil {
 		deps.logBuildError(name, err)
 		_, _ = fmt.Fprintf(deps.stderr, "unable to create %s client: %v\n", name, err)

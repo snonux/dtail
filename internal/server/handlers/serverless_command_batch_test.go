@@ -230,8 +230,6 @@ func (s *aggregateSwapReadServer) Aggregate() *maprserver.Aggregate {
 }
 
 func TestReadCommandProcessorUsesAggregateCapturedAtAdmission(t *testing.T) {
-	resetServerLogger(t)
-	resetCommonLogger(t)
 
 	oldAggregate, err := maprserver.NewAggregate(
 		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})

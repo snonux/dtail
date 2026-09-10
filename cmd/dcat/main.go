@@ -16,7 +16,7 @@ func main() {
 func run() int {
 	var args config.Args
 	runner := cli.BindCommonClientFlags(flag.CommandLine, &args)
-	return runner.RunClient("dcat", func(args config.Args) (clients.Client, error) {
-		return clients.NewCatClient(args)
+	return runner.RunClient("dcat", func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
+		return clients.NewCatClient(args, loggers)
 	})
 }

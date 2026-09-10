@@ -6,11 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // Used to collect and display various server stats.
 type stats struct {
+	logger              logging.Logger
 	mutex               sync.Mutex
 	currentConnections  int
 	lifetimeConnections uint64
@@ -24,10 +25,22 @@ type stats struct {
 	preAuthConnections int
 }
 
-func newStats(maxConnections int) stats {
+type mapreduceLogger interface {
+	Mapreduce(string, map[string]interface{}) string
+}
+
+func newStats(maxConnections int, logger logging.Logger) stats {
 	return stats{
 		maxConnections: maxConnections,
+		logger:         logging.OrNop(logger),
 	}
+}
+
+func (s *stats) log() logging.Logger {
+	if s.logger == nil {
+		return logging.NopLogger{}
+	}
+	return s.logger
 }
 
 func (s *stats) incrementConnections() {
@@ -85,7 +98,7 @@ func (s *stats) hasConnections() bool {
 	s.mutex.Unlock()
 
 	has := currentConnections > 0
-	dlog.Server.Info("stats", "Server with open connections?",
+	s.log().Info("stats", "Server with open connections?",
 		has, currentConnections)
 	return has
 }
@@ -98,7 +111,11 @@ func (s *stats) logServerStats() {
 	data["currentConnections"] = s.currentConnections
 	data["lifetimeConnections"] = s.lifetimeConnections
 	data["preAuthConnections"] = s.preAuthConnections
-	dlog.Server.Mapreduce("STATS", data)
+	if logger, ok := s.log().(mapreduceLogger); ok {
+		logger.Mapreduce("STATS", data)
+		return
+	}
+	s.log().Info("STATS", data)
 }
 
 // serverLimitExceeded checks whether accepting another connection would exceed

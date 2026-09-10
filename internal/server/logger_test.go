@@ -1,0 +1,11 @@
+package server
+
+import (
+	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
+	"github.com/mimecast/dtail/internal/logging"
+)
+
+var serverTestLoggers = clients.NewLoggerDependencies(
+	clientlog.NopLogger{}, logging.NopLogger{}, logging.NopLogger{},
+)

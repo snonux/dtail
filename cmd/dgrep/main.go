@@ -28,7 +28,7 @@ func run() int {
 			args.RegexStr = grep
 		}
 	})
-	return runner.RunClient("dgrep", func(args config.Args) (clients.Client, error) {
-		return clients.NewGrepClient(args)
+	return runner.RunClient("dgrep", func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
+		return clients.NewGrepClient(args, loggers)
 	})
 }

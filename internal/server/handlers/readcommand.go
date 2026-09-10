@@ -3,15 +3,12 @@ package handlers
 import (
 	"bytes"
 	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/ctxutil"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/journal"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -152,14 +149,14 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	if argc >= 4 {
 		deserializedRegex, err := regex.Deserialize(strings.Join(args[2:], " "))
 		if err != nil {
-			r.sendServerMessage(ctx, dlog.Server.Error(r.server.LogContext(),
+			r.sendServerMessage(ctx, r.server.Logger().Error(r.server.LogContext(),
 				"Unable to parse command", err))
 			return
 		}
 		re = deserializedRegex
 	}
 	if argc < 3 {
-		r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(),
+		r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
 			"Unable to parse command", args, argc))
 		return
 	}
@@ -170,18 +167,18 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	isPipe := r.isInputFromPipe() && (argc < 2 || args[1] == "" || args[1] == "-")
 
 	if isPipe {
-		dlog.Server.Debug("Reading data from stdin pipe")
+		r.server.Logger().Debug("Reading data from stdin pipe")
 		r.readPipe(ctx, ltx, re)
 		return
 	}
 
 	if fs.IsJournalSpec(args[1]) {
-		dlog.Server.Debug("Reading data from journal")
+		r.server.Logger().Debug("Reading data from journal")
 		r.readJournal(ctx, ltx, args[1], re, retries)
 		return
 	}
 
-	dlog.Server.Debug("Reading data from file(s)")
+	r.server.Logger().Debug("Reading data from file(s)")
 	r.readGlob(ctx, ltx, args[1], re, retries)
 }
 
@@ -243,7 +240,7 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 	for retryCount := 0; retryCount < retries; retryCount++ {
 		paths, err := filepath.Glob(glob)
 		if err != nil {
-			dlog.Server.Warn(r.server.LogContext(), glob, err)
+			r.server.Logger().Warn(r.server.LogContext(), glob, err)
 			if !ctxutil.Sleep(ctx, retryInterval) {
 				return
 			}
@@ -251,8 +248,8 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		}
 
 		if numPaths := len(paths); numPaths == 0 {
-			dlog.Server.Error(r.server.LogContext(), "No such file(s) to read", glob)
-			r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(),
+			r.server.Logger().Error(r.server.LogContext(), "No such file(s) to read", glob)
+			r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
 				"Unable to read file(s), check server logs"))
 			select {
 			case <-ctx.Done():
@@ -270,9 +267,9 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		// exhausting server memory. Excess paths are dropped with a warning so
 		// the partial result is still delivered rather than failing entirely.
 		if cap := r.server.MaxGlobTargets(); len(paths) > cap {
-			dlog.Server.Warn(r.server.LogContext(), "Glob expansion exceeded cap, truncating",
+			r.server.Logger().Warn(r.server.LogContext(), "Glob expansion exceeded cap, truncating",
 				"glob", glob, "matched", len(paths), "cap", cap)
-			r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(),
+			r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
 				"Glob expansion exceeded server limit, only first targets served",
 				"limit", cap, "matched", len(paths)))
 			paths = paths[:cap]
@@ -282,21 +279,21 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 
-	r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(),
+	r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
 		"Giving up to read file(s)"))
 }
 
 func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	paths []string, glob string, re regex.Regex) {
 
-	dlog.Server.Info(r.server.LogContext(), "Processing files", "count", len(paths), "glob", glob)
+	r.server.Logger().Info(r.server.LogContext(), "Processing files", "count", len(paths), "glob", glob)
 
 	// Transfer the dispatch-time reservation to the resolved paths before any
 	// file goroutine can complete. Adding len(paths)-1 preserves a non-zero
 	// count throughout the hand-off. Direct unit callers without a reservation
 	// continue to register the full path count.
 	totalPending := r.registerPendingFiles(len(paths))
-	dlog.Server.Info(r.server.LogContext(), "Added pending files", "count", len(paths), "totalPending", totalPending)
+	r.server.Logger().Info(r.server.LogContext(), "Added pending files", "count", len(paths), "totalPending", totalPending)
 
 	var wg sync.WaitGroup
 	wg.Add(len(paths))
@@ -305,7 +302,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	}
 	wg.Wait()
 
-	dlog.Server.Info(r.server.LogContext(), "All files processed", "count", len(paths))
+	r.server.Logger().Info(r.server.LogContext(), "All files processed", "count", len(paths))
 
 	select {
 	case <-ctx.Done():
@@ -359,12 +356,12 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 			pending, active := r.server.PendingAndActive()
 			shouldSignalEOF := pending == 0
 			if !shouldSignalEOF {
-				dlog.Server.Trace(r.server.LogContext(), "Skipping output EOF signal for non-final command",
+				r.server.Logger().Trace(r.server.LogContext(), "Skipping output EOF signal for non-final command",
 					"pending", pending, "active", active)
 				return
 			}
 
-			dlog.Server.Debug(r.server.LogContext(), "Output mode: flushing data before EOF signal")
+			r.server.Logger().Debug(r.server.LogContext(), "Output mode: flushing data before EOF signal")
 
 			// Ensure all output data is flushed before signaling EOF.
 			r.server.FlushOutput()
@@ -380,13 +377,13 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 					// The wait is also released when enable() hands the
 					// handshake over to a new batch (stale refresh), not only
 					// by a reader ack — the log wording covers both.
-					dlog.Server.Debug(r.server.LogContext(), "Output EOF handshake released (reader ack or handover)")
+					r.server.Logger().Debug(r.server.LogContext(), "Output EOF handshake released (reader ack or handover)")
 					// Allow transport buffers to flush after acknowledgement.
 					if !ctxutil.Sleep(ctx, r.server.ShutdownSerializeWait()) {
 						return
 					}
 				} else {
-					dlog.Server.Warn(
+					r.server.Logger().Warn(
 						r.server.LogContext(),
 						"Timeout waiting for output EOF acknowledgement",
 						"timeout", timeout,
@@ -438,8 +435,8 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 	globID := r.makeGlobID(ctx, path, glob)
 	target, ok := r.server.PrepareReadTarget(path)
 	if !ok {
-		dlog.Server.Error(r.server.LogContext(), "No permission to read file", path, globID)
-		r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(),
+		r.server.Logger().Error(r.server.LogContext(), "No permission to read file", path, globID)
+		r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
 			"Unable to read file(s), check server logs"))
 		return
 	}
@@ -449,7 +446,7 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	path string, target *fs.ValidatedReadTarget, globID string, re regex.Regex) {
 
-	dlog.Server.Info(r.server.LogContext(), "Start reading", path, globID)
+	r.server.Logger().Info(r.server.LogContext(), "Start reading", path, globID)
 	r.logRegexMode(re)
 
 	var reader fs.FileReader
@@ -463,16 +460,16 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		case target != nil && target.Kind == fs.JournalKind:
 			journalReader, err := journal.NewReader(journalArgs(path), path, false, serverMessages)
 			if err != nil {
-				r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(), "Unable to read journal", err))
+				r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(), "Unable to read journal", err))
 				return
 			}
 			reader = journalReader
 		case target != nil:
 			catFile := fs.NewValidatedCatFile(path, *target, globID, serverMessages,
-				r.server.MaxLineLength(), dlog.Common)
+				r.server.MaxLineLength(), r.server.ReaderLogger())
 			reader = &catFile
 		default:
-			catFile := fs.NewCatFile(path, globID, serverMessages, r.server.MaxLineLength(), dlog.Common)
+			catFile := fs.NewCatFile(path, globID, serverMessages, r.server.MaxLineLength(), r.server.ReaderLogger())
 			reader = &catFile
 		}
 		limiter = r.server.CatLimiter()
@@ -483,16 +480,16 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		case target != nil && target.Kind == fs.JournalKind:
 			journalReader, err := journal.NewReader(journalArgs(path), path, true, serverMessages)
 			if err != nil {
-				r.sendServerMessage(ctx, dlog.Server.Warn(r.server.LogContext(), "Unable to read journal", err))
+				r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(), "Unable to read journal", err))
 				return
 			}
 			reader = journalReader
 		case target != nil:
 			tailFile := fs.NewValidatedTailFile(path, *target, globID, serverMessages,
-				r.server.MaxLineLength(), dlog.Common)
+				r.server.MaxLineLength(), r.server.ReaderLogger())
 			reader = &tailFile
 		default:
-			tailFile := fs.NewTailFile(path, globID, serverMessages, r.server.MaxLineLength(), dlog.Common)
+			tailFile := fs.NewTailFile(path, globID, serverMessages, r.server.MaxLineLength(), r.server.ReaderLogger())
 			reader = &tailFile
 		}
 		limiter = r.server.TailLimiter()
@@ -512,18 +509,18 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	select {
 	case limiter <- struct{}{}:
 		acquired = true
-		dlog.Server.Debug(r.server.LogContext(), "Got limiter slot immediately", "path", path)
+		r.server.Logger().Debug(r.server.LogContext(), "Got limiter slot immediately", "path", path)
 	case <-ctx.Done():
-		dlog.Server.Debug(r.server.LogContext(), "Context cancelled while waiting for limiter", "path", path)
+		r.server.Logger().Debug(r.server.LogContext(), "Context cancelled while waiting for limiter", "path", path)
 		return
 	default:
-		dlog.Server.Info(r.server.LogContext(), "Server limit hit, queueing file", "limiterLen", len(limiter), "path", path, "maxConcurrent", cap(limiter))
+		r.server.Logger().Info(r.server.LogContext(), "Server limit hit, queueing file", "limiterLen", len(limiter), "path", path, "maxConcurrent", cap(limiter))
 		select {
 		case limiter <- struct{}{}:
 			acquired = true
-			dlog.Server.Info(r.server.LogContext(), "Server limit OK now, processing file", "limiterLen", len(limiter), "path", path)
+			r.server.Logger().Info(r.server.LogContext(), "Server limit OK now, processing file", "limiterLen", len(limiter), "path", path)
 		case <-ctx.Done():
-			dlog.Server.Debug(r.server.LogContext(), "Context cancelled while queued for limiter", "path", path)
+			r.server.Logger().Debug(r.server.LogContext(), "Context cancelled while queued for limiter", "path", path)
 			return
 		}
 	}
@@ -538,9 +535,9 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	// (readViaChannels feeding the regular server.Aggregate) was removed once
 	// serverless MapReduce migrated to the output aggregate (tasks sv0/hv0), so
 	// there is no non-output path left here.
-	dlog.Server.Debug(r.server.LogContext(), "Selecting read mode",
+	r.server.Logger().Debug(r.server.LogContext(), "Selecting read mode",
 		"mode", r.mode, "hasAggregate", r.aggregate != nil)
-	dlog.Server.Info(r.server.LogContext(), "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
+	r.server.Logger().Info(r.server.LogContext(), "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
 	r.readWithProcessor(ctx, ltx, path, globID, re, reader)
 }
 
@@ -555,7 +552,7 @@ func journalArgs(spec string) []string {
 func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LContext,
 	path, globID string, re regex.Regex, reader fs.FileReader) {
 
-	dlog.Server.Info(r.server.LogContext(), "Using output channel-less implementation", path, globID)
+	r.server.Logger().Info(r.server.LogContext(), "Using output channel-less implementation", path, globID)
 	r.logRegexMode(re)
 
 	r.ensureOutputEnabled(ctx)
@@ -569,7 +566,7 @@ func (r *readCommand) executeReadLoop(ctx context.Context, ltx lcontext.LContext
 
 	for {
 		if err := strategy(ctx, ltx, reader, re); err != nil {
-			dlog.Server.Error(r.server.LogContext(), path, globID, err)
+			r.server.Logger().Error(r.server.LogContext(), path, globID, err)
 		}
 
 		select {
@@ -584,36 +581,36 @@ func (r *readCommand) executeReadLoop(ctx context.Context, ltx lcontext.LContext
 		if !ctxutil.Sleep(ctx, r.server.ReadRetryInterval()) {
 			return
 		}
-		dlog.Server.Info(path, globID, "Reading file again")
+		r.server.Logger().Info(path, globID, "Reading file again")
 	}
 }
 
 func (r *readCommand) readViaProcessor(path, globID string, writer LineWriter) readStrategy {
 	return func(ctx context.Context, ltx lcontext.LContext, reader fs.FileReader, re regex.Regex) error {
-		dlog.Server.Trace(r.server.LogContext(), path, globID, "readWithProcessor -> starting read loop iteration")
+		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> starting read loop iteration")
 
 		processor := r.makeProcessor(path, globID, writer)
 
-		dlog.Server.Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> about to start")
+		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> about to start")
 		startErr := reader.StartWithProcessorOptimized(ctx, ltx, processor, re)
-		dlog.Server.Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> completed")
+		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> completed")
 
 		// Ensure we flush and close the processor before retry checks.
-		dlog.Server.Trace(r.server.LogContext(), path, globID, "readWithProcessor -> flushing processor")
+		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> flushing processor")
 		if flushErr := processor.Flush(); flushErr != nil {
-			dlog.Server.Error(r.server.LogContext(), path, globID, "flush error", flushErr)
+			r.server.Logger().Error(r.server.LogContext(), path, globID, "flush error", flushErr)
 		}
-		dlog.Server.Trace(r.server.LogContext(), path, globID, "readWithProcessor -> closing processor")
+		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> closing processor")
 		if closeErr := processor.Close(); closeErr != nil {
-			dlog.Server.Error(r.server.LogContext(), path, globID, "close error", closeErr)
+			r.server.Logger().Error(r.server.LogContext(), path, globID, "close error", closeErr)
 		}
-		dlog.Server.Trace(r.server.LogContext(), path, globID, "readWithProcessor -> processor closed")
+		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> processor closed")
 
 		// Give time for data to be transmitted.
 		// This is crucial for integration tests to ensure all data is sent
 		// Skip this delay in serverless mode since data is written directly to stdout
 		if !r.server.Serverless() {
-			dlog.Server.Trace(r.server.LogContext(), path, globID, "readWithProcessor -> waiting for data transmission")
+			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> waiting for data transmission")
 			if !ctxutil.Sleep(ctx, r.server.OutputTransmissionDelay()) {
 				return startErr
 			}
@@ -638,7 +635,7 @@ func (r *readCommand) ensureOutputEnabled(ctx context.Context) {
 func (r *readCommand) makeWriter(ctx context.Context) LineWriter {
 	// Create a writer instance per file to keep concurrent processing isolated.
 	if r.server.Serverless() {
-		return NewGeneratedDirectWriter(serverlessOutputWriter(), r.server.Hostname(), r.server.PlainOutput(), r.server.Serverless(), r.generation, r.server.ActiveSessionGeneration)
+		return NewGeneratedDirectWriter(r.server.ServerlessOutput(), r.server.Hostname(), r.server.PlainOutput(), r.server.Serverless(), r.generation, r.server.ActiveSessionGeneration)
 	}
 
 	// Use NewNetworkWriter so bufSize is set to 64KB. A bare struct literal
@@ -649,52 +646,16 @@ func (r *readCommand) makeWriter(ctx context.Context) LineWriter {
 	return NewNetworkWriter(ctx, r.server.GetOutputChannel(),
 		r.server.ServerMessagesChannel(), r.server.Hostname(),
 		r.server.PlainOutput(), r.server.Serverless(), r.generation,
-		r.server.ActiveSessionGeneration)
-}
-
-// serverlessOutputWriter returns the io.Writer the serverless direct-output
-// (output) path writes payload to. It is os.Stdout by default. When the client
-// opted in via --log-payload / Client.LogPayload, it additionally tees the exact
-// same payload bytes into the fout daily log FILE sink.
-//
-// This is needed because output is now the only runtime path: the serverless
-// direct-output path writes payload straight to stdout and bypasses the fout
-// logger's Raw method, so the logger's own --log-payload file tee never runs.
-// The tee is added via io.MultiWriter, which writes to os.Stdout first and byte
-// for byte unchanged, so stdout stays identical whether or not --log-payload is
-// set; only the file gains the payload. When LogPayload is off (the default) we
-// return the bare os.Stdout so the hot path stays allocation-free.
-func serverlessOutputWriter() io.Writer {
-	if config.Client != nil && config.Client.LogPayload {
-		return io.MultiWriter(os.Stdout, payloadFileTeeWriter{})
-	}
-	return os.Stdout
-}
-
-// payloadFileTeeWriter is an io.Writer that forwards serverless payload bytes to
-// the client logger's FILE sink only (never stdout), honoring --log-payload. It
-// lets the serverless direct-output path reuse the fout daily-log file tee that
-// the bypassed logger.Raw path would otherwise have provided.
-type payloadFileTeeWriter struct{}
-
-func (payloadFileTeeWriter) Write(p []byte) (int, error) {
-	// dlog.Client is the fout logger that owns the daily log file in serverless
-	// mode; RawPayloadFileTee no-ops when the logger has no file sink or payload
-	// teeing is disabled. Report the full length as written so io.MultiWriter
-	// does not treat the tee as a short write.
-	if dlog.Client != nil {
-		dlog.Client.RawPayloadFileTee(string(p))
-	}
-	return len(p), nil
+		r.server.ActiveSessionGeneration, r.server.Logger())
 }
 
 func (r *readCommand) makeProcessor(path, globID string, writer LineWriter) readProcessor {
 	if aggregate := r.aggregate; aggregate != nil {
-		dlog.Server.Info(r.server.LogContext(), "Using turbo aggregate processor for MapReduce", path, globID)
+		r.server.Logger().Info(r.server.LogContext(), "Using turbo aggregate processor for MapReduce", path, globID)
 		return server.NewAggregateProcessor(aggregate, globID)
 	}
 
-	return NewDirectLineProcessor(writer, globID)
+	return NewDirectLineProcessor(writer, globID, r.server.Logger())
 }
 
 func (r *readCommand) logRegexMode(re regex.Regex) {
@@ -702,9 +663,9 @@ func (r *readCommand) logRegexMode(re regex.Regex) {
 		return
 	}
 	if re.IsLiteral() {
-		dlog.Server.Info(r.server.LogContext(), "Using optimized literal string matching for pattern:", re.Pattern())
+		r.server.Logger().Info(r.server.LogContext(), "Using optimized literal string matching for pattern:", re.Pattern())
 	} else {
-		dlog.Server.Info(r.server.LogContext(), "Using regex matching for pattern:", re.Pattern())
+		r.server.Logger().Info(r.server.LogContext(), "Using regex matching for pattern:", re.Pattern())
 	}
 }
 
@@ -725,7 +686,7 @@ func (r *readCommand) makeGlobID(ctx context.Context, path, glob string) string 
 		return pathParts[len(pathParts)-1]
 	}
 
-	r.sendServerMessage(ctx, dlog.Server.Warn("Empty file path given?", path, glob))
+	r.sendServerMessage(ctx, r.server.Logger().Warn("Empty file path given?", path, glob))
 	return ""
 }
 

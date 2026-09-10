@@ -13,10 +13,10 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/protocol"
 	user "github.com/mimecast/dtail/internal/user/server"
@@ -86,6 +86,9 @@ func cancelCommandContext(ctx context.Context) {
 }
 
 type baseHandler struct {
+	logger                  logging.Logger
+	readerLogger            logging.Logger
+	serverlessOutput        io.Writer
 	done                    *internal.Done
 	handleCommandCb         handleCommandCb
 	prepareCommandContextCb prepareCommandContextCb
@@ -140,6 +143,17 @@ type baseHandler struct {
 	activeGeneration func() uint64
 }
 
+// Logger returns the handler logger, falling back to a no-op logger for
+// zero-value handlers used by focused unit tests.
+func (h *baseHandler) Logger() logging.Logger {
+	return logging.OrNop(h.logger)
+}
+
+// ReaderLogger returns the logger used by filesystem reader dependencies.
+func (h *baseHandler) ReaderLogger() logging.Logger {
+	return logging.OrNop(h.readerLogger)
+}
+
 // getAggregate returns the current output MapReduce aggregate atomically.
 func (h *baseHandler) getAggregate() *maprserver.Aggregate {
 	return h.aggregate.Load()
@@ -171,7 +185,7 @@ func (h *baseHandler) Shutdown() {
 	h.commandMu.Unlock()
 
 	if ta := h.getAggregate(); ta != nil {
-		dlog.Server.Info(h.user, "Aborting output aggregate")
+		h.Logger().Info(h.user, "Aborting output aggregate")
 		ta.AbortAndWait()
 	}
 	h.done.Shutdown()
@@ -382,7 +396,7 @@ func (h *baseHandler) Write(p []byte) (n int, err error) {
 			// without ever emitting a ';' delimiter and grow the buffer
 			// indefinitely. Reject and close when the configurable limit is hit.
 			if h.maxCommandFrameSize > 0 && h.writeBuf.Len() > h.maxCommandFrameSize {
-				dlog.Server.Error(h.user,
+				h.Logger().Error(h.user,
 					"command frame exceeds maximum size, closing session",
 					"frameSize", h.writeBuf.Len(),
 					"limit", h.maxCommandFrameSize,
@@ -398,16 +412,16 @@ func (h *baseHandler) Write(p []byte) (n int, err error) {
 }
 
 func (h *baseHandler) handleCommand(commandStr string) {
-	dlog.Server.Debug(h.user, commandStr)
+	h.Logger().Debug(h.user, commandStr)
 
 	args, argc, add, err := h.handleProtocolVersion(strings.Split(commandStr, " "))
 	if err != nil {
-		h.send(h.serverMessages, dlog.Server.Error(h.user, err)+add)
+		h.send(h.serverMessages, h.Logger().Error(h.user, err)+add)
 		return
 	}
 	args, argc, err = h.handleBase64(args, argc)
 	if err != nil {
-		h.sendln(h.serverMessages, dlog.Server.Error(h.user, err))
+		h.sendln(h.serverMessages, h.Logger().Error(h.user, err))
 		return
 	}
 	ctx, cancel := h.newCommandContext(context.Background())
@@ -420,7 +434,7 @@ func (h *baseHandler) handleCommand(commandStr string) {
 
 	if err := h.dispatchCommand(ctx, args, argc); err != nil {
 		cancel()
-		h.sendln(h.serverMessages, dlog.Server.Error(h.user, err))
+		h.sendln(h.serverMessages, h.Logger().Error(h.user, err))
 	}
 }
 
@@ -571,7 +585,7 @@ func (h *baseHandler) newCommandContext(parent context.Context) (context.Context
 func (h *baseHandler) handleAckCommand(argc int, args []string) {
 	if argc < 3 {
 		if !h.quiet {
-			h.sendln(h.serverMessages, dlog.Server.Warn(h.user,
+			h.sendln(h.serverMessages, h.Logger().Warn(h.user,
 				"Unable to parse command", args, argc))
 		}
 		return
@@ -591,15 +605,15 @@ func (h *baseHandler) handleOptions(options map[string]string) {
 	// changed multiple times for multiple incoming commands.
 	h.once.Do(func() {
 		if quiet := options["quiet"]; quiet == "true" {
-			dlog.Server.Debug(h.user, "Enabling quiet mode")
+			h.Logger().Debug(h.user, "Enabling quiet mode")
 			h.quiet = true
 		}
 		if plain := options["plain"]; plain == "true" {
-			dlog.Server.Debug(h.user, "Enabling plain mode")
+			h.Logger().Debug(h.user, "Enabling plain mode")
 			h.plain = true
 		}
 		if serverless := options["serverless"]; serverless == "true" {
-			dlog.Server.Debug(h.user, "Enabling serverless mode")
+			h.Logger().Debug(h.user, "Enabling serverless mode")
 			h.serverless = true
 		}
 	})
@@ -630,13 +644,13 @@ func (h *baseHandler) shouldDropGeneration(generation uint64) bool {
 }
 
 func (h *baseHandler) flush() {
-	dlog.Server.Trace(h.user, "flush()")
+	h.Logger().Trace(h.user, "flush()")
 	numUnsentMessages := func() int {
 		lineCount := len(h.lines)
 		serverCount := len(h.serverMessages)
 		maprCount := len(h.maprMessages)
 		outputCount := h.output.channelLen()
-		dlog.Server.Trace(h.user, "flush", "lines", lineCount, "server", serverCount, "mapr", maprCount, "output", outputCount)
+		h.Logger().Trace(h.user, "flush", "lines", lineCount, "server", serverCount, "mapr", maprCount, "output", outputCount)
 		return lineCount + serverCount + maprCount + outputCount
 	}
 
@@ -654,14 +668,14 @@ func (h *baseHandler) flush() {
 	for i := 0; ; i++ {
 		unsent := numUnsentMessages()
 		if unsent == 0 {
-			dlog.Server.Debug(h.user, "ALL lines sent", fmt.Sprintf("%p", h))
+			h.Logger().Debug(h.user, "ALL lines sent", fmt.Sprintf("%p", h))
 			return
 		}
 		if time.Now().After(deadline) {
-			dlog.Server.Warn(h.user, "Some lines remain unsent", unsent)
+			h.Logger().Warn(h.user, "Some lines remain unsent", unsent)
 			return
 		}
-		dlog.Server.Debug(h.user, "Still lines to be sent", "iteration", i, "unsent", unsent, "deadline", time.Until(deadline))
+		h.Logger().Debug(h.user, "Still lines to be sent", "iteration", i, "unsent", unsent, "deadline", time.Until(deadline))
 		time.Sleep(time.Millisecond * 10)
 	}
 }
@@ -669,7 +683,7 @@ func (h *baseHandler) flush() {
 func (h *baseHandler) shutdown() {
 	// Log current state at shutdown
 	activeCommands := atomic.LoadInt32(&h.activeCommands)
-	dlog.Server.Info(h.user, "shutdown() called", "activeCommands", activeCommands, "outputMode", h.output.enabled())
+	h.Logger().Info(h.user, "shutdown() called", "activeCommands", activeCommands, "outputMode", h.output.enabled())
 
 	// In output mode, ensure all data is flushed before shutdown
 	if h.output.enabled() {
@@ -680,7 +694,7 @@ func (h *baseHandler) shutdown() {
 	// Use the atomic accessor to avoid a data race with handleMapCommand which
 	// may be concurrently storing the aggregate pointer on another goroutine.
 	if ta := h.getAggregate(); ta != nil {
-		dlog.Server.Info(h.user, "Shutting down output aggregate in shutdown()")
+		h.Logger().Info(h.user, "Shutting down output aggregate in shutdown()")
 		ta.Shutdown()
 		// Give time for serialization to complete.
 		time.Sleep(100 * time.Millisecond)
@@ -698,7 +712,7 @@ func (h *baseHandler) shutdown() {
 	select {
 	case <-h.ackCloseReceived:
 	case <-time.After(time.Second * 5):
-		dlog.Server.Debug(h.user, "Shutdown timeout reached, enforcing shutdown")
+		h.Logger().Debug(h.user, "Shutdown timeout reached, enforcing shutdown")
 	case <-h.done.Done():
 	}
 	h.done.Shutdown()

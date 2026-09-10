@@ -52,13 +52,14 @@ type KnownHostsCallback struct {
 	untrustedHosts map[string]bool
 	mutex          *sync.Mutex
 	logger         logging.Logger
+	promptLogger   logging.Logger
 }
 
 var _ HostKeyCallback = (*KnownHostsCallback)(nil)
 
 // NewKnownHostsCallback returns a new wrapper.
 func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
-	logger logging.Logger) (HostKeyCallback, error) {
+	logger, promptLogger logging.Logger) (HostKeyCallback, error) {
 
 	knownHostsFile, err := fs.NewRootedPath(knownHostsPath)
 	if err != nil {
@@ -75,6 +76,7 @@ func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
 		untrustedHosts:  untrustedHosts,
 		mutex:           &sync.Mutex{},
 		logger:          logging.OrNop(logger),
+		promptLogger:    logging.OrNop(promptLogger),
 	}
 	if trustAllHosts {
 		// Use the same sync.Once path so both the constructor and the
@@ -217,7 +219,7 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 		strings.Join(servers, ","),
 		"Do you want to trust these hosts?",
 	)
-	p := prompt.New(question)
+	p := prompt.New(question, c.promptLogger)
 
 	a := prompt.Answer{
 		Long:  "yes",

@@ -53,7 +53,7 @@ func buildLimiterTestHandler(t *testing.T, capacity int) (*ServerHandler, chan s
 			maprMessages:     make(chan string, 4),
 			ackCloseReceived: make(chan struct{}),
 			user:             &userserver.User{Name: "semaphore-test-user"},
-			codec:            newProtocolCodec(&userserver.User{Name: "semaphore-test-user"}),
+			codec:            newProtocolCodec(&userserver.User{Name: "semaphore-test-user"}, handlerTestLogger),
 		},
 		serverCfg:   &config.ServerConfig{},
 		catLimiter:  limiter,
@@ -71,7 +71,6 @@ func buildLimiterTestHandler(t *testing.T, capacity int) (*ServerHandler, chan s
 // count. With the bug present, each of the N goroutines would drain one slot
 // via the unconditional defer, reducing limiter length to zero.
 func TestReadSemaphoreNotStolenOnCancelBeforeAcquire(t *testing.T) {
-	resetServerLogger(t)
 
 	const (
 		capacity = 5

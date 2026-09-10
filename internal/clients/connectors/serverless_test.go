@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/logging"
 	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
 	sessionspec "github.com/mimecast/dtail/internal/session"
 )
 
 func TestServerlessStartReturnsAfterCancellationAndDrainsServerOutput(t *testing.T) {
-	resetClientLogger(t)
 
 	clientHandler := newServerlessLifecycleClient()
 	serverHandler := newServerlessLifecycleServer([]byte("final output"))
@@ -25,6 +25,7 @@ func TestServerlessStartReturnsAfterCancellationAndDrainsServerOutput(t *testing
 		sessionspec.Spec{},
 		false,
 		serverlessLifecycleFactory{handler: serverHandler},
+		logging.NopLogger{},
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	startDone := make(chan struct{})
@@ -57,7 +58,6 @@ func TestServerlessStartReturnsAfterCancellationAndDrainsServerOutput(t *testing
 }
 
 func TestServerlessOutputFailureUsesAbruptShutdownAndReturnsError(t *testing.T) {
-	resetClientLogger(t)
 
 	wantErr := errors.New("client output failed")
 	clientHandler := &failingServerlessClient{
@@ -72,6 +72,7 @@ func TestServerlessOutputFailureUsesAbruptShutdownAndReturnsError(t *testing.T) 
 		sessionspec.Spec{},
 		false,
 		serverlessLifecycleFactory{handler: serverHandler},
+		logging.NopLogger{},
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -98,7 +99,6 @@ func TestServerlessOutputFailureUsesAbruptShutdownAndReturnsError(t *testing.T) 
 }
 
 func TestServerlessStartReportsHandlerFactoryFailure(t *testing.T) {
-	resetClientLogger(t)
 
 	clientHandler := newServerlessLifecycleClient()
 	connector := NewServerless(
@@ -108,6 +108,7 @@ func TestServerlessStartReportsHandlerFactoryFailure(t *testing.T) {
 		sessionspec.Spec{},
 		false,
 		serverlessErrorFactory{err: errors.New("permission setup failed")},
+		logging.NopLogger{},
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

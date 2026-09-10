@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -415,11 +414,6 @@ func TestChannelWriter_Stats(t *testing.T) {
 }
 
 func TestNetworkWriterWriteLineDataStopsOnCancellation(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	outputLines := make(chan []byte, 1)
 	outputLines <- []byte("occupied")
@@ -458,11 +452,6 @@ func TestNetworkWriterWriteLineDataStopsOnCancellation(t *testing.T) {
 }
 
 func TestNetworkWriterStopsBlockedSendAfterGenerationAdvance(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	outputLines := make(chan []byte, 1)
 	outputLines <- []byte("occupied")
@@ -534,11 +523,6 @@ func waitForNetworkWriterSending(t *testing.T, writer *NetworkWriter) {
 }
 
 func TestNetworkWriterFlushWaitsForBufferedDataAndInFlightSend(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	outputLines := make(chan []byte, 1)
 	outputLines <- []byte("occupied")
@@ -642,11 +626,6 @@ func TestNetworkWriterFlushWaitsForBufferedDataAndInFlightSend(t *testing.T) {
 }
 
 func TestNetworkWriterStopsWaitingWhenContextIsCancelled(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	outputLines := make(chan []byte, 1)
 	outputLines <- []byte("occupied")
@@ -699,11 +678,6 @@ func TestNetworkWriterStopsWaitingWhenContextIsCancelled(t *testing.T) {
 }
 
 func TestNetworkWriterFlushCancelsWhileWaitingOnInFlightSend(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	outputLines := make(chan []byte, 1)
 	outputLines <- []byte("occupied")
@@ -999,11 +973,6 @@ func TestChannelWriter_StatsBytesWrittenMatchesPayloads(t *testing.T) {
 // accumulate in writeBuf below the flush threshold, and that the stat matches
 // the payload eventually flushed to the output channel.
 func TestNetworkWriter_StatsBytesWrittenBelowThreshold(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	outputLines := make(chan []byte, 1)
 	writer := &NetworkWriter{
@@ -1052,11 +1021,6 @@ func TestNetworkWriter_StatsBytesWrittenBelowThreshold(t *testing.T) {
 // would count 11+22+33 bytes per cycle instead of the correct 33, so this
 // test fails against the pre-fix code.
 func TestNetworkWriter_StatsBytesWrittenAcrossFlushThreshold(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	const numLines = 20
 	outputLines := make(chan []byte, numLines)
@@ -1110,7 +1074,7 @@ func TestNewNetworkWriter_SetsBufSize(t *testing.T) {
 	ch := make(chan []byte, 1)
 	msgCh := make(chan string, 1)
 	w := NewNetworkWriter(context.Background(), ch, msgCh, "testhost",
-		true, false, 0, nil)
+		true, false, 0, nil, handlerTestLogger)
 
 	if w.bufSize != 64*1024 {
 		t.Fatalf("expected bufSize 64KB, got %d", w.bufSize)
@@ -1124,18 +1088,13 @@ func TestNewNetworkWriter_SetsBufSize(t *testing.T) {
 // for the ~5.7x server-mode speedup — against the pre-fix code (bufSize == 0)
 // each WriteLineData would have produced its own payload.
 func TestNetworkWriter_BatchesSmallLines(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	// Buffered enough that each line COULD land as its own payload if batching
 	// were broken; the test asserts it does not.
 	const numLines = 100
 	outputLines := make(chan []byte, numLines)
 	w := NewNetworkWriter(context.Background(), outputLines, nil, "testhost",
-		true, false, 0, nil)
+		true, false, 0, nil, handlerTestLogger)
 
 	content := []byte("small log line") // +1 byte for the message delimiter.
 	for i := uint64(1); i <= numLines; i++ {
@@ -1188,15 +1147,10 @@ drain:
 // must be emitted promptly when Flush is called (as tailWithProcessorOptimized
 // does after every read chunk), not held back waiting for the buffer to fill.
 func TestNetworkWriter_FlushEmitsPartialBufferPromptly(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	outputLines := make(chan []byte, 4)
 	w := NewNetworkWriter(context.Background(), outputLines, nil, "testhost",
-		true, false, 0, nil)
+		true, false, 0, nil, handlerTestLogger)
 
 	if err := w.WriteLineData([]byte("tail line"), 1, "app.log"); err != nil {
 		t.Fatalf("WriteLineData failed: %v", err)
@@ -1229,15 +1183,10 @@ func TestNetworkWriter_FlushEmitsPartialBufferPromptly(t *testing.T) {
 // accumulated lines cross bufSize, WriteLineData sends the batch immediately
 // without needing an explicit Flush.
 func TestNetworkWriter_LineCrossingThresholdFlushes(t *testing.T) {
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Server = originalLogger
-	})
 
 	outputLines := make(chan []byte, 8)
 	w := NewNetworkWriter(context.Background(), outputLines, nil, "testhost",
-		true, false, 0, nil)
+		true, false, 0, nil, handlerTestLogger)
 	w.bufSize = 32 // Small threshold so a few 11-byte lines cross it.
 
 	content := []byte("0123456789") // 11 bytes with the message delimiter.
@@ -1260,14 +1209,36 @@ func TestNetworkWriter_LineCrossingThresholdFlushes(t *testing.T) {
 	}
 }
 
-// TestDirectLineProcessor tests the line processor wrapper
-// Note: Skipped because DirectLineProcessor uses dlog.Server which requires initialization
+// TestDirectLineProcessor tests the line processor wrapper.
 func TestDirectLineProcessor(t *testing.T) {
-	t.Skip("Requires dlog initialization - tested via integration tests")
+	var output bytes.Buffer
+	writer := NewDirectWriter(&output, "testhost", true, true)
+	processor := NewDirectLineProcessor(writer, "glob", handlerTestLogger)
+	lineContent := bytes.NewBufferString("payload")
+	if err := processor.ProcessLine(lineContent, 1, "source"); err != nil {
+		t.Fatalf("ProcessLine: %v", err)
+	}
+	if err := processor.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if got, want := output.String(), "payload\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
 }
 
-// TestDirectLineProcessor_Close tests the close method
-// Note: Skipped because DirectLineProcessor uses dlog.Server which requires initialization
+// TestDirectLineProcessor_Close tests the close method.
 func TestDirectLineProcessor_Close(t *testing.T) {
-	t.Skip("Requires dlog initialization - tested via integration tests")
+	var output bytes.Buffer
+	writer := NewDirectWriter(&output, "testhost", true, true)
+	processor := NewDirectLineProcessor(writer, "glob", handlerTestLogger)
+	lineContent := bytes.NewBufferString("payload")
+	if err := processor.ProcessLine(lineContent, 1, "source"); err != nil {
+		t.Fatalf("ProcessLine: %v", err)
+	}
+	if err := processor.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got, want := output.String(), "payload\n"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
 }

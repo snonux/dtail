@@ -120,7 +120,6 @@ func TestDispatchCommandReservesReadInputBeforeHandlerExecution(t *testing.T) {
 func TestDispatchedReadCommandsRegisterAllPendingFilesBeforeCompletion(t *testing.T) {
 	const commandCount = 128
 
-	resetServerLogger(t)
 	server := newPendingRegistrationTestServer()
 	commands := make([]*readCommand, commandCount)
 	start := make(chan struct{})
@@ -188,7 +187,6 @@ func TestDispatchedReadCommandsRegisterAllPendingFilesBeforeCompletion(t *testin
 }
 
 func TestDispatchedReadCommandReleasesReservationOnEarlyReturn(t *testing.T) {
-	resetServerLogger(t)
 	server := newPendingRegistrationTestServer()
 	command := newReservedTestReadCommand(server, omode.GrepClient)
 
@@ -207,7 +205,6 @@ func TestDispatchedReadCommandReleasesReservationOnEarlyReturn(t *testing.T) {
 }
 
 func TestUnclaimedReservationCompletesOlderAggregateAtFinalZero(t *testing.T) {
-	resetServerLogger(t)
 	server := newPendingRegistrationTestServer()
 	olderRead := newReservedTestReadCommand(server, omode.CatClient)
 	unclaimed := newPendingInputReservation(server, omode.CatClient)
@@ -332,7 +329,6 @@ func TestAdmittedUnclaimedReadReservationRunsIdleShutdown(t *testing.T) {
 }
 
 func TestDispatchedReadCommandReleasesReservationWhenRetryIsCanceled(t *testing.T) {
-	resetServerLogger(t)
 	server := newPendingRegistrationTestServer()
 	command := newReservedTestReadCommand(server, omode.CatClient)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -349,7 +345,6 @@ func TestDispatchedReadCommandReleasesReservationWhenRetryIsCanceled(t *testing.
 }
 
 func TestDispatchedTailReleasesReservationWithoutFinishingAggregate(t *testing.T) {
-	resetServerLogger(t)
 	server := newPendingRegistrationTestServer()
 	command := newReservedTestReadCommand(server, omode.TailClient)
 	command.releasePendingInputReservation()
@@ -372,8 +367,6 @@ func (s *markerlessInputTestServer) Aggregate() *maprserver.Aggregate {
 }
 
 func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
-	resetServerLogger(t)
-	resetCommonLogger(t)
 	aggregate, err := maprserver.NewAggregate(
 		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
 	if err != nil {

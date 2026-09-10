@@ -42,7 +42,7 @@ func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
 		return nil, fmt.Errorf("user %s does not support public key authentication", c.User())
 	}
 
-	user, err := user.New(c.User(), c.RemoteAddr().String(), nil)
+	user, err := user.New(c.User(), c.RemoteAddr().String(), nil, logger)
 	if err != nil {
 		return nil, err
 	}

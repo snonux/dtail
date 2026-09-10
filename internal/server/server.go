@@ -9,8 +9,9 @@ import (
 	"net"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/server/handlers"
 	"github.com/mimecast/dtail/internal/ssh/server"
 	user "github.com/mimecast/dtail/internal/user/server"
@@ -23,7 +24,9 @@ const sshHandshakeTimeout = 10 * time.Second
 
 // Server is the main server data structure.
 type Server struct {
-	cfg config.RuntimeConfig
+	cfg          config.RuntimeConfig
+	logger       logging.Logger
+	readerLogger logging.Logger
 	// Various server statistics counters.
 	stats stats
 	// SSH server configuration.
@@ -44,6 +47,20 @@ type Server struct {
 
 type authStrategy func(*user.User, string, string) bool
 
+func (s *Server) log() logging.Logger {
+	if s.logger == nil {
+		return logging.NopLogger{}
+	}
+	return s.logger
+}
+
+func (s *Server) readerLog() logging.Logger {
+	if s.readerLogger == nil {
+		return s.log()
+	}
+	return s.readerLogger
+}
+
 // secretsEqual compares two secret strings in constant time to prevent
 // timing side-channel attacks. Unlike plain ==, this function takes the same
 // amount of time regardless of where the first differing byte is, so an
@@ -53,15 +70,21 @@ func secretsEqual(a, b string) bool {
 }
 
 // New returns a new server.
-func New(cfg config.RuntimeConfig) (*Server, error) {
+func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) (*Server, error) {
+	logger := logging.OrNop(loggers.Server)
 	if cfg.Server == nil || cfg.Common == nil {
-		dlog.Server.FatalPanic("Missing runtime server/common configuration")
+		if fatalLogger, ok := logger.(interface{ FatalPanic(...interface{}) }); ok {
+			fatalLogger.FatalPanic("Missing runtime server/common configuration")
+		}
+		panic("Missing runtime server/common configuration")
 	}
 
-	dlog.Server.Info("Starting server", version.String())
+	logger.Info("Starting server", version.String())
 
 	s := Server{
-		cfg: cfg,
+		cfg:          cfg,
+		logger:       logger,
+		readerLogger: logging.OrNop(loggers.Common),
 		sshServerConfig: &gossh.ServerConfig{
 			Config: gossh.Config{
 				KeyExchanges: cfg.Server.KeyExchanges,
@@ -69,11 +92,11 @@ func New(cfg config.RuntimeConfig) (*Server, error) {
 				MACs:         cfg.Server.MACs,
 			},
 		},
-		stats:       newStats(cfg.Server.MaxConnections),
+		stats:       newStats(cfg.Server.MaxConnections, logger),
 		catLimiter:  make(chan struct{}, cfg.Server.MaxConcurrentCats),
 		tailLimiter: make(chan struct{}, cfg.Server.MaxConcurrentTails),
-		sched:       newScheduler(cfg),
-		cont:        newContinuous(cfg),
+		sched:       newScheduler(cfg, loggers),
+		cont:        newContinuous(cfg, loggers),
 		authKeyStore: server.NewAuthKeyStore(
 			time.Duration(cfg.Server.AuthKeyTTLSeconds)*time.Second,
 			cfg.Server.AuthKeyMaxPerUser,
@@ -86,10 +109,10 @@ func New(cfg config.RuntimeConfig) (*Server, error) {
 		cfg.Server.AuthKeyEnabled,
 		cfg.Common.CacheDir,
 		s.authKeyStore,
-		dlog.Server,
+		logger,
 	)
 
-	privateKey, err := server.PrivateHostKey(cfg.Server.HostKeyFile, cfg.Server.HostKeyBits, dlog.Server)
+	privateKey, err := server.PrivateHostKey(cfg.Server.HostKeyFile, cfg.Server.HostKeyBits, logger)
 	if err != nil {
 		return nil, fmt.Errorf("load SSH host key: %w", err)
 	}
@@ -104,9 +127,9 @@ func New(cfg config.RuntimeConfig) (*Server, error) {
 
 // Start the server.
 func (s *Server) Start(ctx context.Context) (int, error) {
-	dlog.Server.Info("Starting server")
+	s.log().Info("Starting server")
 	bindAt := net.JoinHostPort(s.cfg.Server.SSHBindAddress, fmt.Sprintf("%d", s.cfg.Common.SSHPort))
-	dlog.Server.Info("Binding server", bindAt)
+	s.log().Info("Binding server", bindAt)
 
 	listener, err := net.Listen("tcp", bindAt)
 	if err != nil {
@@ -124,7 +147,7 @@ func (s *Server) Start(ctx context.Context) (int, error) {
 }
 
 func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
-	dlog.Server.Debug("Starting listener loop")
+	s.log().Debug("Starting listener loop")
 	for {
 		conn, err := listener.Accept() // Blocking
 		if err != nil {
@@ -133,12 +156,12 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 				return
 			default:
 			}
-			dlog.Server.Error("Failed to accept incoming connection", err)
+			s.log().Error("Failed to accept incoming connection", err)
 			continue
 		}
 
 		if err := s.stats.serverLimitExceeded(); err != nil {
-			dlog.Server.Error(err)
+			s.log().Error(err)
 			_ = conn.Close()
 			continue
 		}
@@ -152,7 +175,7 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 }
 
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
-	dlog.Server.Info("Handling connection")
+	s.log().Info("Handling connection")
 
 	// The caller (listenerLoop) already reserved a pre-auth slot via
 	// reservePreAuth. We must release it on every early-exit path. On the
@@ -167,7 +190,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 
 	// Prevent slow clients from holding connections open indefinitely before SSH handshake completes.
 	if err := conn.SetDeadline(time.Now().Add(sshHandshakeTimeout)); err != nil {
-		dlog.Server.Error("Failed to set SSH handshake deadline", err)
+		s.log().Error("Failed to set SSH handshake deadline", err)
 		_ = conn.Close()
 		releasePreAuth()
 		return
@@ -177,14 +200,14 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	if err != nil {
 		// Handshake failed (auth error, timeout, or connection reset).
 		// Release the pre-auth slot so the limit accurately reflects reality.
-		dlog.Server.Error("SSH handshake failed", err)
+		s.log().Error("SSH handshake failed", err)
 		releasePreAuth()
 		return
 	}
 
 	// Handshake succeeded; remove deadline so active sessions are not cut off by the handshake timeout.
 	if err := conn.SetDeadline(time.Time{}); err != nil {
-		dlog.Server.Error("Failed to clear SSH handshake deadline", err)
+		s.log().Error("Failed to clear SSH handshake deadline", err)
 		_ = sshConn.Close()
 		releasePreAuth()
 		return
@@ -206,33 +229,33 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 func (s *Server) handleChannel(ctx context.Context, sshConn gossh.Conn,
 	newChannel gossh.NewChannel) {
 
-	serverUser, userErr := user.New(sshConn.User(), sshConn.RemoteAddr().String(), s.cfg.Server.UserPermissions)
+	serverUser, userErr := user.New(sshConn.User(), sshConn.RemoteAddr().String(), s.cfg.Server.UserPermissions, s.log())
 	if userErr != nil {
-		dlog.Server.Error(serverUser, userErr)
+		s.log().Error(serverUser, userErr)
 		if rejectErr := newChannel.Reject(gossh.Prohibited, userErr.Error()); rejectErr != nil {
-			dlog.Server.Debug(rejectErr)
+			s.log().Debug(rejectErr)
 		}
 		return
 	}
 
-	dlog.Server.Info(serverUser, "Invoking channel handler")
+	s.log().Info(serverUser, "Invoking channel handler")
 	if newChannel.ChannelType() != "session" {
 		channelTypeErr := errors.New("don't allow channel types other than session")
-		dlog.Server.Error(serverUser, channelTypeErr)
+		s.log().Error(serverUser, channelTypeErr)
 		if rejectErr := newChannel.Reject(gossh.Prohibited, channelTypeErr.Error()); rejectErr != nil {
-			dlog.Server.Debug(rejectErr)
+			s.log().Debug(rejectErr)
 		}
 		return
 	}
 
 	channel, requests, acceptErr := newChannel.Accept()
 	if acceptErr != nil {
-		dlog.Server.Error(serverUser, "Could not accept channel", acceptErr)
+		s.log().Error(serverUser, "Could not accept channel", acceptErr)
 		return
 	}
 
 	if err := s.handleRequests(ctx, sshConn, requests, channel, serverUser); err != nil {
-		dlog.Server.Error(serverUser, err)
+		s.log().Error(serverUser, err)
 		_ = sshConn.Close()
 	}
 }
@@ -240,11 +263,11 @@ func (s *Server) handleChannel(ctx context.Context, sshConn gossh.Conn,
 func (s *Server) handleRequests(ctx context.Context, sshConn gossh.Conn,
 	in <-chan *gossh.Request, channel gossh.Channel, user *user.User) error {
 
-	dlog.Server.Info(user, "Invoking request handler")
+	s.log().Info(user, "Invoking request handler")
 	for req := range in {
 		var payload = struct{ Value string }{}
 		if err := gossh.Unmarshal(req.Payload, &payload); err != nil {
-			dlog.Server.Error(user, err)
+			s.log().Error(user, err)
 		}
 
 		switch req.Type {
@@ -252,7 +275,7 @@ func (s *Server) handleRequests(ctx context.Context, sshConn gossh.Conn,
 			s.handleShellRequest(ctx, sshConn, channel, user, req)
 		default:
 			if err := req.Reply(false, nil); err != nil {
-				dlog.Server.Trace(user, fmt.Errorf("reply(false): %w", err))
+				s.log().Trace(user, fmt.Errorf("reply(false): %w", err))
 			}
 			return fmt.Errorf("closing SSH connection as unknown request received|%s|%v",
 				req.Type, payload.Value)
@@ -271,7 +294,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	var err error
 	switch user.Name {
 	case config.HealthUser:
-		handler, err = handlers.NewHealthHandler(user)
+		handler, err = handlers.NewHealthHandler(user, s.log())
 	default:
 		handler, err = handlers.NewServerHandler(
 			user,
@@ -279,15 +302,17 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 			s.tailLimiter,
 			s.cfg.Server,
 			s.authKeyStore,
+			nil,
+			handlers.HandlerLoggers{Diagnostics: s.log(), Reader: s.readerLog()},
 		)
 	}
 	if err != nil {
-		dlog.Server.Error(user, "Unable to create session handler", err)
+		s.log().Error(user, "Unable to create session handler", err)
 		if replyErr := req.Reply(false, nil); replyErr != nil {
-			dlog.Server.Trace(user, fmt.Errorf("reply(false): %w", replyErr))
+			s.log().Trace(user, fmt.Errorf("reply(false): %w", replyErr))
 		}
 		if closeErr := sshConn.Close(); closeErr != nil {
-			dlog.Server.Trace(user, fmt.Errorf("close failed session connection: %w", closeErr))
+			s.log().Trace(user, fmt.Errorf("close failed session connection: %w", closeErr))
 		}
 		return
 	}
@@ -295,7 +320,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	terminate := func() {
 		handler.Shutdown()
 		if err := sshConn.Close(); err != nil {
-			dlog.Server.Trace(user, fmt.Errorf("close session connection: %w", err))
+			s.log().Trace(user, fmt.Errorf("close session connection: %w", err))
 		}
 	}
 
@@ -303,7 +328,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	go func() {
 		defer terminate()
 		if _, err := io.Copy(channel, handler); err != nil {
-			dlog.Server.Trace(user, fmt.Errorf("channel->handler: %w", err))
+			s.log().Trace(user, fmt.Errorf("channel->handler: %w", err))
 		}
 	}()
 
@@ -311,7 +336,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	go func() {
 		defer terminate()
 		if _, err := io.Copy(handler, channel); err != nil {
-			dlog.Server.Trace(user, fmt.Errorf("handler->channel: %w", err))
+			s.log().Trace(user, fmt.Errorf("handler->channel: %w", err))
 		}
 	}()
 
@@ -330,15 +355,15 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	// 1:1 per TCP connection regardless of how many shell requests are opened.
 	go func() {
 		if err := sshConn.Wait(); err != nil && !errors.Is(err, io.EOF) {
-			dlog.Server.Error(user, err)
+			s.log().Error(user, err)
 		}
-		dlog.Server.Info(user, "Good bye Mister!")
+		s.log().Info(user, "Good bye Mister!")
 		terminate()
 	}()
 
 	// Reply to indicate shell request was accepted
 	if err := req.Reply(true, nil); err != nil {
-		dlog.Server.Trace(user, fmt.Errorf("reply(true): %w", err))
+		s.log().Trace(user, fmt.Errorf("reply(true): %w", err))
 	}
 }
 
@@ -346,7 +371,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 func (s *Server) Callback(c gossh.ConnMetadata,
 	authPayload []byte) (*gossh.Permissions, error) {
 
-	user, err := user.New(c.User(), c.RemoteAddr().String(), s.cfg.Server.UserPermissions)
+	user, err := user.New(c.User(), c.RemoteAddr().String(), s.cfg.Server.UserPermissions, s.log())
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +380,7 @@ func (s *Server) Callback(c gossh.ConnMetadata,
 	remoteAddr := c.RemoteAddr().String()
 	remoteIP, _, splitErr := net.SplitHostPort(remoteAddr)
 	if splitErr != nil {
-		dlog.Server.Debug(user, "Unable to split remote address host/port, using raw address",
+		s.log().Debug(user, "Unable to split remote address host/port, using raw address",
 			"remoteAddr", remoteAddr, "error", splitErr)
 		remoteIP = remoteAddr
 	}
@@ -382,7 +407,7 @@ func (s *Server) authorizeHealthUser(user *user.User, authInfo, _ string) bool {
 	if !secretsEqual(authInfo, config.HealthUser) {
 		return false
 	}
-	dlog.Server.Debug(user, "Granting permissions to health user")
+	s.log().Debug(user, "Granting permissions to health user")
 	return true
 }
 
@@ -390,7 +415,7 @@ func (s *Server) authorizeScheduleUser(user *user.User, authInfo, remoteIP strin
 	for i := range s.cfg.Server.Schedule {
 		job := &s.cfg.Server.Schedule[i]
 		if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
-			dlog.Server.Debug(user, "Granting SSH connection")
+			s.log().Debug(user, "Granting SSH connection")
 			return true
 		}
 	}
@@ -401,7 +426,7 @@ func (s *Server) authorizeContinuousUser(user *user.User, authInfo, remoteIP str
 	for i := range s.cfg.Server.Continuous {
 		job := &s.cfg.Server.Continuous[i]
 		if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
-			dlog.Server.Debug(user, "Granting SSH connection")
+			s.log().Debug(user, "Granting SSH connection")
 			return true
 		}
 	}
@@ -424,12 +449,12 @@ func (s *Server) backgroundCanSSH(user *user.User, authInfo, remoteIP,
 	// Do not log authInfo (the client-presented secret) — only log the
 	// operator-configured job name so the shared secret cannot leak into
 	// debug logs.
-	dlog.Server.Debug("backgroundCanSSH", user, remoteIP, "allowedJobName", allowedJobName, allowFrom)
+	s.log().Debug("backgroundCanSSH", user, remoteIP, "allowedJobName", allowedJobName, allowFrom)
 
 	// Constant-time comparison prevents a remote attacker from recovering the
 	// secret by measuring how long the server takes to reject wrong values.
 	if !secretsEqual(authInfo, allowedJobName) {
-		dlog.Server.Debug(user, "backgroundCanSSH",
+		s.log().Debug(user, "backgroundCanSSH",
 			"Job name does not match, skipping to next one...", "allowedJobName", allowedJobName)
 		return false
 	}
@@ -437,13 +462,13 @@ func (s *Server) backgroundCanSSH(user *user.User, authInfo, remoteIP,
 	for _, myAddr := range allowFrom {
 		ips, err := net.LookupIP(myAddr)
 		if err != nil {
-			dlog.Server.Debug(user, "backgroundCanSSH", "Unable to lookup IP "+
+			s.log().Debug(user, "backgroundCanSSH", "Unable to lookup IP "+
 				"address for allowed hosts lookup, skipping to next one...",
 				"allowedJobName", allowedJobName, "addr", myAddr, "error", err)
 			continue
 		}
 		for _, ip := range ips {
-			dlog.Server.Debug(user, "backgroundCanSSH", "Comparing IP addresses",
+			s.log().Debug(user, "backgroundCanSSH", "Comparing IP addresses",
 				"allowedJobName", allowedJobName, "remoteIP", remoteIP, "candidateIP", ip.String())
 			if remoteIP == ip.String() {
 				return true

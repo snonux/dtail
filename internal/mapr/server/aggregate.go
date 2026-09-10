@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -29,8 +28,6 @@ type Aggregate struct {
 	// session teardown. Follow-mode (tail) inputs never signal it, so
 	// interval-based streaming aggregation keeps running.
 	inputFinished *internal.Done
-	// Hostname of the current server (used to populate $hostname field).
-	hostname string
 	// The mapr query
 	query *mapr.Query
 	// The mapr log format parser
@@ -129,12 +126,6 @@ func NewAggregate(queryStr string, defaultLogFormat string, logger logging.Logge
 		return nil, err
 	}
 
-	fqdn, err := config.Hostname()
-	if err != nil {
-		return nil, fmt.Errorf("resolve aggregate hostname: %w", err)
-	}
-	s := strings.Split(fqdn, ".")
-
 	parserName := resolveParserName(query, defaultLogFormat)
 
 	logger.Info("Creating log format parser",
@@ -154,7 +145,6 @@ func NewAggregate(queryStr string, defaultLogFormat string, logger logging.Logge
 		done:          internal.NewDone(),
 		inputFinished: internal.NewDone(),
 		serialize:     make(chan struct{}, 1), // Buffered to avoid blocking
-		hostname:      s[0],
 		query:         query,
 		parser:        logParser,
 		groupSets:     make(map[string]*mapr.AggregateSet),

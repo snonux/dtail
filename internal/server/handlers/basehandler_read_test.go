@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -157,12 +156,6 @@ func TestBaseHandlerReadLargeHiddenMessageAcrossMultipleReads(t *testing.T) {
 // mode is toggled on between Reads: the remainder belongs to a message that
 // was already accepted for delivery, so output output must not preempt it.
 func TestBaseHandlerReadDrainsRemainderBeforeOutputData(t *testing.T) {
-	// The output read path logs via dlog.Server, which is nil in unit tests;
-	// stub it out like the other output tests in this package do.
-	originalLogger := dlog.Server
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() { dlog.Server = originalLogger })
-
 	handler := newReadTestHandler()
 
 	message := "regular " + string(bytes.Repeat([]byte("r"), 200))

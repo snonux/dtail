@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	user "github.com/mimecast/dtail/internal/user/server"
 )
 
@@ -39,6 +39,7 @@ type outputManagerConfig struct {
 // constructor before any goroutine can touch the manager, so goroutine
 // creation establishes the necessary happens-before edge.
 type outputManager struct {
+	logger logging.Logger
 	mu     sync.Mutex
 	mode   bool
 	lines  chan []byte
@@ -65,7 +66,8 @@ type outputManager struct {
 // configure sets the tunables. It must be called before the manager is used
 // concurrently (i.e. from the handler constructor); see the struct comment
 // for why the config fields need no locking.
-func (t *outputManager) configure(cfg outputManagerConfig) {
+func (t *outputManager) configure(cfg outputManagerConfig, logger logging.Logger) {
+	t.logger = logging.OrNop(logger)
 	if cfg.channelBufferSize > 0 {
 		t.channelBufferSize = cfg.channelBufferSize
 	}
@@ -81,6 +83,13 @@ func (t *outputManager) configure(cfg outputManagerConfig) {
 	if cfg.eofAckQuietPeriod > 0 {
 		t.eofAckQuietPeriod = cfg.eofAckQuietPeriod
 	}
+}
+
+func (t *outputManager) log() logging.Logger {
+	if t.logger == nil {
+		return logging.NopLogger{}
+	}
+	return t.logger
 }
 
 func (t *outputManager) resolvedChannelBufferSize() int {
@@ -327,17 +336,17 @@ func (t *outputManager) flush(user *user.User) {
 		return
 	}
 
-	dlog.Server.Debug(user, "Flushing output data", "channelLen", len(lines))
+	t.log().Debug(user, "Flushing output data", "channelLen", len(lines))
 
 	timeout := time.After(t.resolvedFlushTimeout())
 	for {
 		select {
 		case <-timeout:
-			dlog.Server.Warn(user, "Timeout while flushing output data", "remaining", len(lines))
+			t.log().Warn(user, "Timeout while flushing output data", "remaining", len(lines))
 			return
 		default:
 			if len(lines) == 0 {
-				dlog.Server.Debug(user, "Output channel drained successfully")
+				t.log().Debug(user, "Output channel drained successfully")
 				return
 			}
 			// Give the reader time to process.
@@ -366,7 +375,7 @@ func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration 
 	// args or build a []interface{} when trace is off (the default). This also
 	// shortens the t.mu hold time. Locking semantics are unchanged: the guard is
 	// a pure branch and touches no lock. maxLevel is fixed at logger construction.
-	traceEnabled := dlog.Server.TraceEnabled()
+	traceEnabled := t.log().TraceEnabled()
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -379,12 +388,12 @@ func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration 
 	// that invariant ever change.
 	if len(t.buffer) > 0 {
 		if traceEnabled {
-			dlog.Server.Trace(user, "baseHandler.Read", "using buffered output data", "bufferedLen", len(t.buffer))
+			t.log().Trace(user, "baseHandler.Read", "using buffered output data", "bufferedLen", len(t.buffer))
 		}
 		n = copy(p, t.buffer)
 		t.buffer = t.buffer[n:]
 		if traceEnabled {
-			dlog.Server.Trace(user, "baseHandler.Read", "after buffer read", "copied", n, "remaining", len(t.buffer))
+			t.log().Trace(user, "baseHandler.Read", "after buffer read", "copied", n, "remaining", len(t.buffer))
 		}
 		return n, true
 	}
@@ -398,7 +407,7 @@ func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration 
 	}
 
 	if traceEnabled {
-		dlog.Server.Trace(user, "baseHandler.Read", "checking outputLines channel", "channelLen", len(t.lines))
+		t.log().Trace(user, "baseHandler.Read", "checking outputLines channel", "channelLen", len(t.lines))
 	}
 
 	for {
@@ -417,7 +426,7 @@ func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration 
 			if outputData, received := t.retryReceiveLocked(user, traceEnabled); received {
 				if n, delivered := t.consumeLocked(p, outputData, user, traceEnabled, shouldDropGeneration); delivered {
 					if traceEnabled {
-						dlog.Server.Trace(user, "baseHandler.Read", "got data after wait")
+						t.log().Trace(user, "baseHandler.Read", "got data after wait")
 					}
 					return n, true
 				}
@@ -428,7 +437,7 @@ func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration 
 		t.maybeAckEOFLocked(user)
 
 		if traceEnabled {
-			dlog.Server.Trace(user, "baseHandler.Read", "no data in outputLines, falling through")
+			t.log().Trace(user, "baseHandler.Read", "no data in outputLines, falling through")
 		}
 		return 0, false
 	}
@@ -442,7 +451,7 @@ func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration 
 // caller must hold t.mu; it is held again on return.
 func (t *outputManager) retryReceiveLocked(user *user.User, traceEnabled bool) (outputData []byte, received bool) {
 	if traceEnabled {
-		dlog.Server.Trace(user, "baseHandler.Read", "channel has data but not available, waiting")
+		t.log().Trace(user, "baseHandler.Read", "channel has data but not available, waiting")
 	}
 
 	retryInterval := t.resolvedReadRetryInterval()
@@ -473,14 +482,14 @@ func (t *outputManager) consumeLocked(p, outputData []byte, user *user.User,
 	}
 
 	if traceEnabled {
-		dlog.Server.Trace(user, "baseHandler.Read", "got data from outputLines", "dataLen", len(decodedData))
+		t.log().Trace(user, "baseHandler.Read", "got data from outputLines", "dataLen", len(decodedData))
 	}
 	t.eofEmptySince = time.Time{}
 	n = copy(p, decodedData)
 	if n < len(decodedData) {
 		t.buffer = decodedData[n:]
 		if traceEnabled {
-			dlog.Server.Trace(user, "baseHandler.Read", "buffering remaining data", "bufferedLen", len(t.buffer))
+			t.log().Trace(user, "baseHandler.Read", "buffering remaining data", "bufferedLen", len(t.buffer))
 		}
 	}
 	return n, true
@@ -511,7 +520,7 @@ func (t *outputManager) maybeAckEOFLocked(user *user.User) {
 	}
 
 	if time.Since(t.eofEmptySince) >= t.resolvedEOFAckQuietPeriod() {
-		dlog.Server.Trace(user, "baseHandler.Read", "EOF acknowledged and channel stable-empty, disabling output mode")
+		t.log().Trace(user, "baseHandler.Read", "EOF acknowledged and channel stable-empty, disabling output mode")
 		t.mode = false
 		t.signalEOFAckLocked()
 	}

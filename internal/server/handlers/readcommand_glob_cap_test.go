@@ -13,6 +13,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/regex"
@@ -69,11 +71,14 @@ func (s *globCapTestServer) CatLimiter() chan struct{}  { return s.catLimiter }
 func (s *globCapTestServer) TailLimiter() chan struct{} { return s.tailLimiter }
 
 func (s *globCapTestServer) LogContext() interface{}            { return "glob-cap-test" }
+func (s *globCapTestServer) Logger() logging.Logger             { return logging.NopLogger{} }
+func (s *globCapTestServer) ReaderLogger() logging.Logger       { return logging.NopLogger{} }
 func (s *globCapTestServer) SendServerMessage(msg string)       { s.drainOrStore(msg) }
 func (s *globCapTestServer) ServerMessagesChannel() chan string { return s.serverMessage }
 func (s *globCapTestServer) Hostname() string                   { return "testhost" }
 func (s *globCapTestServer) PlainOutput() bool                  { return false }
 func (s *globCapTestServer) Serverless() bool                   { return false }
+func (s *globCapTestServer) ServerlessOutput() io.Writer        { return io.Discard }
 
 func (s *globCapTestServer) drainOrStore(msg string) {
 	select {
@@ -143,7 +148,6 @@ func createTempFiles(t *testing.T, dir string, n int) string {
 // than MaxGlobTargets, only MaxGlobTargets paths are dispatched. The check is
 // done by counting PrepareReadTarget invocations on the mock server.
 func TestGlobCapTruncatesExcessPaths(t *testing.T) {
-	resetServerLogger(t)
 
 	const (
 		totalFiles = 20 // files on disk — clearly above the cap
@@ -171,7 +175,6 @@ func TestGlobCapTruncatesExcessPaths(t *testing.T) {
 // TestGlobCapUnderLimitPassesAll verifies that when the number of glob matches
 // is at or below MaxGlobTargets, all paths are dispatched without truncation.
 func TestGlobCapUnderLimitPassesAll(t *testing.T) {
-	resetServerLogger(t)
 
 	const (
 		totalFiles = 5
@@ -195,7 +198,6 @@ func TestGlobCapUnderLimitPassesAll(t *testing.T) {
 // TestGlobCapExactlyAtLimit verifies that when the number of glob matches
 // equals MaxGlobTargets exactly, all paths are dispatched (boundary condition).
 func TestGlobCapExactlyAtLimit(t *testing.T) {
-	resetServerLogger(t)
 
 	const count = 8 // cap == totalFiles
 

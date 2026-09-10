@@ -13,7 +13,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -34,12 +34,12 @@ type interactiveReloadState struct {
 func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan string) int {
 	controlTTY, err := os.OpenFile(c.ControlTTYPath, os.O_RDWR, 0)
 	if err != nil {
-		dlog.Client.Error("Unable to open interactive query control TTY", c.ControlTTYPath, err)
+		c.clientLogger().Error("Unable to open interactive query control TTY", c.ControlTTYPath, err)
 		return 1
 	}
 	defer func() {
 		if closeErr := controlTTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
-			dlog.Client.Debug("Unable to close interactive query control TTY", closeErr)
+			c.clientLogger().Debug("Unable to close interactive query control TTY", closeErr)
 		}
 	}()
 
@@ -63,7 +63,7 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 		return status
 	case err := <-controlErrCh:
 		if err != nil {
-			dlog.Client.Warn("Interactive query control stopped", err)
+			c.clientLogger().Warn("Interactive query control stopped", err)
 		}
 		cancel()
 		return <-statusCh
@@ -91,7 +91,7 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 		}
 
 		currentArgs, _ := c.snapshotConnectionState()
-		command, err := parseInteractiveCommand(currentArgs, line)
+		command, err := parseInteractiveCommand(currentArgs, line, c.clientLogger())
 		if err != nil {
 			if writeErr := writeControlLine(tty, "interactive query error: "+err.Error()); writeErr != nil {
 				return writeErr
@@ -261,7 +261,7 @@ func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 	return writeControlLine(writer, line)
 }
 
-func parseInteractiveCommand(current config.Args, line string) (interactiveCommand, error) {
+func parseInteractiveCommand(current config.Args, line string, logger logging.Logger) (interactiveCommand, error) {
 	line = strings.TrimSpace(line)
 
 	switch {
@@ -284,7 +284,7 @@ func parseInteractiveCommand(current config.Args, line string) (interactiveComma
 		if err != nil {
 			return interactiveCommand{}, err
 		}
-		nextSpec, err := buildInteractiveSessionSpec(nextArgs)
+		nextSpec, err := buildInteractiveSessionSpec(nextArgs, logger)
 		if err != nil {
 			return interactiveCommand{}, err
 		}
@@ -343,8 +343,8 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 	return next, nil
 }
 
-func buildInteractiveSessionSpec(args config.Args) (SessionSpec, error) {
-	normalizedArgs, err := normalizeInteractiveArgs(args)
+func buildInteractiveSessionSpec(args config.Args, logger logging.Logger) (SessionSpec, error) {
+	normalizedArgs, err := normalizeInteractiveArgs(args, logger)
 	if err != nil {
 		return SessionSpec{}, err
 	}
@@ -356,12 +356,12 @@ func buildInteractiveSessionSpec(args config.Args) (SessionSpec, error) {
 	return spec, nil
 }
 
-func normalizeInteractiveArgs(args config.Args) (config.Args, error) {
+func normalizeInteractiveArgs(args config.Args, logger logging.Logger) (config.Args, error) {
 	if !isInteractiveQueryMode(args) {
 		return args, nil
 	}
 
-	_, regexValue, err := maprRegexFromQueryString(args.QueryStr)
+	_, regexValue, err := maprRegexFromQueryString(args.QueryStr, logger)
 	if err != nil {
 		return args, err
 	}

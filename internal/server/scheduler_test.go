@@ -7,15 +7,13 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
 func TestSchedulerRunJobDisablesAuthKeyRegistration(t *testing.T) {
-	dlog.Server = &dlog.DLog{}
 
 	s := newScheduler(config.RuntimeConfig{
 		Server: &config.ServerConfig{SSHBindAddress: "127.0.0.1"},
-	})
+	}, serverTestLoggers)
 	var capturedArgs config.Args
 	s.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
 		capturedArgs = args

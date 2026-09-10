@@ -32,7 +32,8 @@ var (
 // is always non-nil so callers can unconditionally defer closer.Close().
 func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool,
-	privateKeyPath string, agentKeyIndex int, logger logging.Logger) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
+	privateKeyPath string, agentKeyIndex int, logger,
+	promptLogger logging.Logger) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
 
 	logger = logging.OrNop(logger)
 	if len(sshAuthMethods) > 0 {
@@ -42,11 +43,12 @@ func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 		}
 		return sshAuthMethods, simpleCallback, noAuthCloser, nil
 	}
-	return initKnownHostsAuthMethods(trustAllHosts, privateKeyPath, agentKeyIndex, logger)
+	return initKnownHostsAuthMethods(trustAllHosts, privateKeyPath, agentKeyIndex, logger, promptLogger)
 }
 
 func initKnownHostsAuthMethods(trustAllHosts bool,
-	privateKeyPath string, agentKeyIndex int, logger logging.Logger) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
+	privateKeyPath string, agentKeyIndex int, logger,
+	promptLogger logging.Logger) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
 
 	knownHostsFile := fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME"))
 	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
@@ -54,7 +56,7 @@ func initKnownHostsAuthMethods(trustAllHosts bool,
 		knownHostsFile = "./known_hosts"
 	}
 
-	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts, logger)
+	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts, logger, promptLogger)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("initialize known-hosts callback from %q: %w", knownHostsFile, err)
 	}

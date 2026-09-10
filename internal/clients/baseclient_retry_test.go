@@ -10,7 +10,6 @@ import (
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 	sshclient "github.com/mimecast/dtail/internal/ssh/client"
 
@@ -68,12 +67,6 @@ func TestSleepWithContextCancellation(t *testing.T) {
 }
 
 func TestStartConnectionReconnectsWithLatestSessionSpec(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	first := &retryTestConnector{
 		server:  "srv1",
 		handler: &retryTestHandler{},
@@ -135,8 +128,6 @@ func TestStartConnectionReconnectsWithLatestSessionSpec(t *testing.T) {
 }
 
 func TestApplyInteractiveReloadConcurrentWithReconnect(t *testing.T) {
-	resetClientLogger(t)
-
 	originalSpec := SessionSpec{
 		Mode:  omode.GrepClient,
 		Files: []string{"/var/log/app.log"},

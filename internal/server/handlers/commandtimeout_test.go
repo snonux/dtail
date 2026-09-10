@@ -102,7 +102,6 @@ func TestApplyCommandTimeout(t *testing.T) {
 // Pre-fix, dispatchCommand split "timeout" as the command name and the read
 // never ran ("Received unknown user command"), which hung dmap/dtail --timeout.
 func TestDispatchCommandStripsTimeoutPrefix(t *testing.T) {
-	resetServerLogger(t)
 
 	handler := newSessionTestHandler("timeout-prefix-user")
 	readServerMessage(t, handler.serverMessages)

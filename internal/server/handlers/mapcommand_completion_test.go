@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
@@ -36,35 +35,20 @@ import (
 const testStatsLine = "INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|" +
 	"MAPREDUCE:STATS|currentConnections=0|lifetimeConnections=1"
 
-// resetCommonLogger installs a quiet common logger for the duration of the
-// test. The mapr serialization path logs via dlog.Common, which is nil unless
-// a real logger was started; a zero-value DLog silently discards everything.
-func resetCommonLogger(t *testing.T) {
-	t.Helper()
-
-	originalLogger := dlog.Common
-	dlog.Common = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Common = originalLogger
-	})
-}
-
 // newMapTestHandler builds a fully wired ServerHandler with direct output
 // enabled, exactly as the SSH server would (via NewServerHandler). The user
 // is the continuous-query user, which bypasses per-path permission checks so
 // the test can read files from t.TempDir().
 func newMapTestHandler(t *testing.T) *ServerHandler {
 	t.Helper()
-	resetServerLogger(t)
-	resetCommonLogger(t)
-
 	user := &userserver.User{Name: config.ContinuousUser}
 	serverCfg := &config.ServerConfig{
 		MapreduceLogFormat: "default",
 		AuthKeyEnabled:     true,
 	}
 	handler, err := NewServerHandler(user, make(chan struct{}, 4), make(chan struct{}, 4),
-		serverCfg, sshserver.NewAuthKeyStore(time.Hour, 5))
+		serverCfg, sshserver.NewAuthKeyStore(time.Hour, 5), nil,
+		HandlerLoggers{Diagnostics: handlerTestLogger, Reader: handlerTestLogger})
 	if err != nil {
 		t.Fatalf("NewServerHandler: %v", err)
 	}

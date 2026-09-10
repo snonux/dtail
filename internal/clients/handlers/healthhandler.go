@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -15,8 +15,9 @@ type HealthHandler struct {
 }
 
 // NewHealthHandler returns a new health client handler.
-func NewHealthHandler(server string) *HealthHandler {
-	dlog.Client.Debug(server, "Creating new health handler")
+func NewHealthHandler(server string, logger clientlog.Logger) *HealthHandler {
+	logger = clientlog.OrNop(logger)
+	logger.Debug(server, "Creating new health handler")
 	return &HealthHandler{
 		baseHandler: baseHandler{
 			server:         server,
@@ -27,6 +28,7 @@ func NewHealthHandler(server string) *HealthHandler {
 			capabilities:   make(map[string]struct{}),
 			capabilitiesCh: make(chan struct{}),
 			sessionAcks:    make(chan SessionAck, 4),
+			logger:         logger,
 		},
 	}
 }

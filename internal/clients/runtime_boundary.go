@@ -2,11 +2,15 @@ package clients
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
 	sshserver "github.com/mimecast/dtail/internal/ssh/server"
@@ -18,10 +22,13 @@ type clientRuntimeBoundary struct {
 	sshConnectTimeout time.Duration
 	interruptPause    time.Duration
 	serverCfg         *config.ServerConfig
+	clientCfg         *config.ClientConfig
 	output            *clientOutputFormatter
+	loggers           LoggerDependencies
+	stdout            func() io.Writer
 }
 
-func newClientRuntimeBoundary(cfg config.RuntimeConfig) *clientRuntimeBoundary {
+func newClientRuntimeBoundary(cfg config.RuntimeConfig, loggers LoggerDependencies) *clientRuntimeBoundary {
 	sshPort := 2222
 	sshConnectTimeout := 2 * time.Second
 	if cfg.Common != nil {
@@ -33,12 +40,16 @@ func newClientRuntimeBoundary(cfg config.RuntimeConfig) *clientRuntimeBoundary {
 		}
 	}
 
+	loggers = loggers.normalized()
 	return &clientRuntimeBoundary{
 		sshPort:           sshPort,
 		sshConnectTimeout: sshConnectTimeout,
 		interruptPause:    time.Second * time.Duration(config.InterruptTimeoutS),
 		serverCfg:         cfg.Server,
+		clientCfg:         cfg.Client,
 		output:            newClientOutputFormatter(cfg.Client),
+		loggers:           loggers,
+		stdout:            func() io.Writer { return os.Stdout },
 	}
 }
 
@@ -63,14 +74,14 @@ func (r *clientRuntimeBoundary) NewServerlessHandler(userName string) (serverHan
 		permissionLookup = r.serverCfg.UserPermissions
 	}
 
-	serverUser, err := user.New(userName, "local(serverless)", permissionLookup)
+	serverUser, err := user.New(userName, "local(serverless)", permissionLookup, r.loggers.Server)
 	if err != nil {
 		return nil, err
 	}
 
 	switch userName {
 	case config.HealthUser:
-		return serverHandlers.NewHealthHandler(serverUser)
+		return serverHandlers.NewHealthHandler(serverUser, r.loggers.Server)
 	default:
 		if r.serverCfg == nil {
 			return nil, fmt.Errorf("missing serverless server config")
@@ -88,8 +99,35 @@ func (r *clientRuntimeBoundary) NewServerlessHandler(userName string) (serverHan
 			make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentTails, 50)),
 			r.serverCfg,
 			keyStore,
+			r.serverlessOutputWriter(),
+			serverHandlers.HandlerLoggers{
+				Diagnostics: r.loggers.Server,
+				Reader:      r.loggers.Common,
+			},
 		)
 	}
+}
+
+func (r *clientRuntimeBoundary) serverlessOutputWriter() io.Writer {
+	var output io.Writer = os.Stdout
+	if r.stdout != nil {
+		if configured := r.stdout(); configured != nil {
+			output = configured
+		}
+	}
+	if r.clientCfg == nil || !r.clientCfg.LogPayload {
+		return output
+	}
+	return io.MultiWriter(output, payloadFileTeeWriter{logger: r.loggers.Client})
+}
+
+type payloadFileTeeWriter struct {
+	logger logging.Logger
+}
+
+func (w payloadFileTeeWriter) Write(p []byte) (int, error) {
+	clientlog.TeePayloadToFile(w.logger, string(p))
+	return len(p), nil
 }
 
 func positiveOrDefault(value, fallback int) int {

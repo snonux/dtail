@@ -135,7 +135,7 @@ func TestWarnUnknownQueryVariables(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			query := mustMaprClientQuery(t, tc.query)
 			var buf bytes.Buffer
-			warnUnknownQueryVariables(&buf, query)
+			warnUnknownQueryVariables(&buf, query, logging.NopLogger{})
 			out := buf.String()
 			if tc.wantSubst == "" {
 				if out != "" {

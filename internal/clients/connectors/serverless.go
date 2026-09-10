@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
 	sessionspec "github.com/mimecast/dtail/internal/session"
 )
@@ -35,6 +35,7 @@ type Serverless struct {
 	interactive    bool
 	userName       string
 	handlerFactory ServerlessHandlerFactory
+	logger         logging.Logger
 }
 
 var _ Connector = (*Serverless)(nil)
@@ -42,9 +43,10 @@ var _ Connector = (*Serverless)(nil)
 // NewServerless starts a new serverless session.
 func NewServerless(userName string, handler handlers.Handler,
 	commands []string, sessionSpec sessionspec.Spec, interactive bool,
-	handlerFactory ServerlessHandlerFactory) *Serverless {
+	handlerFactory ServerlessHandlerFactory, logger logging.Logger) *Serverless {
 
-	dlog.Client.Debug("Creating new serverless connector", handler, commands)
+	logger = logging.OrNop(logger)
+	logger.Debug("Creating new serverless connector", handler, commands)
 	return &Serverless{
 		userName:       userName,
 		handler:        handler,
@@ -52,6 +54,7 @@ func NewServerless(userName string, handler handlers.Handler,
 		sessionSpec:    sessionSpec,
 		interactive:    interactive,
 		handlerFactory: handlerFactory,
+		logger:         logger,
 	}
 }
 
@@ -73,13 +76,13 @@ func (s *Serverless) SupportsQueryUpdates(timeout time.Duration) bool {
 
 // ApplySessionSpec starts or updates the in-process interactive session state.
 func (s *Serverless) ApplySessionSpec(spec sessionspec.Spec, timeout time.Duration) error {
-	return applySessionSpec(s.Server(), s.handler, &s.sessionState, spec, timeout)
+	return applySessionSpec(s.Server(), s.handler, &s.sessionState, spec, timeout, s.logger)
 }
 
 // ApplySessionSpecWithGeneration starts or updates the in-process interactive
 // session state using an explicit committed generation as the update base.
 func (s *Serverless) ApplySessionSpecWithGeneration(spec sessionspec.Spec, generation uint64, timeout time.Duration) error {
-	return applySessionSpecWithGeneration(s.Server(), s.handler, &s.sessionState, spec, generation, false, timeout)
+	return applySessionSpecWithGeneration(s.Server(), s.handler, &s.sessionState, spec, generation, false, timeout, s.logger)
 }
 
 // CommittedSession returns the last server-acknowledged session state.
@@ -97,7 +100,7 @@ func (s *Serverless) RestoreCommittedSession(spec sessionspec.Spec, generation u
 func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 	throttleCh, statsCh chan struct{}) {
 
-	dlog.Client.Debug("Starting serverless connector")
+	s.logger.Debug("Starting serverless connector")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -113,7 +116,7 @@ func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 }
 
 func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) error {
-	dlog.Client.Debug("Creating server handler for a serverless session")
+	s.logger.Debug("Creating server handler for a serverless session")
 
 	if s.handlerFactory == nil {
 		return io.ErrClosedPipe
@@ -224,32 +227,33 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		}
 	}()
 
-	dispatchErr := dispatchInitialCommands(s.Server(), s.handler, s.commands, s.interactive, s.sessionSpec, &s.sessionState)
+	dispatchErr := dispatchInitialCommands(s.Server(), s.handler, s.commands, s.interactive,
+		s.sessionSpec, &s.sessionState, s.logger)
 	var transferErr error
 	if dispatchErr == nil {
 		select {
 		case <-s.handler.Done():
-			dlog.Client.Trace("<-s.handler.Done()")
+			s.logger.Trace("<-s.handler.Done()")
 			// The client handler marks itself done as soon as it receives the
 			// hidden close message. Keep the in-process server alive long enough
 			// for the remaining output and close ACK to drain instead of canceling
 			// the whole session immediately.
 			select {
 			case <-serverOutputDone:
-				dlog.Client.Trace("Server transfer done after client close")
+				s.logger.Trace("Server transfer done after client close")
 			case <-ctx.Done():
-				dlog.Client.Trace("<-ctx.Done() while waiting for server transfer")
+				s.logger.Trace("<-ctx.Done() while waiting for server transfer")
 			case <-time.After(6 * time.Second):
-				dlog.Client.Debug("Timed out waiting for server transfer after client close")
+				s.logger.Debug("Timed out waiting for server transfer after client close")
 			}
 		case <-serverOutputDone:
-			dlog.Client.Trace("Server transfer done")
+			s.logger.Trace("Server transfer done")
 		case <-ctx.Done():
-			dlog.Client.Trace("<-ctx.Done()")
+			s.logger.Trace("<-ctx.Done()")
 		case transferErr = <-errChan:
-			dlog.Client.Trace("Serverless transfer failed", transferErr)
+			s.logger.Trace("Serverless transfer failed", transferErr)
 		case transferErr = <-clientOutputErr:
-			dlog.Client.Trace("Serverless client output failed", transferErr)
+			s.logger.Trace("Serverless client output failed", transferErr)
 		}
 	}
 
@@ -257,7 +261,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	// output already produced during shutdown before finalizing the client
 	// handler. In particular, MaprHandler.Shutdown performs its final aggregate
 	// flush, so it must run after the last server-to-client Write has completed.
-	dlog.Client.Debug("Terminating serverless connection")
+	s.logger.Debug("Terminating serverless connection")
 	if outputDrainCtx.Err() != nil {
 		serverHandler.Shutdown()
 	} else if gracefulHandler, ok := serverHandler.(contextGracefulServerlessHandler); ok {

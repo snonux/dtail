@@ -19,7 +19,7 @@ func run() int {
 	runner := cli.BindCommonClientFlags(flag.CommandLine, &args)
 	flag.IntVar(&args.Timeout, "timeout", 0, "Max time dtail server will collect data until disconnection")
 	flag.StringVar(&args.QueryStr, "query", "", "Map reduce query")
-	return runner.RunClient("dmap", func(args config.Args) (clients.Client, error) {
-		return clients.NewMaprClient(args, clients.DefaultMode)
+	return runner.RunClient("dmap", func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
+		return clients.NewMaprClient(args, clients.DefaultMode, loggers)
 	})
 }

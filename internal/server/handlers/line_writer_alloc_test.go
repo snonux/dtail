@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/pool"
 )
 
@@ -22,20 +21,15 @@ func (nopLineWriter) Flush() error                            { return nil }
 // per-line hot path must not allocate when trace logging is off (the default
 // production/output level). Before the fix, ProcessLine unconditionally built a
 // []interface{} and boxed lineCount/lineNum (runtime.convT64) and sourceID
-// (convTstring) on every line even though dlog.Trace early-returns — that call
+// (convTstring) on every line even though Trace early-returns — that call
 // site was ~98% of all allocated objects in the output serverless dcat profile.
-// The dlog.Server.TraceEnabled() guard elides all of it.
+// The injected logger's TraceEnabled guard elides all of it.
 func TestDirectLineProcessorProcessLineNoAllocWhenTraceOff(t *testing.T) {
-	orig := dlog.Server
-	// Zero-value DLog has maxLevel == None, i.e. trace disabled.
-	dlog.Server = &dlog.DLog{}
-	t.Cleanup(func() { dlog.Server = orig })
-
-	if dlog.Server.TraceEnabled() {
+	if handlerTestLogger.TraceEnabled() {
 		t.Fatal("precondition failed: trace must be disabled for this test")
 	}
 
-	p := NewDirectLineProcessor(nopLineWriter{}, "globID")
+	p := NewDirectLineProcessor(nopLineWriter{}, "globID", handlerTestLogger)
 
 	allocs := testing.AllocsPerRun(1000, func() {
 		// Mirror the real hot path: a pooled buffer that ProcessLine recycles.

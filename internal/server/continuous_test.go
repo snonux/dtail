@@ -8,7 +8,6 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
 type immediateBackgroundClient struct{}
@@ -54,11 +53,10 @@ func TestSameCalendarDay(t *testing.T) {
 }
 
 func TestContinuousRunJobDisablesAuthKeyRegistration(t *testing.T) {
-	dlog.Server = &dlog.DLog{}
 
 	c := newContinuous(config.RuntimeConfig{
 		Server: &config.ServerConfig{SSHBindAddress: "127.0.0.1"},
-	})
+	}, serverTestLoggers)
 	var capturedArgs config.Args
 	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
 		capturedArgs = args
@@ -82,13 +80,12 @@ func TestContinuousRunJobDisablesAuthKeyRegistration(t *testing.T) {
 }
 
 func TestContinuousRunJobsReleasesDayChangeWatcherAcrossRetries(t *testing.T) {
-	dlog.Server = &dlog.DLog{}
 
 	c := newContinuous(config.RuntimeConfig{
 		Server: &config.ServerConfig{
 			SSHBindAddress: "127.0.0.1",
 		},
-	})
+	}, serverTestLoggers)
 	c.retryInterval = 25 * time.Millisecond
 
 	var watcherStarts int32
@@ -150,20 +147,18 @@ func TestContinuousRunJobsReleasesDayChangeWatcherAcrossRetries(t *testing.T) {
 }
 
 func TestContinuousRunJobsReturnsWhenNoJobsAreEnabled(t *testing.T) {
-	dlog.Server = &dlog.DLog{}
 	disabledJob := config.Continuous{}
 	disabledJob.Enable = false
 	c := newContinuous(config.RuntimeConfig{Server: &config.ServerConfig{
 		Continuous: []config.Continuous{disabledJob},
-	}})
+	}}, serverTestLoggers)
 
 	c.runJobs(context.Background())
 }
 
 func TestContinuousWaitForDayChangeDetectsMonthBoundary(t *testing.T) {
-	dlog.Server = &dlog.DLog{}
 
-	c := newContinuous(config.RuntimeConfig{})
+	c := newContinuous(config.RuntimeConfig{}, serverTestLoggers)
 
 	start := time.Date(2026, time.January, 31, 23, 59, 59, 0, time.UTC)
 	sameDay := time.Date(2026, time.January, 31, 23, 59, 59, 500_000_000, time.UTC)

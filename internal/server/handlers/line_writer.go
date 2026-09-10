@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/color/brush"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/pool"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -371,6 +371,7 @@ func (w *ChannelWriter) Stats() (linesWritten, bytesWritten uint64) {
 
 // NetworkWriter writes directly to the network connection bypassing channels
 type NetworkWriter struct {
+	logger         logging.Logger
 	outputLines    chan<- []byte
 	serverMessages chan<- string
 	hostname       string
@@ -412,8 +413,9 @@ var _ LineWriter = (*NetworkWriter)(nil)
 // output back past a read boundary.
 func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
 	serverMessages chan<- string, hostname string, plain, serverless bool,
-	generation uint64, activeGeneration func() uint64) *NetworkWriter {
+	generation uint64, activeGeneration func() uint64, logger logging.Logger) *NetworkWriter {
 	return &NetworkWriter{
+		logger:           logging.OrNop(logger),
 		outputLines:      outputLines,
 		serverMessages:   serverMessages,
 		hostname:         hostname,
@@ -427,6 +429,13 @@ func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
 	}
 }
 
+func (w *NetworkWriter) log() logging.Logger {
+	if w.logger == nil {
+		return logging.NopLogger{}
+	}
+	return w.logger
+}
+
 // WriteLineData formats and writes line data directly to the output channel.
 // Builds the protocol-formatted line and sends it via sendToChannel.
 func (w *NetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error {
@@ -438,9 +447,9 @@ func (w *NetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, source
 	// Per-line hot path (server mode): gate both traces so their uint64/int/string
 	// args are not boxed on every line when trace is off. Evaluated once so the
 	// second trace below shares the same decision.
-	traceEnabled := dlog.Server.TraceEnabled()
+	traceEnabled := w.log().TraceEnabled()
 	if traceEnabled {
-		writerTrace("NetworkWriter.WriteLineData", "lineNum", lineNum, "sourceID", sourceID, "contentLen", len(lineContent))
+		writerTrace(w.log(), "NetworkWriter.WriteLineData", "lineNum", lineNum, "sourceID", sourceID, "contentLen", len(lineContent))
 	}
 
 	// writeBuf accumulates lines until bufSize before flushing, so record its
@@ -460,7 +469,7 @@ func (w *NetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, source
 	w.bytesWritten += uint64(w.writeBuf.Len() - bufLenBefore)
 
 	if traceEnabled {
-		writerTrace("NetworkWriter.WriteLineData", "linesWritten", w.linesWritten, "bytesWritten", w.bytesWritten, "bufSize", w.writeBuf.Len())
+		writerTrace(w.log(), "NetworkWriter.WriteLineData", "linesWritten", w.linesWritten, "bytesWritten", w.bytesWritten, "bufSize", w.writeBuf.Len())
 	}
 
 	if w.writeBuf.Len() < w.bufSize || w.sending {
@@ -537,18 +546,18 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 	// Per-send path (once per 64KB buffer flush): decide once so none of the
 	// diagnostic traces below build a []interface{} or box their args when trace
 	// is off. Cheaper and keeps the send loop tight.
-	traceEnabled := dlog.Server.TraceEnabled()
+	traceEnabled := w.log().TraceEnabled()
 
 	if w.outputLines == nil {
 		if traceEnabled {
-			writerTrace("NetworkWriter.sendToChannel", "outputLines channel is nil")
+			writerTrace(w.log(), "NetworkWriter.sendToChannel", "outputLines channel is nil")
 		}
 		return nil
 	}
 
 	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
 		if traceEnabled {
-			writerTrace("NetworkWriter.sendToChannel", "generation became stale before send")
+			writerTrace(w.log(), "NetworkWriter.sendToChannel", "generation became stale before send")
 		}
 		return nil
 	}
@@ -561,12 +570,12 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 	retryDelay := defaultOutputReadRetryInterval
 
 	if traceEnabled {
-		writerTrace("NetworkWriter.sendToChannel", "sending to outputLines channel", "dataLen", len(data))
+		writerTrace(w.log(), "NetworkWriter.sendToChannel", "sending to outputLines channel", "dataLen", len(data))
 	}
 
 	if err := ctx.Err(); err != nil {
 		if traceEnabled {
-			writerTrace("NetworkWriter.sendToChannel", "context already cancelled before send", "err", err)
+			writerTrace(w.log(), "NetworkWriter.sendToChannel", "context already cancelled before send", "err", err)
 		}
 		return err
 	}
@@ -574,12 +583,12 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 	select {
 	case w.outputLines <- encoded:
 		if traceEnabled {
-			writerTrace("NetworkWriter.sendToChannel", "sent to channel successfully")
+			writerTrace(w.log(), "NetworkWriter.sendToChannel", "sent to channel successfully")
 		}
 		return nil
 	case <-ctx.Done():
 		if traceEnabled {
-			writerTrace("NetworkWriter.sendToChannel", "context cancelled while waiting to send")
+			writerTrace(w.log(), "NetworkWriter.sendToChannel", "context cancelled while waiting to send")
 		}
 		return ctx.Err()
 	default:
@@ -589,12 +598,12 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 		if !waitForGenerationRetry(ctx, w.generation, w.activeGeneration, retryDelay) {
 			if err := ctx.Err(); err != nil {
 				if traceEnabled {
-					writerTrace("NetworkWriter.sendToChannel", "context cancelled while waiting to retry send", "err", err)
+					writerTrace(w.log(), "NetworkWriter.sendToChannel", "context cancelled while waiting to retry send", "err", err)
 				}
 				return err
 			}
 			if traceEnabled {
-				writerTrace("NetworkWriter.sendToChannel", "generation became stale while waiting to retry send")
+				writerTrace(w.log(), "NetworkWriter.sendToChannel", "generation became stale while waiting to retry send")
 			}
 			return nil
 		}
@@ -602,12 +611,12 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 		select {
 		case w.outputLines <- encoded:
 			if traceEnabled {
-				writerTrace("NetworkWriter.sendToChannel", "sent to channel successfully")
+				writerTrace(w.log(), "NetworkWriter.sendToChannel", "sent to channel successfully")
 			}
 			return nil
 		case <-ctx.Done():
 			if traceEnabled {
-				writerTrace("NetworkWriter.sendToChannel", "context cancelled while waiting to send")
+				writerTrace(w.log(), "NetworkWriter.sendToChannel", "context cancelled while waiting to send")
 			}
 			return ctx.Err()
 		default:
@@ -635,7 +644,7 @@ func (w *NetworkWriter) WriteServerMessage(message string) error {
 
 // Flush ensures all data is written
 func (w *NetworkWriter) Flush() error {
-	writerTrace("NetworkWriter.Flush", "called")
+	writerTrace(w.log(), "NetworkWriter.Flush", "called")
 
 	ctx := w.ctx
 	if ctx == nil {
@@ -657,7 +666,7 @@ func (w *NetworkWriter) Flush() error {
 			break
 		}
 
-		writerTrace("NetworkWriter.Flush", "flushing buffered data", "bufSize", w.writeBuf.Len())
+		writerTrace(w.log(), "NetworkWriter.Flush", "flushing buffered data", "bufSize", w.writeBuf.Len())
 
 		data := append([]byte(nil), w.writeBuf.Bytes()...)
 		w.writeBuf.Reset()
@@ -667,10 +676,10 @@ func (w *NetworkWriter) Flush() error {
 		if err := w.sendBufferedData(data); err != nil {
 			return err
 		}
-		writerTrace("NetworkWriter.Flush", "flushed data to channel")
+		writerTrace(w.log(), "NetworkWriter.Flush", "flushed data to channel")
 	}
 
-	writerTrace("NetworkWriter.Flush", "completed")
+	writerTrace(w.log(), "NetworkWriter.Flush", "completed")
 
 	return nil
 }
@@ -683,17 +692,17 @@ func (w *NetworkWriter) Stats() (linesWritten, bytesWritten uint64) {
 	return w.linesWritten, w.bytesWritten
 }
 
-// writerTrace forwards to dlog.Server.Trace for the cold/low-frequency
+// writerTrace forwards to the injected logger for the cold/low-frequency
 // output writer paths (Flush/Close, per-64KB sends). TraceEnabled() is nil-safe
 // and also skips the work when trace is off. Per-line hot callers
 // (DirectLineProcessor.ProcessLine, NetworkWriter.WriteLineData) must wrap
-// their call in an explicit `if dlog.Server.TraceEnabled()` so the variadic
+// their call in an explicit TraceEnabled check so the variadic
 // slice and argument boxing are elided at the call site, not merely here.
-func writerTrace(args ...interface{}) {
-	if !dlog.Server.TraceEnabled() {
+func writerTrace(logger logging.Logger, args ...interface{}) {
+	if !logger.TraceEnabled() {
 		return
 	}
-	dlog.Server.Trace(args...)
+	logger.Trace(args...)
 }
 
 func shouldWriteGeneration(generation uint64, activeGeneration func() uint64) bool {
@@ -733,13 +742,15 @@ type DirectLineProcessor struct {
 	writer    LineWriter
 	globID    string
 	lineCount uint64
+	logger    logging.Logger
 }
 
 // NewDirectLineProcessor creates a processor that writes directly
-func NewDirectLineProcessor(writer LineWriter, globID string) *DirectLineProcessor {
+func NewDirectLineProcessor(writer LineWriter, globID string, logger logging.Logger) *DirectLineProcessor {
 	return &DirectLineProcessor{
 		writer: writer,
 		globID: globID,
+		logger: logging.OrNop(logger),
 	}
 }
 
@@ -751,8 +762,8 @@ func (p *DirectLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uin
 	// into a []interface{} on every line when trace logging is off (the default).
 	// This call site was ~98% of all allocated objects and ~28% of CPU
 	// (convT64+convTstring) in the output serverless dcat profile.
-	if dlog.Server.TraceEnabled() {
-		writerTrace("DirectLineProcessor.ProcessLine", "lineCount", p.lineCount, "lineNum", lineNum, "sourceID", sourceID)
+	if p.logger.TraceEnabled() {
+		writerTrace(p.logger, "DirectLineProcessor.ProcessLine", "lineCount", p.lineCount, "lineNum", lineNum, "sourceID", sourceID)
 	}
 
 	// Write directly to output
@@ -766,12 +777,12 @@ func (p *DirectLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uin
 
 // Flush ensures all data is written
 func (p *DirectLineProcessor) Flush() error {
-	writerTrace("DirectLineProcessor.Flush", "lineCount", p.lineCount)
+	writerTrace(p.logger, "DirectLineProcessor.Flush", "lineCount", p.lineCount)
 	return p.writer.Flush()
 }
 
 // Close flushes any remaining data
 func (p *DirectLineProcessor) Close() error {
-	writerTrace("DirectLineProcessor.Close", "lineCount", p.lineCount)
+	writerTrace(p.logger, "DirectLineProcessor.Close", "lineCount", p.lineCount)
 	return p.writer.Flush()
 }

@@ -360,7 +360,7 @@ func TestFindAuthorizedKeysPathRejectsEscapingHomeSymlink(t *testing.T) {
 func testServerUser(t *testing.T) *serveruser.User {
 	t.Helper()
 
-	user, err := serveruser.New("alice", "127.0.0.1:2222", nil)
+	user, err := serveruser.New("alice", "127.0.0.1:2222", nil, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("serveruser.New failed: %v", err)
 	}

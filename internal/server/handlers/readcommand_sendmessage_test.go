@@ -50,7 +50,6 @@ func fillServerMessagesChannel(t *testing.T, ch chan string) {
 // return instead of blocking forever — and the abandoned message must never
 // surface on the channel afterwards.
 func TestSendServerMessageReturnsOnCancelledContext(t *testing.T) {
-	resetServerLogger(t)
 
 	cmd, srv := newSendMessageTestCommand(2)
 	fillServerMessagesChannel(t, srv.serverMessage)
@@ -94,7 +93,6 @@ func TestSendServerMessageReturnsOnCancelledContext(t *testing.T) {
 // while the context is live (no message is dropped prematurely) and is
 // abandoned as soon as the context is cancelled.
 func TestSendServerMessageUnblocksExactlyOnCancel(t *testing.T) {
-	resetServerLogger(t)
 
 	cmd, srv := newSendMessageTestCommand(1)
 	fillServerMessagesChannel(t, srv.serverMessage)
@@ -138,7 +136,6 @@ func TestSendServerMessageUnblocksExactlyOnCancel(t *testing.T) {
 // with room in the channel and a live context, the message is delivered with
 // the command's generation encoded and a trailing newline appended.
 func TestSendServerMessageDeliversWhenChannelHasRoom(t *testing.T) {
-	resetServerLogger(t)
 
 	cmd, srv := newSendMessageTestCommand(2)
 	cmd.generation = 7
@@ -164,7 +161,6 @@ func TestSendServerMessageDeliversWhenChannelHasRoom(t *testing.T) {
 // once a consumer drains the channel while the context stays live. This
 // mirrors the healthy-session case where baseHandler.Read keeps draining.
 func TestSendServerMessageDeliversToDrainedChannel(t *testing.T) {
-	resetServerLogger(t)
 
 	cmd, srv := newSendMessageTestCommand(1)
 	fillServerMessagesChannel(t, srv.serverMessage)
@@ -201,7 +197,6 @@ func TestSendServerMessageDeliversToDrainedChannel(t *testing.T) {
 // warn-sender stuck on a full serverMessages channel must be released by
 // done.Shutdown() alone — this is exactly the goroutine leak the fix removes.
 func TestSendServerMessageReleasedByHandlerShutdown(t *testing.T) {
-	resetServerLogger(t)
 
 	handler := &baseHandler{
 		done:           internal.NewDone(),

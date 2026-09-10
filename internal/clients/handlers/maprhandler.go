@@ -4,8 +4,7 @@ import (
 	"strings"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/dlog"
-	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -25,8 +24,8 @@ type MaprHandler struct {
 }
 
 // NewMaprHandler returns a new mapreduce client handler.
-func NewMaprHandler(server string, session *client.SessionState, logger logging.Logger) *MaprHandler {
-
+func NewMaprHandler(server string, session *client.SessionState, logger clientlog.Logger) *MaprHandler {
+	logger = clientlog.OrNop(logger)
 	return &MaprHandler{
 		baseHandler: baseHandler{
 			server:         server,
@@ -37,6 +36,7 @@ func NewMaprHandler(server string, session *client.SessionState, logger logging.
 			capabilities:   make(map[string]struct{}),
 			capabilitiesCh: make(chan struct{}),
 			sessionAcks:    make(chan SessionAck, 4),
+			logger:         logger,
 		},
 		aggregate: client.NewAggregate(server, session, logger),
 	}
@@ -55,7 +55,7 @@ func (h *MaprHandler) Write(p []byte) (n int, err error) {
 				h.removedNl = false
 				continue
 			}
-			dlog.Client.Debug(message)
+			h.log().Debug(message)
 			if isAggregateMessage(message) {
 				h.handleAggregateMessage(message)
 			} else {
@@ -90,12 +90,12 @@ func isAggregateMessage(message string) bool {
 func (h *MaprHandler) handleAggregateMessage(message string) {
 	parts := strings.SplitN(message, protocol.FieldDelimiter, 3)
 	if len(parts) != 3 {
-		dlog.Client.Error("Unable to aggregate data", h.server, message, parts,
+		h.log().Error("Unable to aggregate data", h.server, message, parts,
 			len(parts), "expected 3 parts")
 		return
 	}
 	if err := h.aggregate.Aggregate(parts[2]); err != nil {
-		dlog.Client.Error("Unable to aggregate data", h.server, message, err)
+		h.log().Error("Unable to aggregate data", h.server, message, err)
 	}
 }
 
@@ -103,7 +103,7 @@ func (h *MaprHandler) handleAggregateMessage(message string) {
 func (h *MaprHandler) Shutdown() {
 	if h.aggregate != nil {
 		if err := h.aggregate.Flush(); err != nil {
-			dlog.Client.Error("Unable to flush aggregate data on shutdown", h.server, err)
+			h.log().Error("Unable to flush aggregate data on shutdown", h.server, err)
 		}
 	}
 	h.baseHandler.Shutdown()

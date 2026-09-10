@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -11,9 +12,9 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	sshserver "github.com/mimecast/dtail/internal/ssh/server"
@@ -42,6 +43,20 @@ type ServerHandler struct {
 
 type commandHandler func(context.Context, lcontext.LContext, int, []string, func())
 
+// HandlerLoggers contains the logger roles used by a server handler. They are
+// distinct in serverless mode, where file-reader diagnostics belong to the
+// client/common logger while protocol diagnostics retain the server logger.
+type HandlerLoggers struct {
+	Diagnostics logging.Logger
+	Reader      logging.Logger
+}
+
+func (l HandlerLoggers) normalized() HandlerLoggers {
+	l.Diagnostics = logging.OrNop(l.Diagnostics)
+	l.Reader = logging.OrNop(l.Reader)
+	return l
+}
+
 var _ Handler = (*ServerHandler)(nil)
 
 var serverJournalCapabilityAvailable = detectJournalCapabilityAvailable()
@@ -51,9 +66,11 @@ var handlerHostname = config.Hostname
 // NewServerHandler returns the server handler.
 func NewServerHandler(user *user.User, catLimiter,
 	tailLimiter chan struct{}, serverCfg *config.ServerConfig,
-	authKeyStore *sshserver.AuthKeyStore) (*ServerHandler, error) {
+	authKeyStore *sshserver.AuthKeyStore, serverlessOutput io.Writer,
+	loggers HandlerLoggers) (*ServerHandler, error) {
 
-	dlog.Server.Debug(user, "Creating new server handler")
+	loggers = loggers.normalized()
+	loggers.Diagnostics.Debug(user, "Creating new server handler")
 	if user == nil {
 		return nil, fmt.Errorf("create server handler: user must not be nil")
 	}
@@ -67,6 +84,9 @@ func NewServerHandler(user *user.User, catLimiter,
 
 	h := ServerHandler{
 		baseHandler: baseHandler{
+			logger:              loggers.Diagnostics,
+			readerLogger:        loggers.Reader,
+			serverlessOutput:    serverlessOutput,
 			done:                internal.NewDone(),
 			lines:               make(chan *line.Line, 100),
 			serverMessages:      make(chan string, 10),
@@ -75,7 +95,7 @@ func NewServerHandler(user *user.User, catLimiter,
 			commandDone:         internal.NewDone(),
 			outputAbort:         internal.NewDone(),
 			user:                user,
-			codec:               newProtocolCodec(user),
+			codec:               newProtocolCodec(user, loggers.Diagnostics),
 			maxCommandFrameSize: serverCfg.MaxCommandFrameSize,
 		},
 		catLimiter:   catLimiter,
@@ -87,7 +107,7 @@ func NewServerHandler(user *user.User, catLimiter,
 	h.handleCommandCb = h.handleUserCommand
 	h.prepareCommandContextCb = h.prepareCommandContext
 	h.commands = h.newCommandRegistry()
-	h.output.configure(h.outputManagerConfig())
+	h.output.configure(h.outputManagerConfig(), loggers.Diagnostics)
 	h.activeGeneration = h.sessionState.currentGeneration
 
 	fqdn, err := handlerHostname()
@@ -121,7 +141,7 @@ func serverCapabilities(goos string, journalctlAvailable bool) string {
 func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LContext,
 	argc int, args []string, commandName string) {
 
-	dlog.Server.Debug(h.user, "Handling user command", argc, args)
+	h.Logger().Debug(h.user, "Handling user command", argc, args)
 	// The close acknowledgement completes an existing shutdown handshake; it
 	// is protocol control traffic rather than new workload. Process it even
 	// after graceful shutdown has sealed command admission, and keep it out of
@@ -155,7 +175,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		defer h.finishCommand()
 		activeCommands := h.decrementActiveCommands()
 		pendingFiles := atomic.LoadInt32(&h.pendingFiles)
-		dlog.Server.Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
+		h.Logger().Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
 
 		// Release the per-command context + watcher goroutine created for
 		// this invocation (see baseHandler.handleCommand). In the session
@@ -174,7 +194,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 
 	handler, found := h.commands[commandName]
 	if !found {
-		h.sendln(h.serverMessages, dlog.Server.Error(h.user,
+		h.sendln(h.serverMessages, h.Logger().Error(h.user,
 			"Received unknown user command", commandName, argc, args))
 		commandFinished()
 		return
@@ -306,7 +326,7 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 	command, aggregate, err := newMapCommand(h, args)
 	if err != nil {
 		h.sendln(h.serverMessages, err.Error())
-		dlog.Server.Error(h.user, err)
+		h.Logger().Error(h.user, err)
 		commandFinished()
 		return
 	}
@@ -441,7 +461,7 @@ func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
 	}
 	h.cancelCommandWork()
 	if ta != nil {
-		dlog.Server.Info(h.user, "Finalizing serverless output aggregate")
+		h.Logger().Info(h.user, "Finalizing serverless output aggregate")
 		ta.ShutdownContext(ctx)
 	}
 	if ctx.Err() != nil {

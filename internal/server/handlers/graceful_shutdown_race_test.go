@@ -107,7 +107,6 @@ func TestGracefulShutdownContextAbortsWhenFinalOutputCannotDrain(t *testing.T) {
 }
 
 func TestGracefulShutdownLetsAdmittedSessionUpdateDispatchReplacement(t *testing.T) {
-	resetServerLogger(t)
 	handler := newSessionTestHandler("session-update-shutdown-user")
 	handler.commandDone = internal.NewDone()
 	handler.outputAbort = internal.NewDone()
@@ -175,7 +174,6 @@ func TestGracefulShutdownLetsAdmittedSessionUpdateDispatchReplacement(t *testing
 }
 
 func TestGracefulShutdownCanceledWhileInitializerBlockedOnFullQueue(t *testing.T) {
-	resetServerLogger(t)
 	handler := newSessionTestHandler("blocked-init-shutdown-user")
 	handler.commandDone = internal.NewDone()
 	handler.outputAbort = internal.NewDone()
@@ -215,7 +213,6 @@ func TestGracefulShutdownCanceledWhileInitializerBlockedOnFullQueue(t *testing.T
 }
 
 func TestGracefulShutdownAcceptsCloseAckAfterAdmissionSealed(t *testing.T) {
-	resetServerLogger(t)
 	handler := newSessionTestHandler("shutdown-ack-user")
 	readServerMessage(t, handler.serverMessages)
 	handler.commands["cat"] = func(_ context.Context, _ lcontext.LContext, _ int, _ []string, commandFinished func()) {

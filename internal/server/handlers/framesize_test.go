@@ -27,7 +27,7 @@ func frameSizeTestServerHandler(maxFrameBytes int) *ServerHandler {
 			maprMessages:        make(chan string, 4),
 			ackCloseReceived:    make(chan struct{}),
 			user:                u,
-			codec:               newProtocolCodec(u),
+			codec:               newProtocolCodec(u, handlerTestLogger),
 			maxCommandFrameSize: maxFrameBytes,
 		},
 		serverCfg: &config.ServerConfig{
@@ -52,7 +52,7 @@ func frameSizeTestHealthHandler(maxFrameBytes int) *HealthHandler {
 			maprMessages:        make(chan string, 4),
 			ackCloseReceived:    make(chan struct{}),
 			user:                u,
-			codec:               newProtocolCodec(u),
+			codec:               newProtocolCodec(u, handlerTestLogger),
 			maxCommandFrameSize: maxFrameBytes,
 		},
 	}
@@ -63,7 +63,6 @@ func frameSizeTestHealthHandler(maxFrameBytes int) *HealthHandler {
 // to return io.ErrClosedPipe and shuts down the done channel so the SSH layer
 // can tear down the connection.
 func TestWriteOversizeFrameClosesSession(t *testing.T) {
-	resetServerLogger(t)
 
 	const limit = 64 // tiny limit to keep the test fast
 
@@ -90,7 +89,6 @@ func TestWriteOversizeFrameClosesSession(t *testing.T) {
 // through the HealthHandler, which does not hold a ServerConfig and instead
 // uses the default limit (or the one injected in tests via the struct field).
 func TestWriteOversizeFrameHealthHandlerClosesSession(t *testing.T) {
-	resetServerLogger(t)
 
 	const limit = 32
 
@@ -115,7 +113,6 @@ func TestWriteOversizeFrameHealthHandlerClosesSession(t *testing.T) {
 // the limit is still accepted (the guard fires only when the buffer *exceeds* the
 // limit). This ensures the boundary condition is correct.
 func TestWriteFrameAtExactLimitIsAccepted(t *testing.T) {
-	resetServerLogger(t)
 
 	const limit = 16
 
@@ -141,7 +138,6 @@ func TestWriteFrameAtExactLimitIsAccepted(t *testing.T) {
 // TestWriteNormalFramesBelowLimitAreAccepted confirms that legitimate short
 // frames (well below the limit) pass through without triggering the guard.
 func TestWriteNormalFramesBelowLimitAreAccepted(t *testing.T) {
-	resetServerLogger(t)
 
 	const limit = 1024 // generously above any test payload
 
@@ -166,7 +162,6 @@ func TestWriteNormalFramesBelowLimitAreAccepted(t *testing.T) {
 // disables the limit entirely (the guard is not checked), so arbitrarily large
 // frames are tolerated. This makes it easy to opt out of the check when needed.
 func TestWriteZeroLimitDisablesGuard(t *testing.T) {
-	resetServerLogger(t)
 
 	const limit = 0 // disabled
 

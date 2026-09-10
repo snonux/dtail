@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	sessionspec "github.com/mimecast/dtail/internal/session"
@@ -58,12 +58,6 @@ func TestResolveAuthKeyPathFallsBackToHome(t *testing.T) {
 }
 
 func TestExtractAuthKeyBase64(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	t.Run("valid authorized key line", func(t *testing.T) {
 		pubKey := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA user@host\n")
 
@@ -92,12 +86,6 @@ func TestExtractAuthKeyBase64(t *testing.T) {
 }
 
 func TestSendAuthKeyRegistrationCommand(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	tempDir := t.TempDir()
 	privateKeyPath := filepath.Join(tempDir, "id_rsa")
 	publicKeyPath := privateKeyPath + ".pub"
@@ -125,7 +113,6 @@ func TestSendAuthKeyRegistrationCommand(t *testing.T) {
 }
 
 func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
-	resetClientLogger(t)
 
 	conn, err := NewServerConnection(
 		"srv1",
@@ -139,6 +126,7 @@ func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
 		"",
 		false,
 		testSSHSettings{port: 3022, timeout: 5 * time.Second},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("NewServerConnection: %v", err)
@@ -156,7 +144,6 @@ func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
 }
 
 func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
-	resetClientLogger(t)
 
 	conn, err := NewServerConnection(
 		"srv1",
@@ -170,6 +157,7 @@ func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
 		"",
 		false,
 		testSSHSettings{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("NewServerConnection: %v", err)
@@ -184,7 +172,6 @@ func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
 }
 
 func TestNewServerConnectionReturnsInvalidPortError(t *testing.T) {
-	resetClientLogger(t)
 
 	tests := []string{
 		"",
@@ -214,6 +201,7 @@ func TestNewServerConnectionReturnsInvalidPortError(t *testing.T) {
 				"",
 				false,
 				nil,
+				logging.NopLogger{},
 			)
 			if conn != nil {
 				t.Fatalf("connection = %#v, want nil", conn)
@@ -226,7 +214,6 @@ func TestNewServerConnectionReturnsInvalidPortError(t *testing.T) {
 }
 
 func TestNewServerConnectionParsesAddressForms(t *testing.T) {
-	resetClientLogger(t)
 
 	tests := []struct {
 		address      string
@@ -256,6 +243,7 @@ func TestNewServerConnectionParsesAddressForms(t *testing.T) {
 				"",
 				false,
 				testSSHSettings{port: 3022},
+				logging.NopLogger{},
 			)
 			if err != nil {
 				t.Fatalf("NewServerConnection(%q): %v", tt.address, err)
@@ -271,7 +259,6 @@ func TestNewServerConnectionParsesAddressForms(t *testing.T) {
 }
 
 func TestNewServerConnectionRejectsInvalidConfiguredDefaultPort(t *testing.T) {
-	resetClientLogger(t)
 	for _, port := range []int{-1, 65536} {
 		t.Run(strconv.Itoa(port), func(t *testing.T) {
 			conn, err := NewServerConnection(
@@ -286,6 +273,7 @@ func TestNewServerConnectionRejectsInvalidConfiguredDefaultPort(t *testing.T) {
 				"",
 				false,
 				testSSHSettings{port: port},
+				logging.NopLogger{},
 			)
 			if conn != nil {
 				t.Fatalf("connection = %#v, want nil", conn)
@@ -298,7 +286,6 @@ func TestNewServerConnectionRejectsInvalidConfiguredDefaultPort(t *testing.T) {
 }
 
 func TestServerConnectionSupportsQueryUpdates(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		handler: &mockHandler{
@@ -315,7 +302,6 @@ func TestServerConnectionSupportsQueryUpdates(t *testing.T) {
 }
 
 func TestServerConnectionSupportsQueryUpdatesFallsBackForOlderServers(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		handler: &mockHandler{},
@@ -327,7 +313,6 @@ func TestServerConnectionSupportsQueryUpdatesFallsBackForOlderServers(t *testing
 }
 
 func TestServerConnectionSupportsQueryUpdatesRequiresCapabilityFlag(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		handler: &mockHandler{
@@ -341,7 +326,6 @@ func TestServerConnectionSupportsQueryUpdatesRequiresCapabilityFlag(t *testing.T
 }
 
 func TestServerConnectionApplySessionSpecStart(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		server: "srv1",
@@ -376,7 +360,6 @@ func TestServerConnectionApplySessionSpecStart(t *testing.T) {
 }
 
 func TestServerConnectionApplySessionSpecUpdateUsesNextGeneration(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -419,7 +402,6 @@ func TestServerConnectionApplySessionSpecUpdateUsesNextGeneration(t *testing.T) 
 }
 
 func TestServerConnectionApplySessionSpecReappliesPreviousSpecForRollback(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -466,7 +448,6 @@ func TestServerConnectionApplySessionSpecReappliesPreviousSpecForRollback(t *tes
 }
 
 func TestServerConnectionApplySessionSpecFallsBackForUnsupportedServer(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		handler: &mockHandler{},
@@ -555,7 +536,6 @@ func TestRequireJournalCapability(t *testing.T) {
 }
 
 func TestDispatchInitialCommandsRejectsJournalWithoutCapability(t *testing.T) {
-	resetClientLogger(t)
 
 	handler := &mockHandler{
 		waitForCapabilities: true,
@@ -568,7 +548,8 @@ func TestDispatchInitialCommandsRejectsJournalWithoutCapability(t *testing.T) {
 		Files: []string{"journal:ssh.service"},
 	}
 
-	err := dispatchInitialCommands("srv1", handler, []string{"cat: journal:ssh.service ."}, false, spec, &committedSessionState{})
+	err := dispatchInitialCommands("srv1", handler, []string{"cat: journal:ssh.service ."}, false,
+		spec, &committedSessionState{}, logging.NopLogger{})
 	if !errors.Is(err, ErrJournalUnsupported) {
 		t.Fatalf("expected ErrJournalUnsupported, got %v", err)
 	}
@@ -581,7 +562,6 @@ func TestDispatchInitialCommandsRejectsJournalWithoutCapability(t *testing.T) {
 }
 
 func TestDispatchInitialCommandsRejectsInteractiveJournalWithoutCapability(t *testing.T) {
-	resetClientLogger(t)
 
 	handler := &mockHandler{
 		waitForCapabilities: true,
@@ -594,7 +574,8 @@ func TestDispatchInitialCommandsRejectsInteractiveJournalWithoutCapability(t *te
 		Files: []string{"journal:ssh.service"},
 	}
 
-	err := dispatchInitialCommands("srv1", handler, []string{"tail: journal:ssh.service ."}, true, spec, &committedSessionState{})
+	err := dispatchInitialCommands("srv1", handler, []string{"tail: journal:ssh.service ."}, true,
+		spec, &committedSessionState{}, logging.NopLogger{})
 	if !errors.Is(err, ErrJournalUnsupported) {
 		t.Fatalf("expected ErrJournalUnsupported, got %v", err)
 	}
@@ -607,7 +588,6 @@ func TestDispatchInitialCommandsRejectsInteractiveJournalWithoutCapability(t *te
 }
 
 func TestServerConnectionApplySessionSpecPreservesCommittedStateOnRejectedUpdate(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -639,7 +619,6 @@ func TestServerConnectionApplySessionSpecPreservesCommittedStateOnRejectedUpdate
 }
 
 func TestServerConnectionApplySessionSpecRejectsUnexpectedAck(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -669,7 +648,6 @@ func TestServerConnectionApplySessionSpecRejectsUnexpectedAck(t *testing.T) {
 }
 
 func TestServerConnectionApplySessionSpecTimesOutWaitingForAck(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -699,7 +677,6 @@ func TestServerConnectionApplySessionSpecTimesOutWaitingForAck(t *testing.T) {
 }
 
 func TestApplySessionSpecSerializesConcurrentBootstrapAndReload(t *testing.T) {
-	resetClientLogger(t)
 
 	handler := newBlockingSessionHandler()
 	state := &committedSessionState{}
@@ -717,7 +694,7 @@ func TestApplySessionSpecSerializesConcurrentBootstrapAndReload(t *testing.T) {
 
 	initialErrCh := make(chan error, 1)
 	go func() {
-		initialErrCh <- dispatchInitialCommands("srv1", handler, nil, true, initialSpec, state)
+		initialErrCh <- dispatchInitialCommands("srv1", handler, nil, true, initialSpec, state, logging.NopLogger{})
 	}()
 
 	firstCommand := <-handler.commandsCh
@@ -727,7 +704,7 @@ func TestApplySessionSpecSerializesConcurrentBootstrapAndReload(t *testing.T) {
 
 	reloadErrCh := make(chan error, 1)
 	go func() {
-		reloadErrCh <- applySessionSpec("srv1", handler, state, reloadSpec, 50*time.Millisecond)
+		reloadErrCh <- applySessionSpec("srv1", handler, state, reloadSpec, 50*time.Millisecond, logging.NopLogger{})
 	}()
 
 	select {
@@ -805,7 +782,6 @@ func TestThrottleReleasedIsIdempotent(t *testing.T) {
 }
 
 func TestServerConnectionHandleFlushesAfterStdoutCopyAndWaitsForSession(t *testing.T) {
-	resetClientLogger(t)
 
 	allowWrite := make(chan struct{})
 	handler := newLifecycleHandler(allowWrite)
@@ -883,7 +859,6 @@ func TestServerConnectionHandleCompletesForNormalEOFAndHandlerDone(t *testing.T)
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resetClientLogger(t)
 
 			allowWrite := make(chan struct{})
 			close(allowWrite)
@@ -923,7 +898,6 @@ func TestServerConnectionHandleCompletesForNormalEOFAndHandlerDone(t *testing.T)
 }
 
 func TestServerConnectionHandleCancelsTransportAfterIndependentStdoutEOF(t *testing.T) {
-	resetClientLogger(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -964,7 +938,6 @@ func TestServerConnectionHandleCancelsTransportAfterIndependentStdoutEOF(t *test
 }
 
 func TestServerConnectionStartWaitsForDialCleanup(t *testing.T) {
-	resetClientLogger(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dialStarted := make(chan struct{})
@@ -1003,7 +976,6 @@ func TestServerConnectionStartWaitsForDialCleanup(t *testing.T) {
 }
 
 func TestServerConnectionStartReportsDialFailure(t *testing.T) {
-	resetClientLogger(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1027,7 +999,6 @@ func TestServerConnectionStartReportsDialFailure(t *testing.T) {
 }
 
 func TestServerConnectionStartReportsDialTimeoutWhileContextActive(t *testing.T) {
-	resetClientLogger(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1051,7 +1022,6 @@ func TestServerConnectionStartReportsDialTimeoutWhileContextActive(t *testing.T)
 }
 
 func TestServerConnectionStartDoesNotReportContextCancellation(t *testing.T) {
-	resetClientLogger(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	dialStarted := make(chan struct{})
@@ -1084,7 +1054,6 @@ func TestServerConnectionStartDoesNotReportContextCancellation(t *testing.T) {
 }
 
 func TestServerConnectionStartDoesNotDuplicateJournalCapabilityError(t *testing.T) {
-	resetClientLogger(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1096,7 +1065,8 @@ func TestServerConnectionStartDoesNotDuplicateJournalCapabilityError(t *testing.
 		hostKeyCallback: testHostKeyCallback{},
 	}
 	conn.dialFn = func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
-		return dispatchInitialCommands(conn.server, handler, nil, false, spec, &conn.sessionState)
+		return dispatchInitialCommands(conn.server, handler, nil, false, spec,
+			&conn.sessionState, logging.NopLogger{})
 	}
 
 	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
@@ -1112,7 +1082,6 @@ func TestServerConnectionStartDoesNotDuplicateJournalCapabilityError(t *testing.
 }
 
 func TestServerConnectionStartReportsShellRejection(t *testing.T) {
-	resetClientLogger(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1384,16 +1353,6 @@ func (testHostKeyCallback) Untrusted(string) bool {
 }
 
 func (testHostKeyCallback) PromptAddHosts(context.Context) {}
-
-func resetClientLogger(t *testing.T) {
-	t.Helper()
-
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-}
 
 type mockHandler struct {
 	commands            []string

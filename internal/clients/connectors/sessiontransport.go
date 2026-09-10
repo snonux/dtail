@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	sessionspec "github.com/mimecast/dtail/internal/session"
@@ -80,7 +80,9 @@ func (s *committedSessionState) snapshot() (sessionspec.Spec, uint64, bool) {
 }
 
 func dispatchInitialCommands(server string, handler handlers.Handler, commands []string,
-	interactiveQuery bool, initialSpec sessionspec.Spec, state *committedSessionState) error {
+	interactiveQuery bool, initialSpec sessionspec.Spec, state *committedSessionState,
+	logger logging.Logger) error {
+	logger = logging.OrNop(logger)
 
 	if !interactiveQuery || initialSpec.Mode == omode.Unknown {
 		if err := requireJournalCapability(server, handler, initialSpec, defaultCapabilityWait); err != nil {
@@ -89,13 +91,13 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 		return sendLegacyCommands(handler, commands)
 	}
 
-	if err := applySessionSpec(server, handler, state, initialSpec, defaultSessionAckTimeout); err != nil {
+	if err := applySessionSpec(server, handler, state, initialSpec, defaultSessionAckTimeout, logger); err != nil {
 		if !errors.Is(err, ErrSessionUnsupported) {
 			state.clear()
 			return err
 		}
 
-		dlog.Client.Warn(server, "Interactive session bootstrap unsupported, falling back to legacy commands", err)
+		logger.Warn(server, "Interactive session bootstrap unsupported, falling back to legacy commands", err)
 		state.clear()
 		return sendLegacyCommands(handler, commands)
 	}
@@ -104,12 +106,15 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 }
 
 func applySessionSpec(server string, handler handlers.Handler,
-	state *committedSessionState, spec sessionspec.Spec, timeout time.Duration) error {
-	return applySessionSpecWithGeneration(server, handler, state, spec, 0, true, timeout)
+	state *committedSessionState, spec sessionspec.Spec, timeout time.Duration,
+	logger logging.Logger) error {
+	return applySessionSpecWithGeneration(server, handler, state, spec, 0, true, timeout, logger)
 }
 
 func applySessionSpecWithGeneration(server string, handler handlers.Handler,
-	state *committedSessionState, spec sessionspec.Spec, generation uint64, useCurrentGeneration bool, timeout time.Duration) error {
+	state *committedSessionState, spec sessionspec.Spec, generation uint64, useCurrentGeneration bool,
+	timeout time.Duration, logger logging.Logger) error {
+	logger = logging.OrNop(logger)
 
 	// Serialize session transitions so an interactive reload cannot race the
 	// initial SESSION START bootstrap on the same connection.
@@ -166,7 +171,7 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 	}
 
 	state.commit(spec, ack.Generation)
-	dlog.Client.Debug(server, "Committed session spec", "action", action, "generation", ack.Generation)
+	logger.Debug(server, "Committed session spec", "action", action, "generation", ack.Generation)
 	return nil
 }
 

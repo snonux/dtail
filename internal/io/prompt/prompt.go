@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // Answer is a user input of a prompt question.
@@ -27,6 +27,12 @@ type Answer struct {
 type Prompt struct {
 	question string
 	answers  []Answer
+	logger   logging.Logger
+}
+
+type pausingLogger interface {
+	Pause()
+	Resume()
 }
 
 func (p *Prompt) askString() string {
@@ -45,8 +51,8 @@ func (p *Prompt) askString() string {
 }
 
 // New returns a new prompt.
-func New(question string) *Prompt {
-	return &Prompt{question: question}
+func New(question string, logger logging.Logger) *Prompt {
+	return &Prompt{question: question, logger: logging.OrNop(logger)}
 }
 
 // Add an answer.
@@ -57,7 +63,7 @@ func (p *Prompt) Add(answer Answer) {
 // Ask a question.
 func (p *Prompt) Ask() {
 	reader := bufio.NewReader(os.Stdin)
-	dlog.Common.Pause()
+	p.pauseLogging()
 
 	for {
 		fmt.Print(p.askString())
@@ -68,13 +74,25 @@ func (p *Prompt) Ask() {
 				a.Callback()
 			}
 			if !a.AskAgain {
-				dlog.Common.Resume()
+				p.resumeLogging()
 				if a.EndCallback != nil {
 					a.EndCallback()
 				}
 				return
 			}
 		}
+	}
+}
+
+func (p *Prompt) pauseLogging() {
+	if logger, ok := p.logger.(pausingLogger); ok {
+		logger.Pause()
+	}
+}
+
+func (p *Prompt) resumeLogging() {
+	if logger, ok := p.logger.(pausingLogger); ok {
+		logger.Resume()
 	}
 }
 

@@ -1,44 +1,11 @@
 package server
 
 import (
-	"context"
-	"sync"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs"
-	"github.com/mimecast/dtail/internal/source"
+	"github.com/mimecast/dtail/internal/logging"
 )
-
-// ensureTestDeps initialises config and the dlog server logger once per test
-// binary run. It is safe to call from multiple parallel tests because it
-// guards initialisation with the nil-checks used elsewhere in the test suite
-// (see internal/mapr/server/aggregate_test.go).
-func ensureTestDeps(t *testing.T) {
-	t.Helper()
-	if config.Server == nil {
-		config.Server = &config.ServerConfig{}
-	}
-	if config.Common == nil {
-		config.Common = &config.CommonConfig{
-			// Use "none" logger to suppress output during tests and avoid
-			// the factory panic caused by an empty logger name.
-			Logger:   "none",
-			LogLevel: "error",
-		}
-	}
-	if dlog.Server == nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		if err := dlog.Start(ctx, &wg, source.Server); err != nil {
-			wg.Done()
-			t.Fatalf("start test logger: %v", err)
-		}
-	}
-}
 
 // newTestUser creates a User with the given permission strings for testing.
 // It bypasses PermissionLookup and OS-level checks so the unit tests
@@ -48,6 +15,7 @@ func newTestUser(perms []string) *User {
 		Name:          "testuser",
 		remoteAddress: "127.0.0.1",
 		permissions:   perms,
+		logger:        logging.NopLogger{},
 	}
 }
 
@@ -58,7 +26,6 @@ func newTestUser(perms []string) *User {
 // Before the fix, the loop used last-match-wins semantics, so a trailing
 // allow rule could silently neutralise an earlier deny — a security footgun.
 func TestIteratePaths_DenyWins(t *testing.T) {
-	ensureTestDeps(t)
 	t.Parallel()
 
 	tests := []struct {
@@ -156,7 +123,6 @@ func TestIteratePaths_DenyWins(t *testing.T) {
 // TestIteratePaths_InvalidRegex verifies that a malformed regex in the
 // permission list is surfaced as an error rather than silently ignored.
 func TestIteratePaths_InvalidRegex(t *testing.T) {
-	ensureTestDeps(t)
 	t.Parallel()
 
 	u := newTestUser([]string{"readfiles:[invalid"})
@@ -167,7 +133,6 @@ func TestIteratePaths_InvalidRegex(t *testing.T) {
 }
 
 func TestValidateReadTarget_JournalUsesConfigPermissionOnly(t *testing.T) {
-	ensureTestDeps(t)
 	t.Parallel()
 
 	u := newTestUser([]string{`readfiles:^journal:(nginx|postgresql)\.service$`})
@@ -181,7 +146,6 @@ func TestValidateReadTarget_JournalUsesConfigPermissionOnly(t *testing.T) {
 }
 
 func TestValidateReadTarget_JournalDeniedByConfigPermission(t *testing.T) {
-	ensureTestDeps(t)
 	t.Parallel()
 
 	u := newTestUser([]string{`readfiles:^journal:(nginx|postgresql)\.service$`})
@@ -192,7 +156,6 @@ func TestValidateReadTarget_JournalDeniedByConfigPermission(t *testing.T) {
 }
 
 func TestValidateReadTarget_JournalDenyRuleWins(t *testing.T) {
-	ensureTestDeps(t)
 	t.Parallel()
 
 	u := newTestUser([]string{

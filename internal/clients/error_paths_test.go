@@ -7,26 +7,21 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 )
 
 func TestNewGrepClientReturnsInvalidRegexError(t *testing.T) {
-	resetErrorPathLogger(t)
-
 	_, err := NewGrepClient(config.Args{
 		ConnectionsPerCPU: 1,
 		RegexStr:          "[",
 		Serverless:        true,
-	})
+	}, LoggerDependencies{})
 	if err == nil || !strings.Contains(err.Error(), "compile regular expression") {
 		t.Fatalf("NewGrepClient error = %v, want regex compilation error", err)
 	}
 }
 
 func TestNewMaprClientReturnsInvalidQueryError(t *testing.T) {
-	resetErrorPathLogger(t)
-
-	_, err := NewMaprClient(config.Args{QueryStr: "select from"}, DefaultMode)
+	_, err := NewMaprClient(config.Args{QueryStr: "select from"}, DefaultMode, LoggerDependencies{})
 	if err == nil || !strings.Contains(err.Error(), "parse mapreduce query") {
 		t.Fatalf("NewMaprClient error = %v, want query parse error", err)
 	}
@@ -41,7 +36,6 @@ func TestMakeConnectionsReturnsSessionConstructionError(t *testing.T) {
 }
 
 func TestInitializeClosesAuthenticationResourcesOnConnectionSetupError(t *testing.T) {
-	resetErrorPathLogger(t)
 	closer := &recordingCloser{}
 	client := &baseClient{
 		Args:       config.Args{Serverless: true},
@@ -72,11 +66,4 @@ type failingSessionMaker struct{}
 func (failingSessionMaker) makeHandler(string) handlers.Handler { return nil }
 func (failingSessionMaker) makeSessionSpec() (SessionSpec, error) {
 	return SessionSpec{}, errors.New("session construction failed")
-}
-
-func resetErrorPathLogger(t *testing.T) {
-	t.Helper()
-	original := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() { dlog.Client = original })
 }

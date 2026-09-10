@@ -10,7 +10,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -18,20 +18,29 @@ import (
 
 type scheduler struct {
 	cfg           config.RuntimeConfig
+	logger        logging.Logger
 	newMaprClient func(config.Args, clients.MaprClientMode) (backgroundClient, error)
 }
 
-func newScheduler(cfg config.RuntimeConfig) *scheduler {
+func newScheduler(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) *scheduler {
 	return &scheduler{
-		cfg: cfg,
+		cfg:    cfg,
+		logger: logging.OrNop(loggers.Server),
 		newMaprClient: func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
-			return clients.NewMaprClient(args, mode)
+			return clients.NewMaprClient(args, mode, loggers)
 		},
 	}
 }
 
+func (s *scheduler) log() logging.Logger {
+	if s.logger == nil {
+		return logging.NopLogger{}
+	}
+	return s.logger
+}
+
 func (s *scheduler) start(ctx context.Context) {
-	dlog.Server.Info("Starting scheduled job runner after 2s")
+	s.log().Info("Starting scheduled job runner after 2s")
 	// First run after just 10s!
 	time.Sleep(time.Second * 2)
 	s.runJobs(ctx)
@@ -51,16 +60,16 @@ func (s *scheduler) runJobs(ctx context.Context) {
 	for i := range s.cfg.Server.Schedule {
 		job := &s.cfg.Server.Schedule[i]
 		if !job.Enable {
-			dlog.Server.Debug(job.Name, "Not running job as not enabled")
+			s.log().Debug(job.Name, "Not running job as not enabled")
 			continue
 		}
 		hour, err := strconv.Atoi(time.Now().Format("15"))
 		if err != nil {
-			dlog.Server.Error(job.Name, "Unable to create job", err)
+			s.log().Error(job.Name, "Unable to create job", err)
 			continue
 		}
 		if hour < job.TimeRange[0] || hour >= job.TimeRange[1] {
-			dlog.Server.Debug(job.Name, "Not running job out of time range")
+			s.log().Debug(job.Name, "Not running job out of time range")
 			continue
 		}
 		s.runJob(ctx, job)
@@ -73,7 +82,7 @@ func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
 
 	_, err := os.Stat(outfile)
 	if !os.IsNotExist(err) {
-		dlog.Server.Debug(job.Name, "Not running job as outfile already exists", outfile)
+		s.log().Debug(job.Name, "Not running job as outfile already exists", outfile)
 		return
 	}
 
@@ -95,21 +104,21 @@ func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
 	args.QueryStr = fmt.Sprintf("%s outfile %s", job.Query, outfile)
 	client, err := s.newMaprClient(args, clients.CumulativeMode)
 	if err != nil {
-		dlog.Server.Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
+		s.log().Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
 		return
 	}
 
 	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	dlog.Server.Info(fmt.Sprintf("Starting job %s", job.Name))
+	s.log().Info(fmt.Sprintf("Starting job %s", job.Name))
 	status := client.Start(jobCtx, make(chan string))
 	logMessage := fmt.Sprintf("Job exited with status %d", status)
 
 	if status != 0 {
-		dlog.Server.Warn(logMessage)
+		s.log().Warn(logMessage)
 		return
 	}
 
-	dlog.Server.Info(logMessage)
+	s.log().Info(logMessage)
 }

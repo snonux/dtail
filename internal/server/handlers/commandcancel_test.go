@@ -19,7 +19,6 @@ import (
 // for the lifetime of the SSH session. The cancel must fire when
 // commandFinished is invoked.
 func TestHandleCommandCancelsContextAfterCommandFinished(t *testing.T) {
-	resetServerLogger(t)
 
 	handler := newSessionTestHandler("handle-command-cancel-user")
 	readServerMessage(t, handler.serverMessages)
@@ -124,17 +123,20 @@ func TestNewCommandContextHandlerShutdownReleasesWatcher(t *testing.T) {
 	h.done.Shutdown()
 
 	deadline := time.Now().Add(time.Second)
+	for i, ctx := range ctxs {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatalf("context %d not cancelled by handler shutdown", i)
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(remaining):
+			t.Fatalf("context %d not cancelled by handler shutdown", i)
+		}
+	}
+
 	for time.Now().Before(deadline) {
 		if delta := runtime.NumGoroutine() - baseline; delta <= 4 {
-			// All watcher goroutines should have observed the contexts
-			// being cancelled via the defensive done.Done() branch.
-			for _, ctx := range ctxs {
-				select {
-				case <-ctx.Done():
-				default:
-					t.Fatalf("context not cancelled by handler shutdown")
-				}
-			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

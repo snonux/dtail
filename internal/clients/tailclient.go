@@ -15,15 +15,16 @@ type TailClient struct {
 }
 
 // NewTailClient returns a new TailClient.
-func NewTailClient(args config.Args) (*TailClient, error) {
+func NewTailClient(args config.Args, loggers LoggerDependencies) (*TailClient, error) {
 	args.Mode = omode.TailClient
+	loggers = loggers.normalized()
 	c := TailClient{
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
 			retry:      true,
-			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
+			loggers:    loggers,
 		},
 	}
 
@@ -34,7 +35,7 @@ func NewTailClient(args config.Args) (*TailClient, error) {
 }
 
 func (c TailClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewClientHandler(server)
+	return handlers.NewClientHandler(server, c.clientLogger())
 }
 
 func (c TailClient) makeSessionSpec() (SessionSpec, error) { //nolint:unparam // The sessionSpecMaker contract permits construction errors.

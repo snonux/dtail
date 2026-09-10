@@ -9,10 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
-	"github.com/mimecast/dtail/internal/source"
-	"sync"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 func setupBenchmarkData(b *testing.B, lines int) string {
@@ -76,15 +75,9 @@ func benchmarkDGrepWithSize(b *testing.B, lines int) {
 		TermColorsEnable: false,
 	}
 
-	// Initialize logging
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	if err := dlog.Start(ctx, wg, source.Client); err != nil {
-		wg.Done()
-		b.Fatalf("start benchmark logger: %v", err)
-	}
+	loggers := NewLoggerDependencies(clientlog.NopLogger{}, logging.NopLogger{}, logging.NopLogger{})
 
 	// Create test data
 	testFile := setupBenchmarkData(b, lines)
@@ -102,7 +95,7 @@ func benchmarkDGrepWithSize(b *testing.B, lines int) {
 			Plain:      true,
 		}
 
-		client, err := NewGrepClient(args)
+		client, err := NewGrepClient(args, loggers)
 		if err != nil {
 			b.Fatalf("Failed to create grep client: %v", err)
 		}

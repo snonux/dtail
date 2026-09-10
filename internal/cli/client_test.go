@@ -108,8 +108,12 @@ func TestClientRunnerLifecycleAndArguments(t *testing.T) {
 		events = append(events, "interrupt")
 		return make(chan string)
 	}
+	deps.loggers = func() clients.LoggerDependencies {
+		events = append(events, "loggers")
+		return clients.LoggerDependencies{}
+	}
 
-	status := runner.runClient("test-client", func(got config.Args) (clients.Client, error) {
+	status := runner.runClient("test-client", func(got config.Args, _ clients.LoggerDependencies) (clients.Client, error) {
 		events = append(events, "build")
 		if got.UserName != "alice" {
 			t.Fatalf("build UserName = %q, want alice", got.UserName)
@@ -125,7 +129,7 @@ func TestClientRunnerLifecycleAndArguments(t *testing.T) {
 	}
 	wantEvents := []string{
 		"before-setup", "setup", "user", "before-runtime", "context",
-		"new-runtime", "after-runtime", "pprof", "startup", "build",
+		"new-runtime", "after-runtime", "pprof", "startup", "loggers", "build",
 		"interrupt", "start", "shutdown", "stop", "context-cancel",
 	}
 	if !reflect.DeepEqual(events, wantEvents) {
@@ -147,7 +151,7 @@ func TestClientRunnerSetupErrorStopsBeforeRuntime(t *testing.T) {
 		return nil, nil
 	}
 
-	status := runner.runClient("dcat", func(config.Args) (clients.Client, error) {
+	status := runner.runClient("dcat", func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
 		t.Fatal("build called after setup failure")
 		return nil, nil
 	}, deps)
@@ -179,7 +183,7 @@ func TestClientRunnerBuildErrorCleansUpRuntimeAndContext(t *testing.T) {
 	}
 	wantErr := errors.New("constructor failed")
 
-	status := runner.runClient("dmap", func(config.Args) (clients.Client, error) {
+	status := runner.runClient("dmap", func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
 		return nil, wantErr
 	}, deps)
 
@@ -210,7 +214,7 @@ func TestClientRunnerAfterRuntimeCanHandleCommand(t *testing.T) {
 		return runtime, nil
 	}
 
-	status := runner.runClient("dtail", func(config.Args) (clients.Client, error) {
+	status := runner.runClient("dtail", func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
 		t.Fatal("build called after command was handled")
 		return nil, nil
 	}, deps)

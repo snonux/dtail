@@ -113,7 +113,6 @@ func TestBaseHandlerReadDropsStaleLine(t *testing.T) {
 }
 
 func TestOutputManagerTryReadDropsStaleGeneration(t *testing.T) {
-	resetServerLogger(t)
 
 	manager := outputManager{
 		mode:  true,

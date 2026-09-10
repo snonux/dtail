@@ -273,7 +273,7 @@ func testKnownHostsCallbackWithLogger(t *testing.T, knownHostsPath string,
 	logger logging.Logger) *KnownHostsCallback {
 	t.Helper()
 
-	callback, err := NewKnownHostsCallback(knownHostsPath, false, logger)
+	callback, err := NewKnownHostsCallback(knownHostsPath, false, logger, logger)
 	if err != nil {
 		t.Fatalf("NewKnownHostsCallback failed: %v", err)
 	}

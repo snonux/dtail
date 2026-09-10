@@ -1,22 +1,27 @@
 package handlers
 
 import (
-	"bytes"
-	"context"
-	"io"
-	"os"
+	"fmt"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/protocol"
-	"github.com/mimecast/dtail/internal/source"
 )
+
+type recordingClientLogger struct {
+	clientlog.NopLogger
+	errors []string
+}
+
+func (l *recordingClientLogger) Error(args ...any) string {
+	message := fmt.Sprint(args...)
+	l.errors = append(l.errors, message)
+	return message
+}
 
 func TestMaprHandlerShutdownFlushesPendingAggregateState(t *testing.T) {
 	query, queryErr := mapr.NewQuery("select status,count(status) from stats group by status", logging.NopLogger{})
@@ -25,7 +30,7 @@ func TestMaprHandlerShutdownFlushesPendingAggregateState(t *testing.T) {
 	}
 
 	session := maprclient.NewSessionState(query, logging.NopLogger{})
-	handler := NewMaprHandler("srv1", session, logging.NopLogger{})
+	handler := NewMaprHandler("srv1", session, clientlog.NopLogger{})
 	countStorage := handlerCountStorage(t, query)
 
 	message := strings.Join([]string{
@@ -53,19 +58,13 @@ func TestMaprHandlerShutdownFlushesPendingAggregateState(t *testing.T) {
 }
 
 func TestMaprHandlerWriteEmptyMessageBetweenDelimiters(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	query, queryErr := mapr.NewQuery("select status,count(status) from stats group by status", logging.NopLogger{})
 	if queryErr != nil {
 		t.Fatalf("NewQuery() error = %v", queryErr)
 	}
 
 	session := maprclient.NewSessionState(query, logging.NopLogger{})
-	handler := NewMaprHandler("srv1", session, logging.NopLogger{})
+	handler := NewMaprHandler("srv1", session, clientlog.NopLogger{})
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -156,15 +155,14 @@ func TestMaprHandlerClassifiesAuthKeyAckAsControl(t *testing.T) {
 // parser and error-logged, so this test fails red against that code and green
 // against the current prefix-based classifier.
 func TestMaprHandlerWriteAuthKeyAckEmitsNoAggregateError(t *testing.T) {
-	ensureClientStdoutLogger(t)
-
 	query, err := mapr.NewQuery("select status,count(status) from stats group by status", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewQuery() error = %v", err)
 	}
 
 	session := maprclient.NewSessionState(query, logging.NopLogger{})
-	handler := NewMaprHandler("srv1", session, logging.NopLogger{})
+	logger := &recordingClientLogger{}
+	handler := NewMaprHandler("srv1", session, logger)
 	countStorage := handlerCountStorage(t, query)
 
 	// A genuine aggregate wire message: AGGREGATE|host|<serialized set>.
@@ -185,13 +183,12 @@ func TestMaprHandlerWriteAuthKeyAckEmitsNoAggregateError(t *testing.T) {
 	input = append(input, []byte(aggregate)...)
 	input = append(input, protocol.MessageDelimiter)
 
-	logOutput := captureStdout(t, func() {
-		if _, writeErr := handler.Write(input); writeErr != nil {
-			t.Fatalf("Write() error = %v", writeErr)
-		}
-		handler.Shutdown()
-	})
+	if _, writeErr := handler.Write(input); writeErr != nil {
+		t.Fatalf("Write() error = %v", writeErr)
+	}
+	handler.Shutdown()
 
+	logOutput := strings.Join(logger.errors, "\n")
 	if strings.Contains(logOutput, "Unable to aggregate data") ||
 		strings.Contains(logOutput, "expected 3 parts") {
 		t.Fatalf("AUTHKEY OK ack was fed to the aggregate parser; "+
@@ -208,66 +205,6 @@ func TestMaprHandlerWriteAuthKeyAckEmitsNoAggregateError(t *testing.T) {
 	if !strings.Contains(result, "2") {
 		t.Fatalf("expected the genuine aggregate row, got %q", result)
 	}
-}
-
-// ensureClientStdoutLogger initialises the global client logger so that it
-// writes plain (uncolored) lines to os.Stdout at error level. This lets tests
-// capture emitted log lines via captureStdout. It is idempotent and safe under
-// -count>1: dlog.Start runs at most once per process (guarded on dlog.Client),
-// matching the pattern used by the mapr server tests.
-func ensureClientStdoutLogger(t *testing.T) {
-	t.Helper()
-	if config.Common == nil {
-		config.Common = &config.CommonConfig{Logger: "stdout", LogLevel: "error"}
-	}
-	if config.Client == nil {
-		config.Client = &config.ClientConfig{}
-	}
-	// Force the plain log path so captured output has no color escape codes.
-	config.Client.TermColorsEnable = false
-	if dlog.Client == nil {
-		ctx, cancel := context.WithCancel(context.Background())
-		t.Cleanup(cancel)
-		var wg sync.WaitGroup
-		wg.Add(1)
-		if err := dlog.Start(ctx, &wg, source.Client); err != nil {
-			wg.Done()
-			t.Fatalf("start test logger: %v", err)
-		}
-	}
-}
-
-// captureStdout redirects os.Stdout to a pipe for the duration of fn and
-// returns everything written to it. The stdout logger writes synchronously via
-// fmt.Println, so all log lines emitted by fn are captured once fn returns.
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-
-	orig := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe() error = %v", err)
-	}
-	os.Stdout = w
-
-	collected := make(chan string, 1)
-	go func() {
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, r)
-		collected <- buf.String()
-	}()
-
-	fn()
-
-	os.Stdout = orig
-	if err := w.Close(); err != nil {
-		t.Fatalf("closing stdout pipe: %v", err)
-	}
-	out := <-collected
-	if err := r.Close(); err != nil {
-		t.Fatalf("closing stdout pipe reader: %v", err)
-	}
-	return out
 }
 
 func handlerCountStorage(t *testing.T, query *mapr.Query) string {

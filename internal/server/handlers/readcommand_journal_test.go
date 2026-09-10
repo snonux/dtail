@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/fs"
 	journaltest "github.com/mimecast/dtail/internal/io/journal/testhelper"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/session"
@@ -40,6 +42,14 @@ func newJournalReadTestServer() *journalReadTestServer {
 
 func (s *journalReadTestServer) LogContext() interface{} {
 	return "journal-read-test"
+}
+
+func (s *journalReadTestServer) Logger() logging.Logger {
+	return logging.NopLogger{}
+}
+
+func (s *journalReadTestServer) ReaderLogger() logging.Logger {
+	return logging.NopLogger{}
 }
 
 func (s *journalReadTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool) {
@@ -74,6 +84,10 @@ func (s *journalReadTestServer) PlainOutput() bool {
 
 func (s *journalReadTestServer) Serverless() bool {
 	return false
+}
+
+func (s *journalReadTestServer) ServerlessOutput() io.Writer {
+	return io.Discard
 }
 
 func (s *journalReadTestServer) Aggregate() *maprserver.Aggregate {
@@ -168,7 +182,6 @@ func (s *journalReadTestServer) MaxGlobTargets() int {
 var _ readCommandServer = (*journalReadTestServer)(nil)
 
 func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {
-	resetServerLogger(t)
 
 	mock := journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{
@@ -207,7 +220,6 @@ func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {
 }
 
 func TestReadCommandPassesJournalUnitAsSingleArgWithoutShell(t *testing.T) {
-	resetServerLogger(t)
 
 	marker := filepath.Join(t.TempDir(), "journal-injection-marker")
 	unit := "ssh.service;touch${IFS}" + marker

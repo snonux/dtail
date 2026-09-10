@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 )
 
@@ -48,7 +47,7 @@ func newShutdownCoordinator(server readCommandServer, oneShotInput bool, aggrega
 
 func (c *shutdownCoordinator) onFileProcessed(path string) {
 	remaining, activeCommands := c.server.CompletePendingFile()
-	dlog.Server.Debug(c.server.LogContext(), "File processing complete", "path", path, "remainingPending", remaining)
+	c.server.Logger().Debug(c.server.LogContext(), "File processing complete", "path", path, "remainingPending", remaining)
 
 	if remaining != 0 {
 		return
@@ -109,7 +108,7 @@ func (c *shutdownCoordinator) maybeFinishAggregateInput() {
 func (c *shutdownCoordinator) finalizeWhenIdle() {
 	// If we have a output aggregate, trigger final serialization.
 	if aggregate := c.server.Aggregate(); aggregate != nil {
-		dlog.Server.Info(c.server.LogContext(), "Triggering final output aggregate serialization")
+		c.server.Logger().Info(c.server.LogContext(), "Triggering final output aggregate serialization")
 		aggregate.Serialize(context.Background())
 		// In serverless mode, serialization is synchronous, so no wait needed.
 		if !c.server.Serverless() {
@@ -123,10 +122,10 @@ func (c *shutdownCoordinator) finalizeWhenIdle() {
 	}
 	finalPending, finalActive := c.server.PendingAndActive()
 	if finalPending == 0 && finalActive == 0 {
-		dlog.Server.Debug(c.server.LogContext(), "No active commands and no pending files after double-check, triggering shutdown")
+		c.server.Logger().Debug(c.server.LogContext(), "No active commands and no pending files after double-check, triggering shutdown")
 		c.server.TriggerShutdown()
 		return
 	}
 
-	dlog.Server.Debug(c.server.LogContext(), "Shutdown check cancelled", "finalPending", finalPending, "finalActive", finalActive)
+	c.server.Logger().Debug(c.server.LogContext(), "Shutdown check cancelled", "finalPending", finalPending, "finalActive", finalActive)
 }

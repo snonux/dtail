@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/discovery"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/regex"
 	"github.com/mimecast/dtail/internal/ssh/client"
 
@@ -30,6 +30,7 @@ type baseClient struct {
 	mu *sync.RWMutex
 	config.Args
 	runtime *clientRuntimeBoundary
+	loggers LoggerDependencies
 	// To display client side stats
 	stats *stats
 	// We have one connection per remote server.
@@ -60,10 +61,18 @@ type baseClient struct {
 	Regex regex.Regex
 }
 
+func (c *baseClient) clientLogger() clientlog.Logger {
+	if c.loggers.Client == nil {
+		return clientlog.NopLogger{}
+	}
+	return c.loggers.Client
+}
+
 func (c *baseClient) init() error {
-	dlog.Client.Debug("Initiating base client", c.String())
+	c.loggers = c.loggers.normalized()
+	c.clientLogger().Debug("Initiating base client", c.String())
 	if c.runtime == nil {
-		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime())
+		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime(), c.loggers)
 	}
 
 	flag := regex.Default
@@ -81,7 +90,7 @@ func (c *baseClient) init() error {
 	}
 	sshAuthMethods, hostKeyCallback, authCloser, err := client.InitSSHAuthMethods(
 		c.SSHAuthMethods, c.SSHHostKeyCallback, c.TrustAllHosts,
-		c.SSHPrivateKeyFilePath, c.SSHAgentKeyIndex, dlog.Client)
+		c.SSHPrivateKeyFilePath, c.SSHAgentKeyIndex, c.clientLogger(), c.loggers.Common)
 	if err != nil {
 		return fmt.Errorf("initialize SSH authentication: %w", err)
 	}
@@ -126,7 +135,7 @@ func (c *baseClient) makeConnections(maker maker) error {
 		c.sessionSpec = sessionSpec
 	}
 
-	discoveryService, err := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle, dlog.Client)
+	discoveryService, err := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle, c.clientLogger())
 	if err != nil {
 		return fmt.Errorf("configure server discovery: %w", err)
 	}
@@ -142,7 +151,7 @@ func (c *baseClient) makeConnections(maker maker) error {
 		c.connections = append(c.connections, connection)
 	}
 
-	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause())
+	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause(), c.clientLogger())
 	return nil
 }
 
@@ -154,13 +163,13 @@ func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status i
 }
 
 func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) (status int) {
-	dlog.Client.Trace("Starting base client")
+	c.clientLogger().Trace("Starting base client")
 	// Release the ssh-agent connection (if any) once all handshakes and
 	// reconnect attempts that consume c.sshAuthMethods have finished.
 	if c.authCloser != nil {
 		defer func() {
 			if err := c.closeAuth(); err != nil {
-				dlog.Client.Debug("baseClient", "failed to close ssh-agent connection", err)
+				c.clientLogger().Debug("baseClient", "failed to close ssh-agent connection", err)
 			}
 		}()
 	}
@@ -221,7 +230,7 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 
 		// Yes, we want to retry with exponential backoff and jitter.
 		sleepDuration := jitterRetryDelay(retryDelay, retryRandom)
-		dlog.Client.Debug(conn.Server(), "Reconnecting", "backoff", sleepDuration)
+		c.clientLogger().Debug(conn.Server(), "Reconnecting", "backoff", sleepDuration)
 		if !c.sleepRetry(ctx, sleepDuration) {
 			return
 		}
@@ -231,7 +240,7 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 		var err error
 		conn, err = c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
 		if err != nil {
-			dlog.Client.Error(server, "Unable to recreate connection", err)
+			c.clientLogger().Error(server, "Unable to recreate connection", err)
 			if status == 0 {
 				status = 1
 			}
@@ -310,12 +319,12 @@ func (c *baseClient) makeConnectionWithState(server string, sshAuthMethods []gos
 	}
 	if args.Serverless {
 		return connectors.NewServerless(c.UserName, c.maker.makeHandler(server),
-			commands, sessionSpec, args.InteractiveQuery, c.runtime), nil
+			commands, sessionSpec, args.InteractiveQuery, c.runtime, c.clientLogger()), nil
 	}
 	return connectors.NewServerConnection(server, c.UserName, sshAuthMethods,
 		hostKeyCallback, c.maker.makeHandler(server), commands,
 		sessionSpec, args.InteractiveQuery, args.SSHPrivateKeyFilePath,
-		args.NoAuthKey, c.runtime)
+		args.NoAuthKey, c.runtime, c.clientLogger())
 }
 
 func (c *baseClient) sleepRetry(ctx context.Context, delay time.Duration) bool {

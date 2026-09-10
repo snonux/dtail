@@ -66,7 +66,8 @@ func run() int {
 		}
 	}
 
-	healthClient, err := clients.NewHealthClient(args)
+	healthClient, err := clients.NewHealthClient(args,
+		clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common))
 	status := 0
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to create dtailhealth client: %v\n", err)

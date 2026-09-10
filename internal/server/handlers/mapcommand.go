@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/mapr/server"
 )
 
@@ -30,8 +29,8 @@ func newMapCommand(serverHandler *ServerHandler, args []string) (mapCommand, *se
 		defaultLogFormat = serverHandler.serverCfg.MapreduceLogFormat
 	}
 
-	dlog.Server.Info("Creating turbo aggregate for MapReduce", "query", queryStr)
-	aggregate, err := server.NewAggregate(queryStr, defaultLogFormat, dlog.Server)
+	serverHandler.Logger().Info("Creating turbo aggregate for MapReduce", "query", queryStr)
+	aggregate, err := server.NewAggregate(queryStr, defaultLogFormat, serverHandler.Logger())
 	if err != nil {
 		return m, nil, err
 	}
