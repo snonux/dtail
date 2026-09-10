@@ -46,6 +46,28 @@ func (l *aggregatePanicLogger) output() string {
 	return strings.Join(l.messages, "\n")
 }
 
+func TestNewAggregateFallsBackToGenericParserForUnknownFormat(t *testing.T) {
+	logger := &aggregatePanicLogger{}
+	aggregate, err := NewAggregate(
+		`from STATS select count($line) logformat unit-test-missing-format`,
+		"default",
+		logger,
+	)
+	if err != nil {
+		t.Fatalf("NewAggregate failed: %v", err)
+	}
+	if !strings.Contains(logger.output(), "Falling back to 'generic'") {
+		t.Fatalf("fallback diagnostic missing from log output %q", logger.output())
+	}
+
+	if err := aggregate.processLine(bytes.NewBufferString("fallback input"), "source"); err != nil {
+		t.Fatalf("generic fallback parser failed to process a line: %v", err)
+	}
+	if got := aggregate.countGroups(); got != 1 {
+		t.Fatalf("aggregate groups after generic fallback = %d, want 1", got)
+	}
+}
+
 func TestAggregateSerializationChildPanicPropagatesToStart(t *testing.T) {
 	ensureTestServerConfig(t)
 	logger := &aggregatePanicLogger{}

@@ -1,11 +1,22 @@
 package mapr
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/logging"
 )
+
+func TestNewQueryRejectsEmptyQuery(t *testing.T) {
+	query, err := NewQuery("", logging.NopLogger{})
+	if query != nil {
+		t.Fatalf("NewQuery returned query %#v with an empty input", query)
+	}
+	if !errors.Is(err, ErrEmptyQuery) {
+		t.Fatalf("NewQuery error = %v, want ErrEmptyQuery", err)
+	}
+}
 
 func TestParseQueryOutfile(t *testing.T) {
 	queryStr := "select foo from bar outfile \"baz.csv\""

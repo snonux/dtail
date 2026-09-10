@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,6 +25,14 @@ type captureProcessor struct {
 	errAtLine  int
 	processErr error
 	flushErr   error
+}
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) {
+	return 0, r.err
 }
 
 func (p *captureProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uint64, _ string) error {
@@ -487,6 +497,62 @@ func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("optimized tail did not return after context cancellation")
+	}
+}
+
+func TestTailWithProcessorOptimizedRecognizesWrappedEOF(t *testing.T) {
+	rf := readFile{
+		logger:        testLogger,
+		filePath:      "test.log",
+		globID:        "glob-id",
+		maxLineLength: defaultMaxLineLength,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := rf.tailWithProcessorOptimized(
+		ctx,
+		nil,
+		bufio.NewReader(errorReader{err: fmt.Errorf("read tail: %w", io.EOF)}),
+		make(chan struct{}),
+		lcontext.LContext{},
+		&captureProcessor{},
+		regex.NewNoop(),
+	)
+	if err != nil {
+		t.Fatalf("tailWithProcessorOptimized returned wrapped EOF: %v", err)
+	}
+}
+
+func TestTailWithProcessorOptimizedPropagatesNonEOFReadError(t *testing.T) {
+	wantErr := errors.New("read failed")
+	rf := readFile{
+		logger:        testLogger,
+		filePath:      "test.log",
+		globID:        "glob-id",
+		maxLineLength: defaultMaxLineLength,
+	}
+
+	err := rf.tailWithProcessorOptimized(
+		context.Background(),
+		nil,
+		bufio.NewReader(errorReader{err: wantErr}),
+		make(chan struct{}),
+		lcontext.LContext{},
+		&captureProcessor{},
+		regex.NewNoop(),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("tailWithProcessorOptimized error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestIsEarlyStopRequiresExactEOFSentinel(t *testing.T) {
+	if !isEarlyStop(io.EOF) {
+		t.Fatal("isEarlyStop did not recognize bare io.EOF")
+	}
+	if isEarlyStop(fmt.Errorf("downstream write: %w", io.EOF)) {
+		t.Fatal("isEarlyStop treated wrapped io.EOF as the private early-stop sentinel")
 	}
 }
 

@@ -15,6 +15,9 @@ const (
 	unexpectedEnd string = "unexpected end of query"
 )
 
+// ErrEmptyQuery indicates that no mapreduce query was provided.
+var ErrEmptyQuery = errors.New("query cannot be empty")
+
 // Outfile represents the output file of a mapreduce query.
 type Outfile struct {
 	FilePath   string
@@ -69,7 +72,7 @@ func (q *Query) String() string {
 // NewQuery returns a new mapreduce query.
 func NewQuery(queryStr string, logger logging.Logger) (*Query, error) {
 	if queryStr == "" {
-		return nil, nil
+		return nil, ErrEmptyQuery
 	}
 	tokens := tokenize(queryStr)
 	q := Query{
@@ -112,7 +115,7 @@ func (q *Query) parse(tokens []token) error {
 	}
 
 	if len(q.Select) < 1 {
-		return errors.New(invalidQuery + "Expected at least one field in 'select' " +
+		return errors.New(invalidQuery + "expected at least one field in 'select' " +
 			"clause but got none")
 	}
 
@@ -130,7 +133,7 @@ func (q *Query) parse(tokens []token) error {
 			}
 		}
 		if !orderFieldIsValid {
-			return errors.New(invalidQuery + fmt.Sprintf("Can not '(r)order by' '%s',"+
+			return errors.New(invalidQuery + fmt.Sprintf("cannot '(r)order by' '%s',"+
 				"must be present in 'select' clause", q.OrderBy))
 		}
 	}
@@ -241,7 +244,7 @@ func (q *Query) parseTokens(tokens []token) ([]token, error) {
 			}
 			q.LogFormat = found[0].str
 		default:
-			return tokens, errors.New(invalidQuery + "Unexpected keyword " + tokens[0].str)
+			return tokens, errors.New(invalidQuery + "unexpected keyword " + tokens[0].str)
 		}
 	}
 

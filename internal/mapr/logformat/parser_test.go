@@ -1,14 +1,29 @@
 package logformat
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/mapr"
 )
 
 type testParser struct{}
 
 func (p *testParser) MakeFields(maprLine, _ string) (map[string]string, error) {
 	return map[string]string{"line": maprLine}, nil
+}
+
+type queryAwareTestParser struct {
+	query *mapr.Query
+}
+
+func (p *queryAwareTestParser) MakeFields(maprLine, _ string) (map[string]string, error) {
+	return map[string]string{"line": maprLine}, nil
+}
+
+func (p *queryAwareTestParser) setQuery(query *mapr.Query) {
+	p.query = query
 }
 
 func TestRegisterParserValidation(t *testing.T) {
@@ -23,12 +38,9 @@ func TestRegisterParserValidation(t *testing.T) {
 
 func TestNewParserUsesRegistry(t *testing.T) {
 	const parserName = "unit-test-registry-parser"
-
-	if err := RegisterParser(parserName, func(string, string, int) (Parser, error) {
+	registerParserFactoryForTest(t, parserName, func(string, string, int) (Parser, error) {
 		return &testParser{}, nil
-	}); err != nil {
-		t.Fatalf("Unable to register parser: %s", err.Error())
-	}
+	})
 
 	parser, err := NewParser(parserName, nil)
 	if err != nil {
@@ -44,26 +56,87 @@ func TestNewParserUsesRegistry(t *testing.T) {
 	}
 }
 
-func TestNewParserFallbackToDefault(t *testing.T) {
+func TestNewParserRejectsUnknownFormatWithoutReturningParser(t *testing.T) {
 	parser, err := NewParser("missing-parser-format", nil)
 	if err == nil {
-		t.Fatalf("Expected NewParser to return error for missing parser format")
+		t.Fatal("NewParser succeeded for missing parser format")
 	}
 	if !strings.Contains(err.Error(), "no 'missing-parser-format' mapr log format") {
-		t.Errorf("Unexpected error message: %s", err.Error())
+		t.Errorf("NewParser error = %q, want missing-format context", err)
 	}
-	if parser == nil {
-		t.Fatalf("Expected default parser fallback when format is missing")
+	if parser != nil {
+		t.Fatalf("NewParser returned parser %T together with error %v", parser, err)
+	}
+}
+
+func TestNewParserWrapsFactoryErrorWithoutReturningParser(t *testing.T) {
+	const parserName = "unit-test-error-parser"
+	wantErr := errors.New("factory failed")
+	registerParserFactoryForTest(t, parserName, func(string, string, int) (Parser, error) {
+		return &testParser{}, wantErr
+	})
+
+	parser, err := NewParser(parserName, nil)
+	if parser != nil {
+		t.Fatalf("NewParser returned parser %T together with error %v", parser, err)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("NewParser error = %v, want wrapped factory error %v", err, wantErr)
+	}
+}
+
+func TestNewParserRejectsNilParserFromFactory(t *testing.T) {
+	const parserName = "unit-test-nil-parser"
+	registerParserFactoryForTest(t, parserName, func(string, string, int) (Parser, error) {
+		return nil, nil
+	})
+
+	parser, err := NewParser(parserName, nil)
+	if parser != nil {
+		t.Fatalf("NewParser returned unexpected parser %T", parser)
+	}
+	if err == nil || !strings.Contains(err.Error(), "factory returned nil parser") {
+		t.Fatalf("NewParser error = %v, want nil-parser contract error", err)
+	}
+}
+
+func TestNewParserRejectsTypedNilQueryAwareParser(t *testing.T) {
+	const parserName = "unit-test-typed-nil-parser"
+	query, err := mapr.NewQuery("select $line", nil)
+	if err != nil {
+		t.Fatalf("NewQuery failed: %v", err)
+	}
+	registerParserFactoryForTest(t, parserName, func(string, string, int) (Parser, error) {
+		var parser *queryAwareTestParser
+		return parser, nil
+	})
+
+	parser, err := NewParser(parserName, query)
+	if parser != nil {
+		t.Fatalf("NewParser returned unexpected parser %T", parser)
+	}
+	if err == nil || !strings.Contains(err.Error(), "factory returned nil parser") {
+		t.Fatalf("NewParser error = %v, want typed-nil parser contract error", err)
+	}
+}
+
+func registerParserFactoryForTest(t *testing.T, parserName string, factory ParserFactory) {
+	t.Helper()
+
+	parserFactoriesMu.Lock()
+	original, existed := parserFactories[parserName]
+	parserFactoriesMu.Unlock()
+	if err := RegisterParser(parserName, factory); err != nil {
+		t.Fatalf("RegisterParser(%q) failed: %v", parserName, err)
 	}
 
-	fields, parseErr := parser.MakeFields(
-		"INFO|20211002-072342|1|parser_test.go:0|8|14|7|0.21|471h0m21s|MAPREDUCE:STATS|foo=bar",
-		"",
-	)
-	if parseErr != nil {
-		t.Fatalf("Fallback parser failed to parse line: %s", parseErr.Error())
-	}
-	if val, ok := fields["$severity"]; !ok || val != "INFO" {
-		t.Errorf("Fallback parser did not behave like default parser")
-	}
+	t.Cleanup(func() {
+		parserFactoriesMu.Lock()
+		defer parserFactoriesMu.Unlock()
+		if existed {
+			parserFactories[parserName] = original
+			return
+		}
+		delete(parserFactories, parserName)
+	})
 }

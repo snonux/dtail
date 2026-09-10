@@ -354,7 +354,7 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 
 		// Handle read errors
 		if readErr != nil {
-			if readErr != io.EOF {
+			if !errors.Is(readErr, io.EOF) {
 				return readErr
 			}
 
