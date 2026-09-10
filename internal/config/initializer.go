@@ -2,7 +2,6 @@ package config
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -204,7 +203,7 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 		setupPlainMode(in, args)
 	}
 	if args.What == "" {
-		setupAdditionalArgs(args)
+		setupAdditionalArgs(args, additionalArgs)
 	}
 
 	return nil
@@ -233,11 +232,11 @@ func setupPlainMode(in *initializer, args *Args) {
 	}
 }
 
-func setupAdditionalArgs(args *Args) {
+func setupAdditionalArgs(args *Args, additionalArgs []string) {
 	// Interpret additional args as file list or as query.
 	if args.What == "" {
 		var files []string
-		for _, arg := range flag.Args() {
+		for _, arg := range additionalArgs {
 			if args.QueryStr == "" && strings.Contains(strings.ToLower(arg), "select ") {
 				args.QueryStr = arg
 				continue

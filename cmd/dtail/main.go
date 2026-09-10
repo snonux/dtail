@@ -11,148 +11,81 @@ import (
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
-	"github.com/mimecast/dtail/internal/io/signal"
 	"github.com/mimecast/dtail/internal/omode"
-	"github.com/mimecast/dtail/internal/profiling"
-	"github.com/mimecast/dtail/internal/source"
-	"github.com/mimecast/dtail/internal/user"
-	"github.com/mimecast/dtail/internal/version"
 )
 
-// The evil begins here.
 func main() {
-	var args config.Args
-	var checkHealth bool
-	var displayColorTable bool
-	var displayWideColorTable bool
-	var displayVersion bool
-	var grep string
-	var legacyAuthKeyPath string
-	var pprof string
-	var shutdownAfter int
-	var profileFlags profiling.Flags
+	os.Exit(run())
+}
 
-	flag.BoolVar(&args.NoColor, "noColor", false, "Disable ANSII terminal colors")
-	flag.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")
-	flag.BoolVar(&args.LogPayload, "log-payload", false, "Also tee retrieved payload into the client log file (default: file keeps diagnostics only)")
-	flag.BoolVar(&args.Quiet, "quiet", false, "Quiet output mode")
-	flag.BoolVar(&args.RegexInvert, "invert", false, "Invert regex")
-	flag.BoolVar(&args.InteractiveQuery, "interactive-query", false, "Enable interactive in-flight query control over supported sessions")
-	flag.BoolVar(&args.Plain, "plain", false, "Plain output mode")
-	flag.BoolVar(&args.TrustAllHosts, "trustAllHosts", false, "Trust all unknown host keys")
-	flag.BoolVar(&checkHealth, "checkHealth", false, "Deprecated, flag will be removed soon")
-	flag.BoolVar(&displayColorTable, "colorTable", false, "Show color table")
-	flag.BoolVar(&displayWideColorTable, "wideColorTable", false, "Show a large color table")
-	flag.BoolVar(&displayVersion, "version", false, "Display version")
-	flag.IntVar(&args.ConnectionsPerCPU, "cpc", config.DefaultConnectionsPerCPU,
-		"How many connections established per CPU core concurrently")
-	flag.IntVar(&args.AfterContext, "after", 0, "Print lines of trailing context after matching lines")
-	flag.IntVar(&args.BeforeContext, "before", 0, "Print lines of leading context before matching lines")
-	flag.IntVar(&args.MaxCount, "max", 0, "Stop reading file after NUM matching lines")
-	flag.IntVar(&args.SSHAgentKeyIndex, "agentKeyIndex", -1, "SSH agent key index to use (-1 for all keys)")
-	flag.IntVar(&args.SSHPort, "port", config.DefaultSSHPort, "SSH server port")
-	flag.IntVar(&args.Timeout, "timeout", 0, "Max time dtail server will collect data until disconnection")
-	flag.IntVar(&shutdownAfter, "shutdownAfter", 3600*24, "Shutdown after so many seconds")
-	flag.StringVar(&args.ConfigFile, "cfg", "", "Config file path")
-	flag.StringVar(&args.ControlTTYPath, "control-tty", "/dev/tty", "TTY device for interactive query control")
-	flag.StringVar(&args.Discovery, "discovery", "", "Server discovery method")
-	flag.StringVar(&args.LogDir, "logDir", "~/log", "Log dir")
-	flag.StringVar(&args.Logger, "logger", config.DefaultClientLogger, "Logger name")
-	flag.StringVar(&args.LogLevel, "logLevel", config.DefaultLogLevel, "Log level")
-	cli.BindAuthKeyFlags(flag.CommandLine, &legacyAuthKeyPath, &args)
-	flag.StringVar(&args.QueryStr, "query", "", "Map reduce query")
-	flag.StringVar(&args.RegexStr, "regex", ".", "Regular expression")
-	flag.StringVar(&args.ServersStr, "servers", "", "Remote servers to connect")
-	flag.StringVar(&args.UserName, "user", "", "Your system user name")
-	flag.StringVar(&args.What, "files", "", "File(s) to read")
-	flag.StringVar(&grep, "grep", "", "Alias for -regex")
-	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
+func run() int {
+	args := config.Args{Mode: omode.TailClient}
+	runner := cli.BindCommonClientFlags(flag.CommandLine, &args)
+	options := bindTailFlags(flag.CommandLine, &args)
+	options.configureRunner(runner)
+	return runner.RunClient("dtail", buildTailClient)
+}
 
-	// Add profiling flags
-	profiling.AddFlags(&profileFlags)
+type tailOptions struct {
+	checkHealth           bool
+	displayColorTable     bool
+	displayWideColorTable bool
+	grep                  string
+	shutdownAfter         int
+}
 
-	flag.Parse()
-	if warning := cli.ApplyAuthKeyPathCompatibility(&args, legacyAuthKeyPath, cli.FlagWasSet("auth-key-path")); warning != "" {
-		fmt.Fprintln(os.Stderr, warning)
-	}
-	if grep != "" {
-		args.RegexStr = grep
-	}
-	if err := config.Setup(source.Client, &args, flag.Args()); err != nil {
-		fmt.Fprintf(os.Stderr, "unable to configure dtail: %v\n", err)
-		os.Exit(1)
-	}
-	if displayVersion {
-		runtimeCfg := config.CurrentRuntime()
-		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
-	}
-	if args.UserName == "" {
-		userName, err := user.CurrentName()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "unable to determine dtail user: %v\n", err)
-			os.Exit(1)
+func bindTailFlags(fs *flag.FlagSet, args *config.Args) *tailOptions {
+	options := &tailOptions{}
+	fs.BoolVar(&args.RegexInvert, "invert", false, "Invert regex")
+	fs.BoolVar(&options.checkHealth, "checkHealth", false, "Deprecated, flag will be removed soon")
+	fs.BoolVar(&options.displayColorTable, "colorTable", false, "Show color table")
+	fs.BoolVar(&options.displayWideColorTable, "wideColorTable", false, "Show a large color table")
+	fs.IntVar(&args.AfterContext, "after", 0, "Print lines of trailing context after matching lines")
+	fs.IntVar(&args.BeforeContext, "before", 0, "Print lines of leading context before matching lines")
+	fs.IntVar(&args.MaxCount, "max", 0, "Stop reading file after NUM matching lines")
+	fs.IntVar(&args.Timeout, "timeout", 0, "Max time dtail server will collect data until disconnection")
+	fs.IntVar(&options.shutdownAfter, "shutdownAfter", 3600*24, "Shutdown after so many seconds")
+	fs.StringVar(&args.QueryStr, "query", "", "Map reduce query")
+	fs.StringVar(&args.RegexStr, "regex", ".", "Regular expression")
+	fs.StringVar(&options.grep, "grep", "", "Alias for -regex")
+	return options
+}
+
+func (o *tailOptions) configureRunner(runner *cli.ClientRunner) {
+	runner.BeforeSetup(func(args *config.Args) {
+		if o.grep != "" {
+			args.RegexStr = o.grep
 		}
-		args.UserName = userName
-	}
-	if !args.Plain {
-		if displayWideColorTable {
-			color.TablePrintAndExit(true)
+	}).BeforeRuntime(func(args *config.Args) (bool, int) {
+		if args.Plain {
+			return false, 0
 		}
-		if displayColorTable {
-			color.TablePrintAndExit(false)
+		if o.displayWideColorTable {
+			color.PrintTable(true)
+			return true, 0
 		}
-	}
-
-	baseCtx, timeoutCancel := applyClientDeadlines(context.Background(), shutdownAfter, args.Timeout)
-
-	runtime, err := cli.NewClientRuntime(baseCtx, profileFlags, "dtail")
-	if err != nil {
-		timeoutCancel()
-		fmt.Fprintf(os.Stderr, "unable to initialize dtail runtime: %v\n", err)
-		os.Exit(1)
-	}
-	exitWithError := func(err error) {
-		dlog.Client.Error("Unable to initialize dtail client", err)
-		fmt.Fprintf(os.Stderr, "unable to initialize dtail client: %v\n", err)
-		runtime.Stop()
-		timeoutCancel()
-		os.Exit(1)
-	}
-
-	if checkHealth {
+		if o.displayColorTable {
+			color.PrintTable(false)
+			return true, 0
+		}
+		return false, 0
+	}).WithContext(func(args config.Args) (context.Context, context.CancelFunc) {
+		return applyClientDeadlines(context.Background(), o.shutdownAfter, args.Timeout)
+	}).AfterRuntime(func(*config.Args) (bool, int) {
+		if !o.checkHealth {
+			return false, 0
+		}
 		fmt.Println("WARN: DTail health check has moved to separate binary dtailhealth" +
 			" - please adjust the monitoring scripts!")
-		runtime.Stop()
-		timeoutCancel()
-		os.Exit(1)
+		return true, 1
+	})
+}
+
+func buildTailClient(args config.Args) (clients.Client, error) {
+	if args.QueryStr == "" {
+		return clients.NewTailClient(args)
 	}
-
-	runtime.StartPProf(pprof)
-	runtime.LogStartupMetrics()
-
-	var client clients.Client
-	args.Mode = omode.TailClient
-
-	switch args.QueryStr {
-	case "":
-		if client, err = clients.NewTailClient(args); err != nil {
-			exitWithError(err)
-		}
-	default:
-		if client, err = clients.NewMaprClient(args, clients.DefaultMode); err != nil {
-			exitWithError(err)
-		}
-	}
-
-	status := client.Start(
-		runtime.Context(),
-		signal.InterruptChWithCancel(runtime.Context(), runtime.Cancel),
-	)
-	runtime.LogShutdownMetrics()
-	runtime.Stop()
-	timeoutCancel()
-	os.Exit(status)
+	return clients.NewMaprClient(args, clients.DefaultMode)
 }
 
 // applyClientDeadlines wraps ctx with the earliest of two absolute deadlines:
@@ -173,10 +106,9 @@ func main() {
 // The two deadlines compose naturally (context deadlines nest, so the earlier
 // one wins), so they never conflict with each other. A timeout of 0 (unset)
 // contributes no deadline, preserving the previous behaviour. OS signals reach
-// the same context via signal.InterruptChWithCancel in main.
+// the same context via signal.InterruptChWithCancel in the shared client runner.
 func applyClientDeadlines(ctx context.Context, shutdownAfter, timeout int) (
 	context.Context, context.CancelFunc) {
-
 	var cancels []context.CancelFunc
 	addDeadline := func(seconds int) {
 		if seconds <= 0 {
@@ -191,8 +123,6 @@ func applyClientDeadlines(ctx context.Context, shutdownAfter, timeout int) (
 	addDeadline(timeout)
 
 	return ctx, func() {
-		// Release timers in reverse (inner first) to avoid leaking the parent
-		// timer while an inner context still references it.
 		for i := len(cancels) - 1; i >= 0; i-- {
 			cancels[i]()
 		}

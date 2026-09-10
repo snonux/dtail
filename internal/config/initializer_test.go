@@ -335,6 +335,18 @@ func TestDefaultAuthKeyPathWithHome(t *testing.T) {
 	}
 }
 
+func TestSetupAdditionalArgsUsesProvidedArguments(t *testing.T) {
+	args := &Args{}
+	setupAdditionalArgs(args, []string{"first.log", "select count($time)", "second.log"})
+
+	if got, want := args.What, "first.log,second.log"; got != want {
+		t.Fatalf("What = %q, want %q", got, want)
+	}
+	if got, want := args.QueryStr, "select count($time)"; got != want {
+		t.Fatalf("QueryStr = %q, want %q", got, want)
+	}
+}
+
 func writeTestConfig(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {

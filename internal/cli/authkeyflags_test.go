@@ -92,3 +92,19 @@ func TestBindAuthKeyFlagsHelpText(t *testing.T) {
 		t.Fatalf("unexpected auth-key-path default: want %q got %q", want, got)
 	}
 }
+
+func TestFlagWasSetUsesProvidedFlagSet(t *testing.T) {
+	fs := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+	var value string
+	fs.StringVar(&value, "value", "", "test value")
+	if err := fs.Parse([]string{"-value", "set"}); err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	if !FlagWasSet(fs, "value") {
+		t.Fatal("FlagWasSet returned false for an explicitly set flag")
+	}
+	if FlagWasSet(fs, "missing") {
+		t.Fatal("FlagWasSet returned true for a missing flag")
+	}
+}
