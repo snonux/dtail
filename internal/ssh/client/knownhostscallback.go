@@ -277,7 +277,7 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	}
 	p.Add(a)
 
-	p.Ask()
+	p.Ask(os.Stdin)
 }
 
 func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {

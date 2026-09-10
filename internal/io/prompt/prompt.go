@@ -3,7 +3,7 @@ package prompt
 import (
 	"bufio"
 	"fmt"
-	"os"
+	"io"
 	"strings"
 
 	"github.com/mimecast/dtail/internal/logging"
@@ -60,28 +60,42 @@ func (p *Prompt) Add(answer Answer) {
 	p.answers = append(p.answers, answer)
 }
 
-// Ask a question.
-func (p *Prompt) Ask() {
-	reader := bufio.NewReader(os.Stdin)
+// Ask a question using input for answers. A read error selects the "no" answer,
+// when present, and returns so non-interactive callers fail closed.
+func (p *Prompt) Ask(input io.Reader) {
+	reader := bufio.NewReader(input)
 	p.pauseLogging()
 
 	for {
-		fmt.Print(p.askString())
-		answerStr, _ := reader.ReadString('\n')
+		_, _ = fmt.Print(p.askString())
+		answerStr, err := reader.ReadString('\n')
+		if err != nil {
+			answer, _ := p.answer("no")
+			p.handleAnswer(answer, false)
+			return
+		}
 
 		if a, ok := p.answer(strings.TrimSpace(answerStr)); ok {
-			if a.Callback != nil {
-				a.Callback()
-			}
-			if !a.AskAgain {
-				p.resumeLogging()
-				if a.EndCallback != nil {
-					a.EndCallback()
-				}
+			if p.handleAnswer(a, true) {
 				return
 			}
 		}
 	}
+}
+
+func (p *Prompt) handleAnswer(answer *Answer, allowAskAgain bool) bool {
+	if answer != nil && answer.Callback != nil {
+		answer.Callback()
+	}
+	if answer != nil && allowAskAgain && answer.AskAgain {
+		return false
+	}
+
+	p.resumeLogging()
+	if answer != nil && answer.EndCallback != nil {
+		answer.EndCallback()
+	}
+	return true
 }
 
 func (p *Prompt) pauseLogging() {
