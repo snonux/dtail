@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,12 +19,163 @@ import (
 
 type recordingLogger struct {
 	logging.NopLogger
-	debugCount atomic.Int32
+	debugCount     atomic.Int32
+	infoCount      atomic.Int32
+	errorCount     atomic.Int32
+	paused         atomic.Bool
+	logWhilePaused atomic.Bool
+	mutex          sync.Mutex
+	lastError      error
 }
 
 func (l *recordingLogger) Debug(...any) string {
 	l.debugCount.Add(1)
+	if l.paused.Load() {
+		l.logWhilePaused.Store(true)
+	}
 	return ""
+}
+
+func (l *recordingLogger) Info(...any) string {
+	l.infoCount.Add(1)
+	if l.paused.Load() {
+		l.logWhilePaused.Store(true)
+	}
+	return ""
+}
+
+func (l *recordingLogger) Error(args ...any) string {
+	l.errorCount.Add(1)
+	if l.paused.Load() {
+		l.logWhilePaused.Store(true)
+	}
+	for _, arg := range args {
+		if err, ok := arg.(error); ok {
+			l.mutex.Lock()
+			l.lastError = err
+			l.mutex.Unlock()
+		}
+	}
+	return ""
+}
+
+func (l *recordingLogger) Pause() {
+	l.paused.Store(true)
+}
+
+func (l *recordingLogger) Resume() {
+	l.paused.Store(false)
+}
+
+func (l *recordingLogger) lastErrorValue() error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	return l.lastError
+}
+
+func TestPromptAddHostsLogsAfterResume(t *testing.T) {
+	tests := []struct {
+		name         string
+		answer       string
+		wantTrustAll bool
+	}{
+		{name: "trust batch", answer: "yes\n"},
+		{name: "trust all", answer: "all\n", wantTrustAll: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+			if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
+				t.Fatalf("WriteFile failed: %v", err)
+			}
+
+			logger := &recordingLogger{}
+			callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+			withPromptInput(t, test.answer, func() {
+				callback.promptAddHosts([]unknownHost{testUnknownHost("new.example:2222", "new")})
+			})
+
+			if got := logger.infoCount.Load(); got != 1 {
+				t.Fatalf("Info calls = %d, want 1", got)
+			}
+			if logger.logWhilePaused.Load() {
+				t.Fatal("known-host callback logged before the prompt resumed logging")
+			}
+			if logger.paused.Load() {
+				t.Fatal("prompt left logging paused")
+			}
+			select {
+			case <-callback.trustAllHostsCh:
+				if !test.wantTrustAll {
+					t.Fatal("trust-all state set for a single-batch answer")
+				}
+			default:
+				if test.wantTrustAll {
+					t.Fatal("trust-all state not set for an all answer")
+				}
+			}
+		})
+	}
+}
+
+func TestPromptAddHostsFailureLogsAfterResume(t *testing.T) {
+	tmp := t.TempDir()
+	knownHostsPath := filepath.Join(tmp, "known_hosts")
+	if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	logger := &recordingLogger{}
+	callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+	if err := os.RemoveAll(tmp); err != nil {
+		t.Fatalf("remove known-hosts directory: %v", err)
+	}
+	withPromptInput(t, "yes\n", func() {
+		callback.promptAddHosts([]unknownHost{testUnknownHost("new.example:2222", "new")})
+	})
+
+	if got := logger.errorCount.Load(); got != 1 {
+		t.Fatalf("Error calls = %d, want 1", got)
+	}
+	if logger.logWhilePaused.Load() {
+		t.Fatal("known-host failure logged before the prompt resumed logging")
+	}
+	if logger.paused.Load() {
+		t.Fatal("prompt left logging paused after trust failure")
+	}
+}
+
+func TestPromptAddHostsCleanupFailureIsReportedAfterResume(t *testing.T) {
+	tmp := t.TempDir()
+	knownHostsPath := filepath.Join(tmp, "known_hosts")
+	if err := os.Mkdir(knownHostsPath, 0o700); err != nil {
+		t.Fatalf("create invalid known-hosts directory: %v", err)
+	}
+
+	logger := &recordingLogger{}
+	callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+	cleanupErr := errors.New("forced cleanup failure")
+	callback.removeTempFile = func(*os.Root, string) error { return cleanupErr }
+	withPromptInput(t, "yes\n", func() {
+		callback.promptAddHosts([]unknownHost{testUnknownHost("new.example:2222", "new")})
+	})
+
+	if got := logger.debugCount.Load(); got != 0 {
+		t.Fatalf("Debug calls = %d, want 0 from the paused callback", got)
+	}
+	if got := logger.errorCount.Load(); got != 1 {
+		t.Fatalf("Error calls = %d, want 1 after Resume", got)
+	}
+	if logger.logWhilePaused.Load() {
+		t.Fatal("temporary-file cleanup logged before the prompt resumed logging")
+	}
+	loggedErr := logger.lastErrorValue()
+	if !errors.Is(loggedErr, cleanupErr) {
+		t.Fatalf("logged error %v does not retain cleanup error %v", loggedErr, cleanupErr)
+	}
+	if !strings.Contains(loggedErr.Error(), "open known hosts file") {
+		t.Fatalf("logged error does not retain primary open failure: %v", loggedErr)
+	}
 }
 
 func TestTrustHostsAppendsDistinctExistingEntries(t *testing.T) {
@@ -312,4 +464,27 @@ func testTCPAddr(address string) *net.TCPAddr {
 	}
 
 	return &net.TCPAddr{IP: net.ParseIP(host), Port: port}
+}
+
+func withPromptInput(t *testing.T, contents string, run func()) {
+	t.Helper()
+	input, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create prompt input: %v", err)
+	}
+	previousStdin := os.Stdin
+	os.Stdin = input
+	defer func() {
+		os.Stdin = previousStdin
+		_ = input.Close()
+		_ = inputWriter.Close()
+	}()
+
+	if _, err := inputWriter.WriteString(contents); err != nil {
+		t.Fatalf("write prompt input: %v", err)
+	}
+	if err := inputWriter.Close(); err != nil {
+		t.Fatalf("close prompt input: %v", err)
+	}
+	run()
 }

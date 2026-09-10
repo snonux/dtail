@@ -3,6 +3,7 @@ package loggers
 import (
 	"bytes"
 	"context"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,43 +71,135 @@ func TestStdoutBuffersAndPreservesOrder(t *testing.T) {
 	}
 }
 
-// TestStdoutFlushOnPause proves output produced before Pause() is flushed to
-// the sink before Pause returns, so an interactive prompt writing directly to
-// the terminal never appears ahead of already-logged output.
-func TestStdoutFlushOnPause(t *testing.T) {
+// TestStdoutPauseReturnsAndFlushesWithoutLogCall proves Pause does not need a
+// concurrent logger call to complete and flushes earlier output before it
+// returns. The quiet unknown-host prompt depends on both properties.
+func TestStdoutPauseReturnsAndFlushesWithoutLogCall(t *testing.T) {
 	cw := &countingWriter{}
 	s := newStdoutWriter(cw)
 
 	s.Raw(time.Now(), "before-pause\n")
 
-	// Pause blocks on the pauseCh handshake until a concurrent log() consumes
-	// the token (the existing pause semantics). Drive a stream of log() calls
-	// so one is guaranteed to pick up the token and let Pause() return,
-	// mirroring the real prompt flow where logging goroutines are active.
 	paused := make(chan struct{})
 	go func() {
 		s.Pause()
 		close(paused)
 	}()
-	go func() {
-		for {
-			select {
-			case <-paused:
-				return
-			default:
-				s.Log(time.Now(), "consumes-pause")
-				time.Sleep(time.Millisecond)
-			}
-		}
-	}()
-	<-paused
+	waitForSignal(t, paused, "Pause blocked without a concurrent log call")
 
-	// Pause() flushes before the handshake, so the pre-pause line must already
+	// Pause flushes before returning, so the pre-pause line must already
 	// be in the sink now regardless of the buffer.
 	if got := cw.String(); !strings.Contains(got, "before-pause") {
 		t.Fatalf("expected buffered output flushed on Pause, got %q", got)
 	}
 	s.Resume()
+}
+
+// TestStdoutBlocksEveryLogPathWhilePaused verifies that every public logging
+// entry point waits until Resume and that no paused output reaches the sink.
+func TestStdoutBlocksEveryLogPathWhilePaused(t *testing.T) {
+	cw := &countingWriter{}
+	s := newStdoutWriter(cw)
+	s.Pause()
+
+	writes := []struct {
+		name  string
+		write func()
+	}{
+		{name: "Log", write: func() { s.Log(time.Now(), "[log]") }},
+		{name: "LogWithColors", write: func() { s.LogWithColors(time.Now(), "[plain-log]", "[colored-log]") }},
+		{name: "Raw", write: func() { s.Raw(time.Now(), "[raw]") }},
+		{name: "RawWithColors", write: func() { s.RawWithColors(time.Now(), "[plain-raw]", "[colored-raw]") }},
+	}
+
+	done := make([]chan struct{}, len(writes))
+	for i, test := range writes {
+		done[i] = make(chan struct{})
+		go func() {
+			test.write()
+			close(done[i])
+		}()
+	}
+
+	for i, ch := range done {
+		assertNoSignal(t, ch, writes[i].name+" returned while stdout was paused")
+	}
+	if got := cw.String(); got != "" {
+		t.Fatalf("paused output reached the sink: %q", got)
+	}
+
+	s.Resume()
+	for i, ch := range done {
+		waitForSignal(t, ch, writes[i].name+" did not resume")
+	}
+	s.Flush()
+
+	got := cw.String()
+	for _, message := range []string{"[log]\n", "[colored-log]\n", "[raw]", "[colored-raw]"} {
+		if count := strings.Count(got, message); count != 1 {
+			t.Errorf("resumed output contains %d copies of %q in %q, want 1", count, message, got)
+		}
+	}
+	for _, message := range []string{"[plain-log]", "[plain-raw]"} {
+		if strings.Contains(got, message) {
+			t.Errorf("colored logging wrote unused plain message %q in %q", message, got)
+		}
+	}
+}
+
+// TestStdoutPausePreservesPromptOrdering verifies that output before the pause,
+// direct terminal output during it, and resumed logging cannot be reordered.
+func TestStdoutPausePreservesPromptOrdering(t *testing.T) {
+	cw := &countingWriter{}
+	s := newStdoutWriter(cw)
+	s.Raw(time.Now(), "before\n")
+	s.Pause()
+
+	logged := make(chan struct{})
+	go func() {
+		s.Raw(time.Now(), "after\n")
+		close(logged)
+	}()
+	assertNoSignal(t, logged, "log returned while direct prompt output owned the sink")
+
+	if _, err := cw.Write([]byte("prompt\n")); err != nil {
+		t.Fatalf("write prompt output: %v", err)
+	}
+	s.Resume()
+	waitForSignal(t, logged, "log did not resume after prompt output")
+	s.Flush()
+
+	if got, want := cw.String(), "before\nprompt\nafter\n"; got != want {
+		t.Fatalf("output order mismatch: got %q, want %q", got, want)
+	}
+}
+
+// TestStdoutNestedPauseRequiresMatchingResumes verifies overlapping terminal
+// owners cannot accidentally resume logging until every pause has ended.
+func TestStdoutNestedPauseRequiresMatchingResumes(t *testing.T) {
+	s := newStdoutWriter(&countingWriter{})
+	s.Pause()
+	s.Pause()
+
+	logged := make(chan struct{})
+	go func() {
+		s.Log(time.Now(), "blocked")
+		close(logged)
+	}()
+	assertNoSignal(t, logged, "log returned during nested pause")
+
+	s.Resume()
+	assertNoSignal(t, logged, "one Resume ended two nested pauses")
+	s.Resume()
+	waitForSignal(t, logged, "matching Resumes did not unblock logging")
+
+	// An unmatched Resume is harmless and must never wait for a logger call.
+	resumed := make(chan struct{})
+	go func() {
+		s.Resume()
+		close(resumed)
+	}()
+	waitForSignal(t, resumed, "Resume blocked while stdout was not paused")
 }
 
 // TestStdoutIdleFlush proves that a single low-volume line (follow/tail style)
@@ -159,32 +252,101 @@ func TestStdoutFinalFlushOnClose(t *testing.T) {
 	}
 }
 
-// Regression: during an interactive prompt, dlog.Common.Pause() unblocks when some
-// goroutine hits stdout.log(); that goroutine must not hold the stdout mutex while
-// waiting on resume, or dlog.Client.Info from the prompt callback deadlocks forever.
-func TestStdoutSecondLogDuringPauseWaitDoesNotDeadlock(t *testing.T) {
-	s := newStdout()
+// TestStdoutShutdownWhilePaused verifies cancellation and final flushing do not
+// depend on Resume, while a paused log remains blocked until explicitly resumed.
+func TestStdoutShutdownWhilePaused(t *testing.T) {
+	cw := &countingWriter{}
+	s := newStdoutWriter(cw)
+	ctx, cancel := context.WithCancel(context.Background())
+	var flushers sync.WaitGroup
+	flushers.Add(1)
+	s.Start(ctx, &flushers)
 
-	go s.Pause()
-	time.Sleep(50 * time.Millisecond)
-
+	s.Raw(time.Now(), "before-shutdown\n")
+	s.Pause()
+	logged := make(chan struct{})
 	go func() {
-		s.Log(time.Now(), "first log consumes pause and waits on resume")
+		s.Raw(time.Now(), "after-resume\n")
+		close(logged)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	assertNoSignal(t, logged, "log returned while stdout was paused")
 
-	secondDone := make(chan struct{})
+	cancel()
+	shutdown := make(chan struct{})
 	go func() {
-		s.Log(time.Now(), "second log must acquire mutex while first waits for Resume")
-		close(secondDone)
+		flushers.Wait()
+		close(shutdown)
 	}()
-
-	select {
-	case <-secondDone:
-	case <-time.After(2 * time.Second):
-		t.Fatal("deadlock: second Log blocked on mutex while first waits for Resume")
-	}
+	waitForSignal(t, shutdown, "stdout flusher did not stop while logging was paused")
+	assertNoSignal(t, logged, "shutdown bypassed the active pause")
 
 	s.Resume()
-	time.Sleep(50 * time.Millisecond)
+	waitForSignal(t, logged, "paused log did not return after shutdown and Resume")
+	s.Flush()
+	if got, want := cw.String(), "before-shutdown\nafter-resume\n"; got != want {
+		t.Fatalf("shutdown output mismatch: got %q, want %q", got, want)
+	}
+}
+
+func TestStdoutConcurrentPauseResume(t *testing.T) {
+	cw := &countingWriter{}
+	s := newStdoutWriter(cw)
+	start := make(chan struct{})
+
+	const (
+		writers       = 8
+		writesPerLoop = 200
+		pauseCycles   = 200
+	)
+	var workers sync.WaitGroup
+	workers.Add(writers + 1)
+	for worker := 0; worker < writers; worker++ {
+		go func() {
+			defer workers.Done()
+			<-start
+			for i := 0; i < writesPerLoop; i++ {
+				s.Raw(time.Now(), "line\n")
+			}
+		}()
+	}
+	go func() {
+		defer workers.Done()
+		<-start
+		for i := 0; i < pauseCycles; i++ {
+			s.Pause()
+			runtime.Gosched()
+			s.Resume()
+		}
+	}()
+
+	close(start)
+	done := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(done)
+	}()
+	waitForSignal(t, done, "concurrent writers and pause cycles did not finish")
+	s.Flush()
+
+	if got, want := strings.Count(cw.String(), "line\n"), writers*writesPerLoop; got != want {
+		t.Fatalf("logged line count: got %d, want %d", got, want)
+	}
+}
+
+func waitForSignal(t *testing.T, ch <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal(failure)
+	}
+}
+
+func assertNoSignal(t *testing.T, ch <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatal(failure)
+	case <-time.After(25 * time.Millisecond):
+	}
 }
