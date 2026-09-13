@@ -30,6 +30,9 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		stats:     &f.stats,
 		globID:    f.globID,
 	}
+	if f.bufferRecycleObserver != nil {
+		filterProcessor.recycle = f.recycleBytesBuffer
+	}
 	defer filterProcessor.resetGeneration()
 
 	// Compute the local-context predicate once. When no context is requested we
@@ -64,7 +67,7 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		}
 
 		// Check for file truncation. The periodicTruncateCheck goroutine
-		// (started in StartWithProcessorOptimized) already ticks every 3s and
+		// (started in Start) already ticks every 3s and
 		// signals on the unbuffered truncate channel, so this non-blocking
 		// receive only re-stats the file on that cadence. Keeping the timing in
 		// the goroutine lets the per-line cost be a single atomic load on an
@@ -129,10 +132,9 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 // This is a NORMAL early stop, not a genuine I/O error: bufio.Scanner signals
 // real end-of-input via Scan()==false and never returns io.EOF from
 // ProcessFiltered*, so any io.EOF bubbling up from the filter can only be the
-// max-count sentinel. The byte-by-byte path (readWithProcessor) swallows it and
-// returns nil; the optimized path must do the same, otherwise the sentinel leaks
-// out to the caller and is logged as a spurious SERVER|...|ERROR|...|EOF line.
-// Real (non-EOF) processor errors are left untouched so they still surface.
+// max-count sentinel. It must be swallowed here, otherwise it leaks out to the
+// caller and is logged as a spurious SERVER|...|ERROR|...|EOF line. Real
+// (non-EOF) processor errors are left untouched so they still surface.
 //
 // Bare equality (== io.EOF) is intentional and must NOT become errors.Is: the
 // sentinel is returned bare by processWithContext, so exact identity matches it
@@ -194,9 +196,8 @@ func (f *readFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEO
 	return 0, nil, nil
 }
 
-// StartWithProcessorOptimized starts reading a log file using an optimized LineProcessor implementation.
-// This version uses buffered line reading instead of byte-by-byte reading.
-func (f *readFile) StartWithProcessorOptimized(ctx context.Context, ltx lcontext.LContext,
+// Start reads a log file using buffered line reading and a line processor.
+func (f *readFile) Start(ctx context.Context, ltx lcontext.LContext,
 	processor line.Processor, re regex.Regex) error {
 
 	truncateCtx, cancelTruncate := context.WithCancel(ctx)
@@ -256,6 +257,9 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		stats:     &f.stats,
 		globID:    f.globID,
 	}
+	if f.bufferRecycleObserver != nil {
+		filterProcessor.recycle = f.recycleBytesBuffer
+	}
 	defer filterProcessor.resetGeneration()
 
 	// Compute the local-context predicate once (see readWithProcessorOptimized):
@@ -308,7 +312,7 @@ func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 					if partialLine.Len() > 0 {
 						if processErr := processPartialLine(); processErr != nil {
 							// Max-count early stop is a clean stop, not an error
-							// (see isEarlyStop); mirror the byte-by-byte path.
+							// (see isEarlyStop).
 							if isEarlyStop(processErr) {
 								return nil
 							}

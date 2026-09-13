@@ -44,14 +44,9 @@ type panicReadServer struct {
 
 type panickingFileReader struct{}
 
-func (panickingFileReader) StartWithProcessor(context.Context, lcontext.LContext,
+func (panickingFileReader) Start(context.Context, lcontext.LContext,
 	line.Processor, regex.Regex) error {
 	panic("reader processor path failed")
-}
-
-func (reader panickingFileReader) StartWithProcessorOptimized(ctx context.Context, ltx lcontext.LContext,
-	processor line.Processor, re regex.Regex) error {
-	return reader.StartWithProcessor(ctx, ltx, processor, re)
 }
 
 func (panickingFileReader) FilePath() string { return "panic.log" }

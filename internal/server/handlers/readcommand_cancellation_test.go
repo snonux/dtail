@@ -14,11 +14,7 @@ import (
 
 type retryOnlyFileReader struct{}
 
-func (retryOnlyFileReader) StartWithProcessor(context.Context, lcontext.LContext, line.Processor, regex.Regex) error {
-	return nil
-}
-
-func (retryOnlyFileReader) StartWithProcessorOptimized(context.Context, lcontext.LContext, line.Processor, regex.Regex) error {
+func (retryOnlyFileReader) Start(context.Context, lcontext.LContext, line.Processor, regex.Regex) error {
 	return nil
 }
 

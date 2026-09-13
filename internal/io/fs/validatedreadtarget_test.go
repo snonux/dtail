@@ -13,7 +13,7 @@ import (
 	"github.com/mimecast/dtail/internal/regex"
 )
 
-func TestValidatedCatFileStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
+func TestValidatedCatFileStartReadsAllLines(t *testing.T) {
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	target := mustValidatedReadTarget(t, filePath)
 	re := regex.NewNoop()
@@ -22,7 +22,7 @@ func TestValidatedCatFileStartWithProcessorOptimizedReadsAllLines(t *testing.T) 
 		defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 
-	if err := cat.StartWithProcessorOptimized(
+	if err := cat.Start(
 		context.Background(),
 		lcontext.LContext{},
 		processor,

@@ -19,10 +19,7 @@ var ErrReaderWorkerPanic = errors.New("file reader background worker panic")
 // channel-based Start(chan<- *line.Line) method was removed once every read path
 // migrated to the processor pipeline (task iv0).
 type FileReader interface {
-	StartWithProcessor(ctx context.Context, ltx lcontext.LContext, processor line.Processor,
-		re regex.Regex) error
-	StartWithProcessorOptimized(ctx context.Context, ltx lcontext.LContext, processor line.Processor,
-		re regex.Regex) error
+	Start(ctx context.Context, ltx lcontext.LContext, processor line.Processor, re regex.Regex) error
 	FilePath() string
 	Retry() bool
 }

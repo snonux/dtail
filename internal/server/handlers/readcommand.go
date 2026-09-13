@@ -624,9 +624,9 @@ func (r *readCommand) readViaProcessor(path, globID string, writer LineWriter) r
 				}
 			}()
 
-			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> about to start")
-			err := reader.StartWithProcessorOptimized(ctx, ltx, processor, re)
-			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.StartWithPocessorOptimized -> completed")
+			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.Start -> about to start")
+			err := reader.Start(ctx, ltx, processor, re)
+			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.Start -> completed")
 			return err
 		}()
 

@@ -40,14 +40,12 @@ The channel-less implementation replaces the channel pipeline with direct functi
    - Uses internal buffering for efficiency (64KB buffer)
    - Thread-safe with mutex protection
 
-3. **Modified File Reading** (`internal/io/fs/readfile_processor.go`)
-   - `StartWithProcessor()` - Channel-less file reading
+3. **File Reading** (`internal/io/fs/readfile_processor_optimized.go`)
+   - `Start()` - Channel-less file reading
    - Direct callbacks instead of channel sends
    - Inline regex filtering without goroutines
-
-4. **Optimized File Reading** (`internal/io/fs/readfile_processor_optimized.go`)
    - Uses buffered line reading instead of byte-by-byte
-   - Custom scanner with 256KB buffer
+   - Custom scanner with a pooled buffer and 1 MiB token limit
    - Efficient handling of long lines
    - Special optimization for tail mode
 
@@ -75,16 +73,15 @@ channel-less, optimized read path is always on and cannot be toggled.
 
 ### Performance Testing
 
-Use the provided script to compare performance:
+Use the maintained benchmark targets to measure the current read/output path:
 
 ```bash
-./test_channelless_performance.sh
+make benchmark-quick
+make benchmark
 ```
 
-This will test:
-1. Original channel-based implementation
-2. Channel-less implementation
-3. Optimized channel-less implementation
+The historical channel-based and byte-at-a-time implementations have been
+removed, so there is no runtime toggle or legacy implementation to compare.
 
 ### Usage
 
@@ -97,11 +94,9 @@ dgrep -regex "pattern" file.log
 
 ### Future Improvements
 
-1. Extend channel-less approach to other commands (dcat, dtail)
-2. Add configurable buffer sizes
-3. Implement zero-copy optimizations
-4. Add performance metrics collection
-5. Consider using io_uring on Linux for async I/O
+1. Evaluate configurable reader buffer sizes with representative workloads
+2. Add performance metrics collection
+3. Consider using io_uring on Linux for async I/O
 
 ## Summary
 
@@ -112,6 +107,7 @@ former `DTAIL_TURBOBOOST_DISABLE` environment variable and the
 `TurboBoostDisable` key is silently ignored.
 
 The path provides:
-- Channel-less processing for grep and cat operations
-- Optimized buffered I/O reader (256KB buffer)
+- Channel-less processing for read operations
+- A 1 MiB scanner token limit for non-follow reads
+- A pooled 64 KiB buffer for follow reads
 - Buffer pooling to reduce memory allocations

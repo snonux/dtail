@@ -153,7 +153,7 @@ func TestStartReadsJournalctlOutputWithoutFollowFlags(t *testing.T) {
 	}
 
 	processor := &captureProcessor{}
-	if err := reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+	if err := reader.Start(context.Background(), lcontext.LContext{},
 		processor, regex.NewNoop()); err != nil {
 		t.Fatalf("start reader: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestStartFollowReadsLinesInOrder(t *testing.T) {
 	processor := &flushCountingProcessor{}
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessorOptimized(ctx, lcontext.LContext{}, processor, regex.NewNoop())
+		done <- reader.Start(ctx, lcontext.LContext{}, processor, regex.NewNoop())
 	}()
 
 	// Poll until all three follow lines have arrived (the reader appends from its
@@ -245,7 +245,7 @@ func TestStartFollowPassesFollowFlagsAndTerminatesOnCancel(t *testing.T) {
 	processor := &flushCountingProcessor{}
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessorOptimized(ctx, lcontext.LContext{}, processor, regex.NewNoop())
+		done <- reader.Start(ctx, lcontext.LContext{}, processor, regex.NewNoop())
 	}()
 
 	// Wait for the first follow line to arrive before probing the process.
@@ -313,7 +313,7 @@ func TestStartSurfacesStderrAsServerMessages(t *testing.T) {
 		t.Fatalf("new reader: %v", err)
 	}
 
-	if err := reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+	if err := reader.Start(context.Background(), lcontext.LContext{},
 		&captureProcessor{}, regex.NewNoop()); err != nil {
 		t.Fatalf("start reader: %v", err)
 	}
@@ -346,7 +346,7 @@ func TestStartPropagatesStderrForwarderPanic(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+		done <- reader.Start(context.Background(), lcontext.LContext{},
 			&captureProcessor{}, regex.NewNoop())
 	}()
 	select {
@@ -389,7 +389,7 @@ func TestRunPrioritizesStderrWorkerPanicOverParentCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessorOptimized(ctx, lcontext.LContext{},
+		done <- reader.Start(ctx, lcontext.LContext{},
 			&captureProcessor{}, regex.NewNoop())
 	}()
 
@@ -426,7 +426,7 @@ func TestRunJoinsProcessorFailureWithWaitWorkerPanic(t *testing.T) {
 	}
 
 	processorErr := errors.New("processor failed")
-	err = reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+	err = reader.Start(context.Background(), lcontext.LContext{},
 		errorProcessor{err: processorErr}, regex.NewNoop())
 	if !errors.Is(err, processorErr) {
 		t.Fatalf("reader error = %v, want processor failure in joined chain", err)
@@ -455,7 +455,7 @@ func TestRunKillsAndReapsTermIgnoringChildWhenWaitPanicsBeforeWait(t *testing.T)
 	processorErr := errors.New("processor failed")
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+		done <- reader.Start(context.Background(), lcontext.LContext{},
 			errorProcessor{err: processorErr}, regex.NewNoop())
 	}()
 
@@ -497,7 +497,7 @@ func TestRunRecoversScanProcessorPanicAndReapsTermIgnoringChild(t *testing.T) {
 	started := time.Now()
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessorOptimized(ctx, lcontext.LContext{},
+		done <- reader.Start(ctx, lcontext.LContext{},
 			processor, regex.NewNoop())
 	}()
 
@@ -549,7 +549,7 @@ func TestStartReturnsExitErrorAndForwardsStderrOnNonZeroExit(t *testing.T) {
 	}
 
 	processor := &captureProcessor{}
-	err = reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+	err = reader.Start(context.Background(), lcontext.LContext{},
 		processor, regex.NewNoop())
 	if err == nil {
 		t.Fatal("expected non-zero journalctl exit error")
@@ -597,7 +597,7 @@ func TestStartReadsLongJournalLine(t *testing.T) {
 	}
 
 	processor := &captureProcessor{}
-	if err := reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+	if err := reader.Start(context.Background(), lcontext.LContext{},
 		processor, regex.NewNoop()); err != nil {
 		t.Fatalf("start reader: %v", err)
 	}
@@ -625,7 +625,7 @@ func TestStartDropsPartialLineAtShutdown(t *testing.T) {
 	}
 
 	processor := &captureProcessor{}
-	if err := reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+	if err := reader.Start(context.Background(), lcontext.LContext{},
 		processor, regex.NewNoop()); err != nil {
 		t.Fatalf("start reader: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestStartPreservesUTF8Lines(t *testing.T) {
 	}
 
 	processor := &captureProcessor{}
-	if err := reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+	if err := reader.Start(context.Background(), lcontext.LContext{},
 		processor, regex.NewNoop()); err != nil {
 		t.Fatalf("start reader: %v", err)
 	}
@@ -684,7 +684,7 @@ func TestConcurrentReadersDifferentUnitsDoNotInterfere(t *testing.T) {
 				return
 			}
 			processor := &captureProcessor{}
-			err = reader.StartWithProcessorOptimized(context.Background(), lcontext.LContext{},
+			err = reader.Start(context.Background(), lcontext.LContext{},
 				processor, regex.NewNoop())
 			resultCh <- result{lines: processor.lines, err: err}
 		}()
@@ -711,7 +711,7 @@ func TestConcurrentReadersDifferentUnitsDoNotInterfere(t *testing.T) {
 	}
 }
 
-func TestStartWithProcessorOptimizedAppliesRegexAndLocalContext(t *testing.T) {
+func TestStartAppliesRegexAndLocalContext(t *testing.T) {
 	journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{
 			Lines: []string{"before", "match", "context", "skip"},
@@ -728,14 +728,14 @@ func TestStartWithProcessorOptimizedAppliesRegexAndLocalContext(t *testing.T) {
 	}
 	processor := &captureProcessor{}
 
-	err = reader.StartWithProcessorOptimized(
+	err = reader.Start(
 		context.Background(),
 		lcontext.LContext{BeforeContext: 1, AfterContext: 1, MaxCount: 1},
 		processor,
 		re,
 	)
 	if err != nil && !errors.Is(err, context.Canceled) {
-		t.Fatalf("start optimized reader: %v", err)
+		t.Fatalf("start reader: %v", err)
 	}
 
 	want := []string{"before\n", "match\n", "context\n"}
@@ -783,14 +783,14 @@ func (p *flushCountingProcessor) snapshot() []string {
 	return append([]string(nil), p.lines...)
 }
 
-// TestStartWithProcessorFollowFlushesEachLine is the regression guard for the
+// TestStartFollowFlushesEachLine is the regression guard for the
 // output batching fix (task 0t0). A follow read blocks in r.run until journalctl
 // is stopped, so a batching output writer would hold live lines in its 64KB
 // buffer and the client would see nothing until the stream ends. The reader
 // must therefore flush the processor after every line while following. If the
 // per-line flush is dropped, flushCount stays at zero during the follow and
 // this test fails.
-func TestStartWithProcessorFollowFlushesEachLine(t *testing.T) {
+func TestStartFollowFlushesEachLine(t *testing.T) {
 	journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{
 			FollowLines:    []string{"one", "two", "three"},
@@ -809,7 +809,7 @@ func TestStartWithProcessorFollowFlushesEachLine(t *testing.T) {
 	processor := &flushCountingProcessor{}
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessorOptimized(ctx, lcontext.LContext{}, processor, regex.NewNoop())
+		done <- reader.Start(ctx, lcontext.LContext{}, processor, regex.NewNoop())
 	}()
 
 	// While the follow is still live, each of the three lines must trigger a
@@ -838,10 +838,10 @@ func TestStartWithProcessorFollowFlushesEachLine(t *testing.T) {
 	}
 }
 
-// TestStartWithProcessorNonFollowFlushesOnceAtEnd pins the complementary
+// TestStartNonFollowFlushesOnceAtEnd pins the complementary
 // behavior: a non-follow snapshot read keeps the batching benefit and only
 // flushes once, at the end, rather than per line.
-func TestStartWithProcessorNonFollowFlushesOnceAtEnd(t *testing.T) {
+func TestStartNonFollowFlushesOnceAtEnd(t *testing.T) {
 	journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{
 			Lines: []string{"a", "b", "c", "d"},
@@ -854,9 +854,9 @@ func TestStartWithProcessorNonFollowFlushesOnceAtEnd(t *testing.T) {
 	}
 
 	processor := &flushCountingProcessor{}
-	if err := reader.StartWithProcessorOptimized(context.Background(),
+	if err := reader.Start(context.Background(),
 		lcontext.LContext{}, processor, regex.NewNoop()); err != nil {
-		t.Fatalf("start optimized reader: %v", err)
+		t.Fatalf("start reader: %v", err)
 	}
 
 	lines, flushes := processor.counts()
@@ -869,7 +869,7 @@ func TestStartWithProcessorNonFollowFlushesOnceAtEnd(t *testing.T) {
 	}
 }
 
-func TestStartWithProcessorErrorTerminatesJournalctl(t *testing.T) {
+func TestStartErrorTerminatesJournalctl(t *testing.T) {
 	mock := journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{
 			Lines:    []string{"ready"},
@@ -885,7 +885,7 @@ func TestStartWithProcessorErrorTerminatesJournalctl(t *testing.T) {
 	processorErr := errors.New("processor stopped")
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessor(
+		done <- reader.Start(
 			context.Background(),
 			lcontext.LContext{},
 			errorProcessor{err: processorErr},
@@ -907,7 +907,7 @@ func TestStartWithProcessorErrorTerminatesJournalctl(t *testing.T) {
 	}
 }
 
-func TestStartWithProcessorErrorKillsTermIgnoringJournalctl(t *testing.T) {
+func TestStartErrorKillsTermIgnoringJournalctl(t *testing.T) {
 	mock := journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{
 			Lines:         []string{"ready"},
@@ -925,7 +925,7 @@ func TestStartWithProcessorErrorKillsTermIgnoringJournalctl(t *testing.T) {
 	started := time.Now()
 	done := make(chan error, 1)
 	go func() {
-		done <- reader.StartWithProcessor(
+		done <- reader.Start(
 			context.Background(),
 			lcontext.LContext{},
 			errorProcessor{err: processorErr},

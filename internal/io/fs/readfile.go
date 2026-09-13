@@ -16,14 +16,7 @@ import (
 	"github.com/mimecast/dtail/internal/logging"
 )
 
-type readStatus int
-
-const (
-	nothing              readStatus = iota
-	abortReading         readStatus = iota
-	continueReading      readStatus = iota
-	defaultMaxLineLength            = 1024 * 1024
-)
+const defaultMaxLineLength = 1024 * 1024
 
 var (
 	errFileTruncated = errors.New("file got truncated")

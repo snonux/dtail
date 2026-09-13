@@ -69,15 +69,8 @@ func NewReader(args []string, sourceID string, follow bool, serverMessages chan<
 	}, nil
 }
 
-// StartWithProcessor reads journalctl stdout and sends matching lines to processor.
-func (r *Reader) StartWithProcessor(ctx context.Context, ltx lcontext.LContext,
-	processor line.Processor, re regex.Regex) error {
-
-	return r.runWithProcessor(ctx, ltx, processor, re)
-}
-
-// StartWithProcessorOptimized reads journalctl stdout and sends matching lines to processor.
-func (r *Reader) StartWithProcessorOptimized(ctx context.Context, ltx lcontext.LContext,
+// Start reads journalctl stdout and sends matching lines to processor.
+func (r *Reader) Start(ctx context.Context, ltx lcontext.LContext,
 	processor line.Processor, re regex.Regex) error {
 
 	return r.runWithProcessor(ctx, ltx, processor, re)

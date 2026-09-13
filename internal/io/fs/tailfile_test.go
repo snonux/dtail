@@ -80,7 +80,7 @@ func TestTailFileFollowsCopytruncateAndRenameRotations(t *testing.T) {
 		t.Helper()
 		done := make(chan error, 1)
 		go func() {
-			done <- tail.StartWithProcessorOptimized(
+			done <- tail.Start(
 				ctx,
 				lcontext.LContext{},
 				processor,
@@ -317,7 +317,7 @@ func TestNonFollowReadersStillStartAtBeginningOnEveryOpen(t *testing.T) {
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		processor := &captureProcessor{}
-		if err := cat.StartWithProcessorOptimized(
+		if err := cat.Start(
 			context.Background(),
 			lcontext.LContext{},
 			processor,
@@ -354,7 +354,7 @@ func TestCompressedNonFollowReaderUnaffected(t *testing.T) {
 
 	cat := NewCatFile(path, "snapshot.log.gz", nil, defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
-	if err := cat.StartWithProcessorOptimized(
+	if err := cat.Start(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
