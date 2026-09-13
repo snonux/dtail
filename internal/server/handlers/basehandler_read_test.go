@@ -3,14 +3,12 @@ package handlers
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -19,7 +17,6 @@ import (
 func newReadTestHandler() baseHandler {
 	return baseHandler{
 		done:           internal.NewDone(),
-		lines:          make(chan *line.Line, 4),
 		serverMessages: make(chan string, 4),
 		maprMessages:   make(chan string, 4),
 		hostname:       "testhost",
@@ -61,36 +58,6 @@ func readExactly(t *testing.T, handler *baseHandler, bufSize, wantLen int) []byt
 		got = append(got, p[:n]...)
 	}
 	return got
-}
-
-// expectedRemoteLine renders the protocol message Read is expected to emit
-// for a line delivered via the lines channel in non-plain mode.
-func expectedRemoteLine(content []byte, count uint64, sourceID string) []byte {
-	var want bytes.Buffer
-	formatRemoteLine(&want, "testhost", fmt.Sprintf("%3d", 100), count,
-		sourceID, content)
-	return want.Bytes()
-}
-
-// TestBaseHandlerReadLargeLineAcrossMultipleReads reproduces the original
-// bug: a line larger than the caller's buffer must arrive completely,
-// including the trailing message delimiter, across multiple Read calls.
-func TestBaseHandlerReadLargeLineAcrossMultipleReads(t *testing.T) {
-	handler := newReadTestHandler()
-
-	content := bytes.Repeat([]byte("x"), 1000)
-	handler.lines <- line.New(bytes.NewBuffer(append([]byte{}, content...)),
-		1, 100, "test.log")
-
-	want := expectedRemoteLine(content, 1, "test.log")
-	got := readExactly(t, &handler, 32, len(want))
-
-	if !bytes.Equal(got, want) {
-		t.Fatalf("large line corrupted across reads:\ngot  %q\nwant %q", got, want)
-	}
-	if got[len(got)-1] != protocol.MessageDelimiter {
-		t.Fatalf("message delimiter lost, last byte = %q", got[len(got)-1])
-	}
 }
 
 // TestBaseHandlerReadLargeServerMessageAcrossMultipleReads verifies the
@@ -249,44 +216,6 @@ func TestBaseHandlerReadExactFitBuffer(t *testing.T) {
 	if !bytes.Equal(got, secondWant.Bytes()) {
 		t.Fatalf("stale remainder leaked into next message:\ngot  %q\nwant %q",
 			got, secondWant.Bytes())
-	}
-}
-
-// TestBaseHandlerReadMultipleQueuedMessages verifies that several queued
-// messages, each larger than the read buffer, arrive back to back in order
-// and without corruption.
-func TestBaseHandlerReadMultipleQueuedMessages(t *testing.T) {
-	handler := newReadTestHandler()
-
-	var want bytes.Buffer
-	for i := 0; i < 3; i++ {
-		content := bytes.Repeat([]byte{byte('a' + i)}, 100)
-		handler.lines <- line.New(bytes.NewBuffer(append([]byte{}, content...)),
-			uint64(i+1), 100, "queued.log")
-		want.Write(expectedRemoteLine(content, uint64(i+1), "queued.log"))
-	}
-
-	got := readExactly(t, &handler, 16, want.Len())
-	if !bytes.Equal(got, want.Bytes()) {
-		t.Fatalf("queued messages corrupted:\ngot  %q\nwant %q", got, want.Bytes())
-	}
-}
-
-// TestBaseHandlerReadPlainEmptyLine verifies the edge case of an empty line
-// in plain mode: the message consists of the delimiter only.
-func TestBaseHandlerReadPlainEmptyLine(t *testing.T) {
-	handler := newReadTestHandler()
-	handler.plain = true
-
-	handler.lines <- line.New(&bytes.Buffer{}, 1, 100, "empty.log")
-
-	p := make([]byte, 8)
-	n, err := handler.Read(p)
-	if err != nil {
-		t.Fatalf("Read() error = %v", err)
-	}
-	if n != 1 || p[0] != protocol.MessageDelimiter {
-		t.Fatalf("expected single delimiter byte, got %q", p[:n])
 	}
 }
 

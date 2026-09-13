@@ -215,7 +215,7 @@ func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {
 	}
 
 	// Output is now the one and only read path, so journal output is delivered as
-	// protocol-formatted bytes on the output channel rather than as *line.Line on
+	// protocol-formatted bytes on the output channel rather than line objects on
 	// the shared lines channel. The payload still carries the journal sourceID
 	// and the line content, which is the real regression coverage here.
 	got := waitForOutputLine(t, server.outputLines)

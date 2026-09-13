@@ -7,7 +7,6 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	user "github.com/mimecast/dtail/internal/user/server"
@@ -39,7 +38,6 @@ func NewHealthHandler(user *user.User, logger logging.Logger) (*HealthHandler, e
 		baseHandler: baseHandler{
 			logger:              logger,
 			done:                internal.NewDone(),
-			lines:               make(chan *line.Line, 100),
 			serverMessages:      make(chan string, 10),
 			maprMessages:        make(chan string, 10),
 			ackCloseReceived:    make(chan struct{}),

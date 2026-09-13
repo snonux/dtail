@@ -92,17 +92,6 @@ func (s *stats) promotePreAuthToConnection() {
 	s.mutex.Unlock()
 }
 
-func (s *stats) hasConnections() bool {
-	s.mutex.Lock()
-	currentConnections := s.currentConnections
-	s.mutex.Unlock()
-
-	has := currentConnections > 0
-	s.log().Info("stats", "Server with open connections?",
-		has, currentConnections)
-	return has
-}
-
 func (s *stats) logServerStats() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
@@ -145,18 +134,6 @@ func (s *stats) start(ctx context.Context) {
 		case <-ticker.C:
 			s.logServerStats()
 		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (s *stats) waitForConnections() {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		<-ticker.C
-		if !s.hasConnections() {
 			return
 		}
 	}

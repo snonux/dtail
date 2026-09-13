@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/journal"
+	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
@@ -113,12 +113,6 @@ func (r *pendingInputReservation) completeInputBatch() {
 }
 
 type readStrategy func(context.Context, lcontext.LContext, fs.FileReader, regex.Regex) error
-
-type readProcessor interface {
-	ProcessLine(*bytes.Buffer, uint64, string) error
-	Flush() error
-	Close() error
-}
 
 func newReadCommand(server readCommandServer, mode omode.Mode) *readCommand {
 	return newReadCommandWithAggregate(server, mode, server.Aggregate())
@@ -675,7 +669,7 @@ func (r *readCommand) makeWriter(ctx context.Context) LineWriter {
 	return writer
 }
 
-func (r *readCommand) makeProcessor(path, globID string, writer LineWriter) readProcessor {
+func (r *readCommand) makeProcessor(path, globID string, writer LineWriter) line.Processor {
 	if aggregate := r.aggregate; aggregate != nil {
 		r.server.Logger().Info(r.server.LogContext(), "Using turbo aggregate processor for MapReduce", path, globID)
 		return server.NewAggregateProcessor(aggregate, globID)

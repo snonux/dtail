@@ -13,7 +13,6 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
@@ -92,7 +91,6 @@ func NewServerHandler(user *user.User, catLimiter,
 			readerLogger:        loggers.Reader,
 			serverlessOutput:    serverlessOutput,
 			done:                internal.NewDone(),
-			lines:               make(chan *line.Line, 100),
 			serverMessages:      make(chan string, 10),
 			maprMessages:        make(chan string, 10),
 			ackCloseReceived:    make(chan struct{}),

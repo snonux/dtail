@@ -1,14 +1,12 @@
 package handlers
 
 import (
-	"bytes"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/line"
 	userserver "github.com/mimecast/dtail/internal/user/server"
 )
 
@@ -107,26 +105,6 @@ func TestGeneratedMaprMessagesChannelCloseWaitsForForwarding(t *testing.T) {
 	}
 }
 
-func TestBaseHandlerReadDropsStaleLine(t *testing.T) {
-	handler := newGenerationTestHandler(4)
-
-	staleLine := line.New(bytes.NewBufferString("stale line"), 1, 100, "app.log")
-	staleLine.Generation = 3
-	currentLine := line.New(bytes.NewBufferString("fresh line"), 2, 100, "app.log")
-	currentLine.Generation = 4
-
-	handler.lines <- staleLine
-	handler.lines <- currentLine
-
-	got := readHandlerOutput(t, &handler)
-	if strings.Contains(got, "stale line") {
-		t.Fatalf("unexpected stale line output: %q", got)
-	}
-	if !strings.Contains(got, "fresh line") {
-		t.Fatalf("expected current line output, got %q", got)
-	}
-}
-
 func TestOutputManagerTryReadDropsStaleGeneration(t *testing.T) {
 
 	manager := outputManager{mode: true}
@@ -148,7 +126,6 @@ func TestOutputManagerTryReadDropsStaleGeneration(t *testing.T) {
 func newGenerationTestHandler(activeGeneration uint64) baseHandler {
 	return baseHandler{
 		done:           internal.NewDone(),
-		lines:          make(chan *line.Line, 2),
 		serverMessages: make(chan string, 2),
 		maprMessages:   make(chan string, 2),
 		hostname:       "testhost",

@@ -14,8 +14,6 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/line"
-	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
@@ -94,7 +92,6 @@ type baseHandler struct {
 	done                    *internal.Done
 	handleCommandCb         handleCommandCb
 	prepareCommandContextCb prepareCommandContextCb
-	lines                   chan *line.Line
 
 	// aggregate is written by handleMapCommand on the command-dispatch
 	// goroutine and read concurrently by Shutdown, Aggregate, and
@@ -301,14 +298,6 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			}
 			return n, nil
 
-		case line := <-h.lines:
-			stopOptionalTimer(eofTimer)
-			n = h.readLine(p, line)
-			if n == 0 {
-				continue
-			}
-			return n, nil
-
 		case <-h.done.Done():
 			stopOptionalTimer(eofTimer)
 			// Producers finish before graceful shutdown closes done. Recheck
@@ -372,12 +361,6 @@ func (h *baseHandler) tryReadQueued(p []byte) (int, bool) {
 		return h.readMaprMessage(p, message), true
 	default:
 	}
-	select {
-	case queuedLine := <-h.lines:
-		return h.readLine(p, queuedLine), true
-	default:
-	}
-
 	// A flush request is acknowledged only by the session reader, after it has
 	// returned every prior read to io.Copy's writer and observed all queues and
 	// the output manager empty. Keeping an acknowledgement pending across Read
@@ -460,34 +443,6 @@ func (h *baseHandler) readMaprMessage(p []byte, message string) int {
 	h.readBuf.WriteString(decodedMessage)
 	h.readBuf.WriteByte(protocol.MessageDelimiter)
 	return h.drainReadBuf(p)
-}
-
-func (h *baseHandler) readLine(p []byte, queuedLine *line.Line) int {
-	if queuedLine == nil {
-		return 0
-	}
-	if h.shouldDropGeneration(queuedLine.Generation) {
-		pool.RecycleBytesBuffer(queuedLine.Content)
-		queuedLine.Recycle()
-		return 0
-	}
-	if h.plain {
-		h.readBuf.Write(queuedLine.Content.Bytes())
-		h.readBuf.WriteByte(protocol.MessageDelimiter)
-	} else {
-		formatRemoteLine(
-			&h.readBuf,
-			h.hostname,
-			fmt.Sprintf("%3d", queuedLine.TransmittedPerc),
-			queuedLine.Count,
-			queuedLine.SourceID,
-			queuedLine.Content.Bytes(),
-		)
-	}
-	n := h.drainReadBuf(p)
-	pool.RecycleBytesBuffer(queuedLine.Content)
-	queuedLine.Recycle()
-	return n
 }
 
 // drainReadBuf copies as many buffered message bytes as fit into p and keeps
@@ -793,12 +748,11 @@ func (h *baseHandler) flushContext(ctx context.Context) error {
 	h.ensureFlushChannels()
 	h.Logger().Trace(h.user, "flush()")
 	numUnsentMessages := func() int {
-		lineCount := len(h.lines)
 		serverCount := len(h.serverMessages)
 		maprCount := len(h.maprMessages)
 		outputBytes := h.output.bufferedLen()
-		h.Logger().Trace(h.user, "flush", "lines", lineCount, "server", serverCount, "mapr", maprCount, "outputBytes", outputBytes)
-		return lineCount + serverCount + maprCount + outputBytes
+		h.Logger().Trace(h.user, "flush", "server", serverCount, "mapr", maprCount, "outputBytes", outputBytes)
+		return serverCount + maprCount + outputBytes
 	}
 
 	maxWait := h.output.resolvedFlushTimeout()

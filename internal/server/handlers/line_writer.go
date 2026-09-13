@@ -244,133 +244,6 @@ func (w *DirectWriter) Stats() (linesWritten, bytesWritten uint64) {
 	return w.linesWritten, w.bytesWritten
 }
 
-// ChannelWriter writes pre-formatted data to a output channel
-type ChannelWriter struct {
-	channel    chan<- []byte
-	hostname   string
-	plain      bool
-	serverless bool
-	generation uint64
-
-	// Buffering for efficiency
-	writeBuf bytes.Buffer
-	bufSize  int
-	mutex    sync.Mutex
-
-	// Stats
-	linesWritten uint64
-	bytesWritten uint64
-
-	activeGeneration func() uint64
-}
-
-var _ LineWriter = (*ChannelWriter)(nil)
-
-// NewChannelWriter creates a writer that sends to a output channel
-func NewChannelWriter(channel chan<- []byte, hostname string, plain, serverless bool) *ChannelWriter {
-	return &ChannelWriter{
-		channel:    channel,
-		hostname:   hostname,
-		plain:      plain,
-		serverless: serverless,
-		bufSize:    64 * 1024, // 64KB buffer
-	}
-}
-
-// NewGeneratedChannelWriter creates a ChannelWriter bound to a session generation.
-func NewGeneratedChannelWriter(channel chan<- []byte, hostname string, plain, serverless bool, generation uint64, activeGeneration func() uint64) *ChannelWriter {
-	w := NewChannelWriter(channel, hostname, plain, serverless)
-	w.generation = generation
-	w.activeGeneration = activeGeneration
-	return w
-}
-
-// WriteLineData formats and writes line data to the output channel
-func (w *ChannelWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error {
-	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
-		return nil
-	}
-	w.mutex.Lock()
-	defer w.mutex.Unlock()
-
-	// writeBuf is reset after every call here, so its length before appending
-	// is always zero. Still use the explicit before/after delta so the stats
-	// idiom stays uniform with the other output write paths.
-	bufLenBefore := w.writeBuf.Len()
-
-	if !w.plain && !w.serverless {
-		formatRemoteLine(&w.writeBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID, lineContent)
-	} else {
-		w.writeBuf.Write(lineContent)
-		w.writeBuf.WriteByte(protocol.MessageDelimiter)
-	}
-
-	// Update stats: add only the delta appended for this line.
-	w.linesWritten++
-	w.bytesWritten += uint64(w.writeBuf.Len() - bufLenBefore)
-
-	// Send to channel
-	data := make([]byte, w.writeBuf.Len())
-	copy(data, w.writeBuf.Bytes())
-	w.writeBuf.Reset()
-
-	select {
-	case w.channel <- encodeGeneratedBytes(w.generation, data):
-		return nil
-	default:
-		return fmt.Errorf("output channel full")
-	}
-}
-
-// WriteServerMessage writes a server message
-func (w *ChannelWriter) WriteServerMessage(message string) error {
-	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
-		return nil
-	}
-	if w.serverless {
-		return nil
-	}
-
-	w.mutex.Lock()
-	defer w.mutex.Unlock()
-
-	// Skip empty server messages when in plain mode
-	if w.plain && (message == "" || message == "\n") {
-		return nil
-	}
-
-	var buf bytes.Buffer
-
-	// Handle hidden messages
-	if len(message) > 0 && message[0] == '.' {
-		buf.WriteString(message)
-		buf.WriteByte(protocol.MessageDelimiter)
-	} else {
-		formatServerMessage(&buf, w.hostname, message, w.plain)
-	}
-
-	data := buf.Bytes()
-	select {
-	case w.channel <- encodeGeneratedBytes(w.generation, data):
-		return nil
-	default:
-		return fmt.Errorf("output channel full")
-	}
-}
-
-// Flush is a no-op for channel writer as data is sent immediately
-func (w *ChannelWriter) Flush() error {
-	return nil
-}
-
-// Stats returns writing statistics
-func (w *ChannelWriter) Stats() (linesWritten, bytesWritten uint64) {
-	w.mutex.Lock()
-	defer w.mutex.Unlock()
-
-	return w.linesWritten, w.bytesWritten
-}
-
 // NetworkWriter writes directly to the network connection bypassing channels
 type NetworkWriter struct {
 	logger         logging.Logger
@@ -407,7 +280,7 @@ var _ LineWriter = (*NetworkWriter)(nil)
 // WriteLineData (writeBuf.Len() < w.bufSize) was never true off the
 // backpressure path, so every line was sent as its own output-channel payload —
 // one SSH packet and one write syscall per line. Setting bufSize to 64KB (the
-// same value NewDirectWriter and NewChannelWriter use) lets many
+// same value NewDirectWriter uses) lets many
 // lines coalesce into a single send, which is the whole point of output output.
 //
 // Follow-mode (dtail tail) latency is preserved: tailWithProcessorOptimized

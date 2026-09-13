@@ -27,7 +27,6 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/regex"
@@ -48,7 +47,6 @@ func buildLimiterTestHandler(t *testing.T, capacity int) (*ServerHandler, chan s
 	handler := &ServerHandler{
 		baseHandler: baseHandler{
 			done:             internal.NewDone(),
-			lines:            make(chan *line.Line, 4),
 			serverMessages:   make(chan string, 64),
 			maprMessages:     make(chan string, 4),
 			ackCloseReceived: make(chan struct{}),

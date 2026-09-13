@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -421,13 +420,12 @@ func TestBaseHandlerBlockedReadKeepsFlushErrorBeforeCloseSync(t *testing.T) {
 	}
 }
 
-func TestShutdownTimeoutDrainsQueuedPayloadBeforeReaderOwnedClose(t *testing.T) {
+func TestShutdownTimeoutDrainsQueuedAggregateBeforeReaderOwnedClose(t *testing.T) {
 	handler := newReadTestHandler()
 	handler.output.configure(outputManagerConfig{flushTimeout: 5 * time.Millisecond}, handlerTestLogger)
 	handler.ackCloseReceived = make(chan struct{})
 	handler.AttachOutputReader()
 	handler.maprMessages <- "queued aggregate"
-	handler.lines <- line.New(bytes.NewBufferString("queued line"), 1, 100, "app.log")
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -482,12 +480,9 @@ func TestShutdownTimeoutDrainsQueuedPayloadBeforeReaderOwnedClose(t *testing.T) 
 	if got := string(readNext()); !strings.Contains(got, "queued aggregate") {
 		t.Fatalf("second message = %q, want queued aggregate", got)
 	}
-	if got := string(readNext()); !strings.Contains(got, "queued line") {
-		t.Fatalf("third message = %q, want queued line", got)
-	}
 	wantSync := append([]byte(".syn close connection"), protocol.MessageDelimiter)
 	if got := readNext(); !bytes.Equal(got, wantSync) {
-		t.Fatalf("fourth message = %q, want %q", got, wantSync)
+		t.Fatalf("third message = %q, want %q", got, wantSync)
 	}
 
 	ackClose()

@@ -14,7 +14,7 @@ channel-less path is now unconditional.
 
 The original dgrep implementation used multiple channels in a pipeline:
 - `rawLines chan *bytes.Buffer` (buffer: 100) - Raw lines read from file
-- `lines chan *line.Line` (buffer: 100) - Filtered lines to send to client
+- `lines` channel (buffer: 100) - Allocated line objects to send to client
 
 This created several performance issues:
 1. Fixed channel buffer sizes causing blocking under high throughput
@@ -24,21 +24,20 @@ This created several performance issues:
 
 ## Solution
 
-The channel-less implementation replaces the channel pipeline with direct function calls using a `LineProcessor` interface.
+The channel-less implementation replaces the channel pipeline with direct function calls using the `line.Processor` interface.
 
 ### Key Components
 
-1. **LineProcessor Interface** (`internal/io/line/processor.go`)
+1. **line.Processor Interface** (`internal/io/line/processor.go`)
    - Defines methods for processing lines without channels
    - `ProcessLine()` - Handle a single line
    - `Flush()` - Ensure buffered data is written
    - `Close()` - Clean up resources
 
-2. **GrepLineProcessor** (`internal/server/handlers/lineprocessor.go`)
-   - Implements LineProcessor for grep operations
-   - Writes directly to the network connection
-   - Uses internal buffering for efficiency (64KB buffer)
-   - Thread-safe with mutex protection
+2. **DirectLineProcessor** (`internal/server/handlers/line_writer.go`)
+   - Implements `line.Processor` for direct read operations
+   - Delegates formatted output to the active direct or network writer
+   - Flushes the writer at read boundaries
 
 3. **File Reading** (`internal/io/fs/readfile_processor_optimized.go`)
    - `Start()` - Channel-less file reading

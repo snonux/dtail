@@ -13,7 +13,6 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
@@ -459,7 +458,6 @@ func newSessionTestHandler(userName string) *ServerHandler {
 	handler := &ServerHandler{
 		baseHandler: baseHandler{
 			done:             internal.NewDone(),
-			lines:            make(chan *line.Line, 4),
 			serverMessages:   make(chan string, 8),
 			maprMessages:     make(chan string, 4),
 			ackCloseReceived: make(chan struct{}),

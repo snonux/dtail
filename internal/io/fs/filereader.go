@@ -16,8 +16,8 @@ var ErrReaderWorkerPanic = errors.New("file reader background worker panic")
 
 // FileReader is the interface used on the dtail server to read/cat/grep/mapr...
 // a file. Line delivery is processor-based (line.Processor); the historic
-// channel-based Start(chan<- *line.Line) method was removed once every read path
-// migrated to the processor pipeline (task iv0).
+// channel-based reader entry point was removed once every read path migrated
+// to the processor pipeline (task iv0).
 type FileReader interface {
 	Start(ctx context.Context, ltx lcontext.LContext, processor line.Processor, re regex.Regex) error
 	FilePath() string

@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/logging"
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
 	userserver "github.com/mimecast/dtail/internal/user/server"
@@ -28,7 +27,6 @@ func TestAggregatePointerRaceWithShutdown(t *testing.T) {
 	for i := 0; i < iterations; i++ {
 		h := &baseHandler{
 			done:           internal.NewDone(),
-			lines:          make(chan *line.Line, 4),
 			serverMessages: make(chan string, 8),
 			maprMessages:   make(chan string, 4),
 			user:           &userserver.User{Name: "race-test-output-user"},
