@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/clientlog"
@@ -38,6 +39,15 @@ type MaprClient struct {
 	session *maprclient.SessionState
 	// Selected cumulative reporting mode.
 	mode MaprClientMode
+	// Publication state prevents an empty interval from replacing a result
+	// produced earlier in the same query generation.
+	outfileState outfileReportState
+}
+
+type outfileReportState struct {
+	mu         sync.Mutex
+	generation uint64
+	hasRows    bool
 }
 
 // NewMaprClient returns a new mapreduce client.
@@ -216,6 +226,20 @@ func (c *MaprClient) printResults(snapshot maprclient.SessionSnapshot) error {
 }
 
 func (c *MaprClient) writeResultsToOutfile(snapshot maprclient.SessionSnapshot, finalResult bool) error {
+	current, err := c.session.WithCurrentSnapshot(snapshot, func() error {
+		// Lock order inside the callback is SessionState read lock, then
+		// outfileState.mu, then the aggregate/file locks. Do not re-enter
+		// SessionState from this callback.
+		return c.writeCurrentResultsToOutfile(snapshot, finalResult)
+	})
+	if !current {
+		c.clientLogger().Debug("Discarding stale mapreduce outfile result", "generation", snapshot.Generation)
+		return nil
+	}
+	return err
+}
+
+func (c *MaprClient) writeCurrentResultsToOutfile(snapshot maprclient.SessionSnapshot, finalResult bool) error {
 	cumulative := c.isCumulative(snapshot.Query)
 	c.clientLogger().Debug("writeResultsToOutfile called", "finalResult", finalResult, "cumulative", cumulative, "generation", snapshot.Generation)
 	if cumulative {
@@ -225,8 +249,38 @@ func (c *MaprClient) writeResultsToOutfile(snapshot maprclient.SessionSnapshot, 
 		c.clientLogger().Debug("WriteResult completed for cumulative mode")
 		return nil
 	}
-	if err := snapshot.GlobalGroup.SwapOut().WriteResult(snapshot.Query, true); err != nil {
+
+	if snapshot.Query.Outfile.AppendMode {
+		group := snapshot.GlobalGroup.SwapOut()
+		if err := group.WriteResult(snapshot.Query, true); err != nil {
+			return fmt.Errorf("unable to write non-cumulative mapreduce result: %w", err)
+		}
+		c.clientLogger().Debug("WriteResult completed for non-cumulative append mode")
+		return nil
+	}
+
+	// Keep detaching and publishing in one critical section so overlapping
+	// reports cannot write older intervals after newer ones.
+	c.outfileState.mu.Lock()
+	defer c.outfileState.mu.Unlock()
+
+	group := snapshot.GlobalGroup.SwapOut()
+	empty := group.IsEmpty()
+	if c.outfileState.generation != snapshot.Generation {
+		// An outfile from an earlier generation is stale. Leave hasRows false
+		// so the first empty interval replaces it with this query's header.
+		c.outfileState.generation = snapshot.Generation
+		c.outfileState.hasRows = false
+	}
+	if empty && c.outfileState.hasRows {
+		c.clientLogger().Debug("Preserving previous non-empty outfile result", "generation", snapshot.Generation)
+		return nil
+	}
+	if err := group.WriteResult(snapshot.Query, true); err != nil {
 		return fmt.Errorf("unable to write non-cumulative mapreduce result: %w", err)
+	}
+	if !empty {
+		c.outfileState.hasRows = true
 	}
 	c.clientLogger().Debug("WriteResult completed for non-cumulative mode")
 	return nil

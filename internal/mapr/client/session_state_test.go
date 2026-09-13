@@ -1,6 +1,8 @@
 package client
 
 import (
+	"fmt"
+	"runtime"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/logging"
@@ -68,6 +70,78 @@ func TestSessionStateCommitQueryRejectsInvalidQuery(t *testing.T) {
 	}
 	if after.Query == nil || after.Query.RawQuery != before.Query.RawQuery {
 		t.Fatalf("query changed on invalid query: before=%#v after=%#v", before.Query, after.Query)
+	}
+}
+
+func TestSessionStateWithCurrentSnapshotOrdersPublicationAndCommit(t *testing.T) {
+	query := mustSessionStateQuery(t, "select count(status) from stats group by status")
+	state := NewSessionState(query, logging.NopLogger{})
+	snapshot := state.Snapshot()
+
+	publicationEntered := make(chan struct{})
+	releasePublication := make(chan struct{})
+	publicationDone := make(chan error, 1)
+	go func() {
+		run, err := state.WithCurrentSnapshot(snapshot, func() error {
+			close(publicationEntered)
+			<-releasePublication
+			return nil
+		})
+		if err == nil && !run {
+			err = fmt.Errorf("current snapshot callback was not run")
+		}
+		publicationDone <- err
+	}()
+	<-publicationEntered
+
+	commitStarted := make(chan struct{})
+	commitDone := make(chan error, 1)
+	go func() {
+		close(commitStarted)
+		_, err := state.CommitQuery(query.RawQuery, 1)
+		commitDone <- err
+	}()
+	<-commitStarted
+
+	writerWaiting := false
+	for range 10_000 {
+		if state.mu.TryRLock() {
+			state.mu.RUnlock()
+			runtime.Gosched()
+			continue
+		}
+		writerWaiting = true
+		break
+	}
+	if !writerWaiting {
+		close(releasePublication)
+		t.Fatal("CommitQuery did not wait for the publication read lock")
+	}
+	select {
+	case err := <-commitDone:
+		close(releasePublication)
+		t.Fatalf("CommitQuery completed during publication with error %v", err)
+	default:
+	}
+
+	close(releasePublication)
+	if err := <-publicationDone; err != nil {
+		t.Fatalf("WithCurrentSnapshot() error = %v", err)
+	}
+	if err := <-commitDone; err != nil {
+		t.Fatalf("CommitQuery() error = %v", err)
+	}
+
+	callbackCalled := false
+	run, err := state.WithCurrentSnapshot(snapshot, func() error {
+		callbackCalled = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stale WithCurrentSnapshot() error = %v", err)
+	}
+	if run || callbackCalled {
+		t.Fatalf("stale WithCurrentSnapshot() = run:%v callbackCalled:%v, want both false", run, callbackCalled)
 	}
 }
 

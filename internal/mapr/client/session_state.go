@@ -52,6 +52,19 @@ func (s *SessionState) Snapshot() SessionSnapshot {
 	}
 }
 
+// WithCurrentSnapshot calls fn only while snapshot still identifies the active
+// query generation. The read lock prevents CommitQuery from completing during
+// fn. The callback must not call another SessionState method.
+func (s *SessionState) WithCurrentSnapshot(snapshot SessionSnapshot, fn func() error) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.generation != snapshot.Generation || s.query != snapshot.Query || s.global != snapshot.GlobalGroup {
+		return false, nil
+	}
+	return true, fn()
+}
+
 // Changes returns a channel that is signaled whenever a new generation is committed.
 func (s *SessionState) Changes() <-chan struct{} {
 	return s.changedCh

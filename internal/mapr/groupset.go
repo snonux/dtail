@@ -44,6 +44,11 @@ func (g *GroupSet) String() string {
 	return fmt.Sprintf("GroupSet(%v)", g.sets)
 }
 
+// IsEmpty reports whether the group set contains any aggregate rows.
+func (g *GroupSet) IsEmpty() bool {
+	return len(g.sets) == 0
+}
+
 // InitSet makes the group set empty (initialize).
 func (g *GroupSet) InitSet() {
 	g.sets = make(map[string]*AggregateSet)
