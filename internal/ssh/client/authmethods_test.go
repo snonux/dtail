@@ -3,6 +3,7 @@ package client
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -59,11 +60,73 @@ func (s *mockSigner) Sign(_ io.Reader, _ []byte) (*gossh.Signature, error) {
 	}, nil
 }
 
+func TestInitSSHAuthMethodsUsesConfiguredPaths(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+	privateKeyPath := "/configured/id_rsa"
+	t.Setenv("HOME", "/tmp/dtail-auth-config-home")
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/ignored-environment-key")
+
+	originalPrivateKeySigner := privateKeySigner
+	originalAgentSigners := agentSigners
+	t.Cleanup(func() {
+		privateKeySigner = originalPrivateKeySigner
+		agentSigners = originalAgentSigners
+	})
+
+	var attemptedPaths []string
+	privateKeySigner = func(path string) (gossh.Signer, error) {
+		attemptedPaths = append(attemptedPaths, path)
+		if path == privateKeyPath {
+			return newMockSigner("configured"), nil
+		}
+		return nil, fmt.Errorf("missing private key: %s", path)
+	}
+	agentSigners = func(int, logging.Logger) ([]gossh.Signer, io.Closer, error) {
+		return nil, noAuthCloser, nil
+	}
+
+	methods, callback, closer, err := InitSSHAuthMethods(nil, nil, AuthMethodConfig{
+		TrustAllHosts:  true,
+		KnownHostsPath: knownHostsPath,
+		PrivateKeyPath: privateKeyPath,
+		AgentKeyIndex:  -1,
+	}, sshClientTestLogger, sshClientTestLogger)
+	if err != nil {
+		t.Fatalf("InitSSHAuthMethods: %v", err)
+	}
+	if len(methods) != 1 {
+		t.Fatalf("auth method count = %d, want 1", len(methods))
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("close auth resources: %v", err)
+	}
+	knownHostsCallback, ok := callback.(*KnownHostsCallback)
+	if !ok {
+		t.Fatalf("callback type = %T, want *KnownHostsCallback", callback)
+	}
+	if got := knownHostsCallback.knownHostsPath; got != knownHostsPath {
+		t.Fatalf("known hosts path = %q, want %q", got, knownHostsPath)
+	}
+	for _, path := range attemptedPaths {
+		if path == "/tmp/ignored-environment-key" {
+			t.Fatalf("SSH auth layer selected environment path %q", path)
+		}
+	}
+}
+
+func TestInitSSHAuthMethodsRejectsConfiguredKnownHostsDirectory(t *testing.T) {
+	_, _, _, err := InitSSHAuthMethods(nil, nil, AuthMethodConfig{
+		KnownHostsPath: string(filepath.Separator),
+	}, sshClientTestLogger, sshClientTestLogger)
+	if err == nil {
+		t.Fatal("InitSSHAuthMethods accepted a directory as known_hosts path")
+	}
+}
+
 func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 	homeDir := "/tmp/dtail-auth-order"
 	t.Setenv("HOME", homeDir)
-	// Keep this unit test deterministic regardless of integration-mode env.
-	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
@@ -93,7 +156,7 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 		return []gossh.Signer{newMockSigner("agent")}, agentCloser, nil
 	}
 
-	methods, closer, err := collectKnownHostsAuthMethods("/custom/id_fast", 7, sshClientTestLogger)
+	methods, closer, err := collectKnownHostsAuthMethods("/custom/id_fast", nil, 7, sshClientTestLogger)
 	if err != nil {
 		t.Fatalf("collectKnownHostsAuthMethods: %v", err)
 	}
@@ -111,7 +174,7 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 	}
 
 	callOrder = nil
-	signers, sCloser := collectKnownHostsSigners("/custom/id_fast", 7, sshClientTestLogger)
+	signers, sCloser := collectKnownHostsSigners("/custom/id_fast", nil, 7, sshClientTestLogger)
 	if len(signers) != 4 {
 		t.Fatalf("Expected 4 signers, got %d", len(signers))
 	}
@@ -136,8 +199,6 @@ func TestCollectKnownHostsAuthMethodsOrder(t *testing.T) {
 func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 	homeDir := "/tmp/dtail-auth-dedupe"
 	t.Setenv("HOME", homeDir)
-	// Keep this unit test deterministic regardless of integration-mode env.
-	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
@@ -161,7 +222,7 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 		return []gossh.Signer{sharedSigner}, agentCloser, nil
 	}
 
-	methods, closer, err := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", 2, sshClientTestLogger)
+	methods, closer, err := collectKnownHostsAuthMethods(homeDir+"/.ssh/id_rsa", nil, 2, sshClientTestLogger)
 	if err != nil {
 		t.Fatalf("collectKnownHostsAuthMethods: %v", err)
 	}
@@ -174,7 +235,7 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 	_ = closer.Close()
 
 	callOrder = nil
-	signers, sCloser := collectKnownHostsSigners(homeDir+"/.ssh/id_rsa", 2, sshClientTestLogger)
+	signers, sCloser := collectKnownHostsSigners(homeDir+"/.ssh/id_rsa", nil, 2, sshClientTestLogger)
 	if len(signers) != 1 {
 		t.Fatalf("Expected duplicate keys to collapse to 1 signer, got %d", len(signers))
 	}
@@ -197,7 +258,6 @@ func TestCollectKnownHostsAuthMethodsSkipsDuplicateDefaultPath(t *testing.T) {
 
 func TestCollectKnownHostsAuthMethodsReturnsErrorAndClosesAgentWithoutKeys(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
@@ -214,7 +274,7 @@ func TestCollectKnownHostsAuthMethodsReturnsErrorAndClosesAgentWithoutKeys(t *te
 		return nil, agentCloser, nil
 	}
 
-	methods, closer, err := collectKnownHostsAuthMethods("/missing/explicit-key", 0, sshClientTestLogger)
+	methods, closer, err := collectKnownHostsAuthMethods("/missing/explicit-key", nil, 0, sshClientTestLogger)
 	if err == nil {
 		t.Fatal("collectKnownHostsAuthMethods succeeded without any usable key")
 	}
@@ -226,13 +286,14 @@ func TestCollectKnownHostsAuthMethodsReturnsErrorAndClosesAgentWithoutKeys(t *te
 	}
 }
 
-func TestCollectKnownHostsSignersIncludesIntegrationFallbackForExplicitKey(t *testing.T) {
+func TestCollectKnownHostsSignersIncludesConfiguredFallbackForExplicitKey(t *testing.T) {
 	homeDir := "/tmp/dtail-auth-integration-fallback"
 	suiteKeyPath := "/tmp/dtail-suite-auth/id_rsa"
 	explicitKeyPath := "/tmp/dtail-explicit-auth/id_rsa"
 	t.Setenv("HOME", homeDir)
+	// Environment state must not select SSH trust or key paths in this layer.
 	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
-	t.Setenv("DTAIL_AUTH_KEY_PATH", suiteKeyPath)
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/ignored-environment-key")
 
 	originalPrivateKeySigner := privateKeySigner
 	originalAgentSigners := agentSigners
@@ -258,7 +319,7 @@ func TestCollectKnownHostsSignersIncludesIntegrationFallbackForExplicitKey(t *te
 		return nil, noAuthCloser, nil
 	}
 
-	signers, closer := collectKnownHostsSigners(explicitKeyPath, 4, sshClientTestLogger)
+	signers, closer := collectKnownHostsSigners(explicitKeyPath, []string{suiteKeyPath}, 4, sshClientTestLogger)
 	if len(signers) != 2 {
 		t.Fatalf("Expected explicit and integration fallback signers, got %d", len(signers))
 	}

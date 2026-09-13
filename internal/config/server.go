@@ -4,6 +4,8 @@ import (
 	"errors"
 )
 
+const defaultServerHostKeyPath = "./cache/ssh_host_key"
+
 // Permissions map. Each SSH user has a list of permissions which log files it
 // is allowed to follow and which ones not.
 type Permissions struct {
@@ -55,8 +57,16 @@ type ServerConfig struct {
 	Permissions Permissions `json:",omitempty"`
 	// The mapr log format
 	MapreduceLogFormat string `json:",omitempty"`
-	// The default path of the server host key
+	// HostKeyFile is the legacy private SSH host-key path.
+	//
+	// Deprecated: use HostKeyPath. Existing configuration files remain supported.
 	HostKeyFile string
+	// HostKeyPath selects the private SSH host key. When empty, HostKeyFile is
+	// used for compatibility; when both are empty, the built-in path is used.
+	HostKeyPath string `json:",omitempty"`
+	// AuthorizedKeysPath selects one authorized_keys file for all users. When
+	// empty, the per-user cache and ~/.ssh/authorized_keys lookup is used.
+	AuthorizedKeysPath string `json:",omitempty"`
 	// The host key size in bits
 	HostKeyBits int
 	// Scheduled mapreduce jobs.
@@ -123,7 +133,6 @@ func newDefaultServerConfig() *ServerConfig {
 	defaultBindAddress := "0.0.0.0"
 	return &ServerConfig{
 		HostKeyBits:         4096,
-		HostKeyFile:         "./cache/ssh_host_key",
 		MapreduceLogFormat:  "default",
 		MaxConcurrentCats:   2,
 		MaxConcurrentTails:  50,
@@ -160,6 +169,21 @@ func newDefaultServerConfig() *ServerConfig {
 // compare default configuration without running the full config initializer.
 func NewDefaultServerConfigForTest() *ServerConfig {
 	return newDefaultServerConfig()
+}
+
+// EffectiveHostKeyPath returns the configured SSH host-key path, including
+// compatibility with the legacy HostKeyFile setting.
+func (c *ServerConfig) EffectiveHostKeyPath() string {
+	if c == nil {
+		return ""
+	}
+	if c.HostKeyPath != "" {
+		return c.HostKeyPath
+	}
+	if c.HostKeyFile != "" {
+		return c.HostKeyFile
+	}
+	return defaultServerHostKeyPath
 }
 
 // UserPermissions retrieves the permission set of a given user.

@@ -17,11 +17,15 @@ import (
 type Args struct {
 	lcontext.LContext
 	Arguments             []string
+	AuthorizedKeysPath    string
 	ConfigFile            string
 	ConnectionsPerCPU     int
 	ControlTTYPath        string
 	Discovery             string
+	HostnameOverride      string
+	HostKeyPath           string
 	InteractiveQuery      bool
+	KnownHostsPath        string
 	LogDir                string
 	Logger                string
 	LogLevel              string
@@ -39,13 +43,16 @@ type Args struct {
 	SSHHostKeyCallback    gossh.HostKeyCallback
 	SSHPort               int
 	SSHPrivateKeyFilePath string
-	Serverless            bool
-	ServersStr            string
-	Plain                 bool
-	Timeout               int
-	TrustAllHosts         bool
-	UserName              string
-	What                  string
+	// SSHPrivateKeyFallbackPaths contains additional bootstrap keys selected
+	// during configuration initialization. It is not exposed as a CLI flag.
+	SSHPrivateKeyFallbackPaths []string
+	Serverless                 bool
+	ServersStr                 string
+	Plain                      bool
+	Timeout                    int
+	TrustAllHosts              bool
+	UserName                   string
+	What                       string
 }
 
 func (a *Args) String() string {
@@ -54,11 +61,15 @@ func (a *Args) String() string {
 	sb.WriteString("Args(")
 
 	fmt.Fprintf(&sb, "Arguments:%v,", a.Arguments)
+	fmt.Fprintf(&sb, "AuthorizedKeysPath:%v,", a.AuthorizedKeysPath)
 	fmt.Fprintf(&sb, "ConfigFile:%v,", a.ConfigFile)
 	fmt.Fprintf(&sb, "ConnectionsPerCPU:%v,", a.ConnectionsPerCPU)
 	fmt.Fprintf(&sb, "ControlTTYPath:%v,", a.ControlTTYPath)
 	fmt.Fprintf(&sb, "Discovery:%v,", a.Discovery)
+	fmt.Fprintf(&sb, "HostnameOverride:%v,", a.HostnameOverride)
+	fmt.Fprintf(&sb, "HostKeyPath:%v,", a.HostKeyPath)
 	fmt.Fprintf(&sb, "InteractiveQuery:%v,", a.InteractiveQuery)
+	fmt.Fprintf(&sb, "KnownHostsPath:%v,", a.KnownHostsPath)
 	fmt.Fprintf(&sb, "LogDir:%v,", a.LogDir)
 	fmt.Fprintf(&sb, "LogLevel:%v,", a.LogLevel)
 	fmt.Fprintf(&sb, "LogPayload:%v,", a.LogPayload)

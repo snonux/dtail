@@ -18,7 +18,7 @@ func TestNewReturnsMalformedHostKeyError(t *testing.T) {
 	}
 
 	serverConfig := config.NewDefaultServerConfigForTest()
-	serverConfig.HostKeyFile = hostKeyFile
+	serverConfig.HostKeyPath = hostKeyFile
 	_, err := New(config.RuntimeConfig{
 		Server: serverConfig,
 		Common: &config.CommonConfig{SSHPort: 2222, CacheDir: t.TempDir()},

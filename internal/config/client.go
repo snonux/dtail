@@ -111,6 +111,9 @@ type ClientConfig struct {
 	TermColors       termColors `json:",omitempty"`
 	AuthKeyPath      string     `json:",omitempty"`
 	AuthKeyDisable   bool       `json:",omitempty"`
+	// KnownHostsPath selects the OpenSSH known_hosts file. An empty value uses
+	// the current user's ~/.ssh/known_hosts file.
+	KnownHostsPath string `json:",omitempty"`
 	// LogPayload opts in to teeing the full retrieved payload (the bulk
 	// dcat/dgrep/dtail output) into the daily client log file. Default false:
 	// the file keeps diagnostics/audit lines only, so a large read no longer

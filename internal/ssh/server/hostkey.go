@@ -5,7 +5,6 @@ import (
 	"fmt"
 	iofs "io/fs"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/ssh"
@@ -24,9 +23,6 @@ func PrivateHostKey(hostKeyFile string, hostKeyBits int, logger logging.Logger) 
 	}
 	if hostKeyBits <= 0 {
 		hostKeyBits = defaultHostKeyBits
-	}
-	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		hostKeyFile = "./ssh_host_key"
 	}
 	hostKeyPath, err := fs.NewRootedPath(hostKeyFile)
 	if err != nil {

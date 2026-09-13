@@ -22,7 +22,7 @@ type authorizedKeyParser func([]byte) (gossh.PublicKey, string, []string, []byte
 // NewPublicKeyCallback creates an instance-scoped SSH public key callback.
 // keyStore must be non-nil; callers are responsible for constructing and
 // wiring the store. There is no shared package-level fallback.
-func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
+func NewPublicKeyCallback(authKeyEnabled bool, cacheDir, authorizedKeysPath string,
 	keyStore *AuthKeyStore, logger logging.Logger) func(gossh.ConnMetadata, gossh.PublicKey) (*gossh.Permissions, error) {
 
 	if keyStore == nil {
@@ -30,12 +30,12 @@ func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
 	}
 	logger = logging.OrNop(logger)
 	return func(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey) (*gossh.Permissions, error) {
-		return publicKeyCallback(c, offeredPubKey, authKeyEnabled, cacheDir, keyStore, logger)
+		return publicKeyCallback(c, offeredPubKey, authKeyEnabled, cacheDir, authorizedKeysPath, keyStore, logger)
 	}
 }
 
 func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
-	authKeyEnabled bool, cacheDir string, keyStore *AuthKeyStore,
+	authKeyEnabled bool, cacheDir, authorizedKeysPath string, keyStore *AuthKeyStore,
 	logger logging.Logger) (*gossh.Permissions, error) {
 
 	if config.IsPasswordOnlyUser(c.User()) {
@@ -55,16 +55,16 @@ func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
 		}
 	}
 
-	authorizedKeysPath, err := authorizedKeysPathForUser(user, cacheDir)
+	rootedAuthorizedKeysPath, err := authorizedKeysPathForUser(user, cacheDir, authorizedKeysPath)
 	if err != nil {
 		return nil, err
 	}
 
-	logger.Info(user, "Reading", authorizedKeysPath.Path())
-	authorizedKeysBytes, err := authorizedKeysPath.ReadFile()
+	logger.Info(user, "Reading", rootedAuthorizedKeysPath.Path())
+	authorizedKeysBytes, err := rootedAuthorizedKeysPath.ReadFile()
 	if err != nil {
 		return nil, fmt.Errorf("unable to read authorized keys file|%s|%s|%s",
-			authorizedKeysPath.Path(), user, err.Error())
+			rootedAuthorizedKeysPath.Path(), user, err.Error())
 	}
 
 	return verifyAuthorizedKeys(user, authorizedKeysBytes, offeredPubKey, logger)
@@ -133,9 +133,9 @@ func permissionsFromPublicKey(offeredPubKey gossh.PublicKey) *gossh.Permissions 
 
 type userLookupFunc func(string) (*goUser.User, error)
 
-func authorizedKeysPathForUser(user *user.User, cacheDir string) (fs.RootedPath, error) {
-	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		return fs.NewRootedPath(config.IntegrationSSHPrivateKeyPath() + ".pub")
+func authorizedKeysPathForUser(user *user.User, cacheDir, configuredPath string) (fs.RootedPath, error) {
+	if configuredPath != "" {
+		return fs.NewRootedPath(configuredPath)
 	}
 
 	cwd, err := os.Getwd()

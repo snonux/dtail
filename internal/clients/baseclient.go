@@ -89,8 +89,13 @@ func (c *baseClient) init() error {
 		return nil
 	}
 	sshAuthMethods, hostKeyCallback, authCloser, err := client.InitSSHAuthMethods(
-		c.SSHAuthMethods, c.SSHHostKeyCallback, c.TrustAllHosts,
-		c.SSHPrivateKeyFilePath, c.SSHAgentKeyIndex, c.clientLogger(), c.loggers.Common)
+		c.SSHAuthMethods, c.SSHHostKeyCallback, client.AuthMethodConfig{
+			TrustAllHosts:             c.TrustAllHosts,
+			KnownHostsPath:            c.KnownHostsPath,
+			PrivateKeyPath:            c.SSHPrivateKeyFilePath,
+			AdditionalPrivateKeyPaths: c.SSHPrivateKeyFallbackPaths,
+			AgentKeyIndex:             c.SSHAgentKeyIndex,
+		}, c.clientLogger(), c.loggers.Common)
 	if err != nil {
 		return fmt.Errorf("initialize SSH authentication: %w", err)
 	}

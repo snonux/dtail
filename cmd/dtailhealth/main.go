@@ -49,6 +49,7 @@ func run() int {
 	var pprof string
 
 	flag.BoolVar(&displayVersion, "version", false, "Display version")
+	flag.StringVar(&args.HostnameOverride, "hostname-override", "", "Override the hostname used in logs and output")
 	flag.StringVar(&args.Logger, "logger", config.DefaultHealthCheckLogger, "Logger name")
 	flag.StringVar(&args.LogLevel, "logLevel", "none", "Log level")
 	flag.StringVar(&args.ServersStr, "server", "", "Remote server to connect")

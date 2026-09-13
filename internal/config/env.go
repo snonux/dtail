@@ -2,40 +2,23 @@ package config
 
 import "os"
 
-const legacyIntegrationSSHPrivateKeyPath = "./id_rsa"
-
 // Env returns true when a given environment variable is set to "yes".
 func Env(env string) bool {
 	return os.Getenv(env) == "yes"
 }
 
-// IntegrationSSHPrivateKeyPath returns the private key used to bootstrap
-// integration-test SSH connections. TestMain normally provides a process-local
-// key through DTAIL_AUTH_KEY_PATH; the relative path preserves compatibility
-// with older integration harnesses that provide ./id_rsa themselves.
+// IntegrationSSHPrivateKeyPath returns the bootstrap key path used by the
+// legacy integration harness. Runtime SSH setup receives the resolved path
+// through Args; this helper remains for integration-test compatibility.
 func IntegrationSSHPrivateKeyPath() string {
-	if path := os.Getenv("DTAIL_AUTH_KEY_PATH"); path != "" {
-		return path
-	}
-	return legacyIntegrationSSHPrivateKeyPath
+	return integrationSSHPrivateKeyPath(os.Getenv("DTAIL_AUTH_KEY_PATH"))
 }
 
-// Hostname returns the current hostname. It can be overriden with
-// DTAIL_HOSTNAME_OVERRIDE environment variable (useful for integration tests).
-// When DTAIL_INTEGRATION_TEST_RUN_MODE is set to "yes", it automatically
-// returns "integrationtest" as the hostname.
+// Hostname returns the configured hostname override or the system hostname.
+// Environment compatibility is resolved once by Setup rather than here.
 func Hostname() (string, error) {
-	// Check if we're in integration test mode
-	if Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		return "integrationtest", nil
+	if Common != nil && Common.HostnameOverride != "" {
+		return Common.HostnameOverride, nil
 	}
-
-	// Check for manual hostname override
-	hostname := os.Getenv("DTAIL_HOSTNAME_OVERRIDE")
-	if len(hostname) > 0 {
-		return hostname, nil
-	}
-
-	// Return actual hostname
 	return os.Hostname()
 }

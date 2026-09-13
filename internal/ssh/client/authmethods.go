@@ -5,12 +5,21 @@ import (
 	"io"
 	"os"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/ssh"
 
 	gossh "golang.org/x/crypto/ssh"
 )
+
+// AuthMethodConfig contains filesystem and agent settings used to initialize
+// client SSH authentication.
+type AuthMethodConfig struct {
+	TrustAllHosts             bool
+	KnownHostsPath            string
+	PrivateKeyPath            string
+	AdditionalPrivateKeyPaths []string
+	AgentKeyIndex             int
+}
 
 // noopCloser lets callers unconditionally defer closer.Close() when a code
 // path does not own a real resource (e.g. no agent available).
@@ -31,8 +40,7 @@ var (
 // that consume the returned auth methods have completed. On success the closer
 // is always non-nil so callers can unconditionally defer closer.Close().
 func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
-	hostKeyCallback gossh.HostKeyCallback, trustAllHosts bool,
-	privateKeyPath string, agentKeyIndex int, logger,
+	hostKeyCallback gossh.HostKeyCallback, settings AuthMethodConfig, logger,
 	promptLogger logging.Logger) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
 
 	logger = logging.OrNop(logger)
@@ -43,32 +51,25 @@ func InitSSHAuthMethods(sshAuthMethods []gossh.AuthMethod,
 		}
 		return sshAuthMethods, simpleCallback, noAuthCloser, nil
 	}
-	return initKnownHostsAuthMethods(trustAllHosts, privateKeyPath, agentKeyIndex, logger, promptLogger)
+	return initKnownHostsAuthMethods(settings, logger, promptLogger)
 }
 
-func initKnownHostsAuthMethods(trustAllHosts bool,
-	privateKeyPath string, agentKeyIndex int, logger,
+func initKnownHostsAuthMethods(settings AuthMethodConfig, logger,
 	promptLogger logging.Logger) ([]gossh.AuthMethod, HostKeyCallback, io.Closer, error) {
 
-	knownHostsFile := fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME"))
-	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		// In case of integration test, override known hosts file path.
-		knownHostsFile = "./known_hosts"
+	knownHostsFile := settings.KnownHostsPath
+	if knownHostsFile == "" {
+		knownHostsFile = fmt.Sprintf("%s/.ssh/known_hosts", os.Getenv("HOME"))
 	}
 
-	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, trustAllHosts, logger, promptLogger)
+	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, settings.TrustAllHosts, logger, promptLogger)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("initialize known-hosts callback from %q: %w", knownHostsFile, err)
 	}
 	logger.Debug("initKnownHostsAuthMethods", "Added known hosts file path", knownHostsFile)
 
-	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		if privateKeyPath == "" {
-			privateKeyPath = config.IntegrationSSHPrivateKeyPath()
-		}
-	}
-
-	sshAuthMethods, agentCloser, err := collectKnownHostsAuthMethods(privateKeyPath, agentKeyIndex, logger)
+	sshAuthMethods, agentCloser, err := collectKnownHostsAuthMethods(settings.PrivateKeyPath,
+		settings.AdditionalPrivateKeyPaths, settings.AgentKeyIndex, logger)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -76,9 +77,9 @@ func initKnownHostsAuthMethods(trustAllHosts bool,
 	return sshAuthMethods, knownHostsCallback, agentCloser, nil
 }
 
-func collectKnownHostsAuthMethods(privateKeyPath string, agentKeyIndex int,
+func collectKnownHostsAuthMethods(privateKeyPath string, additionalPrivateKeyPaths []string, agentKeyIndex int,
 	logger logging.Logger) ([]gossh.AuthMethod, io.Closer, error) {
-	signers, agentCloser := collectKnownHostsSigners(privateKeyPath, agentKeyIndex, logger)
+	signers, agentCloser := collectKnownHostsSigners(privateKeyPath, additionalPrivateKeyPaths, agentKeyIndex, logger)
 	if len(signers) == 0 {
 		if err := agentCloser.Close(); err != nil {
 			return nil, nil, fmt.Errorf("close SSH agent after authentication setup failure: %w", err)
@@ -91,7 +92,7 @@ func collectKnownHostsAuthMethods(privateKeyPath string, agentKeyIndex int,
 	return []gossh.AuthMethod{gossh.PublicKeys(signers...)}, agentCloser, nil
 }
 
-func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int,
+func collectKnownHostsSigners(privateKeyPath string, additionalPrivateKeyPaths []string, agentKeyIndex int,
 	logger logging.Logger) ([]gossh.Signer, io.Closer) {
 	var signers []gossh.Signer
 
@@ -102,10 +103,6 @@ func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int,
 		home + "/.ssh/id_ecdsa",
 		home + "/.ssh/id_ed25519",
 	}
-	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		defaultPrivateKeyPaths = append([]string{config.IntegrationSSHPrivateKeyPath()}, defaultPrivateKeyPaths...)
-	}
-
 	if privateKeyPath == "" {
 		privateKeyPath = defaultPrivateKeyPaths[0]
 	}
@@ -162,7 +159,13 @@ func collectKnownHostsSigners(privateKeyPath string, agentKeyIndex int,
 		addSigner(fmt.Sprintf("agent:%d:%d", agentKeyIndex, i), signer)
 	}
 
-	// Third, additional default private key paths.
+	// Third, configuration-selected fallback paths (for example, a test
+	// harness bootstrap key while exercising registration of another key).
+	for _, path := range additionalPrivateKeyPaths {
+		addPrivateKeySigner(path)
+	}
+
+	// Fourth, additional default private key paths.
 	for _, path := range defaultPrivateKeyPaths {
 		addPrivateKeySigner(path)
 	}

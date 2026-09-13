@@ -207,6 +207,24 @@ func TestResolveSSHKeyPath(t *testing.T) {
 }
 
 func TestIntegrationSSHPrivateKeyPath(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		want       string
+	}{
+		{name: "Configured", configured: "/tmp/integration/id_rsa", want: "/tmp/integration/id_rsa"},
+		{name: "LegacyFallback", want: "./id_rsa"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := integrationSSHPrivateKeyPath(tc.configured); got != tc.want {
+				t.Fatalf("integrationSSHPrivateKeyPath(%q) = %q, want %q", tc.configured, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIntegrationSSHPrivateKeyPathCompatibility(t *testing.T) {
 	t.Run("Environment", func(t *testing.T) {
 		t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/integration/id_rsa")
 		if got := IntegrationSSHPrivateKeyPath(); got != "/tmp/integration/id_rsa" {
@@ -216,8 +234,8 @@ func TestIntegrationSSHPrivateKeyPath(t *testing.T) {
 
 	t.Run("LegacyFallback", func(t *testing.T) {
 		t.Setenv("DTAIL_AUTH_KEY_PATH", "")
-		if got := IntegrationSSHPrivateKeyPath(); got != "./id_rsa" {
-			t.Fatalf("IntegrationSSHPrivateKeyPath() = %q, want ./id_rsa", got)
+		if got := IntegrationSSHPrivateKeyPath(); got != legacyIntegrationSSHPrivateKeyPath {
+			t.Fatalf("IntegrationSSHPrivateKeyPath() = %q, want %q", got, legacyIntegrationSSHPrivateKeyPath)
 		}
 	})
 }
@@ -227,6 +245,7 @@ func TestIntegrationSSHPrivateKeyPath(t *testing.T) {
 // DTAIL_AUTH_KEY_PATH and DTAIL_SSH_PRIVATE_KEYFILE_PATH are set,
 // DTAIL_AUTH_KEY_PATH must win.
 func TestProcessEnvVarsAuthKeyPathTakesPrecedence(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 	t.Setenv("DTAIL_AUTH_KEY_PATH", "/env/auth/key")
 	t.Setenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH", "/env/legacy/key")
 
@@ -236,9 +255,7 @@ func TestProcessEnvVarsAuthKeyPathTakesPrecedence(t *testing.T) {
 		Client: newDefaultClientConfig(),
 	}
 	args := &Args{}
-	if err := in.processEnvVars(args); err != nil {
-		t.Fatalf("processEnvVars: %v", err)
-	}
+	in.processEnvVars(args)
 
 	if args.SSHPrivateKeyFilePath != "/env/auth/key" {
 		t.Fatalf("expected DTAIL_AUTH_KEY_PATH to win, got %q", args.SSHPrivateKeyFilePath)
@@ -248,6 +265,7 @@ func TestProcessEnvVarsAuthKeyPathTakesPrecedence(t *testing.T) {
 // TestProcessEnvVarsLegacyFallback verifies that DTAIL_SSH_PRIVATE_KEYFILE_PATH
 // is still applied when DTAIL_AUTH_KEY_PATH is not set.
 func TestProcessEnvVarsLegacyFallback(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 	t.Setenv("DTAIL_AUTH_KEY_PATH", "")
 	t.Setenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH", "/env/legacy/key")
 
@@ -257,9 +275,7 @@ func TestProcessEnvVarsLegacyFallback(t *testing.T) {
 		Client: newDefaultClientConfig(),
 	}
 	args := &Args{}
-	if err := in.processEnvVars(args); err != nil {
-		t.Fatalf("processEnvVars: %v", err)
-	}
+	in.processEnvVars(args)
 
 	if args.SSHPrivateKeyFilePath != "/env/legacy/key" {
 		t.Fatalf("expected legacy env var to be used, got %q", args.SSHPrivateKeyFilePath)
@@ -269,6 +285,7 @@ func TestProcessEnvVarsLegacyFallback(t *testing.T) {
 // TestProcessEnvVarsCLIFlagNotOverridden verifies that an explicit CLI flag
 // value is not overridden by either environment variable.
 func TestProcessEnvVarsCLIFlagNotOverridden(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
 	t.Setenv("DTAIL_AUTH_KEY_PATH", "/env/auth/key")
 	t.Setenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH", "/env/legacy/key")
 
@@ -278,30 +295,196 @@ func TestProcessEnvVarsCLIFlagNotOverridden(t *testing.T) {
 		Client: newDefaultClientConfig(),
 	}
 	args := &Args{SSHPrivateKeyFilePath: "/cli/explicit/key"}
-	if err := in.processEnvVars(args); err != nil {
-		t.Fatalf("processEnvVars: %v", err)
-	}
+	in.processEnvVars(args)
 
 	if args.SSHPrivateKeyFilePath != "/cli/explicit/key" {
 		t.Fatalf("expected CLI flag to be preserved, got %q", args.SSHPrivateKeyFilePath)
 	}
 }
 
-func TestProcessEnvVarsReturnsSetEnvironmentError(t *testing.T) {
+func TestProcessEnvVarsMapsIntegrationModeToConfig(t *testing.T) {
 	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
-	wantErr := errors.New("setenv failed")
-	originalSetEnvironment := setEnvironment
-	setEnvironment = func(string, string) error { return wantErr }
-	t.Cleanup(func() { setEnvironment = originalSetEnvironment })
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/integration/id_rsa")
+	t.Setenv("DTAIL_HOSTNAME_OVERRIDE", "")
 
 	in := initializer{
 		Common: newDefaultCommonConfig(),
 		Server: newDefaultServerConfig(),
 		Client: newDefaultClientConfig(),
 	}
-	err := in.processEnvVars(&Args{})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("processEnvVars error = %v, want %v", err, wantErr)
+	args := &Args{}
+	in.processEnvVars(args)
+
+	if got := in.Common.HostnameOverride; got != integrationHostname {
+		t.Fatalf("HostnameOverride = %q, want %q", got, integrationHostname)
+	}
+	if got := in.Client.KnownHostsPath; got != integrationKnownHostsPath {
+		t.Fatalf("KnownHostsPath = %q, want %q", got, integrationKnownHostsPath)
+	}
+	if got := in.Server.AuthorizedKeysPath; got != "/tmp/integration/id_rsa.pub" {
+		t.Fatalf("AuthorizedKeysPath = %q, want integration public key", got)
+	}
+	if got := in.Server.HostKeyPath; got != integrationHostKeyPath {
+		t.Fatalf("HostKeyPath = %q, want %q", got, integrationHostKeyPath)
+	}
+	if got := in.Server.MaxLineLength; got != 1024 {
+		t.Fatalf("MaxLineLength = %d, want 1024", got)
+	}
+	if got := args.SSHPrivateKeyFallbackPaths; len(got) != 1 || got[0] != "/tmp/integration/id_rsa" {
+		t.Fatalf("SSHPrivateKeyFallbackPaths = %v, want integration private key", got)
+	}
+}
+
+func TestProcessEnvVarsPreservesExplicitSecurityPaths(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/integration/id_rsa")
+	t.Setenv("DTAIL_HOSTNAME_OVERRIDE", "/env/hostname")
+
+	in := initializer{
+		Common: &CommonConfig{HostnameOverride: "config-host"},
+		Server: &ServerConfig{
+			HostKeyFile:        "/config/legacy-host-key",
+			HostKeyPath:        "/config/host-key",
+			AuthorizedKeysPath: "/config/authorized-keys",
+		},
+		Client: &ClientConfig{KnownHostsPath: "/config/known-hosts"},
+	}
+	args := &Args{
+		HostnameOverride:   "cli-host",
+		KnownHostsPath:     "/cli/known-hosts",
+		AuthorizedKeysPath: "/cli/authorized-keys",
+		HostKeyPath:        "/cli/host-key",
+	}
+	in.processEnvVars(args)
+
+	if got := in.Common.HostnameOverride; got != "config-host" {
+		t.Fatalf("config HostnameOverride changed to %q", got)
+	}
+	if got := in.Client.KnownHostsPath; got != "/config/known-hosts" {
+		t.Fatalf("config KnownHostsPath changed to %q", got)
+	}
+	if got := in.Server.AuthorizedKeysPath; got != "/config/authorized-keys" {
+		t.Fatalf("config AuthorizedKeysPath changed to %q", got)
+	}
+	if got := in.Server.HostKeyPath; got != "/config/host-key" {
+		t.Fatalf("config HostKeyPath changed to %q", got)
+	}
+}
+
+func TestProcessEnvVarsPreservesExplicitLegacyDefaultHostKeyPath(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/integration/id_rsa")
+
+	in := initializer{
+		Common: newDefaultCommonConfig(),
+		Server: newDefaultServerConfig(),
+		Client: newDefaultClientConfig(),
+	}
+	in.Server.HostKeyFile = defaultServerHostKeyPath
+	in.processEnvVars(&Args{})
+
+	if got := in.Server.HostKeyPath; got != "" {
+		t.Fatalf("integration mode set HostKeyPath to %q despite explicit legacy HostKeyFile", got)
+	}
+	if got := in.Server.EffectiveHostKeyPath(); got != defaultServerHostKeyPath {
+		t.Fatalf("EffectiveHostKeyPath = %q, want explicit legacy path %q", got, defaultServerHostKeyPath)
+	}
+}
+
+func TestDefaultSecurityPathConfig(t *testing.T) {
+	common := newDefaultCommonConfig()
+	client := newDefaultClientConfig()
+	server := newDefaultServerConfig()
+
+	if common.HostnameOverride != "" || client.KnownHostsPath != "" ||
+		server.AuthorizedKeysPath != "" || server.HostKeyPath != "" {
+		t.Fatalf("explicit path defaults should be empty: common=%+v client=%+v server=%+v",
+			common, client, server)
+	}
+	if got := server.EffectiveHostKeyPath(); got != defaultServerHostKeyPath {
+		t.Fatalf("EffectiveHostKeyPath = %q, want %q", got, defaultServerHostKeyPath)
+	}
+	server.HostKeyPath = "/explicit/host-key"
+	if got := server.EffectiveHostKeyPath(); got != "/explicit/host-key" {
+		t.Fatalf("explicit EffectiveHostKeyPath = %q", got)
+	}
+	server.HostKeyPath = ""
+	server.HostKeyFile = "/legacy/host-key"
+	if got := server.EffectiveHostKeyPath(); got != "/legacy/host-key" {
+		t.Fatalf("legacy EffectiveHostKeyPath = %q", got)
+	}
+}
+
+func TestSetupLoadsExplicitSecurityPaths(t *testing.T) {
+	originalCommon, originalClient, originalServer := Common, Client, Server
+	t.Cleanup(func() {
+		Common, Client, Server = originalCommon, originalClient, originalServer
+	})
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
+	t.Setenv("DTAIL_HOSTNAME_OVERRIDE", "")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "")
+	t.Setenv("DTAIL_SSH_PRIVATE_KEYFILE_PATH", "")
+
+	configPath := filepath.Join(t.TempDir(), "security-paths.conf")
+	writeTestConfig(t, configPath, `{
+  "Common": {"HostnameOverride": "configured-host"},
+  "Client": {"KnownHostsPath": "/config/known_hosts"},
+  "Server": {
+    "AuthorizedKeysPath": "/config/authorized_keys",
+    "HostKeyPath": "/config/ssh_host_key"
+  }
+}`)
+
+	clientArgs := &Args{ConfigFile: configPath, SSHPort: DefaultSSHPort}
+	if err := Setup(source.Client, clientArgs, nil); err != nil {
+		t.Fatalf("Setup client: %v", err)
+	}
+	if clientArgs.HostnameOverride != "configured-host" ||
+		clientArgs.KnownHostsPath != "/config/known_hosts" {
+		t.Fatalf("client args did not receive config paths: %+v", clientArgs)
+	}
+	if hostname, err := Hostname(); err != nil || hostname != "configured-host" {
+		t.Fatalf("Hostname() = %q, %v; want configured-host", hostname, err)
+	}
+
+	serverArgs := &Args{ConfigFile: configPath, SSHPort: DefaultSSHPort}
+	if err := Setup(source.Server, serverArgs, nil); err != nil {
+		t.Fatalf("Setup server: %v", err)
+	}
+	if serverArgs.AuthorizedKeysPath != "/config/authorized_keys" ||
+		serverArgs.HostKeyPath != "/config/ssh_host_key" {
+		t.Fatalf("server args did not receive config paths: %+v", serverArgs)
+	}
+}
+
+func TestSetupFlagsOverrideConfiguredSecurityPaths(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
+	t.Setenv("DTAIL_HOSTNAME_OVERRIDE", "environment-host")
+
+	in := initializer{
+		Common: &CommonConfig{HostnameOverride: "configured-host", SSHPort: DefaultSSHPort},
+		Server: &ServerConfig{
+			AuthorizedKeysPath: "/config/authorized_keys",
+			HostKeyPath:        "/config/ssh_host_key",
+		},
+		Client: &ClientConfig{KnownHostsPath: "/config/known_hosts", AuthKeyDisable: true},
+	}
+	args := &Args{
+		HostnameOverride:   "flag-host",
+		KnownHostsPath:     "/flag/known_hosts",
+		AuthorizedKeysPath: "/flag/authorized_keys",
+		HostKeyPath:        "/flag/ssh_host_key",
+		SSHPort:            DefaultSSHPort,
+	}
+	in.processEnvVars(args)
+	if err := in.setupConfig(transformServer, args, nil); err != nil {
+		t.Fatalf("setupConfig: %v", err)
+	}
+
+	if in.Common.HostnameOverride != "flag-host" ||
+		in.Server.AuthorizedKeysPath != "/flag/authorized_keys" ||
+		in.Server.HostKeyPath != "/flag/ssh_host_key" {
+		t.Fatalf("flag values did not override config: common=%+v server=%+v", in.Common, in.Server)
 	}
 }
 

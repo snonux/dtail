@@ -28,6 +28,8 @@ func TestBindCommonClientFlagsUsesProvidedFlagSet(t *testing.T) {
 		"-cfg", "none",
 		"-cpuprofile",
 		"-files", "/tmp/a.log",
+		"-hostname-override", "test-host",
+		"-known-hosts-path", "/tmp/known_hosts",
 		"-logger", "stdout",
 		"-port", "2022",
 		"-profiledir", "/tmp/profiles",
@@ -44,6 +46,12 @@ func TestBindCommonClientFlagsUsesProvidedFlagSet(t *testing.T) {
 	}
 	if got, want := args.SSHPrivateKeyFilePath, "/tmp/key"; got != want {
 		t.Fatalf("SSHPrivateKeyFilePath = %q, want %q", got, want)
+	}
+	if got, want := args.HostnameOverride, "test-host"; got != want {
+		t.Fatalf("HostnameOverride = %q, want %q", got, want)
+	}
+	if got, want := args.KnownHostsPath, "/tmp/known_hosts"; got != want {
+		t.Fatalf("KnownHostsPath = %q, want %q", got, want)
 	}
 	if got, want := args.SSHPort, 2022; got != want {
 		t.Fatalf("SSHPort = %d, want %d", got, want)

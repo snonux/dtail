@@ -73,7 +73,7 @@ func TestPublicKeyCallbackRejectsPasswordOnlyUsers(t *testing.T) {
 			store.Add(userName, key)
 
 			permissions, err := publicKeyCallback(testConnMetadata{user: userName}, key, true,
-				t.TempDir(), store, logging.NopLogger{})
+				t.TempDir(), "", store, logging.NopLogger{})
 			if err == nil {
 				t.Fatal("Expected public key authentication to be rejected")
 			}
@@ -202,29 +202,23 @@ func TestFindAuthorizedKeysPathUsesCacheDirWhenPresent(t *testing.T) {
 	}
 }
 
-func TestAuthorizedKeysPathForUserUsesIntegrationAuthKeyPath(t *testing.T) {
+func TestAuthorizedKeysPathForUserUsesConfiguredPath(t *testing.T) {
 	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
-	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/dtail-integration-key/id_rsa")
-
-	path, err := authorizedKeysPathForUser(testServerUser(t), "")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/ignored-environment-key")
+	configuredPath := filepath.Join(t.TempDir(), "authorized_keys")
+	path, err := authorizedKeysPathForUser(testServerUser(t), "", configuredPath)
 	if err != nil {
 		t.Fatalf("authorizedKeysPathForUser failed: %v", err)
 	}
-	if got, want := path.Path(), "/tmp/dtail-integration-key/id_rsa.pub"; got != want {
+	if got, want := path.Path(), configuredPath; got != want {
 		t.Fatalf("authorizedKeysPathForUser returned %q, want %q", got, want)
 	}
 }
 
-func TestAuthorizedKeysPathForUserUsesLegacyIntegrationFallback(t *testing.T) {
-	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
-	t.Setenv("DTAIL_AUTH_KEY_PATH", "")
-
-	path, err := authorizedKeysPathForUser(testServerUser(t), "")
-	if err != nil {
-		t.Fatalf("authorizedKeysPathForUser failed: %v", err)
-	}
-	if got, want := path.Path(), "./id_rsa.pub"; got != want {
-		t.Fatalf("authorizedKeysPathForUser returned %q, want %q", got, want)
+func TestAuthorizedKeysPathForUserRejectsConfiguredDirectory(t *testing.T) {
+	_, err := authorizedKeysPathForUser(testServerUser(t), "", string(filepath.Separator))
+	if err == nil {
+		t.Fatal("authorizedKeysPathForUser accepted a directory as the configured file path")
 	}
 }
 

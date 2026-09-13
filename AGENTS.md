@@ -183,6 +183,14 @@ make profile-help
   DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
   ```
 - Integration tests are run by setting DTAIL_INTEGRATION_TEST_RUN_MODE to yes, and by running 'make test'
+- `DTAIL_INTEGRATION_TEST_RUN_MODE=yes` is a compatibility shortcut for the
+  unchanged test harness. During config initialization it supplies
+  `HostnameOverride=integrationtest`, `KnownHostsPath=./known_hosts`,
+  `AuthorizedKeysPath=<DTAIL_AUTH_KEY_PATH>.pub` (or `./id_rsa.pub` when that
+  key variable is unset), and
+  `HostKeyPath=./ssh_host_key` only when those values were not set explicitly.
+  Runtime handlers and SSH packages consume these fields and do not inspect the
+  integration-mode environment variable themselves.
 - Integration tests verify: DCat, DGrep, DMap (MapReduce), DServer, DTail, DTailHealth, and auth-key fast reconnect functionality
 - All tests run with race detection enabled (`--race` flag)
 

@@ -69,10 +69,13 @@ func run() int {
 	flag.IntVar(&args.SSHPort, "port", config.DefaultSSHPort, "SSH server port")
 	flag.IntVar(&shutdownAfter, "shutdownAfter", 0, "Shutdown after so many seconds")
 	flag.StringVar(&args.ConfigFile, "cfg", "", "Config file path")
+	flag.StringVar(&args.HostnameOverride, "hostname-override", "", "Override the hostname used in logs and output")
 	flag.StringVar(&args.LogDir, "logDir", "", "Log dir")
 	flag.StringVar(&args.LogLevel, "logLevel", config.DefaultLogLevel, "Log level")
 	flag.StringVar(&args.Logger, "logger", config.DefaultServerLogger, "Logger name")
 	flag.StringVar(&args.SSHBindAddress, "bindAddress", "", "The SSH bind address")
+	flag.StringVar(&args.AuthorizedKeysPath, "authorized-keys-path", "", "Authorized keys file path")
+	flag.StringVar(&args.HostKeyPath, "host-key-path", "", "Private SSH host key path")
 	flag.StringVar(&pprof, "pprof", "", "Start PProf server this address")
 
 	flag.Parse()

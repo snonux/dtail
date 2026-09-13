@@ -109,11 +109,12 @@ func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) (*Server,
 	s.sshServerConfig.PublicKeyCallback = server.NewPublicKeyCallback(
 		cfg.Server.AuthKeyEnabled,
 		cfg.Common.CacheDir,
+		cfg.Server.AuthorizedKeysPath,
 		s.authKeyStore,
 		logger,
 	)
 
-	privateKey, err := server.PrivateHostKey(cfg.Server.HostKeyFile, cfg.Server.HostKeyBits, logger)
+	privateKey, err := server.PrivateHostKey(cfg.Server.EffectiveHostKeyPath(), cfg.Server.HostKeyBits, logger)
 	if err != nil {
 		return nil, fmt.Errorf("load SSH host key: %w", err)
 	}

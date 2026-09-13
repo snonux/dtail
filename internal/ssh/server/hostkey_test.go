@@ -40,7 +40,9 @@ func TestPrivateHostKeyGeneratesAndReloadsExistingKey(t *testing.T) {
 }
 
 func TestPrivateHostKeyReturnsConfiguredPathError(t *testing.T) {
-	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "")
+	// The explicit path must remain authoritative regardless of test-harness
+	// environment state.
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
 	parent := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(parent, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write parent file: %v", err)
