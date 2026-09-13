@@ -119,6 +119,43 @@ func TestServerlessStartReportsHandlerFactoryFailure(t *testing.T) {
 	}
 }
 
+func TestServerlessAttachesOutputReaderBeforeCommandDispatch(t *testing.T) {
+	clientHandler := newDispatchingServerlessClient()
+	serverHandler := newServerlessLifecycleServer(nil)
+	connector := NewServerless(
+		"test-user",
+		clientHandler,
+		[]string{"health"},
+		sessionspec.Spec{},
+		false,
+		serverlessLifecycleFactory{handler: serverHandler},
+		logging.NopLogger{},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- connector.handle(ctx, cancel)
+	}()
+
+	waitForSignal(t, serverHandler.writeCalled, "initial command dispatch")
+	if attached, writeBeforeAttach := serverHandler.attachmentState(); !attached || writeBeforeAttach {
+		t.Fatalf("reader attachment state = (attached=%v, writeBeforeAttach=%v), want (true, false)",
+			attached, writeBeforeAttach)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serverless handle error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("serverless connector did not stop after attachment-order check")
+	}
+}
+
 type serverlessLifecycleFactory struct {
 	handler serverHandlers.Handler
 }
@@ -218,15 +255,19 @@ func (h *serverlessLifecycleClient) shutdownBeforeOutput() bool {
 }
 
 type serverlessLifecycleServer struct {
-	payload         []byte
-	shutdown        chan struct{}
-	shutdownOnce    sync.Once
-	readStarted     chan struct{}
-	readStartedOnce sync.Once
-	mu              sync.Mutex
-	shutdownCount   int
-	gracefulCount   int
-	eager           bool
+	payload              []byte
+	shutdown             chan struct{}
+	shutdownOnce         sync.Once
+	readStarted          chan struct{}
+	readStartedOnce      sync.Once
+	writeCalled          chan struct{}
+	writeCalledOnce      sync.Once
+	mu                   sync.Mutex
+	shutdownCount        int
+	gracefulCount        int
+	outputReaderAttached bool
+	writeBeforeAttach    bool
+	eager                bool
 }
 
 func newServerlessLifecycleServer(payload []byte) *serverlessLifecycleServer {
@@ -234,6 +275,7 @@ func newServerlessLifecycleServer(payload []byte) *serverlessLifecycleServer {
 		payload:     payload,
 		shutdown:    make(chan struct{}),
 		readStarted: make(chan struct{}),
+		writeCalled: make(chan struct{}),
 	}
 }
 
@@ -258,7 +300,21 @@ func (h *serverlessLifecycleServer) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func (*serverlessLifecycleServer) Write(p []byte) (int, error) { return len(p), nil }
+func (h *serverlessLifecycleServer) AttachOutputReader() {
+	h.mu.Lock()
+	h.outputReaderAttached = true
+	h.mu.Unlock()
+}
+
+func (h *serverlessLifecycleServer) Write(p []byte) (int, error) {
+	h.mu.Lock()
+	if !h.outputReaderAttached {
+		h.writeBeforeAttach = true
+	}
+	h.mu.Unlock()
+	h.writeCalledOnce.Do(func() { close(h.writeCalled) })
+	return len(p), nil
+}
 
 func (h *serverlessLifecycleServer) Shutdown() {
 	h.mu.Lock()
@@ -290,6 +346,38 @@ func (h *serverlessLifecycleServer) gracefulShutdownCalls() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.gracefulCount
+}
+
+func (h *serverlessLifecycleServer) attachmentState() (bool, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.outputReaderAttached, h.writeBeforeAttach
+}
+
+type dispatchingServerlessClient struct {
+	*serverlessLifecycleClient
+	commands chan []byte
+}
+
+func newDispatchingServerlessClient() *dispatchingServerlessClient {
+	return &dispatchingServerlessClient{
+		serverlessLifecycleClient: newServerlessLifecycleClient(),
+		commands:                  make(chan []byte, 1),
+	}
+}
+
+func (h *dispatchingServerlessClient) SendMessage(message string) error {
+	h.commands <- []byte(message)
+	return nil
+}
+
+func (h *dispatchingServerlessClient) Read(p []byte) (int, error) {
+	select {
+	case command := <-h.commands:
+		return copy(p, command), nil
+	case <-h.done:
+		return 0, io.EOF
+	}
 }
 
 type failingServerlessClient struct {

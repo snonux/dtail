@@ -331,6 +331,14 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 		return
 	}
 
+	// Publish the transport reader before either I/O goroutine can dispatch
+	// commands. Input and output goroutines start independently; without this
+	// attachment signal, a fast command can reach shutdown before Read starts
+	// and incorrectly look like a serverless/raw-channel consumer.
+	if outputReader, ok := handler.(interface{ AttachOutputReader() }); ok {
+		outputReader.AttachOutputReader()
+	}
+
 	var terminateOnce sync.Once
 	terminate := func() {
 		defer s.recoverGoroutinePanic("session termination", user, func() { _ = sshConn.Close() })

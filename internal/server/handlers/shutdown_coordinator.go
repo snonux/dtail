@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"time"
 
 	maprserver "github.com/mimecast/dtail/internal/mapr/server"
@@ -106,20 +105,11 @@ func (c *shutdownCoordinator) maybeFinishAggregateInput() {
 }
 
 func (c *shutdownCoordinator) finalizeWhenIdle() {
-	// If we have a output aggregate, trigger final serialization.
-	if aggregate := c.server.Aggregate(); aggregate != nil {
-		c.server.Logger().Info(c.server.LogContext(), "Triggering final output aggregate serialization")
-		aggregate.Serialize(context.Background())
-		// In serverless mode, serialization is synchronous, so no wait needed.
-		if !c.server.Serverless() {
-			time.Sleep(c.server.ShutdownSerializeWait())
-		}
-	}
-
-	// Double-check that we really have no pending work before shutdown.
-	if !c.server.Serverless() {
-		time.Sleep(c.server.ShutdownIdleRecheckWait())
-	}
+	// Pending input is registered before work starts. A map command remains
+	// active until Aggregate.Start synchronously completes its final
+	// Aggregate.Shutdown serialization. Reaching idle is
+	// therefore already the aggregate-completion signal; handler shutdown also
+	// joins Aggregate.Shutdown defensively.
 	finalPending, finalActive := c.server.PendingAndActive()
 	if finalPending == 0 && finalActive == 0 {
 		c.server.Logger().Debug(c.server.LogContext(), "No active commands and no pending files after double-check, triggering shutdown")

@@ -79,9 +79,11 @@ func (s *epochOrderTestServer) PendingAndActive() (int32, int32) {
 	return s.globCapTestServer.PendingAndActive()
 }
 
-func (s *epochOrderTestServer) FlushOutput() {
+func (s *epochOrderTestServer) FlushOutput(context.Context) error {
 	s.record("FlushOutput")
+	return nil
 }
+func (s *epochOrderTestServer) ReportOutputFlushError(uint64, error) {}
 
 func (s *epochOrderTestServer) SignalOutputEOF(epoch uint64) {
 	s.mu.Lock()

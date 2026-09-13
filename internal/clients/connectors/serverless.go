@@ -26,6 +26,10 @@ type contextGracefulServerlessHandler interface {
 	GracefulShutdownContext(context.Context)
 }
 
+type outputReaderAttacher interface {
+	AttachOutputReader()
+}
+
 // Serverless creates a server object directly without TCP.
 type Serverless struct {
 	handler        handlers.Handler
@@ -124,6 +128,13 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	serverHandler, err := s.handlerFactory.NewServerlessHandler(s.userName)
 	if err != nil {
 		return err
+	}
+	// Publish reader ownership before any I/O goroutine or command dispatch can
+	// run. A fast serverless command may otherwise reach shutdown before the
+	// server reader's first Read and skip its delivery barrier as though a raw
+	// channel consumer owned the output.
+	if outputReader, ok := serverHandler.(outputReaderAttacher); ok {
+		outputReader.AttachOutputReader()
 	}
 	// Use buffered channels to prevent deadlock
 	// This approach avoids the circular dependency of direct io.Copy

@@ -51,7 +51,8 @@ type readCommandOutput interface {
 	// call performed the off->on transition and false when it was already on.
 	EnableDirectOutput() bool
 	HasOutputEOF() bool
-	FlushOutput()
+	FlushOutput(context.Context) error
+	ReportOutputFlushError(uint64, error)
 	// OutputEpoch returns the output handshake epoch; capture it before the
 	// pending-work check and pass it to SignalOutputEOF (see baseHandler).
 	OutputEpoch() uint64
@@ -59,7 +60,7 @@ type readCommandOutput interface {
 	SignalOutputEOF(epoch uint64)
 	EnqueueOutput(context.Context, uint64, []byte, func() uint64) error
 	OutputBufferBytes() int
-	WaitForOutputEOFAck(timeout time.Duration) bool
+	WaitForOutputEOFAck(context.Context, time.Duration) bool
 }
 
 type readCommandTiming interface {
@@ -181,9 +182,14 @@ func (h *ServerHandler) TriggerShutdown() {
 	h.triggerIdleShutdown()
 }
 
-// FlushOutput drains pending output data to the underlying writer.
-func (h *ServerHandler) FlushOutput() {
-	h.flushOutput()
+// FlushOutput waits until pending output has reached the session reader.
+func (h *ServerHandler) FlushOutput(ctx context.Context) error {
+	return h.flushOutput(ctx)
+}
+
+// ReportOutputFlushError queues a nonblocking client-visible flush failure.
+func (h *ServerHandler) ReportOutputFlushError(generation uint64, err error) {
+	h.reportFlushError(generation, err)
 }
 
 // OutputEOFAckTimeout returns the timeout used while waiting for output EOF ACK.
@@ -241,12 +247,12 @@ func (h *ServerHandler) OutputEOFWaitDuration(fileCount int) time.Duration {
 	return wait
 }
 
-// ShutdownSerializeWait returns the wait before final output shutdown checks.
+// ShutdownSerializeWait returns the transport-buffer grace period after EOF acknowledgement.
 func (h *ServerHandler) ShutdownSerializeWait() time.Duration {
 	return durationFromMilliseconds(h.serverCfg.ShutdownOutputSerializeWaitMs, 500*time.Millisecond)
 }
 
-// ShutdownIdleRecheckWait returns the wait used for the final idle recheck.
+// ShutdownIdleRecheckWait retains the legacy timing setting for config compatibility.
 func (h *ServerHandler) ShutdownIdleRecheckWait() time.Duration {
 	return durationFromMilliseconds(h.serverCfg.ShutdownIdleRecheckWaitMs, 10*time.Millisecond)
 }

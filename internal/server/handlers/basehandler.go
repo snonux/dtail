@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -33,6 +34,7 @@ type prepareCommandContextCb func(context.Context, string) (context.Context, fun
 type commandCancelKeyType struct{}
 
 var commandCancelKey commandCancelKeyType
+var errHandlerFlushTimeout = errors.New("timed out flushing session output")
 
 // sessionCommandAdmissionKey marks work dispatched by a SESSION command whose
 // outer transaction has already passed command admission. Graceful shutdown
@@ -100,21 +102,30 @@ type baseHandler struct {
 	// without requiring h.mutex to be held around every access site.
 	aggregate atomic.Pointer[maprserver.Aggregate]
 
-	maprMessages     chan string
-	serverMessages   chan string
-	hostname         string
-	user             *user.User
-	ackCloseReceived chan struct{}
-	ackCloseOnce     sync.Once
-	activeCommands   int32
-	codec            protocolCodec
-	commandDone      *internal.Done
-	outputAbort      *internal.Done
-	commandMu        sync.Mutex
-	commandInitWg    sync.WaitGroup
-	commandWg        sync.WaitGroup
-	stopping         bool
-	aborting         bool
+	maprMessages      chan string
+	serverMessages    chan string
+	hostname          string
+	user              *user.User
+	ackCloseReceived  chan struct{}
+	ackCloseOnce      sync.Once
+	flushInitOnce     sync.Once
+	flushRequests     chan chan struct{}
+	flushErrors       chan string
+	closeSyncWake     chan struct{}
+	pendingFlushAcks  []chan struct{}
+	deferredServer    string
+	hasDeferredServer bool
+	closeSyncObserved bool
+	closeSyncEmitted  bool
+	activeCommands    int32
+	codec             protocolCodec
+	commandDone       *internal.Done
+	outputAbort       *internal.Done
+	commandMu         sync.Mutex
+	commandInitWg     sync.WaitGroup
+	commandWg         sync.WaitGroup
+	stopping          bool
+	aborting          bool
 
 	// readBuf holds the formatted protocol message currently being sent to
 	// the client. It is only touched by Read (single session output
@@ -123,6 +134,14 @@ type baseHandler struct {
 	// calls instead of being truncated (see Read/drainReadBuf).
 	readBuf  bytes.Buffer
 	writeBuf bytes.Buffer
+	// readActive and readBufferedBytes let shutdown distinguish an idle handler
+	// from a slow client whose session reader still owns a partially delivered
+	// protocol message. readBuf itself remains single-reader owned.
+	readActive         atomic.Bool
+	readerSeen         atomic.Bool
+	readBufferedBytes  atomic.Int64
+	deliveryPending    atomic.Bool
+	closeSyncRequested atomic.Bool
 
 	// maxCommandFrameSize is the maximum number of bytes that may be buffered
 	// between two ';' delimiters. When a frame grows beyond this limit the
@@ -197,6 +216,14 @@ func (h *baseHandler) Done() <-chan struct{} {
 	return h.done.Done()
 }
 
+// AttachOutputReader declares that the handler's output is owned by a
+// transport reader. The server calls this before starting either session I/O
+// goroutine so a fast input command cannot reach flush before Read starts.
+// In-process consumers that drain the raw channels directly leave it unset.
+func (h *baseHandler) AttachOutputReader() {
+	h.readerSeen.Store(true)
+}
+
 // Read is to send data to the dtail client via Reader interface.
 //
 // A formatted protocol message can be larger than p (io.Copy drives this
@@ -207,11 +234,28 @@ func (h *baseHandler) Done() <-chan struct{} {
 // delimiter, desyncing the client-side parser. This mirrors the remainder
 // buffer used by the output path (outputManager.tryRead).
 func (h *baseHandler) Read(p []byte) (n int, err error) {
+	h.ensureFlushChannels()
+	h.readerSeen.Store(true)
+	h.readActive.Store(true)
+	// io.Copy never calls Read again until its Writer accepted the previous
+	// bytes. Entering the next Read therefore confirms that delivery; the defer
+	// below publishes a new pending delivery before clearing readActive.
+	h.deliveryPending.Store(false)
+	defer func() {
+		if n > 0 {
+			h.deliveryPending.Store(true)
+		}
+		h.readActive.Store(false)
+	}()
 	if h.readBuf.Len() > 0 {
 		return h.drainReadBuf(p), nil
 	}
 
 	for {
+		// Snapshot the output notification channel before inspecting the queue.
+		// If a producer changes state between these two operations it leaves a
+		// token on this channel, so the blocking select wakes without polling.
+		outputChanged, eofWait := h.output.readWait()
 		if readN, handled := h.output.tryRead(p, h.user, h.shouldDropGeneration); handled {
 			if readN == 0 {
 				continue
@@ -225,22 +269,32 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			return readN, nil
 		}
 
-		pollInterval := time.Second
-		if h.output.enabled() {
-			// Output reads require tighter wake-ups so we can continue draining the output channel.
-			pollInterval = h.output.resolvedReadRetryInterval()
+		var eofTimer *time.Timer
+		var eofTimerC <-chan time.Time
+		if eofWait > 0 {
+			eofTimer = time.NewTimer(eofWait)
+			eofTimerC = eofTimer.C
 		}
-		poll := time.After(pollInterval)
 
 		select {
-		case message := <-h.serverMessages:
+		case message := <-h.flushErrors:
+			stopOptionalTimer(eofTimer)
 			n = h.readServerMessage(p, message)
 			if n == 0 {
 				continue
 			}
 			return n, nil
 
+		case message := <-h.serverMessages:
+			stopOptionalTimer(eofTimer)
+			n = h.readSelectedServerMessage(p, message)
+			if n == 0 {
+				continue
+			}
+			return n, nil
+
 		case message := <-h.maprMessages:
+			stopOptionalTimer(eofTimer)
 			n = h.readMaprMessage(p, message)
 			if n == 0 {
 				continue
@@ -248,6 +302,7 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			return n, nil
 
 		case line := <-h.lines:
+			stopOptionalTimer(eofTimer)
 			n = h.readLine(p, line)
 			if n == 0 {
 				continue
@@ -255,6 +310,7 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			return n, nil
 
 		case <-h.done.Done():
+			stopOptionalTimer(eofTimer)
 			// Producers finish before graceful shutdown closes done. Recheck
 			// every queue after observing it so EOF can never overtake a final
 			// protocol message that was ready in the same select.
@@ -272,22 +328,40 @@ func (h *baseHandler) Read(p []byte) (n int, err error) {
 			}
 			return 0, io.EOF
 
-		case <-poll:
-			// Wake periodically so output mode transitions don't leave this read blocked forever.
-			select {
-			case <-h.done.Done():
-				// Loop through the non-blocking queue drains before reporting
-				// EOF. A final message may have become ready at the same time as
-				// this timer and the shutdown signal.
-				continue
-			default:
-			}
-			return
+		case flushAck := <-h.flushRequests:
+			stopOptionalTimer(eofTimer)
+			h.pendingFlushAcks = append(h.pendingFlushAcks, flushAck)
+			continue
+
+		case <-outputChanged:
+			stopOptionalTimer(eofTimer)
+			continue
+
+		case <-h.closeSyncWake:
+			stopOptionalTimer(eofTimer)
+			h.closeSyncObserved = true
+			continue
+
+		case <-eofTimerC:
+			// The EOF quiet period is a protocol deadline rather than a queue
+			// poll. Recheck once so maybeAckEOFLocked can complete the handshake.
+			continue
 		}
 	}
 }
 
 func (h *baseHandler) tryReadQueued(p []byte) (int, bool) {
+	select {
+	case message := <-h.flushErrors:
+		return h.readServerMessage(p, message), true
+	default:
+	}
+	if h.hasDeferredServer {
+		message := h.deferredServer
+		h.deferredServer = ""
+		h.hasDeferredServer = false
+		return h.readServerMessage(p, message), true
+	}
 	select {
 	case message := <-h.serverMessages:
 		return h.readServerMessage(p, message), true
@@ -303,7 +377,57 @@ func (h *baseHandler) tryReadQueued(p []byte) (int, bool) {
 		return h.readLine(p, queuedLine), true
 	default:
 	}
-	return 0, false
+
+	// A flush request is acknowledged only by the session reader, after it has
+	// returned every prior read to io.Copy's writer and observed all queues and
+	// the output manager empty. Keeping an acknowledgement pending across Read
+	// calls also covers protocol messages that span the caller's buffer.
+	receivedFlushRequest := false
+	for {
+		select {
+		case flushAck := <-h.flushRequests:
+			h.pendingFlushAcks = append(h.pendingFlushAcks, flushAck)
+			receivedFlushRequest = true
+		default:
+			if receivedFlushRequest {
+				// The queue scan above preceded receipt of this request. Start a
+				// fresh pass so output published before or during the handoff cannot
+				// be overtaken by its acknowledgement.
+				return 0, true
+			}
+			if h.closeSyncRequested.Load() && !h.closeSyncObserved {
+				h.closeSyncObserved = true
+				// A timeout error or final producer payload may have arrived with
+				// the terminal request after the scan above. Recheck every source
+				// before acknowledging barriers or emitting close.
+				return 0, true
+			}
+			for _, flushAck := range h.pendingFlushAcks {
+				close(flushAck)
+			}
+			h.pendingFlushAcks = nil
+			if h.closeSyncObserved && h.closeSyncRequested.Load() && !h.closeSyncEmitted {
+				h.closeSyncEmitted = true
+				return h.readServerMessage(p, ".syn close connection"), true
+			}
+			return 0, false
+		}
+	}
+}
+
+// readSelectedServerMessage preserves flush-error priority even when Go's
+// select chooses the normal server channel after both it and flushErrors became
+// ready. The selected message remains reader-owned and is delivered on the next
+// Read, so `.syn close connection` cannot overtake the error it follows.
+func (h *baseHandler) readSelectedServerMessage(p []byte, message string) int {
+	select {
+	case flushError := <-h.flushErrors:
+		h.deferredServer = message
+		h.hasDeferredServer = true
+		return h.readServerMessage(p, flushError)
+	default:
+		return h.readServerMessage(p, message)
+	}
 }
 
 func (h *baseHandler) readServerMessage(p []byte, message string) int {
@@ -373,6 +497,7 @@ func (h *baseHandler) readLine(p []byte, queuedLine *line.Line) int {
 // because an empty buffer here simply means there is nothing left to drain.
 func (h *baseHandler) drainReadBuf(p []byte) int {
 	n, _ := h.readBuf.Read(p)
+	h.readBufferedBytes.Store(int64(h.readBuf.Len()))
 	return n
 }
 
@@ -643,7 +768,29 @@ func (h *baseHandler) shouldDropGeneration(generation uint64) bool {
 	return activeGeneration != generation
 }
 
-func (h *baseHandler) flush() {
+func (h *baseHandler) ensureFlushChannels() {
+	h.flushInitOnce.Do(func() {
+		if h.flushRequests == nil {
+			h.flushRequests = make(chan chan struct{})
+		}
+		if h.flushErrors == nil {
+			h.flushErrors = make(chan string, 2)
+		}
+		if h.closeSyncWake == nil {
+			h.closeSyncWake = make(chan struct{}, 1)
+		}
+	})
+}
+
+func (h *baseHandler) flush() error {
+	return h.flushContext(context.Background())
+}
+
+func (h *baseHandler) flushContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	h.ensureFlushChannels()
 	h.Logger().Trace(h.user, "flush()")
 	numUnsentMessages := func() int {
 		lineCount := len(h.lines)
@@ -654,29 +801,88 @@ func (h *baseHandler) flush() {
 		return lineCount + serverCount + maprCount + outputBytes
 	}
 
-	// Use atomic accessors to avoid a data race with handleMapCommand, which
-	// may be concurrently writing aggregate pointers on another goroutine.
-	maxWait := time.Second
-	if h.output.enabled() || h.getAggregate() != nil {
-		maxWait = 3 * time.Second
+	maxWait := h.output.resolvedFlushTimeout()
+	// Some in-process/serverless users consume the exposed queues directly and
+	// never attach the transport Reader. There is no reader to acknowledge in
+	// that mode; queue ownership remains with that external consumer.
+	if !h.readerSeen.Load() {
+		return nil
 	}
-	if h.serverless && maxWait < 5*time.Second {
-		maxWait = 5 * time.Second
+	if numUnsentMessages() == 0 && h.readBufferedBytes.Load() == 0 &&
+		!h.readActive.Load() && !h.deliveryPending.Load() {
+		h.Logger().Debug(h.user, "ALL lines sent", fmt.Sprintf("%p", h))
+		return nil
 	}
 
-	deadline := time.Now().Add(maxWait)
-	for i := 0; ; i++ {
-		unsent := numUnsentMessages()
-		if unsent == 0 {
+	flushAck := make(chan struct{})
+	timer := time.NewTimer(maxWait)
+	defer timer.Stop()
+
+	select {
+	case h.flushRequests <- flushAck:
+	case <-ctx.Done():
+		return fmt.Errorf("flush session output: %w", ctx.Err())
+	case <-h.done.Done():
+		return fmt.Errorf("flush session output: handler stopped")
+	case <-timer.C:
+		return fmt.Errorf("%w after %s: %d queued units remain",
+			errHandlerFlushTimeout, maxWait, numUnsentMessages())
+	}
+
+	select {
+	case <-flushAck:
+		h.Logger().Debug(h.user, "ALL lines sent", fmt.Sprintf("%p", h))
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("flush session output: %w", ctx.Err())
+	case <-h.done.Done():
+		return fmt.Errorf("flush session output: handler stopped")
+	case <-timer.C:
+		select {
+		case <-flushAck:
 			h.Logger().Debug(h.user, "ALL lines sent", fmt.Sprintf("%p", h))
-			return
+			return nil
+		default:
 		}
-		if time.Now().After(deadline) {
-			h.Logger().Warn(h.user, "Some lines remain unsent", unsent)
-			return
-		}
-		h.Logger().Debug(h.user, "Still lines to be sent", "iteration", i, "unsent", unsent, "deadline", time.Until(deadline))
-		time.Sleep(time.Millisecond * 10)
+		return fmt.Errorf("%w after %s: %d queued units remain",
+			errHandlerFlushTimeout, maxWait, numUnsentMessages())
+	}
+}
+
+func (h *baseHandler) reportFlushError(generation uint64, err error) {
+	if err == nil {
+		return
+	}
+	h.ensureFlushChannels()
+	h.Logger().Error(h.user, "Unable to flush session output", err)
+	message := encodeGeneratedMessage(generation,
+		fmt.Sprintf("Unable to flush session output: %v\n", err))
+	select {
+	case h.flushErrors <- message:
+	default:
+		h.Logger().Error(h.user, "Unable to queue flush error for client", err)
+	}
+}
+
+func (h *baseHandler) requestCloseSync() {
+	if !h.readerSeen.Load() {
+		// Raw-channel consumers do not run Read and retain ownership of the
+		// serverMessages protocol queue.
+		go func() {
+			defer recoverHandlerPanic(h.Logger(), h.user, "shutdown acknowledgement sender", h.abortAfterPanic)
+			select {
+			case h.serverMessages <- ".syn close connection":
+			case <-h.done.Done():
+			}
+		}()
+		return
+	}
+
+	h.ensureFlushChannels()
+	h.closeSyncRequested.Store(true)
+	select {
+	case h.closeSyncWake <- struct{}{}:
+	default:
 	}
 }
 
@@ -687,7 +893,9 @@ func (h *baseHandler) shutdown() {
 
 	// In output mode, ensure all data is flushed before shutdown
 	if h.output.enabled() {
-		h.flushOutput()
+		if err := h.flushOutput(context.Background()); err != nil {
+			h.reportFlushError(0, fmt.Errorf("flush direct output: %w", err))
+		}
 	}
 
 	// Shutdown the aggregate BEFORE flush to ensure MapReduce data is available.
@@ -696,19 +904,13 @@ func (h *baseHandler) shutdown() {
 	if ta := h.getAggregate(); ta != nil {
 		h.Logger().Info(h.user, "Shutting down output aggregate in shutdown()")
 		ta.Shutdown()
-		// Give time for serialization to complete.
-		time.Sleep(100 * time.Millisecond)
 	}
 
-	h.flush()
+	if err := h.flush(); err != nil {
+		h.reportFlushError(0, err)
+	}
 
-	go func() {
-		defer recoverHandlerPanic(h.Logger(), h.user, "shutdown acknowledgement sender", h.abortAfterPanic)
-		select {
-		case h.serverMessages <- ".syn close connection":
-		case <-h.done.Done():
-		}
-	}()
+	h.requestCloseSync()
 
 	select {
 	case <-h.ackCloseReceived:
@@ -828,9 +1030,15 @@ func (h *baseHandler) SignalOutputEOF(epoch uint64) {
 	h.output.signalEOF(epoch)
 }
 
-// flushOutput ensures all output channel data is processed
-func (h *baseHandler) flushOutput() {
-	h.output.flush(h.user)
+// flushOutput waits until all output data has been consumed by the session reader.
+func (h *baseHandler) flushOutput(ctx context.Context) error {
+	if err := h.output.flush(ctx, h.user); err != nil {
+		return err
+	}
+	if !h.readActive.Load() && !h.deliveryPending.Load() {
+		return nil
+	}
+	return h.flushContext(ctx)
 }
 
 // EnqueueOutput adds generated payload to the byte-bounded session output buffer.
@@ -844,7 +1052,8 @@ func (h *baseHandler) OutputBufferBytes() int {
 	return h.output.bufferedLen()
 }
 
-// WaitForOutputEOFAck waits until output reader acknowledges EOF or timeout.
-func (h *baseHandler) WaitForOutputEOFAck(timeout time.Duration) bool {
-	return h.output.waitForEOFAck(timeout)
+// WaitForOutputEOFAck waits until output reader acknowledges EOF, cancellation,
+// or timeout.
+func (h *baseHandler) WaitForOutputEOFAck(ctx context.Context, timeout time.Duration) bool {
+	return h.output.waitForEOFAck(ctx, timeout)
 }

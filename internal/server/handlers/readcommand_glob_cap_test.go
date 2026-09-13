@@ -106,17 +106,18 @@ func (s *globCapTestServer) PendingAndActive() (int32, int32) {
 func (s *globCapTestServer) ActiveSessionGeneration() uint64 { return 0 }
 func (s *globCapTestServer) TriggerShutdown()                {}
 
-func (s *globCapTestServer) DirectOutputActive() bool     { return false }
-func (s *globCapTestServer) EnableDirectOutput() bool     { return false }
-func (s *globCapTestServer) HasOutputEOF() bool           { return false }
-func (s *globCapTestServer) FlushOutput()                 {}
-func (s *globCapTestServer) OutputEpoch() uint64          { return 0 }
-func (s *globCapTestServer) SignalOutputEOF(epoch uint64) {}
+func (s *globCapTestServer) DirectOutputActive() bool             { return false }
+func (s *globCapTestServer) EnableDirectOutput() bool             { return false }
+func (s *globCapTestServer) HasOutputEOF() bool                   { return false }
+func (s *globCapTestServer) FlushOutput(context.Context) error    { return nil }
+func (s *globCapTestServer) ReportOutputFlushError(uint64, error) {}
+func (s *globCapTestServer) OutputEpoch() uint64                  { return 0 }
+func (s *globCapTestServer) SignalOutputEOF(epoch uint64)         {}
 func (s *globCapTestServer) EnqueueOutput(context.Context, uint64, []byte, func() uint64) error {
 	return nil
 }
-func (s *globCapTestServer) OutputBufferBytes() int                 { return 0 }
-func (s *globCapTestServer) WaitForOutputEOFAck(time.Duration) bool { return true }
+func (s *globCapTestServer) OutputBufferBytes() int                                  { return 0 }
+func (s *globCapTestServer) WaitForOutputEOFAck(context.Context, time.Duration) bool { return true }
 
 func (s *globCapTestServer) ReadGlobRetryInterval() time.Duration    { return time.Millisecond }
 func (s *globCapTestServer) ReadRetryInterval() time.Duration        { return time.Millisecond }

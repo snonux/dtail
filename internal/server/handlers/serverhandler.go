@@ -96,6 +96,8 @@ func NewServerHandler(user *user.User, catLimiter,
 			serverMessages:      make(chan string, 10),
 			maprMessages:        make(chan string, 10),
 			ackCloseReceived:    make(chan struct{}),
+			flushRequests:       make(chan chan struct{}),
+			flushErrors:         make(chan string, 2),
 			commandDone:         internal.NewDone(),
 			outputAbort:         internal.NewDone(),
 			user:                user,
@@ -517,7 +519,9 @@ func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
 		h.Shutdown()
 		return
 	}
-	h.flushOutput()
+	if err := h.flushOutput(ctx); err != nil {
+		h.reportFlushError(0, fmt.Errorf("flush direct output: %w", err))
+	}
 	if ctx.Err() != nil {
 		h.Shutdown()
 		return

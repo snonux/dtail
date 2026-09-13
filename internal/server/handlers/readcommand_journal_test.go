@@ -124,7 +124,8 @@ func (s *journalReadTestServer) HasOutputEOF() bool {
 	return false
 }
 
-func (s *journalReadTestServer) FlushOutput() {}
+func (s *journalReadTestServer) FlushOutput(context.Context) error    { return nil }
+func (s *journalReadTestServer) ReportOutputFlushError(uint64, error) {}
 
 func (s *journalReadTestServer) OutputEpoch() uint64 { return 0 }
 
@@ -144,7 +145,7 @@ func (s *journalReadTestServer) OutputBufferBytes() int {
 	return len(s.outputLines)
 }
 
-func (s *journalReadTestServer) WaitForOutputEOFAck(time.Duration) bool {
+func (s *journalReadTestServer) WaitForOutputEOFAck(context.Context, time.Duration) bool {
 	return true
 }
 

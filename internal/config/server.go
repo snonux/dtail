@@ -91,15 +91,17 @@ type ServerConfig struct {
 	OutputBufferMaxBytes int `json:",omitempty"`
 	// Output channel flush timeout in milliseconds.
 	OutputFlushTimeoutMs int `json:",omitempty"`
-	// Output channel flush poll interval in milliseconds.
+	// Retained for config compatibility; signal-driven output flushes do not poll.
 	OutputFlushPollIntervalMs int `json:",omitempty"`
-	// Output read retry interval in milliseconds when data is expected but not yet available.
+	// Compatibility fallback interval for detecting a stale generation when an
+	// older output writer provides no cancellation signal. Values below the
+	// implementation safety minimum are clamped.
 	OutputReadRetryIntervalMs int `json:",omitempty"`
 	// Maximum time to wait for output EOF acknowledgement after signaling EOF, in milliseconds.
 	OutputEOFAckTimeoutMs int `json:",omitempty"`
 	// Wait for aggregate serialization during shutdown in milliseconds.
 	ShutdownOutputSerializeWaitMs int `json:",omitempty"`
-	// Final idle recheck wait before shutdown in milliseconds.
+	// Retained for config compatibility; pending-work completion is signal-driven.
 	ShutdownIdleRecheckWaitMs int `json:",omitempty"`
 	// Maximum size in bytes of a single command frame (bytes accumulated between
 	// ';' delimiters). Frames that grow beyond this limit are rejected and the

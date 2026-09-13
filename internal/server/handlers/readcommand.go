@@ -312,8 +312,8 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	// Active command count may still include side-effect commands (for example AUTHKEY),
 	// so relying on "active == 1" can skip EOF signaling and lead to dropped output.
 	//
-	// Output is now the only runtime path, so the former config gating on
-	// the former config gating has been removed. This EOF handshake runs for every
+	// Output is now the only runtime path, so the former config gating has been
+	// removed. This EOF handshake runs for every
 	// cat/grep/tail read.
 	//
 	// The guard is the mode check rather than Aggregate() == nil:
@@ -361,8 +361,17 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 
 			r.server.Logger().Debug(r.server.LogContext(), "Output mode: flushing data before EOF signal")
 
-			// Ensure all output data is flushed before signaling EOF.
-			r.server.FlushOutput()
+			// Ensure all output data is flushed before signaling EOF. A hard
+			// deadline prevents a slow or vanished client from pinning this
+			// command forever, and the protocol message makes the failure visible
+			// to a client that is still consuming the session.
+			if err := r.server.FlushOutput(ctx); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				r.server.Logger().Error(r.server.LogContext(), "Unable to flush output", err)
+				r.server.ReportOutputFlushError(r.generation, err)
+			}
 
 			// Signal EOF by closing the channel, but only once — and only if
 			// no newer batch joined since the epoch capture above.
@@ -371,7 +380,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 			// Wait for an explicit reader acknowledgement instead of timing guesses.
 			if !r.server.Serverless() {
 				timeout := r.server.OutputEOFAckTimeout()
-				if r.server.WaitForOutputEOFAck(timeout) {
+				if r.server.WaitForOutputEOFAck(ctx, timeout) {
 					// The wait is also released when enable() hands the
 					// handshake over to a new batch (stale refresh), not only
 					// by a reader ack — the log wording covers both.
@@ -381,6 +390,9 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 						return
 					}
 				} else {
+					if ctx.Err() != nil {
+						return
+					}
 					r.server.Logger().Warn(
 						r.server.LogContext(),
 						"Timeout waiting for output EOF acknowledgement",

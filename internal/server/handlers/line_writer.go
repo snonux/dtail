@@ -573,7 +573,6 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 	}
 
 	encoded := encodeGeneratedBytes(w.generation, data)
-	retryDelay := defaultOutputReadRetryInterval
 
 	if traceEnabled {
 		writerTrace(w.log(), "NetworkWriter.sendToChannel", "sending to outputLines channel", "dataLen", len(data))
@@ -586,46 +585,37 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 		return err
 	}
 
-	select {
-	case w.outputLines <- encoded:
-		if traceEnabled {
-			writerTrace(w.log(), "NetworkWriter.sendToChannel", "sent to channel successfully")
-		}
-		return nil
-	case <-ctx.Done():
-		if traceEnabled {
-			writerTrace(w.log(), "NetworkWriter.sendToChannel", "context cancelled while waiting to send")
-		}
-		return ctx.Err()
-	default:
-	}
-
 	for {
-		if !waitForGenerationRetry(ctx, w.generation, w.activeGeneration, retryDelay) {
-			if err := ctx.Err(); err != nil {
-				if traceEnabled {
-					writerTrace(w.log(), "NetworkWriter.sendToChannel", "context cancelled while waiting to retry send", "err", err)
-				}
-				return err
-			}
+		if !shouldWriteGeneration(w.generation, w.activeGeneration) {
 			if traceEnabled {
 				writerTrace(w.log(), "NetworkWriter.sendToChannel", "generation became stale while waiting to retry send")
 			}
 			return nil
 		}
 
+		// Channel writability and cancellation are explicit wakeups. The timer is
+		// only a compatibility fallback for callers that expose generation as a
+		// callback rather than a cancellation signal.
+		var generationTimer *time.Timer
+		var generationTimerC <-chan time.Time
+		if w.activeGeneration != nil {
+			generationTimer = time.NewTimer(minimumOutputGenerationSafetyInterval)
+			generationTimerC = generationTimer.C
+		}
 		select {
 		case w.outputLines <- encoded:
+			stopOptionalTimer(generationTimer)
 			if traceEnabled {
 				writerTrace(w.log(), "NetworkWriter.sendToChannel", "sent to channel successfully")
 			}
 			return nil
 		case <-ctx.Done():
+			stopOptionalTimer(generationTimer)
 			if traceEnabled {
 				writerTrace(w.log(), "NetworkWriter.sendToChannel", "context cancelled while waiting to send")
 			}
 			return ctx.Err()
-		default:
+		case <-generationTimerC:
 		}
 	}
 }
@@ -722,25 +712,6 @@ func shouldWriteGeneration(generation uint64, activeGeneration func() uint64) bo
 	}
 
 	return currentGeneration == generation
-}
-
-func waitForGenerationRetry(ctx context.Context, generation uint64, activeGeneration func() uint64, delay time.Duration) bool {
-	if !shouldWriteGeneration(generation, activeGeneration) {
-		return false
-	}
-	if delay <= 0 {
-		return shouldWriteGeneration(generation, activeGeneration)
-	}
-
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-	}
-
-	return shouldWriteGeneration(generation, activeGeneration)
 }
 
 // DirectLineProcessor processes lines directly without channels in output mode

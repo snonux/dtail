@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,20 @@ func TestBaseHandlerReadDropsStaleMaprMessage(t *testing.T) {
 	}
 	if !strings.Contains(got, "new aggregate") {
 		t.Fatalf("expected current aggregate output, got %q", got)
+	}
+}
+
+func TestBaseHandlerReadDropsStaleFlushError(t *testing.T) {
+	handler := newGenerationTestHandler(2)
+	handler.reportFlushError(1, errors.New("stale flush failure"))
+	handler.reportFlushError(2, errors.New("current flush failure"))
+
+	got := readHandlerOutput(t, &handler)
+	if strings.Contains(got, "stale flush failure") {
+		t.Fatalf("unexpected stale flush error: %q", got)
+	}
+	if !strings.Contains(got, "current flush failure") {
+		t.Fatalf("expected current flush error, got %q", got)
 	}
 }
 

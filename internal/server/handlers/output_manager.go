@@ -20,8 +20,13 @@ const (
 	defaultOutputFlushTimeout      = 2 * time.Second
 	defaultOutputFlushPollInterval = 10 * time.Millisecond
 	defaultOutputReadRetryInterval = time.Millisecond
-	defaultOutputEOFAckQuietPeriod = 50 * time.Millisecond
-	defaultOutputEOFAckTimeout     = 2 * time.Second
+	// Generation changes normally cancel their command context. Keep a bounded
+	// fallback for older callers that only expose an activeGeneration callback;
+	// clamping it prevents a full output buffer from reintroducing millisecond
+	// polling while still releasing a stale writer eventually.
+	minimumOutputGenerationSafetyInterval = 100 * time.Millisecond
+	defaultOutputEOFAckQuietPeriod        = 50 * time.Millisecond
+	defaultOutputEOFAckTimeout            = 2 * time.Second
 )
 
 type outputManagerConfig struct {
@@ -43,6 +48,7 @@ type generatedOutput struct {
 }
 
 var errOutputPayloadTooLarge = errors.New("output payload exceeds session buffer limit")
+var errOutputFlushTimeout = errors.New("timed out flushing output")
 
 // outputManager coordinates output-mode state between command goroutines
 // (enable/signalEOF/flush/waitForEOFAck, spawned per command by the server
@@ -75,6 +81,8 @@ type outputManager struct {
 	retainedBytes     int
 	bufferedEntries   int
 	spaceAvailable    chan struct{}
+	stateChanged      chan struct{}
+	drainDone         chan struct{}
 	flushTimeout      time.Duration
 	flushPollInterval time.Duration
 	readRetryInterval time.Duration
@@ -188,6 +196,7 @@ func (t *outputManager) enable() bool {
 			t.signalEOFAckLocked()
 			t.resetEOFHandshakeLocked()
 		}
+		t.signalStateChangedLocked()
 		return false
 	}
 	t.mode = true
@@ -196,6 +205,7 @@ func (t *outputManager) enable() bool {
 	}
 	// New batch of files: new EOF handshake channels.
 	t.resetEOFHandshakeLocked()
+	t.signalStateChangedLocked()
 	return true
 }
 
@@ -279,6 +289,7 @@ func (t *outputManager) signalEOF(epoch uint64) {
 		// Already closed
 	default:
 		close(t.eof)
+		t.signalStateChangedLocked()
 	}
 }
 
@@ -298,10 +309,10 @@ func (t *outputManager) signalEOFAckLocked() {
 	}
 }
 
-// waitForEOFAck blocks until the reader goroutine acknowledges the EOF or the
-// timeout expires. The ack channel is snapshotted under the lock and waited on
-// outside it, so a blocked waiter never stalls the reader that has to deliver
-// the ack.
+// waitForEOFAck blocks until the reader goroutine acknowledges the EOF, the
+// context is cancelled, or the timeout expires. The ack channel is snapshotted
+// under the lock and waited on outside it, so a blocked waiter never stalls the
+// reader that has to deliver the ack.
 //
 // A timeout <= 0 is clamped to the default (mirroring the fallback that
 // OutputEOFAckTimeout uses) as defense-in-depth: every current handshake
@@ -309,7 +320,10 @@ func (t *outputManager) signalEOFAckLocked() {
 // acked by the reader, and the stale refresh in enable() closes it
 // explicitly), so a forever-wait cannot presently hang — but the clamp keeps
 // that true for any future replacement path or caller.
-func (t *outputManager) waitForEOFAck(timeout time.Duration) bool {
+func (t *outputManager) waitForEOFAck(ctx context.Context, timeout time.Duration) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	t.mu.Lock()
 	eofAck := t.eofAck
 	t.mu.Unlock()
@@ -328,6 +342,8 @@ func (t *outputManager) waitForEOFAck(timeout time.Duration) bool {
 	select {
 	case <-eofAck:
 		return true
+	case <-ctx.Done():
+		return false
 	case <-timer.C:
 		return false
 	}
@@ -367,10 +383,22 @@ func (t *outputManager) enqueue(ctx context.Context, generation uint64, payload 
 		}
 
 		spaceAvailable := t.spaceAvailableLocked()
-		retryInterval := t.resolvedReadRetryInterval()
 		t.mu.Unlock()
 
-		timer := time.NewTimer(retryInterval)
+		if activeGeneration == nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-spaceAvailable:
+			}
+			continue
+		}
+
+		recheckInterval := t.resolvedReadRetryInterval()
+		if recheckInterval < minimumOutputGenerationSafetyInterval {
+			recheckInterval = minimumOutputGenerationSafetyInterval
+		}
+		timer := time.NewTimer(recheckInterval)
 		select {
 		case <-ctx.Done():
 			stopTimer(timer)
@@ -414,7 +442,9 @@ func (t *outputManager) tryEnqueueLocked(generation uint64, payload []byte, maxB
 			entry.retainedBytes = targetCapacity
 		}
 		entry.payload = append(entry.payload, payload...)
+		t.markNotDrainedLocked()
 		t.bufferedBytes += len(payload)
+		t.signalStateChangedLocked()
 		return true
 	}
 
@@ -428,9 +458,11 @@ func (t *outputManager) tryEnqueueLocked(generation uint64, payload []byte, maxB
 		payload:       queuedPayload,
 		retainedBytes: len(queuedPayload),
 	})
+	t.markNotDrainedLocked()
 	t.bufferedBytes += len(payload)
 	t.retainedBytes += len(queuedPayload)
 	t.bufferedEntries++
+	t.signalStateChangedLocked()
 	return true
 }
 
@@ -441,6 +473,12 @@ func stopTimer(timer *time.Timer) {
 	select {
 	case <-timer.C:
 	default:
+	}
+}
+
+func stopOptionalTimer(timer *time.Timer) {
+	if timer != nil {
+		stopTimer(timer)
 	}
 }
 
@@ -455,6 +493,50 @@ func (t *outputManager) spaceAvailableLocked() <-chan struct{} {
 		t.spaceAvailable = make(chan struct{})
 	}
 	return t.spaceAvailable
+}
+
+// readWait snapshots the state-change channel before Read inspects the queue.
+// A producer sends to that channel after changing output state, so an arrival
+// between this snapshot and tryRead cannot be lost.
+func (t *outputManager) readWait() (<-chan struct{}, time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if t.stateChanged == nil {
+		t.stateChanged = make(chan struct{}, 1)
+	}
+	// Clear the notification whose state tryRead is about to inspect. A producer
+	// racing after this drain leaves a token for the blocking select, while a
+	// producer racing before it has already made its state visible under mu.
+	select {
+	case <-t.stateChanged:
+	default:
+	}
+
+	var eofWait time.Duration
+	if !t.eofEmptySince.IsZero() {
+		eofWait = time.Until(t.eofEmptySince.Add(t.resolvedEOFAckQuietPeriod()))
+		if eofWait <= 0 {
+			eofWait = time.Nanosecond
+		}
+	}
+	return t.stateChanged, eofWait
+}
+
+func (t *outputManager) signalStateChangedLocked() {
+	if t.stateChanged == nil {
+		t.stateChanged = make(chan struct{}, 1)
+	}
+	select {
+	case t.stateChanged <- struct{}{}:
+	default:
+	}
+}
+
+func (t *outputManager) markNotDrainedLocked() {
+	if t.bufferedBytes == 0 && t.drainDone == nil {
+		t.drainDone = make(chan struct{})
+	}
 }
 
 func (t *outputManager) releaseOutputLocked(payloadBytes, retainedBytes int, entry bool) {
@@ -473,30 +555,52 @@ func (t *outputManager) releaseOutputLocked(payloadBytes, retainedBytes int, ent
 	if entry && t.bufferedEntries > 0 {
 		t.bufferedEntries--
 	}
+	if t.bufferedBytes == 0 && t.drainDone != nil {
+		close(t.drainDone)
+		t.drainDone = nil
+	}
 	if (retainedBytes > 0 || entry) && t.spaceAvailable != nil {
 		close(t.spaceAvailable)
 		t.spaceAvailable = make(chan struct{})
 	}
 }
 
-// flush waits until all buffered output bytes drain or the flush timeout hits.
-func (t *outputManager) flush(user *user.User) {
-	t.log().Debug(user, "Flushing output data", "bufferedBytes", t.bufferedLen())
+// flush waits for the reader to consume all buffered output. The drain channel
+// belongs to one nonempty interval and is closed exactly on its transition back
+// to empty, which avoids both polling and lost wakeups.
+func (t *outputManager) flush(ctx context.Context, user *user.User) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
-	timeout := time.After(t.resolvedFlushTimeout())
-	for {
-		select {
-		case <-timeout:
-			t.log().Warn(user, "Timeout while flushing output data", "remainingBytes", t.bufferedLen())
-			return
-		default:
-			if t.bufferedLen() == 0 {
-				t.log().Debug(user, "Output buffer drained successfully")
-				return
-			}
-			// Give the reader time to process.
-			time.Sleep(t.resolvedFlushPollInterval())
+	t.mu.Lock()
+	remaining := t.bufferedBytes
+	drainDone := t.drainDone
+	if remaining > 0 && drainDone == nil {
+		drainDone = make(chan struct{})
+		t.drainDone = drainDone
+	}
+	t.mu.Unlock()
+	t.log().Debug(user, "Flushing output data", "bufferedBytes", remaining)
+	if remaining == 0 || drainDone == nil {
+		return nil
+	}
+
+	timer := time.NewTimer(t.resolvedFlushTimeout())
+	defer timer.Stop()
+	select {
+	case <-drainDone:
+		t.log().Debug(user, "Output buffer drained successfully")
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("flush output: %w", ctx.Err())
+	case <-timer.C:
+		remaining = t.bufferedLen()
+		if remaining == 0 {
+			return nil
 		}
+		return fmt.Errorf("%w after %s: %d bytes remain",
+			errOutputFlushTimeout, t.resolvedFlushTimeout(), remaining)
 	}
 }
 
@@ -672,12 +776,16 @@ func (t *outputManager) maybeAckEOFLocked(user *user.User) {
 
 	if t.eofEmptySince.IsZero() {
 		t.eofEmptySince = time.Now()
+		// readWait was snapshotted before tryRead acquired the lock. Wake that
+		// waiter so it can snapshot the newly established quiet-period deadline.
+		t.signalStateChangedLocked()
 		return
 	}
 
 	if time.Since(t.eofEmptySince) >= t.resolvedEOFAckQuietPeriod() {
 		t.log().Trace(user, "baseHandler.Read", "EOF acknowledged and channel stable-empty, disabling output mode")
 		t.mode = false
+		t.eofEmptySince = time.Time{}
 		t.signalEOFAckLocked()
 	}
 }

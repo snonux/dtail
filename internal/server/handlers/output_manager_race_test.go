@@ -97,9 +97,9 @@ func TestOutputManagerConcurrentEnableAndTryRead(t *testing.T) {
 				t.Errorf("enqueue output: %v", err)
 				return
 			}
-			manager.flush(testUser)
+			_ = manager.flush(context.Background(), testUser)
 			manager.signalEOF(manager.currentEpoch())
-			manager.waitForEOFAck(50 * time.Millisecond)
+			manager.waitForEOFAck(context.Background(), 50*time.Millisecond)
 			manager.bufferedLen()
 			manager.hasEOF()
 		}
@@ -171,7 +171,7 @@ func TestOutputManagerEOFHandshakeEndToEnd(t *testing.T) {
 	manager.signalEOF(manager.currentEpoch())
 	driveReaderUntilDisabled(t, manager, testUser)
 
-	if !manager.waitForEOFAck(time.Second) {
+	if !manager.waitForEOFAck(context.Background(), time.Second) {
 		t.Fatal("waitForEOFAck must succeed after the reader acknowledged")
 	}
 }
@@ -251,7 +251,7 @@ func TestOutputManagerEnableRefreshesUnackedEOFHandshake(t *testing.T) {
 	}
 	manager.signalEOF(manager.currentEpoch())
 	driveReaderUntilDisabled(t, manager, testUser)
-	if !manager.waitForEOFAck(time.Second) {
+	if !manager.waitForEOFAck(context.Background(), time.Second) {
 		t.Fatal("batch B's EOF handshake must complete")
 	}
 }
@@ -304,7 +304,7 @@ func TestOutputManagerStaleEpochSignalEOFIsDropped(t *testing.T) {
 	}
 	manager.signalEOF(manager.currentEpoch())
 	driveReaderUntilDisabled(t, manager, testUser)
-	if !manager.waitForEOFAck(time.Second) {
+	if !manager.waitForEOFAck(context.Background(), time.Second) {
 		t.Fatal("batch B's EOF handshake must complete")
 	}
 }
@@ -322,7 +322,7 @@ func TestOutputManagerStaleHandshakeRefreshReleasesWaiter(t *testing.T) {
 
 	released := make(chan bool, 1)
 	go func() {
-		released <- manager.waitForEOFAck(30 * time.Second)
+		released <- manager.waitForEOFAck(context.Background(), 30*time.Second)
 	}()
 
 	// The waiter snapshots the then-current ack channel at an unknown point,
@@ -373,7 +373,7 @@ func TestOutputManagerNeverSignalingJoinerBoundsDegradation(t *testing.T) {
 	if eof, _ := handshakeChannels(manager); eofClosed(eof) {
 		t.Fatal("a never-signaling joiner must invalidate the cat's stale EOF signal")
 	}
-	if manager.waitForEOFAck(20 * time.Millisecond) {
+	if manager.waitForEOFAck(context.Background(), 20*time.Millisecond) {
 		t.Fatal("the cat's ack wait must time out (bounded degradation), not report an ack")
 	}
 
