@@ -288,16 +288,15 @@ and a leftover `TurboBoostDisable` key in an old config file is silently ignored
 - Memory pooling reduces garbage collection pressure
 - Same output format and accuracy regardless of workload
 
-**Tuning knobs (server config):**
-The output path timing and buffer knobs live in the `Output*` / `Shutdown*` config
-namespace (formerly `Turbo*Ms` / `TurboChannelBufferSize` /
-`ShutdownTurboSerializeWaitMs`). See `internal/config/server.go` for the current
-fields: `OutputTransmissionDelayMs`, `OutputEOFWaitBaseMs`,
-`OutputEOFWaitPerFileMs`, `OutputEOFWaitMaxMs`, `OutputBufferMaxBytes`,
-`OutputFlushTimeoutMs`, `OutputFlushPollIntervalMs`, `OutputReadRetryIntervalMs`,
-`OutputEOFAckTimeoutMs`, and `ShutdownOutputSerializeWaitMs`. All are optional
-(`omitempty`) internal tuning knobs with sensible defaults; the old `Turbo*` keys
-are gone, so a config that still sets them reverts silently to the defaults.
+**Output limits and deadlines (server config):**
+The output path exposes four optional settings: `OutputBufferMaxBytes`,
+`OutputFlushTimeoutMs`, `OutputReadRetryIntervalMs`, and
+`OutputEOFAckTimeoutMs`. The buffer setting bounds retained payload memory; the
+two timeout settings bound flush and EOF-ack waits. `OutputReadRetryIntervalMs`
+is a compatibility fallback for stale-generation writers that do not provide a
+cancellation signal, and values below the implementation safety minimum are
+clamped. Removed `Turbo*`, output-delay, EOF-wait-sizing, flush-poll, and
+shutdown-wait keys in older config files are ignored by the lenient decoder.
 
 Authenticated connections use the rolling `IdleSessionTimeoutS` timeout (default
 900 seconds). Successful network reads or writes refresh the deadline, so active

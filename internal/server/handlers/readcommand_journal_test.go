@@ -162,22 +162,6 @@ func (s *journalReadTestServer) MaxLineLength() int {
 	return 1024 * 1024
 }
 
-func (s *journalReadTestServer) OutputTransmissionDelay() time.Duration {
-	return time.Millisecond
-}
-
-func (s *journalReadTestServer) OutputEOFWaitDuration(int) time.Duration {
-	return time.Millisecond
-}
-
-func (s *journalReadTestServer) ShutdownSerializeWait() time.Duration {
-	return time.Millisecond
-}
-
-func (s *journalReadTestServer) ShutdownIdleRecheckWait() time.Duration {
-	return time.Millisecond
-}
-
 func (s *journalReadTestServer) OutputEOFAckTimeout() time.Duration {
 	return time.Millisecond
 }

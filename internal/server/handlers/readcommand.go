@@ -379,10 +379,6 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 					// handshake over to a new batch (stale refresh), not only
 					// by a reader ack — the log wording covers both.
 					r.server.Logger().Debug(r.server.LogContext(), "Output EOF handshake released (reader ack or handover)")
-					// Allow transport buffers to flush after acknowledgement.
-					if !ctxutil.Sleep(ctx, r.server.ShutdownSerializeWait()) {
-						return
-					}
 				} else {
 					if ctx.Err() != nil {
 						return
@@ -623,16 +619,6 @@ func (r *readCommand) readViaProcessor(path, globID string, writer LineWriter) r
 			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.Start -> completed")
 			return err
 		}()
-
-		// Give time for data to be transmitted.
-		// This is crucial for integration tests to ensure all data is sent
-		// Skip this delay in serverless mode since data is written directly to stdout
-		if !r.server.Serverless() {
-			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> waiting for data transmission")
-			if !ctxutil.Sleep(ctx, r.server.OutputTransmissionDelay()) {
-				return startErr
-			}
-		}
 
 		return startErr
 	}

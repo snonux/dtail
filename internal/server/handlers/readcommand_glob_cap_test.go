@@ -119,14 +119,10 @@ func (s *globCapTestServer) EnqueueOutput(context.Context, uint64, []byte, func(
 func (s *globCapTestServer) OutputBufferBytes() int                                  { return 0 }
 func (s *globCapTestServer) WaitForOutputEOFAck(context.Context, time.Duration) bool { return true }
 
-func (s *globCapTestServer) ReadGlobRetryInterval() time.Duration    { return time.Millisecond }
-func (s *globCapTestServer) ReadRetryInterval() time.Duration        { return time.Millisecond }
-func (s *globCapTestServer) MaxLineLength() int                      { return 1024 * 1024 }
-func (s *globCapTestServer) OutputTransmissionDelay() time.Duration  { return time.Millisecond }
-func (s *globCapTestServer) OutputEOFWaitDuration(int) time.Duration { return time.Millisecond }
-func (s *globCapTestServer) ShutdownSerializeWait() time.Duration    { return time.Millisecond }
-func (s *globCapTestServer) ShutdownIdleRecheckWait() time.Duration  { return time.Millisecond }
-func (s *globCapTestServer) OutputEOFAckTimeout() time.Duration      { return time.Millisecond }
+func (s *globCapTestServer) ReadGlobRetryInterval() time.Duration { return time.Millisecond }
+func (s *globCapTestServer) ReadRetryInterval() time.Duration     { return time.Millisecond }
+func (s *globCapTestServer) MaxLineLength() int                   { return 1024 * 1024 }
+func (s *globCapTestServer) OutputEOFAckTimeout() time.Duration   { return time.Millisecond }
 
 // MaxGlobTargets returns the configurable cap for this test server.
 func (s *globCapTestServer) MaxGlobTargets() int { return s.maxGlobTargets }

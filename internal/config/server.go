@@ -89,30 +89,16 @@ type ServerConfig struct {
 	ReadGlobRetryIntervalMs int `json:",omitempty"`
 	// Retry interval for re-reading in tail/cat loops in milliseconds.
 	ReadRetryIntervalMs int `json:",omitempty"`
-	// Delay after output processor flush/close to allow data transmission, in milliseconds.
-	OutputTransmissionDelayMs int `json:",omitempty"`
-	// Output EOF wait base duration in milliseconds.
-	OutputEOFWaitBaseMs int `json:",omitempty"`
-	// Output EOF wait per-file duration in milliseconds.
-	OutputEOFWaitPerFileMs int `json:",omitempty"`
-	// Maximum output EOF wait duration in milliseconds.
-	OutputEOFWaitMaxMs int `json:",omitempty"`
 	// Maximum payload backing memory retained by the output buffer per SSH session.
 	OutputBufferMaxBytes int `json:",omitempty"`
-	// Output channel flush timeout in milliseconds.
+	// Maximum time to wait for the session reader to drain output, in milliseconds.
 	OutputFlushTimeoutMs int `json:",omitempty"`
-	// Retained for config compatibility; signal-driven output flushes do not poll.
-	OutputFlushPollIntervalMs int `json:",omitempty"`
 	// Compatibility fallback interval for detecting a stale generation when an
 	// older output writer provides no cancellation signal. Values below the
 	// implementation safety minimum are clamped.
 	OutputReadRetryIntervalMs int `json:",omitempty"`
 	// Maximum time to wait for output EOF acknowledgement after signaling EOF, in milliseconds.
 	OutputEOFAckTimeoutMs int `json:",omitempty"`
-	// Wait for aggregate serialization during shutdown in milliseconds.
-	ShutdownOutputSerializeWaitMs int `json:",omitempty"`
-	// Retained for config compatibility; pending-work completion is signal-driven.
-	ShutdownIdleRecheckWaitMs int `json:",omitempty"`
 	// Maximum size in bytes of a single command frame (bytes accumulated between
 	// ';' delimiters). Frames that grow beyond this limit are rejected and the
 	// session is closed to prevent unbounded memory exhaustion by a malicious or
@@ -143,24 +129,17 @@ func newDefaultServerConfig() *ServerConfig {
 		Permissions: Permissions{
 			Default: defaultPermissions,
 		},
-		AuthKeyEnabled:                true,
-		AuthKeyTTLSeconds:             86400,
-		AuthKeyMaxPerUser:             5,
-		ReadGlobRetryIntervalMs:       5000,
-		ReadRetryIntervalMs:           2000,
-		OutputTransmissionDelayMs:     50,
-		OutputEOFWaitBaseMs:           500,
-		OutputEOFWaitPerFileMs:        10,
-		OutputEOFWaitMaxMs:            2000,
-		OutputBufferMaxBytes:          DefaultOutputBufferMaxBytes,
-		OutputFlushTimeoutMs:          2000,
-		OutputFlushPollIntervalMs:     10,
-		OutputReadRetryIntervalMs:     1,
-		OutputEOFAckTimeoutMs:         2000,
-		ShutdownOutputSerializeWaitMs: 500,
-		ShutdownIdleRecheckWaitMs:     10,
-		MaxCommandFrameSize:           DefaultMaxCommandFrameSize,
-		MaxGlobTargets:                1000,
+		AuthKeyEnabled:            true,
+		AuthKeyTTLSeconds:         86400,
+		AuthKeyMaxPerUser:         5,
+		ReadGlobRetryIntervalMs:   5000,
+		ReadRetryIntervalMs:       2000,
+		OutputBufferMaxBytes:      DefaultOutputBufferMaxBytes,
+		OutputFlushTimeoutMs:      2000,
+		OutputReadRetryIntervalMs: 1,
+		OutputEOFAckTimeoutMs:     2000,
+		MaxCommandFrameSize:       DefaultMaxCommandFrameSize,
+		MaxGlobTargets:            1000,
 	}
 }
 

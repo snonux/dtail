@@ -18,7 +18,6 @@ const (
 	defaultOutputBufferMaxBytes    = config.DefaultOutputBufferMaxBytes
 	outputQueueEntryBudgetBytes    = 64
 	defaultOutputFlushTimeout      = 2 * time.Second
-	defaultOutputFlushPollInterval = 10 * time.Millisecond
 	defaultOutputReadRetryInterval = time.Millisecond
 	// Generation changes normally cancel their command context. Keep a bounded
 	// fallback for older callers that only expose an activeGeneration callback;
@@ -32,7 +31,6 @@ const (
 type outputManagerConfig struct {
 	bufferMaxBytes    int
 	flushTimeout      time.Duration
-	flushPollInterval time.Duration
 	readRetryInterval time.Duration
 	eofAckQuietPeriod time.Duration
 }
@@ -84,7 +82,6 @@ type outputManager struct {
 	stateChanged      chan struct{}
 	drainDone         chan struct{}
 	flushTimeout      time.Duration
-	flushPollInterval time.Duration
 	readRetryInterval time.Duration
 	eofAckQuietPeriod time.Duration
 
@@ -101,9 +98,6 @@ func (t *outputManager) configure(cfg outputManagerConfig, logger logging.Logger
 	}
 	if cfg.flushTimeout > 0 {
 		t.flushTimeout = cfg.flushTimeout
-	}
-	if cfg.flushPollInterval > 0 {
-		t.flushPollInterval = cfg.flushPollInterval
 	}
 	if cfg.readRetryInterval > 0 {
 		t.readRetryInterval = cfg.readRetryInterval
@@ -140,13 +134,6 @@ func (t *outputManager) resolvedFlushTimeout() time.Duration {
 		return t.flushTimeout
 	}
 	return defaultOutputFlushTimeout
-}
-
-func (t *outputManager) resolvedFlushPollInterval() time.Duration {
-	if t.flushPollInterval > 0 {
-		return t.flushPollInterval
-	}
-	return defaultOutputFlushPollInterval
 }
 
 func (t *outputManager) resolvedReadRetryInterval() time.Duration {

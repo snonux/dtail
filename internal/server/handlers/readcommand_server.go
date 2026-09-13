@@ -67,10 +67,6 @@ type readCommandTiming interface {
 	ReadGlobRetryInterval() time.Duration
 	ReadRetryInterval() time.Duration
 	MaxLineLength() int
-	OutputTransmissionDelay() time.Duration
-	OutputEOFWaitDuration(fileCount int) time.Duration
-	ShutdownSerializeWait() time.Duration
-	ShutdownIdleRecheckWait() time.Duration
 	OutputEOFAckTimeout() time.Duration
 	// MaxGlobTargets returns the maximum number of file paths a single glob
 	// expansion may produce before excess paths are dropped. This caps the
@@ -226,37 +222,6 @@ func (h *ServerHandler) MaxLineLength() int {
 	return positiveIntOrDefault(h.serverCfg.MaxLineLength, 1024*1024)
 }
 
-// OutputTransmissionDelay returns the delay used after output flushes.
-func (h *ServerHandler) OutputTransmissionDelay() time.Duration {
-	return durationFromMilliseconds(h.serverCfg.OutputTransmissionDelayMs, 50*time.Millisecond)
-}
-
-// OutputEOFWaitDuration returns the wait duration used before signaling output EOF.
-func (h *ServerHandler) OutputEOFWaitDuration(fileCount int) time.Duration {
-	baseWait := durationFromMilliseconds(h.serverCfg.OutputEOFWaitBaseMs, 500*time.Millisecond)
-	if fileCount <= 10 {
-		return baseWait
-	}
-
-	perFileWait := durationFromMilliseconds(h.serverCfg.OutputEOFWaitPerFileMs, 10*time.Millisecond)
-	maxWait := durationFromMilliseconds(h.serverCfg.OutputEOFWaitMaxMs, 2*time.Second)
-	wait := time.Duration(fileCount) * perFileWait
-	if wait > maxWait {
-		return maxWait
-	}
-	return wait
-}
-
-// ShutdownSerializeWait returns the transport-buffer grace period after EOF acknowledgement.
-func (h *ServerHandler) ShutdownSerializeWait() time.Duration {
-	return durationFromMilliseconds(h.serverCfg.ShutdownOutputSerializeWaitMs, 500*time.Millisecond)
-}
-
-// ShutdownIdleRecheckWait retains the legacy timing setting for config compatibility.
-func (h *ServerHandler) ShutdownIdleRecheckWait() time.Duration {
-	return durationFromMilliseconds(h.serverCfg.ShutdownIdleRecheckWaitMs, 10*time.Millisecond)
-}
-
 // MaxGlobTargets returns the maximum number of paths a glob may expand to.
 // Excess paths beyond the cap are silently dropped (with a warning logged)
 // to prevent goroutine/memory exhaustion from a broad read permission glob.
@@ -268,8 +233,6 @@ func (h *ServerHandler) outputManagerConfig() outputManagerConfig {
 	return outputManagerConfig{
 		bufferMaxBytes:    positiveIntOrDefault(h.serverCfg.OutputBufferMaxBytes, defaultOutputBufferMaxBytes),
 		flushTimeout:      durationFromMilliseconds(h.serverCfg.OutputFlushTimeoutMs, defaultOutputFlushTimeout),
-		flushPollInterval: durationFromMilliseconds(h.serverCfg.OutputFlushPollIntervalMs, defaultOutputFlushPollInterval),
 		readRetryInterval: durationFromMilliseconds(h.serverCfg.OutputReadRetryIntervalMs, defaultOutputReadRetryInterval),
-		eofAckQuietPeriod: durationFromMilliseconds(h.serverCfg.OutputTransmissionDelayMs, defaultOutputEOFAckQuietPeriod),
 	}
 }

@@ -130,6 +130,34 @@ func TestParseConfigFallsBackToHomeConfig(t *testing.T) {
 	}
 }
 
+func TestParseConfigIgnoresRetiredOutputTimingKeys(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "retired-output-timing.conf")
+	writeTestConfig(t, configPath, `{
+  "Server": {
+    "MaxLineLength": 2048,
+    "OutputTransmissionDelayMs": 1,
+    "OutputEOFWaitBaseMs": 2,
+    "OutputEOFWaitPerFileMs": 3,
+    "OutputEOFWaitMaxMs": 4,
+    "OutputFlushPollIntervalMs": 5,
+    "ShutdownOutputSerializeWaitMs": 6,
+    "ShutdownIdleRecheckWaitMs": 7
+  }
+}`)
+
+	in := initializer{
+		Common: newDefaultCommonConfig(),
+		Server: newDefaultServerConfig(),
+		Client: newDefaultClientConfig(),
+	}
+	if err := in.parseConfig(&Args{ConfigFile: configPath}); err != nil {
+		t.Fatalf("parseConfig with retired output timing keys: %v", err)
+	}
+	if got := in.Server.MaxLineLength; got != 2048 {
+		t.Fatalf("MaxLineLength = %d, want known sibling field 2048", got)
+	}
+}
+
 // TestParseConfigNoConfigFile verifies that parseConfig succeeds without
 // error when neither candidate config file is present.
 func TestParseConfigNoConfigFile(t *testing.T) {
