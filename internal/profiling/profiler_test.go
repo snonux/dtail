@@ -6,7 +6,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestProfiler(t *testing.T) {
@@ -263,7 +262,5 @@ func allocateMemory() {
 		}
 	}
 
-	// Sleep briefly to allow profiler to capture state
-	time.Sleep(10 * time.Millisecond)
 	runtime.KeepAlive(allocations)
 }

@@ -479,8 +479,7 @@ func TestAggregateProducesResults(t *testing.T) {
 			close(done)
 		}()
 
-		// Wait a bit for serialization
-		time.Sleep(200 * time.Millisecond)
+		// Start has returned, so final serialization can no longer send.
 		close(messages)
 
 		// Wait for collection to complete with timeout
@@ -568,8 +567,7 @@ func TestAggregateConcurrency(t *testing.T) {
 	cancel()
 	<-startDone
 
-	// Collect results
-	time.Sleep(200 * time.Millisecond)
+	// Start has returned, so final serialization can no longer send.
 	close(messages)
 
 	var results []string
@@ -775,13 +773,9 @@ func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
 	aggregate.PrepareShutdownContext(drainCtx)
 	cancelCommand()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for len(messages) < cap(messages) {
-		if time.Now().After(deadline) {
-			t.Fatal("Start did not enter final serialization")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitForAggregateCondition(t, 2*time.Second, "Start did not enter final serialization", func() bool {
+		return len(messages) == cap(messages)
+	})
 	select {
 	case <-producerDone:
 		t.Fatal("final serialization completed despite a full output channel")
@@ -1181,14 +1175,25 @@ func newBufferedTestAggregate(t *testing.T) (*Aggregate, chan string, <-chan str
 func waitForAggregateSnapshot(t *testing.T, aggregate *Aggregate) {
 	t.Helper()
 
-	deadline := time.Now().Add(2 * time.Second)
+	waitForAggregateCondition(t, 2*time.Second, "aggregate did not snapshot data for final serialization", func() bool {
+		return aggregate.countGroups() == 0
+	})
+}
+
+func waitForAggregateCondition(t *testing.T, timeout time.Duration, failure string, condition func() bool) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
 	for {
-		if aggregate.countGroups() == 0 {
+		if condition() {
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("aggregate did not snapshot data for final serialization")
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatal(failure)
 		}
-		time.Sleep(time.Millisecond)
 	}
 }

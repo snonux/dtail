@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -103,15 +104,12 @@ func TestFileLoggerIdleFlush(t *testing.T) {
 	defer stop()
 
 	f.Log(time.Now(), "follow-line")
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Contains(readLogFile(t, dir, base), "follow-line") {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("follow-style line stuck behind buffer; idle flush did not emit it")
+	waitForLoggerCondition(t, 2*time.Second, func() bool {
+		return strings.Contains(readLogFile(t, dir, base), "follow-line")
+	}, func() string {
+		return fmt.Sprintf("file sink %q never contained %q; got %q",
+			filepath.Join(dir, base+".log"), "follow-line", readLogFile(t, dir, base))
+	})
 }
 
 // TestFileLoggerExplicitFlush verifies Flush() is SYNCHRONOUS: once it returns,

@@ -315,18 +315,16 @@ func TestServerlessMapBatchAcceptsReadAfterEarlierReadFullyCompletes(t *testing.
 	// has returned completely. At this point the map command is the sole active
 	// command. The old pending-file grace path called FinishInput here, before
 	// the FIFO marker proved that the initial command stream was complete.
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	waitForHandlerCondition(t, 5*time.Second, "first read did not reach map-only state", func() bool {
 		pending, active := handler.PendingAndActive()
 		aggregate := handler.getAggregate()
-		if aggregate != nil && handler.commandBatch.ownsAggregate(aggregate) && pending == 0 && active == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("first read did not reach map-only state: pending=%d active=%d", pending, active)
-		}
-		time.Sleep(time.Millisecond)
-	}
+		return aggregate != nil && handler.commandBatch.ownsAggregate(aggregate) && pending == 0 && active == 1
+	}, func() string {
+		pending, active := handler.PendingAndActive()
+		aggregate := handler.getAggregate()
+		return fmt.Sprintf("pending=%d active=%d aggregatePresent=%t batchOwnsAggregate=%t",
+			pending, active, aggregate != nil, handler.commandBatch.ownsAggregate(aggregate))
+	})
 
 	writeCommand("cat:invalid-option ignored .")
 	if pending, active := handler.PendingAndActive(); pending != 0 || active != 1 {

@@ -3,6 +3,7 @@ package loggers
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"runtime"
 	"strconv"
 	"strings"
@@ -216,19 +217,31 @@ func TestStdoutIdleFlush(t *testing.T) {
 	s.Start(ctx, &wg)
 
 	s.Raw(time.Now(), "follow-line\n")
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if strings.Contains(cw.String(), "follow-line") {
-			cancel()
-			wg.Wait()
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitForLoggerCondition(t, 2*time.Second, func() bool {
+		return strings.Contains(cw.String(), "follow-line")
+	}, func() string {
+		return fmt.Sprintf("stdout sink never contained %q; got %q", "follow-line", cw.String())
+	})
 	cancel()
 	wg.Wait()
-	t.Fatal("follow-style line stuck behind buffer; idle flush did not emit it")
+}
+
+func waitForLoggerCondition(t *testing.T, timeout time.Duration, condition func() bool, diagnostic func() string) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if condition() {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatal(diagnostic())
+		}
+	}
 }
 
 // TestStdoutFinalFlushOnClose proves no buffered output is lost on clean

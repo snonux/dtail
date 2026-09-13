@@ -309,43 +309,28 @@ func TestOutputManagerStaleEpochSignalEOFIsDropped(t *testing.T) {
 	}
 }
 
-// TestOutputManagerStaleHandshakeRefreshReleasesWaiter verifies that when
-// enable() refreshes a signaled-but-unacknowledged handshake, a goroutine
-// still blocked in waitForEOFAck on the old handshake is released instead of
-// stalling until its timeout.
-func TestOutputManagerStaleHandshakeRefreshReleasesWaiter(t *testing.T) {
+// TestOutputManagerStaleHandshakeRefreshClosesPriorAck verifies that enable()
+// releases every waiter on a signaled-but-unacknowledged handshake by closing
+// the exact acknowledgement channel those waiters have snapshotted.
+func TestOutputManagerStaleHandshakeRefreshClosesPriorAck(t *testing.T) {
 
 	manager := newHandshakeTestManager()
 
 	manager.enable()
 	manager.signalEOF(manager.currentEpoch())
 
-	released := make(chan bool, 1)
-	go func() {
-		released <- manager.waitForEOFAck(context.Background(), 30*time.Second)
-	}()
+	manager.mu.Lock()
+	staleAck := manager.eofAck
+	manager.mu.Unlock()
+	if staleAck == nil {
+		t.Fatal("signaled handshake has no acknowledgement channel")
+	}
 
-	// The waiter snapshots the then-current ack channel at an unknown point,
-	// so a single refresh after a sleep would be racy. Instead, keep signaling
-	// and refreshing: every enable() on a signaled handshake closes the
-	// current ack channel before minting a new one, so whichever generation
-	// the waiter snapshotted is closed by a later iteration. This makes the
-	// release deterministic without sleep-based goroutine ordering.
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case acked := <-released:
-			if !acked {
-				t.Fatal("released waiter must report success, not timeout")
-			}
-			return
-		case <-deadline:
-			t.Fatal("stale-handshake refresh did not release the blocked waiter")
-		default:
-			manager.signalEOF(manager.currentEpoch())
-			manager.enable()
-			time.Sleep(time.Millisecond)
-		}
+	manager.enable()
+	select {
+	case <-staleAck:
+	default:
+		t.Fatal("refresh did not close the prior acknowledgement channel")
 	}
 }
 

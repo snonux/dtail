@@ -90,13 +90,11 @@ func TestGracefulShutdownContextAbortsWhenFinalOutputCannotDrain(t *testing.T) {
 		handler.GracefulShutdownContext(drainCtx)
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for len(handler.maprMessages) < cap(handler.maprMessages) {
-		if time.Now().After(deadline) {
-			t.Fatalf("final output did not fill protocol queue: len=%d cap=%d", len(handler.maprMessages), cap(handler.maprMessages))
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitForHandlerCondition(t, 2*time.Second, "final output did not fill protocol queue", func() bool {
+		return len(handler.maprMessages) == cap(handler.maprMessages)
+	}, func() string {
+		return fmt.Sprintf("queue length=%d capacity=%d", len(handler.maprMessages), cap(handler.maprMessages))
+	})
 	cancelDrain()
 	waitForGracefulSignal(t, shutdownDone, "canceled graceful shutdown")
 	waitForGracefulSignal(t, startDone, "aggregate producer shutdown")
@@ -286,11 +284,5 @@ func waitForRecordedCommand(t *testing.T, commands <-chan recordedCommand) recor
 
 func waitForHandlerStopping(t *testing.T, handler *ServerHandler) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for !handler.isStopping() {
-		if time.Now().After(deadline) {
-			t.Fatal("handler did not seal command admission")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitForHandlerCondition(t, 2*time.Second, "handler did not seal command admission", handler.isStopping)
 }

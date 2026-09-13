@@ -336,10 +336,11 @@ func TestStartPropagatesStderrForwarderPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new reader: %v", err)
 	}
+	hookStarted := make(chan struct{})
+	releaseHook := make(chan struct{})
 	reader.forwardStderrHook = func(context.Context, io.Reader) error {
-		// Let the child process finish its startup before forcing the stderr
-		// worker failure, so the test can also verify that cancellation reaps it.
-		time.Sleep(50 * time.Millisecond)
+		close(hookStarted)
+		<-releaseHook
 		panic("stderr child failed")
 	}
 
@@ -349,6 +350,13 @@ func TestStartPropagatesStderrForwarderPanic(t *testing.T) {
 			&captureProcessor{}, regex.NewNoop())
 	}()
 	select {
+	case <-hookStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stderr forwarder did not start")
+	}
+	pid := waitForMockPID(t, mock)
+	close(releaseHook)
+	select {
 	case err := <-done:
 		if !errors.Is(err, fs.ErrReaderWorkerPanic) || !strings.Contains(err.Error(), "stderr child failed") {
 			t.Fatalf("reader error = %v, want propagated stderr child panic", err)
@@ -356,7 +364,6 @@ func TestStartPropagatesStderrForwarderPanic(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("reader did not stop after stderr child panic")
 	}
-	pid := mockPID(t, mock)
 	if processExists(pid) {
 		t.Fatalf("journalctl process %d survived stderr child panic", pid)
 	}
@@ -965,6 +972,29 @@ func mockPID(t *testing.T, mock *journaltest.Mock) int {
 		t.Fatalf("parse fake journalctl pid: %v", err)
 	}
 	return pid
+}
+
+func waitForMockPID(t *testing.T, mock *journaltest.Mock) int {
+	t.Helper()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		content, err := os.ReadFile(mock.PIDFile)
+		if err == nil {
+			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(content)))
+			if parseErr == nil {
+				return pid
+			}
+		}
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for fake journalctl pid in %s", mock.PIDFile)
+			return 0
+		}
+	}
 }
 
 func processExists(pid int) bool {

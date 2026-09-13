@@ -4,6 +4,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -301,13 +302,11 @@ func TestServerHandlerShutdownTerminatesMapFollowJournalWithoutOutputReader(t *t
 		t.Fatalf("write commands: %v", err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for len(handler.maprMessages) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("active journal processor did not queue an aggregate result")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	waitForHandlerCondition(t, 5*time.Second, "active journal processor did not queue an aggregate result", func() bool {
+		return len(handler.maprMessages) > 0
+	}, func() string {
+		return fmt.Sprintf("map result queue length=%d", len(handler.maprMessages))
+	})
 	if got := len(handler.tailLimiter); got != 1 {
 		t.Fatalf("tail limiter occupancy before shutdown = %d, want 1", got)
 	}

@@ -25,6 +25,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/session"
@@ -40,6 +41,10 @@ const testStatsLine = "INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|" +
 // is the continuous-query user, which bypasses per-path permission checks so
 // the test can read files from t.TempDir().
 func newMapTestHandler(t *testing.T) *ServerHandler {
+	return newMapTestHandlerWithReaderLogger(t, handlerTestLogger)
+}
+
+func newMapTestHandlerWithReaderLogger(t *testing.T, readerLogger logging.Logger) *ServerHandler {
 	t.Helper()
 	user := &userserver.User{Name: config.ContinuousUser}
 	serverCfg := &config.ServerConfig{
@@ -48,11 +53,64 @@ func newMapTestHandler(t *testing.T) *ServerHandler {
 	}
 	handler, err := NewServerHandler(user, make(chan struct{}, 4), make(chan struct{}, 4),
 		serverCfg, sshserver.NewAuthKeyStore(time.Hour, 5), nil,
-		HandlerLoggers{Diagnostics: handlerTestLogger, Reader: handlerTestLogger})
+		HandlerLoggers{Diagnostics: handlerTestLogger, Reader: readerLogger})
 	if err != nil {
 		t.Fatalf("NewServerHandler: %v", err)
 	}
 	return handler
+}
+
+type readerReadyLogger struct {
+	logging.NopLogger
+	readyOnce    sync.Once
+	longLineOnce sync.Once
+	ready        chan struct{}
+	longLine     chan struct{}
+}
+
+func newReaderReadyLogger() *readerReadyLogger {
+	return &readerReadyLogger{
+		ready:    make(chan struct{}),
+		longLine: make(chan struct{}),
+	}
+}
+
+func (l *readerReadyLogger) Trace(args ...any) string {
+	for _, arg := range args {
+		if message, ok := arg.(string); ok && message == "Opened file reader" {
+			l.readyOnce.Do(func() { close(l.ready) })
+			break
+		}
+	}
+	return ""
+}
+
+func (l *readerReadyLogger) Warn(args ...any) string {
+	for _, arg := range args {
+		if message, ok := arg.(string); ok && message == "Long log line, splitting into multiple lines" {
+			l.longLineOnce.Do(func() { close(l.longLine) })
+			break
+		}
+	}
+	return fmt.Sprint(args...)
+}
+
+func (l *readerReadyLogger) wait(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-l.ready:
+	case <-time.After(timeout):
+		t.Fatal("tail reader did not open and seek to the initial EOF")
+	}
+}
+
+func (l *readerReadyLogger) waitForLongLine(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	select {
+	case <-l.longLine:
+	case <-time.After(timeout):
+		t.Fatal("tail reader did not consume the long-line processing sentinel")
+	}
 }
 
 // wrapHandlerCommandsForJoin wraps every registered command handler so the
@@ -123,13 +181,11 @@ func (o *testOutput) String() string {
 
 func (o *testOutput) waitForContains(t *testing.T, substr string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for !strings.Contains(o.String(), substr) {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for output to contain %q; got: %q", substr, o.String())
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitForHandlerCondition(t, timeout, "timed out waiting for expected output", func() bool {
+		return strings.Contains(o.String(), substr)
+	}, func() string {
+		return fmt.Sprintf("expected substring %q in %q", substr, o.String())
+	})
 }
 
 // startTestReader drains handler.Read like the SSH session output
@@ -331,7 +387,9 @@ func TestServerModeMapFollowSessionKeepsStreaming(t *testing.T) {
 // the aggregate cannot emit periodically during the test: the result asserted
 // below must come from graceful shutdown's final serialization.
 func TestServerlessMapFollowGracefulShutdownDrainsFinalResult(t *testing.T) {
-	handler := newMapTestHandler(t)
+	readyLogger := newReaderReadyLogger()
+	handler := newMapTestHandlerWithReaderLogger(t, readyLogger)
+	handler.serverCfg.MaxLineLength = len(testStatsLine) + 1
 	path := writeTestStatsFile(t, 0)
 
 	spec := session.Spec{
@@ -339,7 +397,7 @@ func TestServerlessMapFollowGracefulShutdownDrainsFinalResult(t *testing.T) {
 		Files:   []string{path},
 		Options: "plain=true:serverless=true",
 		Query:   "from STATS select count($time),$time group by $time interval 3600",
-		Regex:   ".",
+		Regex:   "MAPREDUCE:STATS",
 	}
 	commands, err := spec.Commands()
 	if err != nil {
@@ -361,21 +419,18 @@ func TestServerlessMapFollowGracefulShutdownDrainsFinalResult(t *testing.T) {
 		t.Fatalf("write commands: %v", writeErr)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	waitForHandlerCondition(t, 5*time.Second, "tail command did not become active", func() bool {
 		pending, active := handler.PendingAndActive()
-		if pending == 1 && active >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("tail command did not become active: pending=%d active=%d", pending, active)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return pending == 1 && active >= 2
+	}, func() string {
+		pending, active := handler.PendingAndActive()
+		return fmt.Sprintf("pending=%d active=%d", pending, active)
+	})
+	readyLogger.wait(t, 5*time.Second)
 
-	// Let the tail reader finish opening and seeking to the original EOF before
-	// appending the records that must be included in the final aggregate.
-	time.Sleep(200 * time.Millisecond)
+	// The oversized, non-matching sentinel follows the three matching records.
+	// Its warning proves that the reader consumed everything before it without
+	// adding another row to the aggregate.
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatalf("open stats file for append: %v", err)
@@ -386,13 +441,17 @@ func TestServerlessMapFollowGracefulShutdownDrainsFinalResult(t *testing.T) {
 			t.Fatalf("append stats line: %v", err)
 		}
 	}
+	// Tail reads use a 64 KiB buffer. Make the sentinel span more than one read
+	// so the long-line path fires before its terminating newline is visible.
+	sentinel := strings.Repeat("x", 128*1024) + "\n"
+	if _, err := file.WriteString(sentinel); err != nil {
+		_ = file.Close()
+		t.Fatalf("append processing sentinel: %v", err)
+	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("close stats file: %v", err)
 	}
-
-	// The follow reader polls EOF every 100ms. No aggregate output can be
-	// emitted during this wait because the query interval is one hour.
-	time.Sleep(500 * time.Millisecond)
+	readyLogger.waitForLongLine(t, 5*time.Second)
 	if strings.Contains(output.String(), "count($time)≔") {
 		t.Fatalf("aggregate emitted before graceful shutdown: %q", output.String())
 	}
@@ -426,7 +485,8 @@ func TestServerlessMapFollowGracefulShutdownDrainsFinalResult(t *testing.T) {
 // away there may be no output consumer, so Shutdown must cancel the follow
 // reader and join its processor without attempting final serialization.
 func TestServerHandlerShutdownAbortsMapFollowWithoutOutputReader(t *testing.T) {
-	handler := newMapTestHandler(t)
+	readyLogger := newReaderReadyLogger()
+	handler := newMapTestHandlerWithReaderLogger(t, readyLogger)
 	path := writeTestStatsFile(t, 0)
 	spec := session.Spec{
 		Mode:  omode.TailClient,
@@ -447,41 +507,34 @@ func TestServerHandlerShutdownAbortsMapFollowWithoutOutputReader(t *testing.T) {
 		t.Fatalf("write commands: %v", writeErr)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	waitForHandlerCondition(t, 5*time.Second, "tail command did not become active", func() bool {
 		pending, active := handler.PendingAndActive()
-		if pending == 1 && active >= 2 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("tail command did not become active: pending=%d active=%d", pending, active)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return pending == 1 && active >= 2
+	}, func() string {
+		pending, active := handler.PendingAndActive()
+		return fmt.Sprintf("pending=%d active=%d", pending, active)
+	})
+	readyLogger.wait(t, 5*time.Second)
 
-	// Admission can become visible before the file is opened, which would miss
-	// the original circular wait. Keep appending until interval serialization
-	// queues a result. This proves the real tail reader and AggregateProcessor
-	// are active while deliberately leaving the protocol queue without a reader.
+	// Queue one record after the reader is ready, then wait for interval
+	// serialization. This proves the real tail reader and AggregateProcessor are
+	// active while deliberately leaving the protocol queue without a reader.
 	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatalf("open stats file for append: %v", err)
 	}
-	deadline = time.Now().Add(5 * time.Second)
-	for len(handler.maprMessages) == 0 {
-		if _, err := file.WriteString(testStatsLine + "\n"); err != nil {
-			_ = file.Close()
-			t.Fatalf("append stats line: %v", err)
-		}
-		if time.Now().After(deadline) {
-			_ = file.Close()
-			t.Fatal("active tail processor did not queue an aggregate result")
-		}
-		time.Sleep(50 * time.Millisecond)
+	if _, err := file.WriteString(testStatsLine + "\n"); err != nil {
+		_ = file.Close()
+		t.Fatalf("append stats line: %v", err)
 	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("close stats file: %v", err)
 	}
+	waitForHandlerCondition(t, 5*time.Second, "active tail processor did not queue an aggregate result", func() bool {
+		return len(handler.maprMessages) > 0
+	}, func() string {
+		return fmt.Sprintf("map result queue length=%d", len(handler.maprMessages))
+	})
 	if got := len(handler.tailLimiter); got != 1 {
 		t.Fatalf("tail limiter occupancy before shutdown = %d, want 1", got)
 	}

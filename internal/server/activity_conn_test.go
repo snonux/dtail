@@ -45,7 +45,9 @@ func TestActivityConnReadExtendsDeadline(t *testing.T) {
 	}
 
 	go func() {
-		time.Sleep(60 * time.Millisecond)
+		delay := time.NewTimer(60 * time.Millisecond)
+		defer delay.Stop()
+		<-delay.C
 		_, _ = clientConn.Write([]byte{'x'})
 	}()
 
@@ -78,7 +80,6 @@ func TestActivityConnWriteExtendsDeadline(t *testing.T) {
 		_, err := io.ReadFull(clientConn, make([]byte, 1))
 		readDone <- err
 	}()
-	time.Sleep(50 * time.Millisecond)
 	started := time.Now()
 	if _, err := conn.Write([]byte{'x'}); err != nil {
 		t.Fatalf("write activity: %v", err)

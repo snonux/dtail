@@ -124,6 +124,7 @@ func (f *readFile) makeReader(ctx context.Context) (*bufio.Reader, *os.File, io.
 }
 
 func (f *readFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompressor io.Closer, err error) {
+	seekInitialEOF := f.seekInitialEOF
 	if fd, err = f.openFile(); err != nil {
 		return
 	}
@@ -137,6 +138,7 @@ func (f *readFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompre
 	reader, decompressor, err = f.makeCompressedFileReader(fd)
 	if err == nil {
 		f.seekInitialEOF = false
+		f.logger.Trace(f.filePath, f.globID, "Opened file reader", "seekInitialEOF", seekInitialEOF)
 	}
 	return
 }

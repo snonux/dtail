@@ -151,8 +151,11 @@ func TestClientRuntimeStopShutsDownPProf(t *testing.T) {
 func waitForHTTPStatus(t *testing.T, url string, want int) {
 	t.Helper()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		resp, err := http.Get(url)
 		if err == nil {
 			if closeErr := resp.Body.Close(); closeErr != nil {
@@ -162,17 +165,22 @@ func waitForHTTPStatus(t *testing.T, url string, want int) {
 				return
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s to return %d", url, want)
+		}
 	}
-
-	t.Fatalf("timed out waiting for %s to return %d", url, want)
 }
 
 func waitForHTTPError(t *testing.T, url string) {
 	t.Helper()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		resp, err := http.Get(url)
 		if err != nil {
 			return
@@ -180,8 +188,10 @@ func waitForHTTPError(t *testing.T, url string) {
 		if closeErr := resp.Body.Close(); closeErr != nil {
 			t.Fatalf("close response body: %v", closeErr)
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s to stop serving", url)
+		}
 	}
-
-	t.Fatalf("timed out waiting for %s to stop serving", url)
 }

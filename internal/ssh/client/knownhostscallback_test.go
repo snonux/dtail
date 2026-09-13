@@ -24,12 +24,19 @@ type recordingLogger struct {
 	errorCount     atomic.Int32
 	paused         atomic.Bool
 	logWhilePaused atomic.Bool
+	debugCh        chan struct{}
 	mutex          sync.Mutex
 	lastError      error
 }
 
 func (l *recordingLogger) Debug(...any) string {
 	l.debugCount.Add(1)
+	if l.debugCh != nil {
+		select {
+		case l.debugCh <- struct{}{}:
+		default:
+		}
+	}
 	if l.paused.Load() {
 		l.logWhilePaused.Store(true)
 	}
@@ -288,7 +295,7 @@ func TestWrapReturnsWhenCtxCancelledBeforeUnknownChSend(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	logger := &recordingLogger{}
+	logger := &recordingLogger{debugCh: make(chan struct{}, 1)}
 	callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -299,8 +306,11 @@ func TestWrapReturnsWhenCtxCancelledBeforeUnknownChSend(t *testing.T) {
 			&mockPublicKey{id: "new"})
 	}()
 
-	// Give the goroutine a moment to park on the unknownCh send, then cancel.
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-logger.debugCh:
+	case <-time.After(time.Second):
+		t.Fatal("host key callback did not reach unknown-host notification")
+	}
 	cancel()
 
 	select {

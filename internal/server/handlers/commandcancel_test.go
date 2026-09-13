@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"runtime"
 	"testing"
 	"time"
@@ -72,11 +73,6 @@ func TestNewCommandContextReleasesWatcherGoroutine(t *testing.T) {
 	h := &baseHandler{done: internal.NewDone()}
 	t.Cleanup(h.done.Shutdown)
 
-	// Warm up so any lazily-started runtime goroutines are already up.
-	_, cancel := h.newCommandContext(context.Background())
-	cancel()
-	time.Sleep(20 * time.Millisecond)
-
 	baseline := runtime.NumGoroutine()
 
 	const N = 100
@@ -85,14 +81,11 @@ func TestNewCommandContextReleasesWatcherGoroutine(t *testing.T) {
 		cancel()
 	}
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		if delta := runtime.NumGoroutine() - baseline; delta <= 4 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("watcher goroutines leaked: delta=%d (expected <= 4)", runtime.NumGoroutine()-baseline)
+	waitForHandlerCondition(t, time.Second, "watcher goroutines did not exit after cancellation", func() bool {
+		return runtime.NumGoroutine()-baseline <= 4
+	}, func() string {
+		return fmt.Sprintf("goroutine delta=%d", runtime.NumGoroutine()-baseline)
+	})
 }
 
 // TestNewCommandContextHandlerShutdownReleasesWatcher verifies the
@@ -101,11 +94,6 @@ func TestNewCommandContextReleasesWatcherGoroutine(t *testing.T) {
 // rather than leaving it blocked until process exit.
 func TestNewCommandContextHandlerShutdownReleasesWatcher(t *testing.T) {
 	h := &baseHandler{done: internal.NewDone()}
-
-	// Warm up.
-	_, cancel := h.newCommandContext(context.Background())
-	cancel()
-	time.Sleep(20 * time.Millisecond)
 
 	baseline := runtime.NumGoroutine()
 
@@ -116,9 +104,11 @@ func TestNewCommandContextHandlerShutdownReleasesWatcher(t *testing.T) {
 		ctxs = append(ctxs, ctx)
 	}
 
-	if delta := runtime.NumGoroutine() - baseline; delta < N/2 {
-		t.Fatalf("expected goroutines to accumulate before shutdown, delta=%d", delta)
-	}
+	waitForHandlerCondition(t, time.Second, "command watchers did not start", func() bool {
+		return runtime.NumGoroutine()-baseline >= N/2
+	}, func() string {
+		return fmt.Sprintf("goroutine delta=%d, want at least %d", runtime.NumGoroutine()-baseline, N/2)
+	})
 
 	h.done.Shutdown()
 
@@ -135,11 +125,9 @@ func TestNewCommandContextHandlerShutdownReleasesWatcher(t *testing.T) {
 		}
 	}
 
-	for time.Now().Before(deadline) {
-		if delta := runtime.NumGoroutine() - baseline; delta <= 4 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("watcher goroutines leaked past shutdown: delta=%d", runtime.NumGoroutine()-baseline)
+	waitForHandlerCondition(t, time.Until(deadline), "watcher goroutines leaked past shutdown", func() bool {
+		return runtime.NumGoroutine()-baseline <= 4
+	}, func() string {
+		return fmt.Sprintf("goroutine delta=%d", runtime.NumGoroutine()-baseline)
+	})
 }
