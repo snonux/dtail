@@ -38,8 +38,10 @@ func TestSetupRuntimeReturnsConfigWithoutPublishingGlobals(t *testing.T) {
 
 	args := &Args{
 		ConfigFile: "none",
-		NoAuthKey:  true,
-		SSHPort:    DefaultSSHPort,
+		SSHArgs: SSHArgs{
+			NoAuthKey: true,
+			SSHPort:   DefaultSSHPort,
+		},
 	}
 	cfg, err := SetupRuntime(source.Client, args, nil)
 	if err != nil {
@@ -80,7 +82,10 @@ func TestSetupLogDirectoryReturnsHomeLookupError(t *testing.T) {
 func TestSetupRejectsInvalidSSHPort(t *testing.T) {
 	for _, port := range []int{-1, 0, 65536} {
 		t.Run(fmt.Sprintf("port_%d", port), func(t *testing.T) {
-			err := Setup(source.Client, &Args{ConfigFile: "none", SSHPort: port}, nil)
+			err := Setup(source.Client, &Args{
+				ConfigFile: "none",
+				SSHArgs:    SSHArgs{SSHPort: port},
+			}, nil)
 			if err == nil || !strings.Contains(err.Error(), "ssh port must be between 1 and 65535") {
 				t.Fatalf("Setup SSHPort %d error = %v, want port range error", port, err)
 			}
@@ -361,7 +366,7 @@ func TestProcessEnvVarsCLIFlagNotOverridden(t *testing.T) {
 		Server: newDefaultServerConfig(),
 		Client: newDefaultClientConfig(),
 	}
-	args := &Args{SSHPrivateKeyFilePath: "/cli/explicit/key"}
+	args := &Args{SSHArgs: SSHArgs{SSHPrivateKeyFilePath: "/cli/explicit/key"}}
 	in.processEnvVars(args)
 
 	if args.SSHPrivateKeyFilePath != "/cli/explicit/key" {
@@ -417,10 +422,12 @@ func TestProcessEnvVarsPreservesExplicitSecurityPaths(t *testing.T) {
 		Client: &ClientConfig{KnownHostsPath: "/config/known-hosts"},
 	}
 	args := &Args{
-		HostnameOverride:   "cli-host",
-		KnownHostsPath:     "/cli/known-hosts",
-		AuthorizedKeysPath: "/cli/authorized-keys",
-		HostKeyPath:        "/cli/host-key",
+		HostnameOverride: "cli-host",
+		SSHArgs: SSHArgs{
+			KnownHostsPath:     "/cli/known-hosts",
+			AuthorizedKeysPath: "/cli/authorized-keys",
+			HostKeyPath:        "/cli/host-key",
+		},
 	}
 	in.processEnvVars(args)
 
@@ -502,7 +509,10 @@ func TestSetupLoadsExplicitSecurityPaths(t *testing.T) {
   }
 }`)
 
-	clientArgs := &Args{ConfigFile: configPath, SSHPort: DefaultSSHPort}
+	clientArgs := &Args{
+		ConfigFile: configPath,
+		SSHArgs:    SSHArgs{SSHPort: DefaultSSHPort},
+	}
 	if err := Setup(source.Client, clientArgs, nil); err != nil {
 		t.Fatalf("Setup client: %v", err)
 	}
@@ -514,7 +524,10 @@ func TestSetupLoadsExplicitSecurityPaths(t *testing.T) {
 		t.Fatalf("Hostname() = %q, %v; want configured-host", hostname, err)
 	}
 
-	serverArgs := &Args{ConfigFile: configPath, SSHPort: DefaultSSHPort}
+	serverArgs := &Args{
+		ConfigFile: configPath,
+		SSHArgs:    SSHArgs{SSHPort: DefaultSSHPort},
+	}
 	if err := Setup(source.Server, serverArgs, nil); err != nil {
 		t.Fatalf("Setup server: %v", err)
 	}
@@ -537,11 +550,13 @@ func TestSetupFlagsOverrideConfiguredSecurityPaths(t *testing.T) {
 		Client: &ClientConfig{KnownHostsPath: "/config/known_hosts", AuthKeyDisable: true},
 	}
 	args := &Args{
-		HostnameOverride:   "flag-host",
-		KnownHostsPath:     "/flag/known_hosts",
-		AuthorizedKeysPath: "/flag/authorized_keys",
-		HostKeyPath:        "/flag/ssh_host_key",
-		SSHPort:            DefaultSSHPort,
+		HostnameOverride: "flag-host",
+		SSHArgs: SSHArgs{
+			KnownHostsPath:     "/flag/known_hosts",
+			AuthorizedKeysPath: "/flag/authorized_keys",
+			HostKeyPath:        "/flag/ssh_host_key",
+			SSHPort:            DefaultSSHPort,
+		},
 	}
 	in.processEnvVars(args)
 	if err := in.setupConfig(transformServer, args, nil); err != nil {

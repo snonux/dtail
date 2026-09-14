@@ -46,7 +46,7 @@ func main() {
 }
 
 func run() int {
-	args := config.Args{SSHPort: config.DefaultSSHPort}
+	args := config.Args{SSHArgs: config.SSHArgs{SSHPort: config.DefaultSSHPort}}
 	var displayVersion bool
 	var pprof string
 
