@@ -14,7 +14,7 @@ import (
 func TestDMapCSVMultiFile(t *testing.T) {
 	cleanupTmpFiles(t)
 	testLogger := NewTestLogger("TestDMapCSVMultiFile")
-	defer testLogger.WriteLogFile()
+	defer writeLogFileIgnoringError(testLogger)
 	runDualModeTest(t, DualModeTest{
 		Name:           "TestDMapCSVMultiFile",
 		ServerlessTest: func(t *testing.T) { testDMapCSVMultiFileServerless(t, testLogger) },
