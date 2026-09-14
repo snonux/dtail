@@ -295,8 +295,8 @@ func (h *ServerHandler) newReadLineWriter(ctx context.Context, generation uint64
 		h.SendReadMessage(ctx, generation, ".output wake")
 	}
 	if h.serverless {
-		return NewGeneratedDirectWriter(h.ServerlessOutput(), h.hostname, h.plain, true,
-			generation, h.sessionState.currentGeneration)
+		return NewGeneratedDirectWriterWithColorizer(h.ServerlessOutput(), h.hostname, h.plain, true,
+			generation, h.sessionState.currentGeneration, h.colorizer)
 	}
 
 	writer := NewNetworkWriter(ctx, nil, h.serverMessages, h.hostname, h.plain, false,

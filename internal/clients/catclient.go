@@ -6,6 +6,7 @@ import (
 	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
 )
@@ -16,7 +17,7 @@ type CatClient struct {
 }
 
 // NewCatClient returns a new cat client.
-func NewCatClient(args config.Args, loggers LoggerDependencies) (*CatClient, error) {
+func NewCatClient(args config.Args, loggers LoggerDependencies, colorizers ...*brush.Brush) (*CatClient, error) {
 	if args.RegexStr != "" {
 		return nil, errors.New("can't use regex with 'cat' operating mode")
 	}
@@ -30,6 +31,7 @@ func NewCatClient(args config.Args, loggers LoggerDependencies) (*CatClient, err
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,
+			colorizer:  firstColorizer(colorizers),
 		},
 	}
 

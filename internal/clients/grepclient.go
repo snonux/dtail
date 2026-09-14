@@ -6,6 +6,7 @@ import (
 	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
 )
@@ -17,7 +18,7 @@ type GrepClient struct {
 }
 
 // NewGrepClient creates a new grep client.
-func NewGrepClient(args config.Args, loggers LoggerDependencies) (*GrepClient, error) {
+func NewGrepClient(args config.Args, loggers LoggerDependencies, colorizers ...*brush.Brush) (*GrepClient, error) {
 	if args.RegexStr == "" {
 		return nil, errors.New("no regex specified, use '-regex' flag")
 	}
@@ -31,6 +32,7 @@ func NewGrepClient(args config.Args, loggers LoggerDependencies) (*GrepClient, e
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,
+			colorizer:  firstColorizer(colorizers),
 		},
 	}
 

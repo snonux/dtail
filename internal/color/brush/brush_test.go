@@ -1,26 +1,48 @@
 package brush
 
 import (
-	"fmt"
-	"os"
 	"strings"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/source"
 )
 
-// TestMain ensures config.Client is populated with defaults so Colorfy can
-// reach the colourised branches without nil-dereferencing TermColors fields.
-func TestMain(m *testing.M) {
-	if err := config.Setup(source.Client, &config.Args{
-		ConfigFile: "none",
-		SSHPort:    config.DefaultSSHPort,
-	}, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "set up brush tests: %v\n", err)
-		os.Exit(1)
+func TestColorfyUsesStandardPaletteWithoutConfigSetup(t *testing.T) {
+	previousClient := config.Client
+	config.Client = nil
+	t.Cleanup(func() { config.Client = previousClient })
+
+	line := "CLIENT|host|WARN message"
+	if got, want := Colorfy(line), New(config.DefaultTermColors()).Colorfy(line); got != want {
+		t.Fatalf("compatibility Colorfy() = %q, want standard palette output %q", got, want)
 	}
-	os.Exit(m.Run())
+}
+
+func TestNewUsesCopiedInjectedPalette(t *testing.T) {
+	theme := config.DefaultTermColors()
+	theme.Client.TextFg = color.FgMagenta
+	theme.Client.TextBg = color.BgWhite
+	theme.Client.TextAttr = color.AttrUnderline
+	b := New(theme)
+
+	// Brush owns a value copy, so later configuration mutation cannot change
+	// an already-composed runtime.
+	theme.Client.TextFg = color.FgGreen
+	got := b.Colorfy("CLIENT|host|payload")
+	wantSequence := string(color.FgMagenta) + string(color.BgWhite) +
+		string(color.AttrUnderline) + "payload"
+	if !strings.Contains(got, wantSequence) {
+		t.Fatalf("injected palette output = %q, want sequence %q", got, wantSequence)
+	}
+}
+
+func TestNilBrushUsesStandardPalette(t *testing.T) {
+	var b *Brush
+	line := "SERVER|host|message"
+	if got, want := b.Colorfy(line), Colorfy(line); got != want {
+		t.Fatalf("nil Brush.Colorfy() = %q, want %q", got, want)
+	}
 }
 
 // TestColorfy_ShortFramesDoNotPanic feeds Colorfy with malformed or short

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
@@ -22,12 +23,13 @@ type scheduler struct {
 	newMaprClient func(config.Args, clients.MaprClientMode) (backgroundClient, error)
 }
 
-func newScheduler(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) *scheduler {
+func newScheduler(cfg config.RuntimeConfig, loggers clients.LoggerDependencies, colorizers ...*brush.Brush) *scheduler {
+	colorizer := firstColorizer(colorizers)
 	return &scheduler{
 		cfg:    cfg,
 		logger: logging.OrNop(loggers.Server),
 		newMaprClient: func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
-			return clients.NewMaprClient(args, mode, loggers)
+			return clients.NewMaprClient(args, mode, loggers, colorizer)
 		},
 	}
 }

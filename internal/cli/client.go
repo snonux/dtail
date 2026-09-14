@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
@@ -30,6 +31,9 @@ type ClientContextFactory func(config.Args) (context.Context, context.CancelFunc
 // have been initialized.
 type ClientBuilder func(config.Args, clients.LoggerDependencies) (clients.Client, error)
 
+// BrushClientBuilder constructs a client with its process-owned terminal brush.
+type BrushClientBuilder func(config.Args, clients.LoggerDependencies, *brush.Brush) (clients.Client, error)
+
 // ClientRunner owns the shared flags and startup lifecycle of a client command.
 type ClientRunner struct {
 	fs                *flag.FlagSet
@@ -42,6 +46,7 @@ type ClientRunner struct {
 	beforeRuntime     ClientHook
 	afterRuntime      ClientHook
 	contextFactory    ClientContextFactory
+	brushFactory      func(config.TermColors) *brush.Brush
 }
 
 type clientRuntime interface {
@@ -60,7 +65,9 @@ type clientRunDependencies struct {
 	currentUserName func() (string, error)
 	colorsEnabled   func() bool
 	printVersion    func(bool)
+	currentRuntime  func() config.RuntimeConfig
 	newRuntime      func(context.Context, profiling.Flags, string) (clientRuntime, error)
+	newBrushRuntime func(context.Context, profiling.Flags, string, *brush.Brush, bool) (clientRuntime, error)
 	interrupt       func(context.Context, context.CancelFunc) <-chan string
 	logBuildError   func(string, error)
 	loggers         func() clients.LoggerDependencies
@@ -126,6 +133,12 @@ func (r *ClientRunner) WithContext(factory ClientContextFactory) *ClientRunner {
 	return r
 }
 
+// WithBrushFactory sets the terminal brush constructor selected by the command.
+func (r *ClientRunner) WithBrushFactory(factory func(config.TermColors) *brush.Brush) *ClientRunner {
+	r.brushFactory = factory
+	return r
+}
+
 // RunClient parses and configures a client command, owns its runtime, and
 // returns the process exit status.
 func (r *ClientRunner) RunClient(name string, build ClientBuilder) int {
@@ -138,9 +151,11 @@ func (r *ClientRunner) RunClient(name string, build ClientBuilder) int {
 			runtimeCfg := config.CurrentRuntime()
 			return runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable
 		},
-		printVersion: version.Print,
-		newRuntime: func(ctx context.Context, flags profiling.Flags, name string) (clientRuntime, error) {
-			return NewClientRuntime(ctx, flags, name)
+		printVersion:   version.Print,
+		currentRuntime: config.CurrentRuntime,
+		newBrushRuntime: func(ctx context.Context, flags profiling.Flags, name string,
+			colorizer *brush.Brush, colorsEnabled bool) (clientRuntime, error) {
+			return NewClientRuntime(ctx, flags, name, colorizer, colorsEnabled)
 		},
 		interrupt: signal.InterruptChWithCancel,
 		logBuildError: func(name string, err error) {
@@ -155,6 +170,42 @@ func (r *ClientRunner) RunClient(name string, build ClientBuilder) int {
 
 func (r *ClientRunner) runClient(name string,
 	build ClientBuilder, deps clientRunDependencies) int {
+	return r.runClientWithBrush(name, func(args config.Args, loggers clients.LoggerDependencies,
+		_ *brush.Brush) (clients.Client, error) {
+		return build(args, loggers)
+	}, deps)
+}
+
+// RunClientWithBrush runs a client whose constructor accepts the command-owned brush.
+func (r *ClientRunner) RunClientWithBrush(name string, build BrushClientBuilder) int {
+	deps := clientRunDependencies{
+		argv:            os.Args[1:],
+		stderr:          os.Stderr,
+		setup:           config.Setup,
+		currentUserName: user.CurrentName,
+		colorsEnabled: func() bool {
+			runtimeCfg := config.CurrentRuntime()
+			return runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable
+		},
+		printVersion:   version.Print,
+		currentRuntime: config.CurrentRuntime,
+		newBrushRuntime: func(ctx context.Context, flags profiling.Flags, name string,
+			colorizer *brush.Brush, colorsEnabled bool) (clientRuntime, error) {
+			return NewClientRuntime(ctx, flags, name, colorizer, colorsEnabled)
+		},
+		interrupt: signal.InterruptChWithCancel,
+		logBuildError: func(name string, err error) {
+			dlog.Client.Error("Unable to create "+name+" client", err)
+		},
+		loggers: func() clients.LoggerDependencies {
+			return clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common)
+		},
+	}
+	return r.runClientWithBrush(name, build, deps)
+}
+
+func (r *ClientRunner) runClientWithBrush(name string,
+	build BrushClientBuilder, deps clientRunDependencies) int {
 	if err := r.fs.Parse(deps.argv); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -210,7 +261,28 @@ func (r *ClientRunner) runClient(name string,
 	}
 	defer cancel()
 
-	runtime, err := deps.newRuntime(parentCtx, r.profile, name)
+	theme := config.DefaultTermColors()
+	colorsEnabled := false
+	if deps.currentRuntime != nil {
+		runtimeCfg := deps.currentRuntime()
+		if runtimeCfg.Client != nil {
+			theme = runtimeCfg.Client.TermColors
+			colorsEnabled = runtimeCfg.Client.TermColorsEnable
+		}
+	}
+	brushFactory := r.brushFactory
+	if brushFactory == nil {
+		brushFactory = brush.New
+	}
+	colorizer := brushFactory(theme)
+
+	var runtime clientRuntime
+	var err error
+	if deps.newBrushRuntime != nil {
+		runtime, err = deps.newBrushRuntime(parentCtx, r.profile, name, colorizer, colorsEnabled)
+	} else {
+		runtime, err = deps.newRuntime(parentCtx, r.profile, name)
+	}
 	if err != nil {
 		_, _ = fmt.Fprintf(deps.stderr, "unable to initialize %s runtime: %v\n", name, err)
 		return 1
@@ -229,7 +301,7 @@ func (r *ClientRunner) runClient(name string,
 	if deps.loggers != nil {
 		loggers = deps.loggers()
 	}
-	client, err := build(*r.args, loggers)
+	client, err := build(*r.args, loggers, colorizer)
 	if err != nil {
 		deps.logBuildError(name, err)
 		_, _ = fmt.Fprintf(deps.stderr, "unable to create %s client: %v\n", name, err)

@@ -10,6 +10,7 @@ import (
 	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/color"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	sessionHandlers "github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/logging"
@@ -26,9 +27,12 @@ type clientRuntimeBoundary struct {
 	output            *clientOutputFormatter
 	loggers           LoggerDependencies
 	stdout            func() io.Writer
+	colorizer         *brush.Brush
 }
 
-func newClientRuntimeBoundary(cfg config.RuntimeConfig, loggers LoggerDependencies) *clientRuntimeBoundary {
+func newClientRuntimeBoundary(cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) *clientRuntimeBoundary {
+	colorizer := firstColorizer(colorizers)
 	sshPort := 2222
 	sshConnectTimeout := 2 * time.Second
 	if cfg.Common != nil {
@@ -50,6 +54,7 @@ func newClientRuntimeBoundary(cfg config.RuntimeConfig, loggers LoggerDependenci
 		output:            newClientOutputFormatter(cfg.Client),
 		loggers:           loggers,
 		stdout:            func() io.Writer { return os.Stdout },
+		colorizer:         colorizer,
 	}
 }
 
@@ -86,6 +91,7 @@ func (r *clientRuntimeBoundary) NewServerlessHandler(ctx context.Context, userNa
 			Reader:      r.loggers.Common,
 		},
 		Capabilities: sessionHandlers.DetectCapabilities(),
+		Colorizer:    r.colorizer,
 	}
 	if r.serverCfg != nil {
 		dependencies.CatLimiter = make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentCats, 2))

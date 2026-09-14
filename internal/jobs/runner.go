@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 )
 
@@ -16,11 +17,19 @@ type Runner struct {
 }
 
 // New returns a background job runner.
-func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) *Runner {
+func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies, colorizers ...*brush.Brush) *Runner {
+	colorizer := firstColorizer(colorizers)
 	return &Runner{
-		scheduler:  newScheduler(cfg, loggers),
-		continuous: newContinuous(cfg, loggers),
+		scheduler:  newScheduler(cfg, loggers, colorizer),
+		continuous: newContinuous(cfg, loggers, colorizer),
 	}
+}
+
+func firstColorizer(colorizers []*brush.Brush) *brush.Brush {
+	if len(colorizers) == 0 {
+		return nil
+	}
+	return colorizers[0]
 }
 
 // Start runs scheduled and continuous workloads until the context is canceled.

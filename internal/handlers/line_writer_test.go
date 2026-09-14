@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/color"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -80,15 +82,34 @@ func TestDirectWriter_ServerlessPlainWithNewline(t *testing.T) {
 	}
 }
 
-// TestDirectWriter_ServerlessColored tests colored serverless mode output
-// Note: Skipped because it requires color config initialization which is complex to set up in tests
 func TestDirectWriter_ServerlessColored(t *testing.T) {
-	t.Skip("Requires color config initialization - tested via integration tests")
+	previousClient := config.Client
+	config.Client = nil
+	t.Cleanup(func() { config.Client = previousClient })
+
+	theme := config.DefaultTermColors()
+	theme.Remote.TextFg = color.FgMagenta
+	theme.Remote.TextBg = color.BgWhite
+	theme.Remote.TextAttr = color.AttrUnderline
+	var output bytes.Buffer
+	writer := NewDirectWriterWithColorizer(&output, "testhost", false, true, brush.New(theme))
+	if err := writer.WriteLineData([]byte("payload"), 1, "source.log"); err != nil {
+		t.Fatalf("WriteLineData() error = %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	wantSequence := string(color.FgMagenta) + string(color.BgWhite) +
+		string(color.AttrUnderline) + "payload"
+	if !strings.Contains(output.String(), wantSequence) {
+		t.Fatalf("colored output = %q, want injected sequence %q", output.String(), wantSequence)
+	}
 }
 
 func TestDirectWriterServerlessColoredPreservesTerminalMessageDelimiter(t *testing.T) {
 	originalClient := config.Client
-	config.Client = &config.ClientConfig{}
+	config.Client = nil
 	t.Cleanup(func() {
 		config.Client = originalClient
 	})
@@ -763,12 +784,12 @@ func TestDirectWriter_StatsBytesWrittenMatchesOutput(t *testing.T) {
 
 // TestDirectWriter_StatsBytesWrittenServerlessColored covers the colored
 // serverless branch of writeServerlessLine: each line is protocol formatted,
-// run through brush.Colorfy and appended to the accumulating writeBuf, so the
+// run through the injected colorizer and appended to the accumulating writeBuf, so the
 // bytesWritten stat must equal the flushed output size. A zero-value
-// ClientConfig is safe for Colorfy (zero TermColors paint with defaults).
+// The compatibility colorizer is safe without ClientConfig setup.
 func TestDirectWriter_StatsBytesWrittenServerlessColored(t *testing.T) {
 	originalClient := config.Client
-	config.Client = &config.ClientConfig{}
+	config.Client = nil
 	t.Cleanup(func() {
 		config.Client = originalClient
 	})

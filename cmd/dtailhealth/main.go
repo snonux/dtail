@@ -11,6 +11,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/signal"
@@ -65,11 +66,14 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to configure dtailhealth: %v\n", err)
 		return 2
 	}
+	runtimeCfg := config.CurrentRuntime()
+	colorizer := brush.New(runtimeCfg.Client.TermColors)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
-	if err := dlog.Start(ctx, &wg, source.HealthCheck); err != nil {
+	if err := dlog.Start(ctx, &wg, source.HealthCheck, colorizer,
+		runtimeCfg.Client.TermColorsEnable); err != nil {
 		wg.Done()
 		cancel()
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to initialize dtailhealth logger: %v\n", err)
@@ -84,7 +88,7 @@ func run() int {
 			return cli.NewPProfServer(ctx, address)
 		},
 		newHealthClient: func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
-			return clients.NewHealthClient(args, loggers)
+			return clients.NewHealthClient(args, loggers, colorizer)
 		},
 	})
 }

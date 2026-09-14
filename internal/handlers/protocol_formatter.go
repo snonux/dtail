@@ -12,6 +12,13 @@ const defaultTransmittedPerc = "100"
 type lineFormat uint8
 type lineFormatter func(*bytes.Buffer, []byte, uint64, string)
 
+// Colorizer renders a protocol frame for terminal output.
+type Colorizer interface {
+	Colorfy(string) string
+}
+
+type defaultColorizer struct{}
+
 const (
 	lineFormatProtocol lineFormat = iota
 	lineFormatDelimited
@@ -19,15 +26,18 @@ const (
 	lineFormatColored
 )
 
-func newLineFormatter(format lineFormat, hostname string) lineFormatter {
+func newLineFormatter(format lineFormat, hostname string, colorizer Colorizer) lineFormatter {
 	switch format {
 	case lineFormatDelimited:
 		return appendDelimitedLine
 	case lineFormatNewline:
 		return appendNewlineLine
 	case lineFormatColored:
+		if colorizer == nil {
+			colorizer = defaultColorizer{}
+		}
 		return func(dst *bytes.Buffer, content []byte, lineNumber uint64, sourceID string) {
-			appendColoredLine(dst, hostname, content, lineNumber, sourceID)
+			appendColoredLine(dst, hostname, content, lineNumber, sourceID, colorizer)
 		}
 	default:
 		return func(dst *bytes.Buffer, content []byte, lineNumber uint64, sourceID string) {
@@ -54,7 +64,8 @@ func appendNewlineLine(dst *bytes.Buffer, content []byte, _ uint64, _ string) {
 	}
 }
 
-func appendColoredLine(dst *bytes.Buffer, hostname string, content []byte, lineNumber uint64, sourceID string) {
+func appendColoredLine(dst *bytes.Buffer, hostname string, content []byte, lineNumber uint64,
+	sourceID string, colorizer Colorizer) {
 	if len(content) > 0 && content[len(content)-1] == '\n' {
 		content = content[:len(content)-1]
 	}
@@ -69,6 +80,10 @@ func appendColoredLine(dst *bytes.Buffer, hostname string, content []byte, lineN
 	})
 	frame := encoded.Bytes()
 	frame = frame[:len(frame)-1]
-	dst.WriteString(brush.Colorfy(string(frame)))
+	dst.WriteString(colorizer.Colorfy(string(frame)))
 	dst.WriteByte('\n')
+}
+
+func (defaultColorizer) Colorfy(line string) string {
+	return brush.Default().Colorfy(line)
 }

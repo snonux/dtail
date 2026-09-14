@@ -12,6 +12,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -51,7 +52,8 @@ type outfileReportState struct {
 }
 
 // NewMaprClient returns a new mapreduce client.
-func NewMaprClient(args config.Args, maprClientMode MaprClientMode, loggers LoggerDependencies) (*MaprClient, error) {
+func NewMaprClient(args config.Args, maprClientMode MaprClientMode, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*MaprClient, error) {
 	if args.QueryStr == "" {
 		return nil, errors.New("no mapreduce query specified, use '-query' flag")
 	}
@@ -78,6 +80,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode, loggers Logg
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      retry,
 			loggers:    loggers,
+			colorizer:  firstColorizer(colorizers),
 		},
 		session: maprclient.NewSessionState(query, loggers.Client),
 		mode:    maprClientMode,

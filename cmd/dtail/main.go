@@ -10,6 +10,7 @@ import (
 	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/color"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
 )
@@ -21,9 +22,10 @@ func main() {
 func run() int {
 	args := config.Args{Mode: omode.TailClient}
 	runner := cli.BindCommonClientFlags(flag.CommandLine, &args)
+	runner.WithBrushFactory(brush.New)
 	options := bindTailFlags(flag.CommandLine, &args)
 	options.configureRunner(runner)
-	return runner.RunClient("dtail", buildTailClient)
+	return runner.RunClientWithBrush("dtail", buildTailClient)
 }
 
 type tailOptions struct {
@@ -81,11 +83,12 @@ func (o *tailOptions) configureRunner(runner *cli.ClientRunner) {
 	})
 }
 
-func buildTailClient(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
+func buildTailClient(args config.Args, loggers clients.LoggerDependencies,
+	colorizer *brush.Brush) (clients.Client, error) {
 	if args.QueryStr == "" {
-		return clients.NewTailClient(args, loggers)
+		return clients.NewTailClient(args, loggers, colorizer)
 	}
-	return clients.NewMaprClient(args, clients.DefaultMode, loggers)
+	return clients.NewMaprClient(args, clients.DefaultMode, loggers, colorizer)
 }
 
 // applyClientDeadlines wraps ctx with the earliest of two absolute deadlines:

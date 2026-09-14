@@ -6,6 +6,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 )
 
@@ -16,7 +17,9 @@ func main() {
 func run() int {
 	var args config.Args
 	runner := cli.BindCommonClientFlags(flag.CommandLine, &args)
-	return runner.RunClient("dcat", func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
-		return clients.NewCatClient(args, loggers)
+	runner.WithBrushFactory(brush.New)
+	return runner.RunClientWithBrush("dcat", func(args config.Args, loggers clients.LoggerDependencies,
+		colorizer *brush.Brush) (clients.Client, error) {
+		return clients.NewCatClient(args, loggers, colorizer)
 	})
 }

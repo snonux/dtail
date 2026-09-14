@@ -19,6 +19,7 @@ type Dependencies struct {
 	ServerlessOutput io.Writer
 	Loggers          HandlerLoggers
 	Capabilities     []string
+	Colorizer        Colorizer
 }
 
 // NewForUser creates the handler appropriate for the authenticated user.

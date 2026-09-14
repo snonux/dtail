@@ -13,6 +13,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
@@ -93,11 +94,14 @@ func run() int {
 		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
 	}
 	version.Print(false)
+	runtimeCfg := config.CurrentRuntime()
+	colorizer := brush.New(runtimeCfg.Client.TermColors)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
-	if err := dlog.Start(rootCtx, &wg, source.Server); err != nil {
+	if err := dlog.Start(rootCtx, &wg, source.Server, colorizer,
+		runtimeCfg.Client.TermColorsEnable); err != nil {
 		wg.Done()
 		rootCancel()
 		fmt.Fprintf(os.Stderr, "unable to initialize dserver logger: %v\n", err)
@@ -106,7 +110,7 @@ func run() int {
 
 	loggers := clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common)
 	return runDServerLifecycle(rootCtx, rootCancel, &wg, shutdownAfter, pprof,
-		config.CurrentRuntime(), dserverLifecycleDependencies{
+		runtimeCfg, dserverLifecycleDependencies{
 			stderr:               os.Stderr,
 			loggers:              loggers,
 			enableProfilingRates: cli.EnableProfilingRates,
@@ -114,11 +118,11 @@ func run() int {
 				return cli.NewPProfServer(ctx, address)
 			},
 			newBackgroundJobs: func(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) server.BackgroundJobs {
-				return jobs.New(cfg, loggers)
+				return jobs.New(cfg, loggers, colorizer)
 			},
 			newServer: func(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers,
 				backgroundJobs server.BackgroundJobs) (dserverService, error) {
-				return server.New(cfg, loggers, backgroundJobs)
+				return server.New(cfg, loggers, backgroundJobs, colorizer)
 			},
 			notifyContext: signal.NotifyContext,
 		})

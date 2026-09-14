@@ -6,6 +6,7 @@ import (
 	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
 
@@ -18,7 +19,7 @@ type HealthClient struct {
 }
 
 // NewHealthClient returns a new health client.
-func NewHealthClient(args config.Args, loggers LoggerDependencies) (*HealthClient, error) {
+func NewHealthClient(args config.Args, loggers LoggerDependencies, colorizers ...*brush.Brush) (*HealthClient, error) {
 	args.Mode = omode.HealthClient
 	args.UserName = config.HealthUser
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(config.HealthUser))
@@ -31,6 +32,7 @@ func NewHealthClient(args config.Args, loggers LoggerDependencies) (*HealthClien
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,
+			colorizer:  firstColorizer(colorizers),
 		},
 	}
 

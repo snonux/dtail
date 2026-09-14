@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
@@ -28,7 +29,8 @@ type continuous struct {
 	newTicker        func(time.Duration) (<-chan time.Time, func())
 }
 
-func newContinuous(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) *continuous {
+func newContinuous(cfg config.RuntimeConfig, loggers clients.LoggerDependencies, colorizers ...*brush.Brush) *continuous {
+	colorizer := firstColorizer(colorizers)
 	c := &continuous{cfg: cfg, logger: logging.OrNop(loggers.Server)}
 	c.retryInterval = time.Minute
 	c.now = time.Now
@@ -37,7 +39,7 @@ func newContinuous(cfg config.RuntimeConfig, loggers clients.LoggerDependencies)
 		return ticker.C, ticker.Stop
 	}
 	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
-		return clients.NewMaprClient(args, mode, loggers)
+		return clients.NewMaprClient(args, mode, loggers, colorizer)
 	}
 	c.dayChangeWatcher = c.waitForDayChange
 	return c

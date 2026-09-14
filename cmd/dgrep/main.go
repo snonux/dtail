@@ -6,6 +6,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 )
 
@@ -17,6 +18,7 @@ func run() int {
 	var args config.Args
 	var grep string
 	runner := cli.BindCommonClientFlags(flag.CommandLine, &args)
+	runner.WithBrushFactory(brush.New)
 	flag.BoolVar(&args.RegexInvert, "invert", false, "Invert regex")
 	flag.IntVar(&args.AfterContext, "after", 0, "Print lines of trailing context after matching lines")
 	flag.IntVar(&args.BeforeContext, "before", 0, "Print lines of leading context before matching lines")
@@ -28,7 +30,8 @@ func run() int {
 			args.RegexStr = grep
 		}
 	})
-	return runner.RunClient("dgrep", func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
-		return clients.NewGrepClient(args, loggers)
+	return runner.RunClientWithBrush("dgrep", func(args config.Args, loggers clients.LoggerDependencies,
+		colorizer *brush.Brush) (clients.Client, error) {
+		return clients.NewGrepClient(args, loggers, colorizer)
 	})
 }

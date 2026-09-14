@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/profiling"
 	"github.com/mimecast/dtail/internal/source"
@@ -145,6 +146,46 @@ func TestClientRunnerLifecycleAndArguments(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+}
+
+func TestClientRunnerInjectsConfiguredBrushWithoutGlobalConfig(t *testing.T) {
+	runner, stderr := newTestClientRunner(t)
+	theme := config.DefaultTermColors()
+	theme.Client.TextFg = "custom-foreground"
+	configuredBrush := brush.New(theme)
+	runner.WithBrushFactory(func(got config.TermColors) *brush.Brush {
+		if !reflect.DeepEqual(got, theme) {
+			t.Fatalf("brush theme = %#v, want %#v", got, theme)
+		}
+		return configuredBrush
+	})
+
+	deps := clientDependenciesForTest(stderr)
+	deps.currentRuntime = func() config.RuntimeConfig {
+		return config.RuntimeConfig{Client: &config.ClientConfig{
+			TermColorsEnable: true,
+			TermColors:       theme,
+		}}
+	}
+	events := []string{}
+	deps.newBrushRuntime = func(_ context.Context, _ profiling.Flags, _ string,
+		got *brush.Brush, enabled bool) (clientRuntime, error) {
+		if got != configuredBrush || !enabled {
+			t.Fatalf("runtime brush = %p enabled=%v, want %p enabled=true", got, enabled, configuredBrush)
+		}
+		return &recordingClientRuntime{ctx: context.Background(), events: &events}, nil
+	}
+
+	status := runner.runClientWithBrush("test-client", func(_ config.Args,
+		_ clients.LoggerDependencies, got *brush.Brush) (clients.Client, error) {
+		if got != configuredBrush {
+			t.Fatalf("client brush = %p, want %p", got, configuredBrush)
+		}
+		return clientFunc(func(context.Context, <-chan string) int { return 0 }), nil
+	}, deps)
+	if status != 0 {
+		t.Fatalf("runClientWithBrush status = %d, want 0", status)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
 )
@@ -15,7 +16,7 @@ type TailClient struct {
 }
 
 // NewTailClient returns a new TailClient.
-func NewTailClient(args config.Args, loggers LoggerDependencies) (*TailClient, error) {
+func NewTailClient(args config.Args, loggers LoggerDependencies, colorizers ...*brush.Brush) (*TailClient, error) {
 	args.Mode = omode.TailClient
 	loggers = loggers.normalized()
 	c := TailClient{
@@ -25,6 +26,7 @@ func NewTailClient(args config.Args, loggers LoggerDependencies) (*TailClient, e
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      true,
 			loggers:    loggers,
+			colorizer:  firstColorizer(colorizers),
 		},
 	}
 

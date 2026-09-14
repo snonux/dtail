@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog/loggers"
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -34,7 +33,9 @@ var started bool
 
 // DLog is the DTail logger.
 type DLog struct {
-	logger loggers.Logger
+	logger        loggers.Logger
+	colorizer     Colorizer
+	colorsEnabled bool
 	// Is this a DTail server or client process logging?
 	sourceProcess source.Source
 	// Is this a DTail server or client package logging? In serverless mode
@@ -46,10 +47,16 @@ type DLog struct {
 	hostname string
 }
 
+// Colorizer renders a message for a terminal color sink.
+type Colorizer interface {
+	Colorfy(string) string
+}
+
 var _ logging.Logger = (*DLog)(nil)
 
 // newDLog creates a new DTail logger.
-func newDLog(sourceProcess, sourcePackage source.Source) (*DLog, error) {
+func newDLog(sourceProcess, sourcePackage source.Source, colorizer Colorizer,
+	colorsEnabled bool) (*DLog, error) {
 	if config.Common == nil {
 		return nil, fmt.Errorf("logger configuration is unavailable")
 	}
@@ -70,6 +77,8 @@ func newDLog(sourceProcess, sourcePackage source.Source) (*DLog, error) {
 
 	return &DLog{
 		logger:        logger,
+		colorizer:     colorizer,
+		colorsEnabled: colorsEnabled,
 		sourceProcess: sourceProcess,
 		sourcePackage: sourcePackage,
 		maxLevel:      maxLevel,
@@ -78,7 +87,8 @@ func newDLog(sourceProcess, sourcePackage source.Source) (*DLog, error) {
 }
 
 // Start logger(s).
-func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source) error {
+func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source,
+	colorizer Colorizer, colorsEnabled bool) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -86,11 +96,11 @@ func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source)
 		Common.FatalPanic("Logger already started")
 	}
 
-	clientLogger, err := newDLog(sourceProcess, source.Client)
+	clientLogger, err := newDLog(sourceProcess, source.Client, colorizer, colorsEnabled)
 	if err != nil {
 		return fmt.Errorf("create client logger: %w", err)
 	}
-	serverLogger, err := newDLog(sourceProcess, source.Server)
+	serverLogger, err := newDLog(sourceProcess, source.Server, colorizer, colorsEnabled)
 	if err != nil {
 		return fmt.Errorf("create server logger: %w", err)
 	}
@@ -213,11 +223,11 @@ func (d *DLog) Devel(args ...any) string {
 
 // Raw message logging.
 func (d *DLog) Raw(message string) string {
-	if !config.Client.TermColorsEnable || !d.logger.SupportsColors() {
+	if !d.shouldColorize() {
 		d.logger.Raw(time.Now(), message)
 		return message
 	}
-	d.logger.RawWithColors(time.Now(), message, brush.Colorfy(message))
+	d.logger.RawWithColors(time.Now(), message, d.colorizer.Colorfy(message))
 	return message
 }
 
@@ -253,11 +263,11 @@ func (d *DLog) RawPayloadFileTee(message string) {
 // written verbatim (no level/hostname prefix); callers pre-format it and must
 // NOT append a trailing newline, since the Log sink appends one.
 func (d *DLog) RawLog(message string) string {
-	if !config.Client.TermColorsEnable || !d.logger.SupportsColors() {
+	if !d.shouldColorize() {
 		d.logger.Log(time.Now(), message)
 		return message
 	}
-	d.logger.LogWithColors(time.Now(), message, brush.Colorfy(message))
+	d.logger.LogWithColors(time.Now(), message, d.colorizer.Colorfy(message))
 	return message
 }
 
@@ -347,13 +357,17 @@ func (d *DLog) log(level level, args []any) string {
 	d.writeArgStrings(sb, args)
 
 	message := sb.String()
-	if !config.Client.TermColorsEnable || !d.logger.SupportsColors() {
+	if !d.shouldColorize() {
 		d.logger.Log(now, message)
 		return message
 	}
 
-	d.logger.LogWithColors(now, message, brush.Colorfy(message))
+	d.logger.LogWithColors(now, message, d.colorizer.Colorfy(message))
 	return message
+}
+
+func (d *DLog) shouldColorize() bool {
+	return d.colorsEnabled && d.colorizer != nil && d.logger.SupportsColors()
 }
 
 func (d *DLog) writeArgStrings(sb *strings.Builder, args []any) {

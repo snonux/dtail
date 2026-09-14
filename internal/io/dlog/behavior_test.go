@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/color"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog/loggers"
 	"github.com/mimecast/dtail/internal/source"
@@ -20,6 +22,8 @@ type behaviorLogger struct {
 	fileOnly      []string
 	coloredLogs   int
 	coloredRaws   int
+	coloredLog    string
+	coloredRaw    string
 	flushes       int
 	pauses        int
 	resumes       int
@@ -32,10 +36,11 @@ func (l *behaviorLogger) Log(_ time.Time, message string) {
 	l.logs = append(l.logs, message)
 }
 
-func (l *behaviorLogger) LogWithColors(_ time.Time, message, _ string) {
+func (l *behaviorLogger) LogWithColors(_ time.Time, message, colored string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.coloredLogs++
+	l.coloredLog = colored
 	l.logs = append(l.logs, message)
 }
 
@@ -45,10 +50,11 @@ func (l *behaviorLogger) Raw(_ time.Time, message string) {
 	l.raws = append(l.raws, message)
 }
 
-func (l *behaviorLogger) RawWithColors(_ time.Time, message, _ string) {
+func (l *behaviorLogger) RawWithColors(_ time.Time, message, colored string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.coloredRaws++
+	l.coloredRaw = colored
 	l.raws = append(l.raws, message)
 }
 
@@ -222,12 +228,18 @@ func TestDLogRoutesMessagesAndHonorsLevels(t *testing.T) {
 
 func TestDLogRoutesColoredRawAndDiagnosticMessages(t *testing.T) {
 	previousClient := config.Client
-	config.Client = &config.ClientConfig{TermColorsEnable: true}
+	config.Client = nil
 	t.Cleanup(func() { config.Client = previousClient })
 
 	recorder := &behaviorLogger{supportsColor: true}
+	theme := config.DefaultTermColors()
+	theme.Client.TextFg = color.FgMagenta
+	theme.Client.TextBg = color.BgWhite
+	theme.Client.TextAttr = color.AttrUnderline
 	d := &DLog{
 		logger:        recorder,
+		colorizer:     brush.New(theme),
+		colorsEnabled: true,
 		sourceProcess: source.Server,
 		maxLevel:      Info,
 	}
@@ -235,14 +247,19 @@ func TestDLogRoutesColoredRawAndDiagnosticMessages(t *testing.T) {
 	if got := d.Info("diagnostic"); !strings.HasSuffix(got, "|diagnostic") {
 		t.Fatalf("Info() = %q, want diagnostic suffix", got)
 	}
-	if got := d.Raw("payload"); got != "payload" {
-		t.Fatalf("Raw() = %q, want payload", got)
+	if got := d.Raw("CLIENT|host|payload"); got != "CLIENT|host|payload" {
+		t.Fatalf("Raw() = %q, want framed payload", got)
 	}
 	if got := d.RawLog("audit"); got != "audit" {
 		t.Fatalf("RawLog() = %q, want audit", got)
 	}
 	if recorder.coloredLogs != 2 || recorder.coloredRaws != 1 {
 		t.Fatalf("colored calls = logs:%d raws:%d, want 2 and 1", recorder.coloredLogs, recorder.coloredRaws)
+	}
+	wantSequence := string(color.FgMagenta) + string(color.BgWhite) +
+		string(color.AttrUnderline) + "payload"
+	if !strings.Contains(recorder.coloredRaw, wantSequence) {
+		t.Fatalf("colored Raw() = %q, want injected sequence %q", recorder.coloredRaw, wantSequence)
 	}
 }
 
@@ -323,7 +340,7 @@ func TestNewDLogValidatesConfiguration(t *testing.T) {
 	})
 
 	config.Common = nil
-	if _, err := newDLog(source.Client, source.Client); err == nil || !strings.Contains(err.Error(), "configuration is unavailable") {
+	if _, err := newDLog(source.Client, source.Client, nil, false); err == nil || !strings.Contains(err.Error(), "configuration is unavailable") {
 		t.Fatalf("newDLog() missing-config error = %v", err)
 	}
 
@@ -345,7 +362,7 @@ func TestNewDLogValidatesConfiguration(t *testing.T) {
 				LogLevel:         tt.levelName,
 				LogRotation:      "signal",
 			}
-			got, err := newDLog(source.Client, source.Server)
+			got, err := newDLog(source.Client, source.Server, nil, false)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("newDLog() error = %v, want substring %q", err, tt.wantErr)
@@ -390,7 +407,7 @@ func TestStartInitializesAndStopsLoggers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
-	if err := Start(ctx, &wg, source.Client); err != nil {
+	if err := Start(ctx, &wg, source.Client, nil, false); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if Client == nil || Server == nil || Common != Client {

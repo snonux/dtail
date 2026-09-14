@@ -11,6 +11,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/connectors"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/discovery"
 	"github.com/mimecast/dtail/internal/regex"
@@ -29,8 +30,9 @@ const (
 type baseClient struct {
 	mu *sync.RWMutex
 	config.Args
-	runtime *clientRuntimeBoundary
-	loggers LoggerDependencies
+	runtime   *clientRuntimeBoundary
+	colorizer *brush.Brush
+	loggers   LoggerDependencies
 	// To display client side stats
 	stats *stats
 	// We have one connection per remote server.
@@ -68,11 +70,18 @@ func (c *baseClient) clientLogger() clientlog.Logger {
 	return c.loggers.Client
 }
 
+func firstColorizer(colorizers []*brush.Brush) *brush.Brush {
+	if len(colorizers) == 0 {
+		return nil
+	}
+	return colorizers[0]
+}
+
 func (c *baseClient) init() error {
 	c.loggers = c.loggers.normalized()
 	c.clientLogger().Debug("Initiating base client", c.String())
 	if c.runtime == nil {
-		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime(), c.loggers)
+		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime(), c.loggers, c.colorizer)
 	}
 
 	flag := regex.Default

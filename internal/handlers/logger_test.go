@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/authkey"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	userserver "github.com/mimecast/dtail/internal/sessionuser"
@@ -35,6 +36,7 @@ func (l *handlerRecordingLogger) Debug(args ...any) string {
 func TestNewServerHandlerPreservesInjectedRoles(t *testing.T) {
 	diagnostics := &handlerRecordingLogger{}
 	reader := &handlerRecordingLogger{}
+	colorizer := brush.New(config.DefaultTermColors())
 	var output bytes.Buffer
 	handler, err := NewServerHandler(context.Background(),
 		&userserver.User{Name: "logger-test"},
@@ -45,6 +47,7 @@ func TestNewServerHandlerPreservesInjectedRoles(t *testing.T) {
 			AuthKeyStore:     authkey.New(time.Hour, 1),
 			ServerlessOutput: &output,
 			Loggers:          HandlerLoggers{Diagnostics: diagnostics, Reader: reader},
+			Colorizer:        colorizer,
 		},
 	)
 	if err != nil {
@@ -58,6 +61,9 @@ func TestNewServerHandlerPreservesInjectedRoles(t *testing.T) {
 	}
 	if handler.ServerlessOutput() != &output {
 		t.Fatal("serverless output writer was not preserved")
+	}
+	if handler.colorizer != colorizer {
+		t.Fatal("terminal colorizer was not preserved")
 	}
 	handler.Logger().Info("diagnostic-event")
 	handler.ReaderLogger().Info("reader-event")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/authkey"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/logging"
@@ -28,6 +29,7 @@ type Server struct {
 	cfg          config.RuntimeConfig
 	logger       logging.Logger
 	readerLogger logging.Logger
+	colorizer    *brush.Brush
 	// Various server statistics counters.
 	stats stats
 	// SSH server configuration.
@@ -78,7 +80,12 @@ func secretsEqual(a, b string) bool {
 }
 
 // New returns a new server.
-func New(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers, backgroundJobs BackgroundJobs) (*Server, error) {
+func New(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers, backgroundJobs BackgroundJobs,
+	colorizers ...*brush.Brush) (*Server, error) {
+	var colorizer *brush.Brush
+	if len(colorizers) > 0 {
+		colorizer = colorizers[0]
+	}
 	logger := logging.OrNop(loggers.Diagnostics)
 	if cfg.Server == nil || cfg.Common == nil {
 		if fatalLogger, ok := logger.(interface{ FatalPanic(...any) }); ok {
@@ -93,6 +100,7 @@ func New(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers, backgroundJo
 		cfg:          cfg,
 		logger:       logger,
 		readerLogger: logging.OrNop(loggers.Reader),
+		colorizer:    colorizer,
 		sshServerConfig: &gossh.ServerConfig{
 			Config: gossh.Config{
 				KeyExchanges: cfg.Server.KeyExchanges,
@@ -352,6 +360,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 			Reader:      s.readerLog(),
 		},
 		Capabilities: s.capabilities,
+		Colorizer:    s.colorizer,
 	})
 	if err != nil {
 		s.log().Error(user, "Unable to create session handler", err)

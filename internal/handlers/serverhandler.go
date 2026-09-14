@@ -29,6 +29,7 @@ type ServerHandler struct {
 	serverCfg           *config.ServerConfig
 	readTimings         readTimings
 	authKeyStore        *authkey.Store
+	colorizer           Colorizer
 	regex               string
 	commands            map[string]commandHandler
 	sessionState        sessionCommandState
@@ -95,6 +96,7 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 		serverCfg:    serverCfg,
 		readTimings:  newReadTimings(serverCfg),
 		authKeyStore: dependencies.AuthKeyStore,
+		colorizer:    dependencies.Colorizer,
 		regex:        ".",
 	}
 	h.handleCommandCb = h.handleUserCommand

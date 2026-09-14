@@ -9,25 +9,42 @@ import (
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
-func paintSeverity(sb *strings.Builder, text string) bool {
+var defaultBrush = &Brush{theme: config.DefaultTermColors()}
+
+// Brush renders protocol messages with a fixed terminal palette.
+type Brush struct {
+	theme config.TermColors
+}
+
+// New returns a Brush that renders with theme.
+func New(theme config.TermColors) *Brush {
+	return &Brush{theme: theme}
+}
+
+// Default returns the immutable Brush used by compatibility paths.
+func Default() *Brush {
+	return defaultBrush
+}
+
+func (b *Brush) paintSeverity(sb *strings.Builder, text string) bool {
 	switch {
 	case strings.HasPrefix(text, "WARN"):
 		color.PaintWithAttr(sb, text,
-			config.Client.TermColors.Common.SeverityWarnFg,
-			config.Client.TermColors.Common.SeverityWarnBg,
-			config.Client.TermColors.Common.SeverityWarnAttr)
+			b.theme.Common.SeverityWarnFg,
+			b.theme.Common.SeverityWarnBg,
+			b.theme.Common.SeverityWarnAttr)
 
 	case strings.HasPrefix(text, "ERROR"):
 		color.PaintWithAttr(sb, text,
-			config.Client.TermColors.Common.SeverityErrorFg,
-			config.Client.TermColors.Common.SeverityErrorBg,
-			config.Client.TermColors.Common.SeverityErrorAttr)
+			b.theme.Common.SeverityErrorFg,
+			b.theme.Common.SeverityErrorBg,
+			b.theme.Common.SeverityErrorAttr)
 
 	case strings.HasPrefix(text, "FATAL"):
 		color.PaintWithAttr(sb, text,
-			config.Client.TermColors.Common.SeverityFatalFg,
-			config.Client.TermColors.Common.SeverityFatalBg,
-			config.Client.TermColors.Common.SeverityFatalAttr)
+			b.theme.Common.SeverityFatalFg,
+			b.theme.Common.SeverityFatalBg,
+			b.theme.Common.SeverityFatalAttr)
 
 	default:
 		return false
@@ -35,180 +52,190 @@ func paintSeverity(sb *strings.Builder, text string) bool {
 	return true
 }
 
-func paintRemote(sb *strings.Builder, line string) {
+func (b *Brush) paintRemote(sb *strings.Builder, line string) {
 	decoded, err := protocol.DecodeLine(line)
 	if err != nil {
 		// Malformed or short frame (e.g. from an older/buggy server):
 		// fall back to the plain-text default branch instead of
 		// indexing out of range.
-		paintDefault(sb, line)
+		b.paintDefault(sb, line)
 		return
 	}
 
 	color.PaintWithAttr(sb, protocol.LineMessageID,
-		config.Client.TermColors.Remote.RemoteFg,
-		config.Client.TermColors.Remote.RemoteBg,
-		config.Client.TermColors.Remote.RemoteAttr)
+		b.theme.Remote.RemoteFg,
+		b.theme.Remote.RemoteBg,
+		b.theme.Remote.RemoteAttr)
 
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Remote.DelimiterFg,
-		config.Client.TermColors.Remote.DelimiterBg,
-		config.Client.TermColors.Remote.DelimiterAttr)
+		b.theme.Remote.DelimiterFg,
+		b.theme.Remote.DelimiterBg,
+		b.theme.Remote.DelimiterAttr)
 
 	color.PaintWithAttr(sb, decoded.Hostname,
-		config.Client.TermColors.Remote.HostnameFg,
-		config.Client.TermColors.Remote.HostnameBg,
-		config.Client.TermColors.Remote.HostnameAttr)
+		b.theme.Remote.HostnameFg,
+		b.theme.Remote.HostnameBg,
+		b.theme.Remote.HostnameAttr)
 
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Remote.DelimiterFg,
-		config.Client.TermColors.Remote.DelimiterBg,
-		config.Client.TermColors.Remote.DelimiterAttr)
+		b.theme.Remote.DelimiterFg,
+		b.theme.Remote.DelimiterBg,
+		b.theme.Remote.DelimiterAttr)
 
 	if decoded.TransmittedPercent == "100" {
 		color.PaintWithAttr(sb, decoded.TransmittedPercent,
-			config.Client.TermColors.Remote.StatsOkFg,
-			config.Client.TermColors.Remote.StatsOkBg,
-			config.Client.TermColors.Remote.StatsOkAttr)
+			b.theme.Remote.StatsOkFg,
+			b.theme.Remote.StatsOkBg,
+			b.theme.Remote.StatsOkAttr)
 	} else {
 		color.PaintWithAttr(sb, decoded.TransmittedPercent,
-			config.Client.TermColors.Remote.StatsWarnFg,
-			config.Client.TermColors.Remote.StatsWarnBg,
-			config.Client.TermColors.Remote.StatsWarnAttr)
+			b.theme.Remote.StatsWarnFg,
+			b.theme.Remote.StatsWarnBg,
+			b.theme.Remote.StatsWarnAttr)
 	}
 
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Remote.DelimiterFg,
-		config.Client.TermColors.Remote.DelimiterBg,
-		config.Client.TermColors.Remote.DelimiterAttr)
+		b.theme.Remote.DelimiterFg,
+		b.theme.Remote.DelimiterBg,
+		b.theme.Remote.DelimiterAttr)
 
 	color.PaintWithAttr(sb, decoded.Number,
-		config.Client.TermColors.Remote.CountFg,
-		config.Client.TermColors.Remote.CountBg,
-		config.Client.TermColors.Remote.CountAttr)
+		b.theme.Remote.CountFg,
+		b.theme.Remote.CountBg,
+		b.theme.Remote.CountAttr)
 
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Remote.DelimiterFg,
-		config.Client.TermColors.Remote.DelimiterBg,
-		config.Client.TermColors.Remote.DelimiterAttr)
+		b.theme.Remote.DelimiterFg,
+		b.theme.Remote.DelimiterBg,
+		b.theme.Remote.DelimiterAttr)
 
 	color.PaintWithAttr(sb, decoded.SourceID,
-		config.Client.TermColors.Remote.IDFg,
-		config.Client.TermColors.Remote.IDBg,
-		config.Client.TermColors.Remote.IDAttr)
+		b.theme.Remote.IDFg,
+		b.theme.Remote.IDBg,
+		b.theme.Remote.IDAttr)
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Remote.DelimiterFg,
-		config.Client.TermColors.Remote.DelimiterBg,
-		config.Client.TermColors.Remote.DelimiterAttr)
+		b.theme.Remote.DelimiterFg,
+		b.theme.Remote.DelimiterBg,
+		b.theme.Remote.DelimiterAttr)
 
-	if paintSeverity(sb, decoded.Content) {
+	if b.paintSeverity(sb, decoded.Content) {
 		return
 	}
 	color.PaintWithAttr(sb, decoded.Content,
-		config.Client.TermColors.Remote.TextFg,
-		config.Client.TermColors.Remote.TextBg,
-		config.Client.TermColors.Remote.TextAttr)
+		b.theme.Remote.TextFg,
+		b.theme.Remote.TextBg,
+		b.theme.Remote.TextAttr)
 }
 
-func paintClient(sb *strings.Builder, line string) {
+func (b *Brush) paintClient(sb *strings.Builder, line string) {
 	splitted := strings.SplitN(line, protocol.FieldDelimiter, 3)
 	if len(splitted) < 3 {
-		paintDefault(sb, line)
+		b.paintDefault(sb, line)
 		return
 	}
 
 	color.PaintWithAttr(sb, splitted[0],
-		config.Client.TermColors.Client.ClientFg,
-		config.Client.TermColors.Client.ClientBg,
-		config.Client.TermColors.Client.ClientAttr)
+		b.theme.Client.ClientFg,
+		b.theme.Client.ClientBg,
+		b.theme.Client.ClientAttr)
 
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Client.DelimiterFg,
-		config.Client.TermColors.Client.DelimiterBg,
-		config.Client.TermColors.Client.DelimiterAttr)
+		b.theme.Client.DelimiterFg,
+		b.theme.Client.DelimiterBg,
+		b.theme.Client.DelimiterAttr)
 
 	color.PaintWithAttr(sb, splitted[1],
-		config.Client.TermColors.Client.HostnameFg,
-		config.Client.TermColors.Client.HostnameBg,
-		config.Client.TermColors.Client.HostnameAttr)
+		b.theme.Client.HostnameFg,
+		b.theme.Client.HostnameBg,
+		b.theme.Client.HostnameAttr)
 
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Client.DelimiterFg,
-		config.Client.TermColors.Client.DelimiterBg,
-		config.Client.TermColors.Client.DelimiterAttr)
+		b.theme.Client.DelimiterFg,
+		b.theme.Client.DelimiterBg,
+		b.theme.Client.DelimiterAttr)
 
-	if paintSeverity(sb, splitted[2]) {
+	if b.paintSeverity(sb, splitted[2]) {
 		return
 	}
 
 	color.PaintWithAttr(sb, splitted[2],
-		config.Client.TermColors.Client.TextFg,
-		config.Client.TermColors.Client.TextBg,
-		config.Client.TermColors.Client.TextAttr)
+		b.theme.Client.TextFg,
+		b.theme.Client.TextBg,
+		b.theme.Client.TextAttr)
 }
 
-func paintServer(sb *strings.Builder, line string) {
+func (b *Brush) paintServer(sb *strings.Builder, line string) {
 	decoded, err := protocol.DecodeMessage(line)
 	if err != nil || decoded.Kind != protocol.MessageServer {
-		paintDefault(sb, line)
+		b.paintDefault(sb, line)
 		return
 	}
 
 	color.PaintWithAttr(sb, protocol.ServerMessageID,
-		config.Client.TermColors.Server.ServerFg,
-		config.Client.TermColors.Server.ServerBg,
-		config.Client.TermColors.Server.ServerAttr)
+		b.theme.Server.ServerFg,
+		b.theme.Server.ServerBg,
+		b.theme.Server.ServerAttr)
 
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Server.DelimiterFg,
-		config.Client.TermColors.Server.DelimiterBg,
-		config.Client.TermColors.Server.DelimiterAttr)
+		b.theme.Server.DelimiterFg,
+		b.theme.Server.DelimiterBg,
+		b.theme.Server.DelimiterAttr)
 
 	color.PaintWithAttr(sb, decoded.Hostname,
-		config.Client.TermColors.Server.HostnameFg,
-		config.Client.TermColors.Server.HostnameBg,
-		config.Client.TermColors.Server.HostnameAttr)
+		b.theme.Server.HostnameFg,
+		b.theme.Server.HostnameBg,
+		b.theme.Server.HostnameAttr)
 
 	color.PaintWithAttr(sb, protocol.FieldDelimiter,
-		config.Client.TermColors.Server.DelimiterFg,
-		config.Client.TermColors.Server.DelimiterBg,
-		config.Client.TermColors.Server.DelimiterAttr)
+		b.theme.Server.DelimiterFg,
+		b.theme.Server.DelimiterBg,
+		b.theme.Server.DelimiterAttr)
 
-	if paintSeverity(sb, decoded.Content) {
+	if b.paintSeverity(sb, decoded.Content) {
 		return
 	}
 
 	color.PaintWithAttr(sb, decoded.Content,
-		config.Client.TermColors.Server.TextFg,
-		config.Client.TermColors.Server.TextBg,
-		config.Client.TermColors.Server.TextAttr)
+		b.theme.Server.TextFg,
+		b.theme.Server.TextBg,
+		b.theme.Server.TextAttr)
 }
 
-// Colorfy a given line based on the line's content.
-func Colorfy(line string) string {
+// Colorfy renders a line based on its protocol fields and content.
+func (b *Brush) Colorfy(line string) string {
+	if b == nil {
+		b = defaultBrush
+	}
 	sb := pool.BuilderBuffer.Get().(*strings.Builder)
 	defer pool.RecycleBuilderBuffer(sb)
 
 	switch {
 	case strings.HasPrefix(line, protocol.LineMessageID):
-		paintRemote(sb, line)
+		b.paintRemote(sb, line)
 
 	case strings.HasPrefix(line, "CLIENT"):
-		paintClient(sb, line)
+		b.paintClient(sb, line)
 
 	case strings.HasPrefix(line, protocol.ServerMessageID):
-		paintServer(sb, line)
+		b.paintServer(sb, line)
 
 	default:
-		paintDefault(sb, line)
+		b.paintDefault(sb, line)
 	}
 	return sb.String()
+}
+
+// Colorfy renders a line with the standard palette.
+//
+// Deprecated: construct a Brush with New and inject it into the caller.
+func Colorfy(line string) string {
+	return Default().Colorfy(line)
 }
 
 // paintDefault writes the line using the default (uncoloured) attributes.
 // It is the fallback used both by Colorfy's default branch and by the
 // paint* functions when the protocol frame is too short to decode safely.
-func paintDefault(sb *strings.Builder, line string) {
+func (*Brush) paintDefault(sb *strings.Builder, line string) {
 	color.PaintWithAttr(sb, line,
 		color.FgDefault,
 		color.BgDefault,

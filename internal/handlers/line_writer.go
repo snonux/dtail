@@ -52,6 +52,12 @@ var _ LineWriter = (*DirectWriter)(nil)
 
 // NewDirectWriter creates a new output writer
 func NewDirectWriter(writer io.Writer, hostname string, plain, serverless bool) *DirectWriter {
+	return NewDirectWriterWithColorizer(writer, hostname, plain, serverless, nil)
+}
+
+// NewDirectWriterWithColorizer creates an output writer with an injected terminal colorizer.
+func NewDirectWriterWithColorizer(writer io.Writer, hostname string, plain, serverless bool,
+	colorizer Colorizer) *DirectWriter {
 	format := lineFormatProtocol
 	switch {
 	case serverless && plain:
@@ -62,7 +68,7 @@ func NewDirectWriter(writer io.Writer, hostname string, plain, serverless bool) 
 		format = lineFormatNewline
 	}
 
-	w := newDirectWriter(writer, newLineFormatter(format, hostname))
+	w := newDirectWriter(writer, newLineFormatter(format, hostname, colorizer))
 	if serverless {
 		w.messageSink = discardServerMessage
 		if flusher, ok := writer.(interface{ Flush() error }); ok {
@@ -87,7 +93,14 @@ func newDirectWriter(writer io.Writer, formatter lineFormatter) *DirectWriter {
 
 // NewGeneratedDirectWriter creates a DirectWriter bound to a session generation.
 func NewGeneratedDirectWriter(writer io.Writer, hostname string, plain, serverless bool, generation uint64, activeGeneration func() uint64) *DirectWriter {
-	w := NewDirectWriter(writer, hostname, plain, serverless)
+	return NewGeneratedDirectWriterWithColorizer(writer, hostname, plain, serverless,
+		generation, activeGeneration, nil)
+}
+
+// NewGeneratedDirectWriterWithColorizer creates a generation-bound writer with an injected colorizer.
+func NewGeneratedDirectWriterWithColorizer(writer io.Writer, hostname string, plain, serverless bool,
+	generation uint64, activeGeneration func() uint64, colorizer Colorizer) *DirectWriter {
+	w := NewDirectWriterWithColorizer(writer, hostname, plain, serverless, colorizer)
 	w.generation = generation
 	w.activeGeneration = activeGeneration
 	return w
@@ -242,7 +255,7 @@ func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
 	if plain || serverless {
 		format = lineFormatDelimited
 	}
-	w := newNetworkWriter(ctx, outputLines, newLineFormatter(format, hostname), generation,
+	w := newNetworkWriter(ctx, outputLines, newLineFormatter(format, hostname, nil), generation,
 		activeGeneration, logger)
 	if serverless || serverMessages == nil {
 		w.messageSink = discardServerMessage
