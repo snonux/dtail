@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -59,7 +58,8 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 		{
 			name: "missing health user",
 			new: func() error {
-				_, err := NewHealthHandler(context.Background(), nil, nil, handlerTestLogger)
+				_, err := NewHealthHandler(context.Background(), nil,
+					config.DefaultMaxCommandFrameSize, "test-host", handlerTestLogger)
 				return err
 			},
 			want: "user",
@@ -68,7 +68,8 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 			name: "missing health context",
 			new: func() error {
 				var nilContext context.Context
-				_, err := NewHealthHandler(nilContext, serverUser, nil, handlerTestLogger)
+				_, err := NewHealthHandler(nilContext, serverUser,
+					config.DefaultMaxCommandFrameSize, "test-host", handlerTestLogger)
 				return err
 			},
 			want: "context",
@@ -85,23 +86,27 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 	}
 }
 
-func TestHandlerConstructorsReturnHostnameError(t *testing.T) {
-	original := handlerHostname
-	handlerHostname = func() (string, error) { return "", errors.New("hostname unavailable") }
-	t.Cleanup(func() { handlerHostname = original })
-
+func TestHandlerConstructorsUseInjectedHostname(t *testing.T) {
 	serverUser := &userserver.User{Name: "test-user"}
-	_, err := NewServerHandler(context.Background(), serverUser, Dependencies{
+	serverHandler, err := NewServerHandler(context.Background(), serverUser, Dependencies{
 		ServerConfig: &config.ServerConfig{},
 		AuthKeyStore: authkey.New(time.Hour, 5),
+		Hostname:     "server.example",
 	})
-	if err == nil || !strings.Contains(err.Error(), "hostname unavailable") {
-		t.Fatalf("NewServerHandler error = %v, want wrapped hostname error", err)
+	if err != nil {
+		t.Fatalf("NewServerHandler error = %v", err)
+	}
+	if serverHandler.hostname != "server" {
+		t.Fatalf("server hostname = %q, want short injected hostname", serverHandler.hostname)
 	}
 
-	_, err = NewHealthHandler(context.Background(), serverUser, nil, handlerTestLogger)
-	if err == nil || !strings.Contains(err.Error(), "hostname unavailable") {
-		t.Fatalf("NewHealthHandler error = %v, want wrapped hostname error", err)
+	healthHandler, err := NewHealthHandler(context.Background(), serverUser,
+		config.DefaultMaxCommandFrameSize, "health.example", handlerTestLogger)
+	if err != nil {
+		t.Fatalf("NewHealthHandler error = %v", err)
+	}
+	if healthHandler.hostname != "health" {
+		t.Fatalf("health hostname = %q, want short injected hostname", healthHandler.hostname)
 	}
 }
 
@@ -121,6 +126,7 @@ func TestNewServerHandlerSendsAdvertisedServerCapabilities(t *testing.T) {
 			AuthKeyStore: authkey.New(time.Hour, 5),
 			Loggers:      HandlerLoggers{Diagnostics: handlerTestLogger, Reader: handlerTestLogger},
 			Capabilities: advertisedCapabilities,
+			Hostname:     "test-host",
 		},
 	)
 	if err != nil {

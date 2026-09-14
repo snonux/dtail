@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/color/brush"
@@ -29,10 +30,11 @@ type ClientContextFactory func(config.Args) (context.Context, context.CancelFunc
 
 // ClientBuilder constructs a client after its runtime and logger dependencies
 // have been initialized.
-type ClientBuilder func(config.Args, clients.LoggerDependencies) (clients.Client, error)
+type ClientBuilder func(config.Args, config.RuntimeConfig, clients.LoggerDependencies) (clients.Client, error)
 
 // BrushClientBuilder constructs a client with its process-owned terminal brush.
-type BrushClientBuilder func(config.Args, clients.LoggerDependencies, *brush.Brush) (clients.Client, error)
+type BrushClientBuilder func(config.Args, config.RuntimeConfig, clients.LoggerDependencies,
+	*brush.Brush) (clients.Client, error)
 
 // ClientRunner owns the shared flags and startup lifecycle of a client command.
 type ClientRunner struct {
@@ -61,16 +63,16 @@ type clientRuntime interface {
 type clientRunDependencies struct {
 	argv            []string
 	stderr          io.Writer
-	setup           func(source.Source, *config.Args, []string) error
+	setup           func(source.Source, *config.Args, []string) (config.RuntimeConfig, error)
 	currentUserName func() (string, error)
-	colorsEnabled   func() bool
 	printVersion    func(bool)
-	currentRuntime  func() config.RuntimeConfig
 	newRuntime      func(context.Context, profiling.Flags, string) (clientRuntime, error)
-	newBrushRuntime func(context.Context, profiling.Flags, string, *brush.Brush, bool) (clientRuntime, error)
-	interrupt       func(context.Context, context.CancelFunc) <-chan string
-	logBuildError   func(string, error)
-	loggers         func() clients.LoggerDependencies
+	newBrushRuntime func(context.Context, profiling.Flags, string, config.RuntimeConfig,
+		*brush.Brush) (clientRuntime, error)
+	interrupt      func(context.Context, context.CancelFunc, time.Duration) <-chan string
+	interruptPause time.Duration
+	logBuildError  func(string, error)
+	loggers        func() clients.LoggerDependencies
 }
 
 // BindCommonClientFlags registers flags shared by the interactive client
@@ -107,7 +109,7 @@ func BindCommonClientFlags(fs *flag.FlagSet, args *config.Args) *ClientRunner {
 }
 
 // BeforeSetup sets an optional normalization hook that runs after parsing and
-// auth-key compatibility handling, immediately before config.Setup.
+// auth-key compatibility handling, immediately before config.SetupRuntime.
 func (r *ClientRunner) BeforeSetup(hook func(*config.Args)) *ClientRunner {
 	r.beforeSetup = hook
 	return r
@@ -145,19 +147,15 @@ func (r *ClientRunner) RunClient(name string, build ClientBuilder) int {
 	deps := clientRunDependencies{
 		argv:            os.Args[1:],
 		stderr:          os.Stderr,
-		setup:           config.Setup,
+		setup:           config.SetupRuntime,
 		currentUserName: user.CurrentName,
-		colorsEnabled: func() bool {
-			runtimeCfg := config.CurrentRuntime()
-			return runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable
-		},
-		printVersion:   version.Print,
-		currentRuntime: config.CurrentRuntime,
+		printVersion:    version.Print,
 		newBrushRuntime: func(ctx context.Context, flags profiling.Flags, name string,
-			colorizer *brush.Brush, colorsEnabled bool) (clientRuntime, error) {
-			return NewClientRuntime(ctx, flags, name, colorizer, colorsEnabled)
+			cfg config.RuntimeConfig, colorizer *brush.Brush) (clientRuntime, error) {
+			return NewClientRuntime(ctx, flags, name, cfg, colorizer)
 		},
-		interrupt: signal.InterruptChWithCancel,
+		interrupt:      signal.InterruptChWithCancel,
+		interruptPause: time.Second * time.Duration(config.InterruptTimeoutS),
 		logBuildError: func(name string, err error) {
 			dlog.Client.Error("Unable to create "+name+" client", err)
 		},
@@ -170,9 +168,9 @@ func (r *ClientRunner) RunClient(name string, build ClientBuilder) int {
 
 func (r *ClientRunner) runClient(name string,
 	build ClientBuilder, deps clientRunDependencies) int {
-	return r.runClientWithBrush(name, func(args config.Args, loggers clients.LoggerDependencies,
-		_ *brush.Brush) (clients.Client, error) {
-		return build(args, loggers)
+	return r.runClientWithBrush(name, func(args config.Args, cfg config.RuntimeConfig,
+		loggers clients.LoggerDependencies, _ *brush.Brush) (clients.Client, error) {
+		return build(args, cfg, loggers)
 	}, deps)
 }
 
@@ -181,19 +179,15 @@ func (r *ClientRunner) RunClientWithBrush(name string, build BrushClientBuilder)
 	deps := clientRunDependencies{
 		argv:            os.Args[1:],
 		stderr:          os.Stderr,
-		setup:           config.Setup,
+		setup:           config.SetupRuntime,
 		currentUserName: user.CurrentName,
-		colorsEnabled: func() bool {
-			runtimeCfg := config.CurrentRuntime()
-			return runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable
-		},
-		printVersion:   version.Print,
-		currentRuntime: config.CurrentRuntime,
+		printVersion:    version.Print,
 		newBrushRuntime: func(ctx context.Context, flags profiling.Flags, name string,
-			colorizer *brush.Brush, colorsEnabled bool) (clientRuntime, error) {
-			return NewClientRuntime(ctx, flags, name, colorizer, colorsEnabled)
+			cfg config.RuntimeConfig, colorizer *brush.Brush) (clientRuntime, error) {
+			return NewClientRuntime(ctx, flags, name, cfg, colorizer)
 		},
-		interrupt: signal.InterruptChWithCancel,
+		interrupt:      signal.InterruptChWithCancel,
+		interruptPause: time.Second * time.Duration(config.InterruptTimeoutS),
 		logBuildError: func(name string, err error) {
 			dlog.Client.Error("Unable to create "+name+" client", err)
 		},
@@ -219,18 +213,20 @@ func (r *ClientRunner) runClientWithBrush(name string,
 	if r.beforeSetup != nil {
 		r.beforeSetup(r.args)
 	}
-	if err := deps.setup(source.Client, r.args, r.fs.Args()); err != nil {
+	runtimeCfg, err := deps.setup(source.Client, r.args, r.fs.Args())
+	if err != nil {
 		_, _ = fmt.Fprintf(deps.stderr, "unable to configure %s: %v\n", name, err)
 		return 1
 	}
 	if r.displayVersion {
-		deps.printVersion(deps.colorsEnabled())
+		colorsEnabled := runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable
+		deps.printVersion(colorsEnabled)
 		return 0
 	}
 	if r.args.UserName == "" {
-		userName, err := deps.currentUserName()
-		if err != nil {
-			_, _ = fmt.Fprintf(deps.stderr, "unable to determine %s user: %v\n", name, err)
+		userName, userErr := deps.currentUserName()
+		if userErr != nil {
+			_, _ = fmt.Fprintf(deps.stderr, "unable to determine %s user: %v\n", name, userErr)
 			return 1
 		}
 		r.args.UserName = userName
@@ -262,13 +258,8 @@ func (r *ClientRunner) runClientWithBrush(name string,
 	defer cancel()
 
 	theme := config.DefaultTermColors()
-	colorsEnabled := false
-	if deps.currentRuntime != nil {
-		runtimeCfg := deps.currentRuntime()
-		if runtimeCfg.Client != nil {
-			theme = runtimeCfg.Client.TermColors
-			colorsEnabled = runtimeCfg.Client.TermColorsEnable
-		}
+	if runtimeCfg.Client != nil {
+		theme = runtimeCfg.Client.TermColors
 	}
 	brushFactory := r.brushFactory
 	if brushFactory == nil {
@@ -277,9 +268,8 @@ func (r *ClientRunner) runClientWithBrush(name string,
 	colorizer := brushFactory(theme)
 
 	var runtime clientRuntime
-	var err error
 	if deps.newBrushRuntime != nil {
-		runtime, err = deps.newBrushRuntime(parentCtx, r.profile, name, colorizer, colorsEnabled)
+		runtime, err = deps.newBrushRuntime(parentCtx, r.profile, name, runtimeCfg, colorizer)
 	} else {
 		runtime, err = deps.newRuntime(parentCtx, r.profile, name)
 	}
@@ -301,14 +291,15 @@ func (r *ClientRunner) runClientWithBrush(name string,
 	if deps.loggers != nil {
 		loggers = deps.loggers()
 	}
-	client, err := build(*r.args, loggers, colorizer)
+	client, err := build(*r.args, runtimeCfg, loggers, colorizer)
 	if err != nil {
 		deps.logBuildError(name, err)
 		_, _ = fmt.Fprintf(deps.stderr, "unable to create %s client: %v\n", name, err)
 		return 1
 	}
 
-	status := client.Start(runtime.Context(), deps.interrupt(runtime.Context(), runtime.Cancel))
+	status := client.Start(runtime.Context(), deps.interrupt(runtime.Context(), runtime.Cancel,
+		deps.interruptPause))
 	runtime.LogShutdownMetrics()
 	return status
 }

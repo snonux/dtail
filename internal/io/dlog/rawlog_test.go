@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog/loggers"
 )
 
@@ -68,10 +67,6 @@ func TestDLogAcceptsLoggerWithoutOptionalLifecycleCapabilities(t *testing.T) {
 // so a server error routed via Raw would silently vanish from the on-disk audit
 // trail. This asserts RawLog -> Log and, for contrast, Raw -> Raw.
 func TestRawLogUsesDiagnosticSink(t *testing.T) {
-	prevClient := config.Client
-	config.Client = &config.ClientConfig{TermColorsEnable: false}
-	t.Cleanup(func() { config.Client = prevClient })
-
 	rec := &recordingLogger{}
 	d := &DLog{logger: rec}
 

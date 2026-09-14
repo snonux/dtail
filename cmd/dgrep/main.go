@@ -30,8 +30,8 @@ func run() int {
 			args.RegexStr = grep
 		}
 	})
-	return runner.RunClientWithBrush("dgrep", func(args config.Args, loggers clients.LoggerDependencies,
-		colorizer *brush.Brush) (clients.Client, error) {
-		return clients.NewGrepClient(args, loggers, colorizer)
+	return runner.RunClientWithBrush("dgrep", func(args config.Args, cfg config.RuntimeConfig,
+		loggers clients.LoggerDependencies, colorizer *brush.Brush) (clients.Client, error) {
+		return clients.NewGrepClient(args, cfg, loggers, colorizer)
 	})
 }

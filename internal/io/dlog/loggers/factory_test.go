@@ -13,14 +13,14 @@ type rotatingRecordingLogger struct {
 func (r *rotatingRecordingLogger) Rotate() { r.rotations++ }
 
 func TestFactoryReturnsErrorForUnsupportedLogger(t *testing.T) {
-	_, err := Factory("test", "carrier-pigeon", Strategy{})
+	_, err := Factory("test", "carrier-pigeon", Strategy{}, Options{})
 	if err == nil || !strings.Contains(err.Error(), "carrier-pigeon") {
 		t.Fatalf("Factory error = %v, want unsupported logger name", err)
 	}
 }
 
 func TestFactoryNormalizesRegisteredLoggerName(t *testing.T) {
-	logger, err := Factory(t.Name(), "NoNe", Strategy{})
+	logger, err := Factory(t.Name(), "NoNe", Strategy{}, Options{})
 	if err != nil {
 		t.Fatalf("Factory: %v", err)
 	}

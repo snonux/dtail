@@ -13,8 +13,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/mimecast/dtail/internal/config"
 )
 
 type failingLogWriter struct {
@@ -23,24 +21,14 @@ type failingLogWriter struct {
 
 func (w failingLogWriter) Write([]byte) (int, error) { return 0, w.err }
 
-// withTempLogDir points config.Common.LogDir at a fresh temp dir for the
-// duration of a test and restores the previous config afterwards. The file
-// logger resolves its output path from config.Common.LogDir at write time.
+// withTempLogDir returns an isolated directory for an injected file logger.
 func withTempLogDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	prev := config.Common
-	config.Common = &config.CommonConfig{LogDir: dir}
-	t.Cleanup(func() { config.Common = prev })
-	return dir
+	return t.TempDir()
 }
 
 // startFileLogger starts f and returns a stop func that cancels the context and
-// JOINS the logger goroutine (wg.Wait). Tests must defer stop() so the goroutine
-// has fully exited before returning: withTempLogDir's t.Cleanup restores the
-// global config.Common, and a still-running goroutine reading config.Common.LogDir
-// would otherwise race that restore. For the same reason none of these tests may
-// call t.Parallel — they mutate the process-global config.Common.
+// joins the logger goroutine.
 func startFileLogger(t *testing.T, f *file) func() {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -71,7 +59,7 @@ func readLogFile(t *testing.T, dir, base string) string {
 func TestFileLoggerNothingLostOnClose(t *testing.T) {
 	dir := withTempLogDir(t)
 	base := "close-test"
-	f := newFile(Strategy{Rotation: SignalRotation, FileBase: base})
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: base}, dir)
 	stop := startFileLogger(t, f)
 
 	const n = 500
@@ -95,11 +83,11 @@ func TestFileLoggerNothingLostOnClose(t *testing.T) {
 // TestFileLoggerIdleFlush verifies a single low-volume line (follow/tail style)
 // is not stuck behind the 64KB buffer: the idle ticker flushes it to disk
 // promptly without any explicit Flush or shutdown. The logger goroutine is
-// joined via stop() before returning so it cannot outlive config.Common.
+// joined via stop() before returning so it cannot outlive the test.
 func TestFileLoggerIdleFlush(t *testing.T) {
 	dir := withTempLogDir(t)
 	base := "idle-test"
-	f := newFile(Strategy{Rotation: SignalRotation, FileBase: base})
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: base}, dir)
 	stop := startFileLogger(t, f)
 	defer stop()
 
@@ -118,7 +106,7 @@ func TestFileLoggerIdleFlush(t *testing.T) {
 func TestFileLoggerExplicitFlush(t *testing.T) {
 	dir := withTempLogDir(t)
 	base := "flush-test"
-	f := newFile(Strategy{Rotation: SignalRotation, FileBase: base})
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: base}, dir)
 	stop := startFileLogger(t, f)
 	defer stop()
 
@@ -132,7 +120,7 @@ func TestFileLoggerExplicitFlush(t *testing.T) {
 
 func TestFileLoggerWriteReturnsBufferedWriteError(t *testing.T) {
 	wantErr := errors.New("disk full")
-	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "failure-test"})
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "failure-test"}, "")
 	f.lastFileName = "failure-test"
 	f.writer = bufio.NewWriterSize(failingLogWriter{err: wantErr}, 1)
 
@@ -174,11 +162,7 @@ func TestFileLoggerCreateFailuresAreReportedAndMessagesDropped(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			logDir, fileBase := tt.configure(t)
-			prev := config.Common
-			config.Common = &config.CommonConfig{LogDir: logDir}
-			t.Cleanup(func() { config.Common = prev })
-
-			f := newFile(Strategy{Rotation: SignalRotation, FileBase: fileBase})
+			f := newFile(Strategy{Rotation: SignalRotation, FileBase: fileBase}, logDir)
 			var stderr bytes.Buffer
 			f.errorWriter = &stderr
 			stop := startFileLogger(t, f)
@@ -199,7 +183,7 @@ func TestFileLoggerCreateFailuresAreReportedAndMessagesDropped(t *testing.T) {
 
 func TestFileLoggerFailedRotationPreservesCurrentWriter(t *testing.T) {
 	dir := withTempLogDir(t)
-	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "current"})
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "current"}, dir)
 
 	current, openErr := f.getWriter("current")
 	if openErr != nil {
@@ -213,7 +197,7 @@ func TestFileLoggerFailedRotationPreservesCurrentWriter(t *testing.T) {
 	if writeErr := os.WriteFile(blocker, []byte("block rotated log directory"), 0o600); writeErr != nil {
 		t.Fatalf("create rotation blocker: %v", writeErr)
 	}
-	config.Common.LogDir = filepath.Join(blocker, "logs")
+	f.logDir = filepath.Join(blocker, "logs")
 	f.lastFileName = "" // The logger goroutine consumed a Rotate signal.
 	var stderr bytes.Buffer
 	f.errorWriter = &stderr
@@ -238,7 +222,7 @@ func TestFileLoggerFailedRotationPreservesCurrentWriter(t *testing.T) {
 	if err := f.fd.Close(); err != nil {
 		t.Fatalf("close current writer: %v", err)
 	}
-	config.Common.LogDir = dir
+	f.logDir = dir
 
 	if got := readLogFile(t, dir, "current"); got != "before\nafter\n" {
 		t.Fatalf("current log contents = %q, want writes before and after failed rotation", got)
@@ -247,7 +231,7 @@ func TestFileLoggerFailedRotationPreservesCurrentWriter(t *testing.T) {
 
 func TestFileLoggerColorMethodsWritePlainMessages(t *testing.T) {
 	dir := withTempLogDir(t)
-	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "colors"})
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "colors"}, dir)
 	stop := startFileLogger(t, f)
 
 	now := time.Now()
@@ -266,7 +250,7 @@ func TestFileLoggerColorMethodsWritePlainMessages(t *testing.T) {
 // was unbuffered and only drained opportunistically from write(), so a SIGHUP
 // before any Log() call would block the caller forever.
 func TestFileLoggerRotateDoesNotBlockWithoutWrites(t *testing.T) {
-	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "unit-test"})
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "unit-test"}, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -297,7 +281,7 @@ func TestFileLoggerRotateDoesNotBlockWithoutWrites(t *testing.T) {
 // by the first getWriter() call, so a ctx cancel with no prior writes
 // panicked on a nil pointer.
 func TestFileLoggerCancelBeforeFirstWriteDoesNotPanic(t *testing.T) {
-	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "unit-test"})
+	f := newFile(Strategy{Rotation: SignalRotation, FileBase: "unit-test"}, "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 

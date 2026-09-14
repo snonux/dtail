@@ -128,6 +128,21 @@ func (a *Aggregate) stopSerializeTicker() {
 
 // New returns a new aggregator.
 func New(queryStr string, defaultLogFormat string, logger logging.Logger) (*Aggregate, error) {
+	return newAggregate(queryStr, defaultLogFormat, logformat.NewParser, logger)
+}
+
+// NewWithHostname returns a new aggregator using an injected process hostname.
+func NewWithHostname(queryStr, defaultLogFormat, hostname string,
+	logger logging.Logger) (*Aggregate, error) {
+	return newAggregate(queryStr, defaultLogFormat,
+		func(name string, query *mapr.Query) (logformat.Parser, error) {
+			return logformat.NewParserWithHostname(name, query, hostname)
+		}, logger)
+}
+
+func newAggregate(queryStr, defaultLogFormat string,
+	newParser func(string, *mapr.Query) (logformat.Parser, error),
+	logger logging.Logger) (*Aggregate, error) {
 	logger = logging.OrNop(logger)
 	query, err := mapr.NewQuery(queryStr, logger)
 	if err != nil {
@@ -140,10 +155,10 @@ func New(queryStr string, defaultLogFormat string, logger logging.Logger) (*Aggr
 		"parserName", parserName,
 		"queryTable", query.Table,
 		"queryLogFormat", query.LogFormat)
-	logParser, err := logformat.NewParser(parserName, query)
+	logParser, err := newParser(parserName, query)
 	if err != nil {
 		logger.Error("Could not create log format parser. Falling back to 'generic'", err)
-		if logParser, err = logformat.NewParser("generic", query); err != nil {
+		if logParser, err = newParser("generic", query); err != nil {
 			return nil, fmt.Errorf("create fallback generic log format parser: %w", err)
 		}
 	}

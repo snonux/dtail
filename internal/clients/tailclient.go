@@ -16,13 +16,15 @@ type TailClient struct {
 }
 
 // NewTailClient returns a new TailClient.
-func NewTailClient(args config.Args, loggers LoggerDependencies, colorizers ...*brush.Brush) (*TailClient, error) {
+func NewTailClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*TailClient, error) {
 	args.Mode = omode.TailClient
 	loggers = loggers.normalized()
 	c := TailClient{
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
+			cfg:        cfg,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      true,
 			loggers:    loggers,

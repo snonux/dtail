@@ -19,7 +19,8 @@ type HealthClient struct {
 }
 
 // NewHealthClient returns a new health client.
-func NewHealthClient(args config.Args, loggers LoggerDependencies, colorizers ...*brush.Brush) (*HealthClient, error) {
+func NewHealthClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*HealthClient, error) {
 	args.Mode = omode.HealthClient
 	args.UserName = config.HealthUser
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(config.HealthUser))
@@ -29,6 +30,7 @@ func NewHealthClient(args config.Args, loggers LoggerDependencies, colorizers ..
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
+			cfg:        cfg,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,

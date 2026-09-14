@@ -30,6 +30,7 @@ type Server struct {
 	logger       logging.Logger
 	readerLogger logging.Logger
 	colorizer    *brush.Brush
+	hostname     string
 	// Various server statistics counters.
 	stats stats
 	// SSH server configuration.
@@ -95,12 +96,17 @@ func New(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers, backgroundJo
 	}
 
 	logger.Info("Starting server", version.String())
+	hostname, err := cfg.Hostname()
+	if err != nil {
+		return nil, fmt.Errorf("resolve server hostname: %w", err)
+	}
 
 	s := Server{
 		cfg:          cfg,
 		logger:       logger,
 		readerLogger: logging.OrNop(loggers.Reader),
 		colorizer:    colorizer,
+		hostname:     hostname,
 		sshServerConfig: &gossh.ServerConfig{
 			Config: gossh.Config{
 				KeyExchanges: cfg.Server.KeyExchanges,
@@ -361,6 +367,7 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 		},
 		Capabilities: s.capabilities,
 		Colorizer:    s.colorizer,
+		Hostname:     s.hostname,
 	})
 	if err != nil {
 		s.log().Error(user, "Unable to create session handler", err)

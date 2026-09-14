@@ -77,7 +77,9 @@ func TestNewServerHandlerPreservesInjectedRoles(t *testing.T) {
 
 func TestNewHealthHandlerPreservesInjectedLogger(t *testing.T) {
 	diagnostics := &handlerRecordingLogger{}
-	handler, err := NewHealthHandler(context.Background(), &userserver.User{Name: "health-logger-test"}, nil, diagnostics)
+	handler, err := NewHealthHandler(context.Background(),
+		&userserver.User{Name: "health-logger-test"}, config.DefaultMaxCommandFrameSize,
+		"test-host", diagnostics)
 	if err != nil {
 		t.Fatalf("NewHealthHandler: %v", err)
 	}

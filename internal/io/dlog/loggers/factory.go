@@ -9,23 +9,29 @@ import (
 var factoryMap map[string]Logger
 var factoryMutex sync.Mutex
 
-type loggerConstructor func(Strategy) Logger
+// Options contains process-owned logger settings.
+type Options struct {
+	LogDir     string
+	LogPayload bool
+}
+
+type loggerConstructor func(Strategy, Options) Logger
 
 var loggerRegistry = map[string]loggerConstructor{
-	"none": func(Strategy) Logger { return none{} },
-	"stdout": func(Strategy) Logger {
+	"none": func(Strategy, Options) Logger { return none{} },
+	"stdout": func(Strategy, Options) Logger {
 		return newStdout()
 	},
-	"file": func(strategy Strategy) Logger {
-		return newFile(strategy)
+	"file": func(strategy Strategy, options Options) Logger {
+		return newFile(strategy, options.LogDir)
 	},
-	"fout": func(strategy Strategy) Logger {
-		return newFout(strategy)
+	"fout": func(strategy Strategy, options Options) Logger {
+		return newFout(strategy, options)
 	},
 }
 
 // Factory is there to retrieve a logger based on various settings.
-func Factory(sourceName, loggerName string, logRotation Strategy) (Logger, error) {
+func Factory(sourceName, loggerName string, logRotation Strategy, options Options) (Logger, error) {
 	factoryMutex.Lock()
 	defer factoryMutex.Unlock()
 
@@ -34,15 +40,15 @@ func Factory(sourceName, loggerName string, logRotation Strategy) (Logger, error
 	if !ok {
 		return nil, fmt.Errorf("unsupported logger type %q", loggerName)
 	}
-	id := fmt.Sprintf("sourceName:%s,fileBase:%s,loggerName:%s", sourceName,
-		logRotation.FileBase, loggerName)
+	id := fmt.Sprintf("sourceName:%s,fileBase:%s,loggerName:%s,logDir:%s,logPayload:%t", sourceName,
+		logRotation.FileBase, loggerName, options.LogDir, options.LogPayload)
 	if factoryMap == nil {
 		factoryMap = make(map[string]Logger)
 	}
 
 	singleton, ok := factoryMap[id]
 	if !ok {
-		singleton = constructor(logRotation)
+		singleton = constructor(logRotation, options)
 		factoryMap[id] = singleton
 	}
 	return singleton, nil

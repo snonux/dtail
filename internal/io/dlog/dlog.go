@@ -55,25 +55,30 @@ type Colorizer interface {
 var _ logging.Logger = (*DLog)(nil)
 
 // newDLog creates a new DTail logger.
-func newDLog(sourceProcess, sourcePackage source.Source, colorizer Colorizer,
-	colorsEnabled bool) (*DLog, error) {
-	if config.Common == nil {
+func newDLog(sourceProcess, sourcePackage source.Source, cfg config.RuntimeConfig,
+	colorizer Colorizer) (*DLog, error) {
+	if cfg.Common == nil {
 		return nil, fmt.Errorf("logger configuration is unavailable")
 	}
-	hostname, err := config.Hostname()
+	hostname, err := cfg.Hostname()
 	if err != nil {
 		return nil, fmt.Errorf("resolve logger hostname: %w", err)
 	}
-	logRotation := loggers.NewStrategy(config.Common.LogRotation)
-	loggerName := config.Common.Logger
-	maxLevel, err := newLevel(config.Common.LogLevel)
+	logRotation := loggers.NewStrategy(cfg.Common.LogRotation)
+	loggerName := cfg.Common.Logger
+	maxLevel, err := newLevel(cfg.Common.LogLevel)
 	if err != nil {
 		return nil, err
 	}
-	logger, err := loggers.Factory(sourceProcess.String(), loggerName, logRotation)
+	options := loggers.Options{LogDir: cfg.Common.LogDir}
+	if cfg.Client != nil {
+		options.LogPayload = cfg.Client.LogPayload
+	}
+	logger, err := loggers.Factory(sourceProcess.String(), loggerName, logRotation, options)
 	if err != nil {
 		return nil, err
 	}
+	colorsEnabled := cfg.Client != nil && cfg.Client.TermColorsEnable
 
 	return &DLog{
 		logger:        logger,
@@ -88,7 +93,7 @@ func newDLog(sourceProcess, sourcePackage source.Source, colorizer Colorizer,
 
 // Start logger(s).
 func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source,
-	colorizer Colorizer, colorsEnabled bool) error {
+	cfg config.RuntimeConfig, colorizer Colorizer) error {
 	mutex.Lock()
 	defer mutex.Unlock()
 
@@ -96,11 +101,11 @@ func Start(ctx context.Context, wg *sync.WaitGroup, sourceProcess source.Source,
 		Common.FatalPanic("Logger already started")
 	}
 
-	clientLogger, err := newDLog(sourceProcess, source.Client, colorizer, colorsEnabled)
+	clientLogger, err := newDLog(sourceProcess, source.Client, cfg, colorizer)
 	if err != nil {
 		return fmt.Errorf("create client logger: %w", err)
 	}
-	serverLogger, err := newDLog(sourceProcess, source.Server, colorizer, colorsEnabled)
+	serverLogger, err := newDLog(sourceProcess, source.Server, cfg, colorizer)
 	if err != nil {
 		return fmt.Errorf("create server logger: %w", err)
 	}
@@ -189,7 +194,7 @@ func (d *DLog) Debug(args ...any) string {
 //
 // The receiver is nil-safe so call sites need no separate nil check on the
 // package-level loggers (Server/Client/Common), which stay nil until Start.
-// maxLevel is fixed at logger construction from config.Common.LogLevel, so the
+// maxLevel is fixed at logger construction from RuntimeConfig.Common.LogLevel, so the
 // result mirrors whatever level Trace itself would observe.
 func (d *DLog) TraceEnabled() bool {
 	return d != nil && d.maxLevel >= Trace

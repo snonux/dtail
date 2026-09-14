@@ -60,19 +60,18 @@ func BenchmarkDGrepLargeFile(b *testing.B) {
 
 func benchmarkDGrepWithSize(b *testing.B, lines int) {
 	// Setup config. The direct-output read path is the only runtime path.
-	config.Server = &config.ServerConfig{
-		MaxConcurrentCats:  10,
-		MaxConcurrentTails: 50,
-		MaxLineLength:      1024 * 1024,
-	}
-
-	config.Common = &config.CommonConfig{
-		Logger:   "none",
-		LogLevel: "error",
-	}
-
-	config.Client = &config.ClientConfig{
-		TermColorsEnable: false,
+	runtimeCfg := config.RuntimeConfig{
+		Server: &config.ServerConfig{
+			MaxConcurrentCats:  10,
+			MaxConcurrentTails: 50,
+			MaxLineLength:      1024 * 1024,
+		},
+		Common: &config.CommonConfig{
+			HostnameOverride: "benchmark-host",
+			Logger:           "none",
+			LogLevel:         "error",
+		},
+		Client: &config.ClientConfig{TermColorsEnable: false},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -95,7 +94,7 @@ func benchmarkDGrepWithSize(b *testing.B, lines int) {
 			Plain:      true,
 		}
 
-		client, err := NewGrepClient(args, loggers)
+		client, err := NewGrepClient(args, runtimeCfg, loggers)
 		if err != nil {
 			b.Fatalf("Failed to create grep client: %v", err)
 		}

@@ -3,12 +3,12 @@ package logformat
 import (
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -87,10 +87,15 @@ func wrapParserFactory[T Parser](factory func(string, string, int) (T, error)) P
 
 // NewParser returns a new log parser.
 func NewParser(logFormatName string, query *mapr.Query) (Parser, error) {
-	hostname, err := config.Hostname()
+	hostname, err := os.Hostname()
 	if err != nil {
 		return nil, err
 	}
+	return NewParserWithHostname(logFormatName, query, hostname)
+}
+
+// NewParserWithHostname returns a log parser using the supplied process hostname.
+func NewParserWithHostname(logFormatName string, query *mapr.Query, hostname string) (Parser, error) {
 	now := time.Now()
 	timeZoneName, timeZoneOffset := now.Zone()
 

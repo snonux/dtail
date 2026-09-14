@@ -55,14 +55,14 @@ func TestInterruptHandlersStopOnContextCancellation(t *testing.T) {
 		{
 			name: "with-cancel",
 			start: func(ctx context.Context, cancel context.CancelFunc) <-chan struct{} {
-				_, stoppedCh := startInterruptChWithCancel(ctx, cancel)
+				_, stoppedCh := startInterruptChWithCancel(ctx, cancel, time.Second)
 				return stoppedCh
 			},
 		},
 		{
 			name: "deprecated",
 			start: func(ctx context.Context, _ context.CancelFunc) <-chan struct{} {
-				_, stoppedCh := startInterruptCh(ctx)
+				_, stoppedCh := startInterruptCh(ctx, time.Second)
 				return stoppedCh
 			},
 		},
@@ -89,7 +89,7 @@ func TestInterruptHandlerStopsWhileWaitingForSecondInterrupt(t *testing.T) {
 	statsCh := make(chan string, 1)
 	stoppedCh := make(chan struct{})
 	go func() {
-		runInterruptHandler(ctx, sigIntCh, sigOtherCh, statsCh, func() {
+		runInterruptHandler(ctx, sigIntCh, sigOtherCh, statsCh, time.Second, func() {
 			t.Error("terminate called after context cancellation")
 		})
 		close(stoppedCh)
@@ -147,7 +147,7 @@ func TestInterruptHandlerInvokesTermination(t *testing.T) {
 			terminatedCh := make(chan struct{}, 1)
 			stoppedCh := make(chan struct{})
 			go func() {
-				runInterruptHandler(ctx, sigIntCh, sigOtherCh, statsCh, func() {
+				runInterruptHandler(ctx, sigIntCh, sigOtherCh, statsCh, time.Second, func() {
 					terminatedCh <- struct{}{}
 					cancel()
 				})
@@ -187,9 +187,9 @@ func TestSignalHandlerHelperProcess(t *testing.T) {
 	var stoppedCh <-chan struct{}
 	switch handler {
 	case "with-cancel":
-		_, stoppedCh = startInterruptChWithCancel(ctx, cancel)
+		_, stoppedCh = startInterruptChWithCancel(ctx, cancel, time.Second)
 	case "deprecated":
-		_, stoppedCh = startInterruptCh(ctx)
+		_, stoppedCh = startInterruptCh(ctx, time.Second)
 	default:
 		t.Fatalf("unknown signal handler %q", handler)
 	}

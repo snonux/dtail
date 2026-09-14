@@ -83,12 +83,12 @@ func (o *tailOptions) configureRunner(runner *cli.ClientRunner) {
 	})
 }
 
-func buildTailClient(args config.Args, loggers clients.LoggerDependencies,
+func buildTailClient(args config.Args, cfg config.RuntimeConfig, loggers clients.LoggerDependencies,
 	colorizer *brush.Brush) (clients.Client, error) {
 	if args.QueryStr == "" {
-		return clients.NewTailClient(args, loggers, colorizer)
+		return clients.NewTailClient(args, cfg, loggers, colorizer)
 	}
-	return clients.NewMaprClient(args, clients.DefaultMode, loggers, colorizer)
+	return clients.NewMaprClient(args, cfg, clients.DefaultMode, loggers, colorizer)
 }
 
 // applyClientDeadlines wraps ctx with the earliest of two absolute deadlines:

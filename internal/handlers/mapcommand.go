@@ -30,7 +30,8 @@ func newMapCommand(serverHandler *ServerHandler, args []string) (mapCommand, *ma
 	}
 
 	serverHandler.Logger().Info("Creating turbo aggregate for MapReduce", "query", queryStr)
-	aggregate, err := mapaggregate.New(queryStr, defaultLogFormat, serverHandler.Logger())
+	aggregate, err := mapaggregate.NewWithHostname(queryStr, defaultLogFormat,
+		serverHandler.hostname, serverHandler.Logger())
 	if err != nil {
 		return m, nil, err
 	}

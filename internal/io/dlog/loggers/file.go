@@ -11,8 +11,6 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
-	"github.com/mimecast/dtail/internal/config"
 )
 
 const (
@@ -57,6 +55,7 @@ type file struct {
 	started      bool
 	lastFileName string
 	strategy     Strategy
+	logDir       string
 	errorWriter  io.Writer
 }
 
@@ -64,7 +63,7 @@ var _ Logger = (*file)(nil)
 var _ Starter = (*file)(nil)
 var _ Rotator = (*file)(nil)
 
-func newFile(strategy Strategy) *file {
+func newFile(strategy Strategy, logDir string) *file {
 	// Rotate uses a capacity-1, non-blocking coalescing send so callers never
 	// block on the logger goroutine (repeated signals collapse into one pending
 	// notification). flushCh is unbuffered and carries a reply
@@ -75,6 +74,7 @@ func newFile(strategy Strategy) *file {
 		rotateCh:    make(chan struct{}, 1),
 		flushCh:     make(chan chan struct{}),
 		strategy:    strategy,
+		logDir:      logDir,
 		errorWriter: os.Stderr,
 	}
 }
@@ -210,15 +210,14 @@ func (f *file) getWriter(name string) (*bufio.Writer, error) {
 	if f.lastFileName == name && f.writer != nil {
 		return f.writer, nil
 	}
-	if config.Common == nil {
+	if f.logDir == "" {
 		return nil, errors.New("log configuration is unavailable")
 	}
-	logDir := config.Common.LogDir
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create log directory %q: %w", logDir, err)
+	if err := os.MkdirAll(f.logDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log directory %q: %w", f.logDir, err)
 	}
 
-	logFile := filepath.Join(logDir, name+".log")
+	logFile := filepath.Join(f.logDir, name+".log")
 	newFd, err := os.OpenFile(logFile, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o666)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %q: %w", logFile, err)

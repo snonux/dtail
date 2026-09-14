@@ -20,6 +20,7 @@ type Dependencies struct {
 	Loggers          HandlerLoggers
 	Capabilities     []string
 	Colorizer        Colorizer
+	Hostname         string
 }
 
 // NewForUser creates the handler appropriate for the authenticated user.
@@ -28,7 +29,12 @@ func NewForUser(ctx context.Context, user *user.User, dependencies Dependencies)
 		return nil, fmt.Errorf("create handler: context must not be nil")
 	}
 	if user != nil && user.Name == config.HealthUser {
-		return NewHealthHandler(ctx, user, dependencies.ServerConfig, dependencies.Loggers.Diagnostics)
+		maxFrameSize := config.DefaultMaxCommandFrameSize
+		if dependencies.ServerConfig != nil && dependencies.ServerConfig.MaxCommandFrameSize > 0 {
+			maxFrameSize = dependencies.ServerConfig.MaxCommandFrameSize
+		}
+		return NewHealthHandler(ctx, user, maxFrameSize, dependencies.Hostname,
+			dependencies.Loggers.Diagnostics)
 	}
 	return NewServerHandler(ctx, user, dependencies)
 }

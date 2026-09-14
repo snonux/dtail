@@ -8,8 +8,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/mimecast/dtail/internal/config"
 )
 
 // recordingSink is an injectable Logger that records which messages reached it
@@ -134,12 +132,9 @@ func TestFoutOptInTeesPayloadToFile(t *testing.T) {
 // This exercises the real file-write path the regression would have skipped.
 func TestFoutServerErrorDiagnosticReachesFileByDefault(t *testing.T) {
 	tmp := t.TempDir()
-	prevCommon := config.Common
-	config.Common = &config.CommonConfig{LogDir: tmp}
-	t.Cleanup(func() { config.Common = prevCommon })
 
 	// SignalRotation with a fixed FileBase gives a deterministic file name.
-	fileSink := newFile(Strategy{Rotation: SignalRotation, FileBase: "servererr"})
+	fileSink := newFile(Strategy{Rotation: SignalRotation, FileBase: "servererr"}, tmp)
 	stdout := &recordingSink{}
 	f := newFoutWithSinks(fileSink, stdout, false)
 

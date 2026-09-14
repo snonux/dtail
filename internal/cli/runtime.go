@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/color/brush"
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/profiling"
 	"github.com/mimecast/dtail/internal/source"
@@ -25,12 +26,13 @@ type ClientRuntime struct {
 
 // NewClientRuntime starts logging and profiling for a client command.
 func NewClientRuntime(parent context.Context, profileFlags profiling.Flags, profileName string,
-	colorizer *brush.Brush, colorsEnabled bool) (*ClientRuntime, error) {
-	return newClientRuntimeWithColorizer(parent, profileFlags, profileName, colorizer, colorsEnabled, dlog.Start)
+	cfg config.RuntimeConfig, colorizer *brush.Brush) (*ClientRuntime, error) {
+	return newClientRuntimeWithColorizer(parent, profileFlags, profileName, cfg, colorizer, dlog.Start)
 }
 
 type clientLoggerStarter func(context.Context, *sync.WaitGroup, source.Source) error
-type colorLoggerStarter func(context.Context, *sync.WaitGroup, source.Source, dlog.Colorizer, bool) error
+type colorLoggerStarter func(context.Context, *sync.WaitGroup, source.Source, config.RuntimeConfig,
+	dlog.Colorizer) error
 type clientProfiler interface {
 	LogMetrics(string)
 	Stop()
@@ -45,20 +47,22 @@ func newClientRuntime(parent context.Context, profileFlags profiling.Flags, prof
 
 func newClientRuntimeWithProfiler(parent context.Context, profileFlags profiling.Flags, profileName string,
 	startLogger clientLoggerStarter, newProfiler clientProfilerFactory) (*ClientRuntime, error) {
-	return newClientRuntimeWithColorizerAndProfiler(parent, profileFlags, profileName, nil, false,
-		func(ctx context.Context, wg *sync.WaitGroup, process source.Source, _ dlog.Colorizer, _ bool) error {
+	return newClientRuntimeWithColorizerAndProfiler(parent, profileFlags, profileName,
+		config.RuntimeConfig{}, nil,
+		func(ctx context.Context, wg *sync.WaitGroup, process source.Source,
+			_ config.RuntimeConfig, _ dlog.Colorizer) error {
 			return startLogger(ctx, wg, process)
 		}, newProfiler)
 }
 
 func newClientRuntimeWithColorizer(parent context.Context, profileFlags profiling.Flags, profileName string,
-	colorizer *brush.Brush, colorsEnabled bool, startLogger colorLoggerStarter) (*ClientRuntime, error) {
-	return newClientRuntimeWithColorizerAndProfiler(parent, profileFlags, profileName, colorizer, colorsEnabled,
+	cfg config.RuntimeConfig, colorizer *brush.Brush, startLogger colorLoggerStarter) (*ClientRuntime, error) {
+	return newClientRuntimeWithColorizerAndProfiler(parent, profileFlags, profileName, cfg, colorizer,
 		startLogger, func(cfg profiling.Config) clientProfiler { return profiling.NewProfiler(cfg) })
 }
 
 func newClientRuntimeWithColorizerAndProfiler(parent context.Context, profileFlags profiling.Flags,
-	profileName string, colorizer *brush.Brush, colorsEnabled bool, startLogger colorLoggerStarter,
+	profileName string, cfg config.RuntimeConfig, colorizer *brush.Brush, startLogger colorLoggerStarter,
 	newProfiler clientProfilerFactory) (*ClientRuntime, error) {
 	if parent == nil {
 		return nil, fmt.Errorf("create client runtime: context must not be nil")
@@ -78,7 +82,7 @@ func newClientRuntimeWithColorizerAndProfiler(parent context.Context, profileFla
 	}
 
 	runtime.wg.Add(1)
-	if err := startLogger(loggerCtx, &runtime.wg, source.Client, colorizer, colorsEnabled); err != nil {
+	if err := startLogger(loggerCtx, &runtime.wg, source.Client, cfg, colorizer); err != nil {
 		runtime.wg.Done()
 		runtime.profiler.Stop()
 		cancel()

@@ -26,6 +26,45 @@ func TestSetupReturnsConfigDecodeError(t *testing.T) {
 	}
 }
 
+func TestSetupRuntimeReturnsConfigWithoutPublishingGlobals(t *testing.T) {
+	previousClient, previousServer, previousCommon := Client, Server, Common
+	sentinelClient := &ClientConfig{}
+	sentinelServer := &ServerConfig{}
+	sentinelCommon := &CommonConfig{HostnameOverride: "legacy-host"}
+	Client, Server, Common = sentinelClient, sentinelServer, sentinelCommon
+	t.Cleanup(func() { Client, Server, Common = previousClient, previousServer, previousCommon })
+	t.Setenv("DTAIL_HOSTNAME_OVERRIDE", "runtime-host")
+	t.Setenv("HOSTNAME", "environment-host")
+
+	args := &Args{
+		ConfigFile: "none",
+		NoAuthKey:  true,
+		SSHPort:    DefaultSSHPort,
+	}
+	cfg, err := SetupRuntime(source.Client, args, nil)
+	if err != nil {
+		t.Fatalf("SetupRuntime: %v", err)
+	}
+	if Client != sentinelClient || Server != sentinelServer || Common != sentinelCommon {
+		t.Fatal("SetupRuntime mutated legacy configuration globals")
+	}
+	if cfg.Client == nil || cfg.Server == nil || cfg.Common == nil {
+		t.Fatalf("SetupRuntime returned incomplete config: %#v", cfg)
+	}
+	if got, err := cfg.Hostname(); err != nil || got != "runtime-host" {
+		t.Fatalf("RuntimeConfig.Hostname() = %q, %v; want runtime-host", got, err)
+	}
+	if args.HostnameOverride != "runtime-host" {
+		t.Fatalf("args hostname = %q, want runtime-host", args.HostnameOverride)
+	}
+	if got := os.Getenv("DTAIL_HOSTNAME_OVERRIDE"); got != "runtime-host" {
+		t.Fatalf("SetupRuntime mutated hostname environment to %q", got)
+	}
+	if got := os.Getenv("HOSTNAME"); got != "environment-host" {
+		t.Fatalf("SetupRuntime mutated HOSTNAME to %q", got)
+	}
+}
+
 func TestSetupLogDirectoryReturnsHomeLookupError(t *testing.T) {
 	original := userHomeDirectory
 	userHomeDirectory = func() (string, error) { return "", errors.New("lookup failed") }

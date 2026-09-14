@@ -52,8 +52,8 @@ type outfileReportState struct {
 }
 
 // NewMaprClient returns a new mapreduce client.
-func NewMaprClient(args config.Args, maprClientMode MaprClientMode, loggers LoggerDependencies,
-	colorizers ...*brush.Brush) (*MaprClient, error) {
+func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode MaprClientMode,
+	loggers LoggerDependencies, colorizers ...*brush.Brush) (*MaprClient, error) {
 	if args.QueryStr == "" {
 		return nil, errors.New("no mapreduce query specified, use '-query' flag")
 	}
@@ -77,6 +77,7 @@ func NewMaprClient(args config.Args, maprClientMode MaprClientMode, loggers Logg
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
+			cfg:        cfg,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      retry,
 			loggers:    loggers,

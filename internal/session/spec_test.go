@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -15,20 +14,20 @@ func TestNewSpec(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		args config.Args
-		want Spec
+		name       string
+		parameters Parameters
+		want       Spec
 	}{
 		{
 			name: "normalizes files and query",
-			args: config.Args{
-				Mode:        omode.GrepClient,
-				What:        " app.log, , audit.log ",
-				Plain:       true,
-				QueryStr:    "  from STATS select count(*)  ",
-				RegexStr:    "ERROR",
-				RegexInvert: true,
-				Timeout:     12,
+			parameters: Parameters{
+				Mode:              omode.GrepClient,
+				What:              " app.log, , audit.log ",
+				SerializedOptions: "plain=true",
+				Query:             "  from STATS select count(*)  ",
+				Regex:             "ERROR",
+				RegexInvert:       true,
+				Timeout:           12,
 			},
 			want: Spec{
 				Mode:        omode.GrepClient,
@@ -41,26 +40,26 @@ func TestNewSpec(t *testing.T) {
 			},
 		},
 		{
-			name: "serverless reader uses standard input",
-			args: config.Args{Mode: omode.CatClient, Serverless: true},
-			want: Spec{Mode: omode.CatClient, Files: []string{"-"}, Options: "serverless=true"},
+			name:       "serverless reader uses standard input",
+			parameters: Parameters{Mode: omode.CatClient, Serverless: true, SerializedOptions: "serverless=true"},
+			want:       Spec{Mode: omode.CatClient, Files: []string{"-"}, Options: "serverless=true"},
 		},
 		{
-			name: "health mode does not invent standard input",
-			args: config.Args{Mode: omode.HealthClient, Serverless: true},
-			want: Spec{Mode: omode.HealthClient, Options: "serverless=true"},
+			name:       "health mode does not invent standard input",
+			parameters: Parameters{Mode: omode.HealthClient, Serverless: true, SerializedOptions: "serverless=true"},
+			want:       Spec{Mode: omode.HealthClient, Options: "serverless=true"},
 		},
 		{
-			name: "blank input stays empty in remote mode",
-			args: config.Args{Mode: omode.TailClient, What: " ,  , "},
-			want: Spec{Mode: omode.TailClient, Files: []string{}},
+			name:       "blank input stays empty in remote mode",
+			parameters: Parameters{Mode: omode.TailClient, What: " ,  , "},
+			want:       Spec{Mode: omode.TailClient, Files: []string{}},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := NewSpec(tt.args); !reflect.DeepEqual(got, tt.want) {
+			if got := NewSpec(tt.parameters); !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("NewSpec() = %#v, want %#v", got, tt.want)
 			}
 		})

@@ -4,8 +4,6 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"github.com/mimecast/dtail/internal/config"
 )
 
 // fout logs to both a file and stdout. It is the default client logger.
@@ -30,26 +28,17 @@ var _ Starter = (*fout)(nil)
 var _ Pauser = (*fout)(nil)
 var _ Rotator = (*fout)(nil)
 
-// newFout builds the default client logger. Whether retrieved payload is teed
-// to the file is decided once at construction from the client config.
-func newFout(strategy Strategy) *fout {
-	return newFoutWithSinks(newFile(strategy), newStdout(), clientLogPayloadEnabled())
+// newFout builds the default client logger from injected process options.
+func newFout(strategy Strategy, options Options) *fout {
+	return newFoutWithSinks(newFile(strategy, options.LogDir), newStdout(), options.LogPayload)
 }
 
 // newFoutWithSinks builds a fout over injectable sinks and an explicit payload
-// switch. Production uses newFout (concrete file+stdout, config-driven switch);
+// switch. Production uses newFout (concrete file+stdout, injected switch);
 // tests inject fakes to assert that diagnostics always reach the file while
 // payload reaches it only when opted in.
 func newFoutWithSinks(file, stdout Logger, logPayload bool) *fout {
 	return &fout{file: file, stdout: stdout, logPayload: logPayload}
-}
-
-// clientLogPayloadEnabled reports whether the client has opted in to teeing the
-// full retrieved payload into the daily log file. Default (false) keeps only
-// diagnostics in the file. config.Client is nil-guarded because a logger can be
-// constructed in early/unit contexts before config.Setup has populated it.
-func clientLogPayloadEnabled() bool {
-	return config.Client != nil && config.Client.LogPayload
 }
 
 func (f *fout) Start(ctx context.Context, wg *sync.WaitGroup) {

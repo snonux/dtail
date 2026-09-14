@@ -47,10 +47,15 @@ func TestRunHealthLifecycleReturnsClientStatus(t *testing.T) {
 	var wg sync.WaitGroup
 	client := &healthClientStub{status: 3}
 
-	status := runHealthLifecycle(ctx, cancel, &wg, config.Args{}, "", healthLifecycleDependencies{
+	runtimeCfg := config.RuntimeConfig{Common: &config.CommonConfig{HostnameOverride: "test-host"}}
+	status := runHealthLifecycle(ctx, cancel, &wg, config.Args{}, runtimeCfg, "", healthLifecycleDependencies{
 		stderr:  &bytes.Buffer{},
 		loggers: nopLoggerDependencies(),
-		newHealthClient: func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
+		newHealthClient: func(_ config.Args, gotCfg config.RuntimeConfig,
+			_ clients.LoggerDependencies) (clients.Client, error) {
+			if gotCfg.Common == nil || gotCfg.Common.HostnameOverride != "test-host" {
+				t.Fatalf("runtime config = %#v, want injected config", gotCfg)
+			}
 			return client, nil
 		},
 	})
@@ -83,14 +88,15 @@ func TestRunHealthLifecycleCleansUpConstructionFailureInOrder(t *testing.T) {
 	status := runHealthLifecycle(ctx, func() {
 		recorder.add("logger cancel")
 		baseCancel()
-	}, &wg, config.Args{}, "test-profile", healthLifecycleDependencies{
+	}, &wg, config.Args{}, config.RuntimeConfig{}, "test-profile", healthLifecycleDependencies{
 		stderr:  &stderr,
 		loggers: loggers,
 		newPProfServer: func(_ context.Context, address string) (profileServer, error) {
 			recorder.add("pprof created: " + address)
 			return profile, nil
 		},
-		newHealthClient: func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
+		newHealthClient: func(config.Args, config.RuntimeConfig,
+			clients.LoggerDependencies) (clients.Client, error) {
 			recorder.add("health client construction")
 			return nil, constructionErr
 		},

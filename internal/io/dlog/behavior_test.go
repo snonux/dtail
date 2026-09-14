@@ -154,10 +154,6 @@ func TestLevelStringPanicsForInvalidLevel(t *testing.T) {
 }
 
 func TestDLogRoutesMessagesAndHonorsLevels(t *testing.T) {
-	previousClient := config.Client
-	config.Client = &config.ClientConfig{}
-	t.Cleanup(func() { config.Client = previousClient })
-
 	recorder := &behaviorLogger{}
 	clientLog := &DLog{
 		logger:        recorder,
@@ -227,10 +223,6 @@ func TestDLogRoutesMessagesAndHonorsLevels(t *testing.T) {
 }
 
 func TestDLogRoutesColoredRawAndDiagnosticMessages(t *testing.T) {
-	previousClient := config.Client
-	config.Client = nil
-	t.Cleanup(func() { config.Client = previousClient })
-
 	recorder := &behaviorLogger{supportsColor: true}
 	theme := config.DefaultTermColors()
 	theme.Client.TextFg = color.FgMagenta
@@ -282,10 +274,6 @@ func TestDLogOptionalSinkCapabilities(t *testing.T) {
 }
 
 func TestDLogMapreduceFormatsClientAndServerRecords(t *testing.T) {
-	previousClient := config.Client
-	config.Client = &config.ClientConfig{}
-	t.Cleanup(func() { config.Client = previousClient })
-
 	tests := []struct {
 		name          string
 		process       source.Source
@@ -312,10 +300,6 @@ func TestDLogMapreduceFormatsClientAndServerRecords(t *testing.T) {
 }
 
 func TestDLogFatalPanicFlushesMessage(t *testing.T) {
-	previousClient := config.Client
-	config.Client = &config.ClientConfig{}
-	t.Cleanup(func() { config.Client = previousClient })
-
 	recorder := &behaviorLogger{}
 	d := &DLog{logger: recorder, sourceProcess: source.Server, maxLevel: Fatal}
 	defer func() {
@@ -331,16 +315,7 @@ func TestDLogFatalPanicFlushesMessage(t *testing.T) {
 }
 
 func TestNewDLogValidatesConfiguration(t *testing.T) {
-	previousCommon := config.Common
-	previousClient := config.Client
-	config.Client = &config.ClientConfig{}
-	t.Cleanup(func() {
-		config.Common = previousCommon
-		config.Client = previousClient
-	})
-
-	config.Common = nil
-	if _, err := newDLog(source.Client, source.Client, nil, false); err == nil || !strings.Contains(err.Error(), "configuration is unavailable") {
+	if _, err := newDLog(source.Client, source.Client, config.RuntimeConfig{}, nil); err == nil || !strings.Contains(err.Error(), "configuration is unavailable") {
 		t.Fatalf("newDLog() missing-config error = %v", err)
 	}
 
@@ -356,13 +331,16 @@ func TestNewDLogValidatesConfiguration(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config.Common = &config.CommonConfig{
-				HostnameOverride: "host-a",
-				Logger:           tt.loggerName,
-				LogLevel:         tt.levelName,
-				LogRotation:      "signal",
+			cfg := config.RuntimeConfig{
+				Common: &config.CommonConfig{
+					HostnameOverride: "host-a",
+					Logger:           tt.loggerName,
+					LogLevel:         tt.levelName,
+					LogRotation:      "signal",
+				},
+				Client: &config.ClientConfig{},
 			}
-			got, err := newDLog(source.Client, source.Server, nil, false)
+			got, err := newDLog(source.Client, source.Server, cfg, nil)
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("newDLog() error = %v, want substring %q", err, tt.wantErr)
@@ -380,8 +358,6 @@ func TestNewDLogValidatesConfiguration(t *testing.T) {
 }
 
 func TestStartInitializesAndStopsLoggers(t *testing.T) {
-	previousCommon := config.Common
-	previousClientConfig := config.Client
 	previousClientLog, previousServerLog, previousCommonLog := Client, Server, Common
 	mutex.Lock()
 	previousStarted := started
@@ -391,23 +367,23 @@ func TestStartInitializesAndStopsLoggers(t *testing.T) {
 		mutex.Lock()
 		started = previousStarted
 		mutex.Unlock()
-		config.Common = previousCommon
-		config.Client = previousClientConfig
 		Client, Server, Common = previousClientLog, previousServerLog, previousCommonLog
 	})
 
-	config.Common = &config.CommonConfig{
-		HostnameOverride: "host-a",
-		Logger:           "none",
-		LogLevel:         "info",
-		LogRotation:      "signal",
+	cfg := config.RuntimeConfig{
+		Common: &config.CommonConfig{
+			HostnameOverride: "host-a",
+			Logger:           "none",
+			LogLevel:         "info",
+			LogRotation:      "signal",
+		},
+		Client: &config.ClientConfig{},
 	}
-	config.Client = &config.ClientConfig{}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
-	if err := Start(ctx, &wg, source.Client, nil, false); err != nil {
+	if err := Start(ctx, &wg, source.Client, cfg, nil); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 	if Client == nil || Server == nil || Common != Client {

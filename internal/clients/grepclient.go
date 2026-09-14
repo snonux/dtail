@@ -18,7 +18,8 @@ type GrepClient struct {
 }
 
 // NewGrepClient creates a new grep client.
-func NewGrepClient(args config.Args, loggers LoggerDependencies, colorizers ...*brush.Brush) (*GrepClient, error) {
+func NewGrepClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*GrepClient, error) {
 	if args.RegexStr == "" {
 		return nil, errors.New("no regex specified, use '-regex' flag")
 	}
@@ -29,6 +30,7 @@ func NewGrepClient(args config.Args, loggers LoggerDependencies, colorizers ...*
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
+			cfg:        cfg,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,

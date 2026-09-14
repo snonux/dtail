@@ -21,8 +21,8 @@ func run() int {
 	runner.WithBrushFactory(brush.New)
 	flag.IntVar(&args.Timeout, "timeout", 0, "Max time dtail server will collect data until disconnection")
 	flag.StringVar(&args.QueryStr, "query", "", "Map reduce query")
-	return runner.RunClientWithBrush("dmap", func(args config.Args, loggers clients.LoggerDependencies,
-		colorizer *brush.Brush) (clients.Client, error) {
-		return clients.NewMaprClient(args, clients.DefaultMode, loggers, colorizer)
+	return runner.RunClientWithBrush("dmap", func(args config.Args, cfg config.RuntimeConfig,
+		loggers clients.LoggerDependencies, colorizer *brush.Brush) (clients.Client, error) {
+		return clients.NewMaprClient(args, cfg, clients.DefaultMode, loggers, colorizer)
 	})
 }

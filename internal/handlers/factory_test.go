@@ -28,6 +28,7 @@ func TestNewForUserSelectsHandlerAndUsesExplicitDependencies(t *testing.T) {
 			Reader:      logging.NopLogger{},
 		},
 		Capabilities: []string{protocol.CapabilityQueryUpdateV1},
+		Hostname:     "test-host",
 	}
 
 	tests := []struct {

@@ -14,14 +14,14 @@ func TestNewGrepClientReturnsInvalidRegexError(t *testing.T) {
 		ConnectionsPerCPU: 1,
 		RegexStr:          "[",
 		Serverless:        true,
-	}, LoggerDependencies{})
+	}, clientTestRuntimeConfig(), LoggerDependencies{})
 	if err == nil || !strings.Contains(err.Error(), "compile regular expression") {
 		t.Fatalf("NewGrepClient error = %v, want regex compilation error", err)
 	}
 }
 
 func TestNewMaprClientReturnsInvalidQueryError(t *testing.T) {
-	_, err := NewMaprClient(config.Args{QueryStr: "select from"}, DefaultMode, LoggerDependencies{})
+	_, err := NewMaprClient(config.Args{QueryStr: "select from"}, config.RuntimeConfig{}, DefaultMode, LoggerDependencies{})
 	if err == nil || !strings.Contains(err.Error(), "parse mapreduce query") {
 		t.Fatalf("NewMaprClient error = %v, want query parse error", err)
 	}

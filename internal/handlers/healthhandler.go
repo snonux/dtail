@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	user "github.com/mimecast/dtail/internal/sessionuser"
@@ -17,7 +16,8 @@ type HealthHandler struct {
 }
 
 // NewHealthHandler returns the server handler.
-func NewHealthHandler(ctx context.Context, user *user.User, serverCfg *config.ServerConfig, logger logging.Logger) (*HealthHandler, error) {
+func NewHealthHandler(ctx context.Context, user *user.User, maxFrameSize int, hostname string,
+	logger logging.Logger) (*HealthHandler, error) {
 	logger = logging.OrNop(logger)
 	logger.Debug(user, "Creating new server health handler")
 	if user == nil {
@@ -25,12 +25,6 @@ func NewHealthHandler(ctx context.Context, user *user.User, serverCfg *config.Se
 	}
 	if ctx == nil {
 		return nil, fmt.Errorf("create health handler: context must not be nil")
-	}
-
-	// A nil configuration uses the protocol-safe default for isolated health checks.
-	maxFrameSize := config.DefaultMaxCommandFrameSize
-	if serverCfg != nil && serverCfg.MaxCommandFrameSize > 0 {
-		maxFrameSize = serverCfg.MaxCommandFrameSize
 	}
 
 	h := HealthHandler{
@@ -42,11 +36,7 @@ func NewHealthHandler(ctx context.Context, user *user.User, serverCfg *config.Se
 	}
 	h.handleCommandCb = h.handleHealthCommand
 
-	fqdn, err := handlerHostname()
-	if err != nil {
-		return nil, fmt.Errorf("create health handler: resolve hostname: %w", err)
-	}
-	s := strings.Split(fqdn, ".")
+	s := strings.Split(hostname, ".")
 	h.hostname = s[0]
 	return &h, nil
 }

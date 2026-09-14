@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/regex"
 )
@@ -22,21 +21,33 @@ type Spec struct {
 	Timeout     int        `json:"timeout,omitempty"`
 }
 
+// Parameters contains the client values needed to construct a session specification.
+type Parameters struct {
+	Mode              omode.Mode
+	What              string
+	SerializedOptions string
+	Query             string
+	Regex             string
+	RegexInvert       bool
+	Timeout           int
+	Serverless        bool
+}
+
 // NewSpec returns a session specification from client args.
-func NewSpec(args config.Args) Spec {
-	files := splitFiles(args.What)
-	if args.Serverless && len(files) == 0 && supportsServerlessPipe(args.Mode) {
+func NewSpec(parameters Parameters) Spec {
+	files := splitFiles(parameters.What)
+	if parameters.Serverless && len(files) == 0 && supportsServerlessPipe(parameters.Mode) {
 		files = []string{"-"}
 	}
 
 	return Spec{
-		Mode:        args.Mode,
+		Mode:        parameters.Mode,
 		Files:       files,
-		Options:     args.SerializeOptions(),
-		Query:       strings.TrimSpace(args.QueryStr),
-		Regex:       args.RegexStr,
-		RegexInvert: args.RegexInvert,
-		Timeout:     args.Timeout,
+		Options:     parameters.SerializedOptions,
+		Query:       strings.TrimSpace(parameters.Query),
+		Regex:       parameters.Regex,
+		RegexInvert: parameters.RegexInvert,
+		Timeout:     parameters.Timeout,
 	}
 }
 

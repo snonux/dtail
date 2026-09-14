@@ -30,6 +30,7 @@ const (
 type baseClient struct {
 	mu *sync.RWMutex
 	config.Args
+	cfg       config.RuntimeConfig
 	runtime   *clientRuntimeBoundary
 	colorizer *brush.Brush
 	loggers   LoggerDependencies
@@ -81,7 +82,7 @@ func (c *baseClient) init() error {
 	c.loggers = c.loggers.normalized()
 	c.clientLogger().Debug("Initiating base client", c.String())
 	if c.runtime == nil {
-		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime(), c.loggers, c.colorizer)
+		c.runtime = newClientRuntimeBoundary(c.cfg, c.loggers, c.colorizer)
 	}
 
 	flag := regex.Default

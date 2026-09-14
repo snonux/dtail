@@ -84,24 +84,22 @@ func run() int {
 
 	flag.Parse()
 	args.NoColor = !color
-	if err := config.Setup(source.Server, &args, flag.Args()); err != nil {
+	runtimeCfg, err := config.SetupRuntime(source.Server, &args, flag.Args())
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "unable to configure dserver: %v\n", err)
 		return 1
 	}
 
 	if displayVersion {
-		runtimeCfg := config.CurrentRuntime()
 		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
 	}
 	version.Print(false)
-	runtimeCfg := config.CurrentRuntime()
 	colorizer := brush.New(runtimeCfg.Client.TermColors)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
-	if err := dlog.Start(rootCtx, &wg, source.Server, colorizer,
-		runtimeCfg.Client.TermColorsEnable); err != nil {
+	if err := dlog.Start(rootCtx, &wg, source.Server, runtimeCfg, colorizer); err != nil {
 		wg.Done()
 		rootCancel()
 		fmt.Fprintf(os.Stderr, "unable to initialize dserver logger: %v\n", err)

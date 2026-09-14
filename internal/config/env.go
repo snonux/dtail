@@ -17,8 +17,5 @@ func IntegrationSSHPrivateKeyPath() string {
 // Hostname returns the configured hostname override or the system hostname.
 // Environment compatibility is resolved once by Setup rather than here.
 func Hostname() (string, error) {
-	if Common != nil && Common.HostnameOverride != "" {
-		return Common.HostnameOverride, nil
-	}
-	return os.Hostname()
+	return CurrentRuntime().Hostname()
 }

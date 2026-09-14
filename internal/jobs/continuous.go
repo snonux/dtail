@@ -39,7 +39,7 @@ func newContinuous(cfg config.RuntimeConfig, loggers clients.LoggerDependencies,
 		return ticker.C, ticker.Stop
 	}
 	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
-		return clients.NewMaprClient(args, mode, loggers, colorizer)
+		return clients.NewMaprClient(args, cfg, mode, loggers, colorizer)
 	}
 	c.dayChangeWatcher = c.waitForDayChange
 	return c

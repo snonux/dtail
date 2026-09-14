@@ -20,7 +20,8 @@ import (
 	"github.com/mimecast/dtail/internal/version"
 )
 
-type healthClientFactory func(config.Args, clients.LoggerDependencies) (clients.Client, error)
+type healthClientFactory func(config.Args, config.RuntimeConfig,
+	clients.LoggerDependencies) (clients.Client, error)
 
 type pprofShutdowner interface {
 	Shutdown(context.Context) error
@@ -62,18 +63,17 @@ func run() int {
 		version.PrintAndExit(false)
 	}
 
-	if err := config.Setup(source.HealthCheck, &args, flag.Args()); err != nil {
+	runtimeCfg, err := config.SetupRuntime(source.HealthCheck, &args, flag.Args())
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to configure dtailhealth: %v\n", err)
 		return 2
 	}
-	runtimeCfg := config.CurrentRuntime()
 	colorizer := brush.New(runtimeCfg.Client.TermColors)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
-	if err := dlog.Start(ctx, &wg, source.HealthCheck, colorizer,
-		runtimeCfg.Client.TermColorsEnable); err != nil {
+	if err := dlog.Start(ctx, &wg, source.HealthCheck, runtimeCfg, colorizer); err != nil {
 		wg.Done()
 		cancel()
 		fmt.Fprintf(os.Stderr, "CRITICAL: unable to initialize dtailhealth logger: %v\n", err)
@@ -81,20 +81,22 @@ func run() int {
 	}
 
 	loggers := clients.NewLoggerDependencies(dlog.Client, dlog.Server, dlog.Common)
-	return runHealthLifecycle(ctx, cancel, &wg, args, pprof, healthLifecycleDependencies{
+	return runHealthLifecycle(ctx, cancel, &wg, args, runtimeCfg, pprof, healthLifecycleDependencies{
 		stderr:  os.Stderr,
 		loggers: loggers,
 		newPProfServer: func(ctx context.Context, address string) (profileServer, error) {
 			return cli.NewPProfServer(ctx, address)
 		},
-		newHealthClient: func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
-			return clients.NewHealthClient(args, loggers, colorizer)
+		newHealthClient: func(args config.Args, cfg config.RuntimeConfig,
+			loggers clients.LoggerDependencies) (clients.Client, error) {
+			return clients.NewHealthClient(args, cfg, loggers, colorizer)
 		},
 	})
 }
 
 func runHealthLifecycle(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup,
-	args config.Args, pprofAddress string, deps healthLifecycleDependencies) int {
+	args config.Args, cfg config.RuntimeConfig, pprofAddress string,
+	deps healthLifecycleDependencies) int {
 	// Register logger cleanup first so pprof shutdown can still report errors.
 	defer func() {
 		cancel()
@@ -112,7 +114,7 @@ func runHealthLifecycle(ctx context.Context, cancel context.CancelFunc, wg *sync
 		}
 	}
 
-	healthClient, err := deps.newHealthClient(args, deps.loggers)
+	healthClient, err := deps.newHealthClient(args, cfg, deps.loggers)
 	if err != nil {
 		_, _ = fmt.Fprintf(deps.stderr, "CRITICAL: unable to create dtailhealth client: %v\n", err)
 		return 2

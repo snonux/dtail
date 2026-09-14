@@ -57,8 +57,6 @@ func (l HandlerLoggers) normalized() HandlerLoggers {
 
 var _ Handler = (*ServerHandler)(nil)
 
-var handlerHostname = config.Hostname
-
 // NewServerHandler returns the server handler.
 func NewServerHandler(ctx context.Context, user *user.User, dependencies Dependencies) (*ServerHandler, error) {
 
@@ -105,12 +103,7 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 	h.output.configure(h.outputManagerConfig(), loggers.Diagnostics)
 	h.activeGeneration = h.sessionState.currentGeneration
 
-	fqdn, err := handlerHostname()
-	if err != nil {
-		return nil, fmt.Errorf("create server handler: resolve hostname: %w", err)
-	}
-
-	s := strings.Split(fqdn, ".")
+	s := strings.Split(dependencies.Hostname, ".")
 	h.hostname = s[0]
 	h.send(h.serverMessages, protocol.HiddenCapabilitiesPrefix+strings.Join(dependencies.Capabilities, " "))
 

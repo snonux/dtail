@@ -17,7 +17,8 @@ type CatClient struct {
 }
 
 // NewCatClient returns a new cat client.
-func NewCatClient(args config.Args, loggers LoggerDependencies, colorizers ...*brush.Brush) (*CatClient, error) {
+func NewCatClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*CatClient, error) {
 	if args.RegexStr != "" {
 		return nil, errors.New("can't use regex with 'cat' operating mode")
 	}
@@ -28,6 +29,7 @@ func NewCatClient(args config.Args, loggers LoggerDependencies, colorizers ...*b
 		baseClient: baseClient{
 			mu:         newBaseClientMu(),
 			Args:       args,
+			cfg:        cfg,
 			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 			retry:      false,
 			loggers:    loggers,

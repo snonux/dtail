@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/color/brush"
@@ -92,7 +93,8 @@ func TestClientRunnerLifecycleAndArguments(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	deps := clientDependenciesForTest(stderr)
 	deps.argv = []string{"-cfg", "none", "first.log", "second.log"}
-	deps.setup = func(gotSource source.Source, gotArgs *config.Args, additional []string) error {
+	deps.setup = func(gotSource source.Source, gotArgs *config.Args,
+		additional []string) (config.RuntimeConfig, error) {
 		events = append(events, "setup")
 		if gotSource != source.Client {
 			t.Fatalf("setup source = %v, want %v", gotSource, source.Client)
@@ -103,7 +105,7 @@ func TestClientRunnerLifecycleAndArguments(t *testing.T) {
 		if want := []string{"first.log", "second.log"}; !reflect.DeepEqual(additional, want) {
 			t.Fatalf("setup additional args = %q, want %q", additional, want)
 		}
-		return nil
+		return clientRuntimeConfigForTest(), nil
 	}
 	deps.currentUserName = func() (string, error) {
 		events = append(events, "user")
@@ -113,7 +115,7 @@ func TestClientRunnerLifecycleAndArguments(t *testing.T) {
 		events = append(events, "new-runtime")
 		return runtime, nil
 	}
-	deps.interrupt = func(context.Context, context.CancelFunc) <-chan string {
+	deps.interrupt = func(context.Context, context.CancelFunc, time.Duration) <-chan string {
 		events = append(events, "interrupt")
 		return make(chan string)
 	}
@@ -122,10 +124,14 @@ func TestClientRunnerLifecycleAndArguments(t *testing.T) {
 		return clients.LoggerDependencies{}
 	}
 
-	status := runner.runClient("test-client", func(got config.Args, _ clients.LoggerDependencies) (clients.Client, error) {
+	status := runner.runClient("test-client", func(got config.Args, gotCfg config.RuntimeConfig,
+		_ clients.LoggerDependencies) (clients.Client, error) {
 		events = append(events, "build")
 		if got.UserName != "alice" {
 			t.Fatalf("build UserName = %q, want alice", got.UserName)
+		}
+		if gotCfg.Common == nil || gotCfg.Common.HostnameOverride != "test-host" {
+			t.Fatalf("build runtime config = %#v, want injected test config", gotCfg)
 		}
 		return clientFunc(func(context.Context, <-chan string) int {
 			events = append(events, "start")
@@ -162,22 +168,22 @@ func TestClientRunnerInjectsConfiguredBrushWithoutGlobalConfig(t *testing.T) {
 	})
 
 	deps := clientDependenciesForTest(stderr)
-	deps.currentRuntime = func() config.RuntimeConfig {
+	deps.setup = func(source.Source, *config.Args, []string) (config.RuntimeConfig, error) {
 		return config.RuntimeConfig{Client: &config.ClientConfig{
 			TermColorsEnable: true,
 			TermColors:       theme,
-		}}
+		}}, nil
 	}
 	events := []string{}
 	deps.newBrushRuntime = func(_ context.Context, _ profiling.Flags, _ string,
-		got *brush.Brush, enabled bool) (clientRuntime, error) {
-		if got != configuredBrush || !enabled {
-			t.Fatalf("runtime brush = %p enabled=%v, want %p enabled=true", got, enabled, configuredBrush)
+		gotCfg config.RuntimeConfig, got *brush.Brush) (clientRuntime, error) {
+		if got != configuredBrush || gotCfg.Client == nil || !gotCfg.Client.TermColorsEnable {
+			t.Fatalf("runtime brush = %p cfg=%#v, want %p with colors enabled", got, gotCfg, configuredBrush)
 		}
 		return &recordingClientRuntime{ctx: context.Background(), events: &events}, nil
 	}
 
-	status := runner.runClientWithBrush("test-client", func(_ config.Args,
+	status := runner.runClientWithBrush("test-client", func(_ config.Args, _ config.RuntimeConfig,
 		_ clients.LoggerDependencies, got *brush.Brush) (clients.Client, error) {
 		if got != configuredBrush {
 			t.Fatalf("client brush = %p, want %p", got, configuredBrush)
@@ -193,14 +199,17 @@ func TestClientRunnerSetupErrorStopsBeforeRuntime(t *testing.T) {
 	runner, stderr := newTestClientRunner(t)
 	wantErr := errors.New("bad config")
 	deps := clientDependenciesForTest(stderr)
-	deps.setup = func(source.Source, *config.Args, []string) error { return wantErr }
+	deps.setup = func(source.Source, *config.Args, []string) (config.RuntimeConfig, error) {
+		return config.RuntimeConfig{}, wantErr
+	}
 	newRuntimeCalled := false
 	deps.newRuntime = func(context.Context, profiling.Flags, string) (clientRuntime, error) {
 		newRuntimeCalled = true
 		return nil, nil
 	}
 
-	status := runner.runClient("dcat", func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
+	status := runner.runClient("dcat", func(config.Args, config.RuntimeConfig,
+		clients.LoggerDependencies) (clients.Client, error) {
 		t.Fatal("build called after setup failure")
 		return nil, nil
 	}, deps)
@@ -246,7 +255,8 @@ func TestClientRunnerRejectsInvalidContextFactoryResults(t *testing.T) {
 				return nil, nil
 			}
 
-			status := runner.runClient("dcat", func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
+			status := runner.runClient("dcat", func(config.Args, config.RuntimeConfig,
+				clients.LoggerDependencies) (clients.Client, error) {
 				t.Fatal("build called after invalid context factory result")
 				return nil, nil
 			}, deps)
@@ -280,7 +290,8 @@ func TestClientRunnerBuildErrorCleansUpRuntimeAndContext(t *testing.T) {
 	}
 	wantErr := errors.New("constructor failed")
 
-	status := runner.runClient("dmap", func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
+	status := runner.runClient("dmap", func(config.Args, config.RuntimeConfig,
+		clients.LoggerDependencies) (clients.Client, error) {
 		return nil, wantErr
 	}, deps)
 
@@ -311,7 +322,8 @@ func TestClientRunnerAfterRuntimeCanHandleCommand(t *testing.T) {
 		return runtime, nil
 	}
 
-	status := runner.runClient("dtail", func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
+	status := runner.runClient("dtail", func(config.Args, config.RuntimeConfig,
+		clients.LoggerDependencies) (clients.Client, error) {
 		t.Fatal("build called after command was handled")
 		return nil, nil
 	}, deps)
@@ -363,16 +375,25 @@ func newTestClientRunner(t *testing.T) (*ClientRunner, *bytes.Buffer) {
 func clientDependenciesForTest(stderr io.Writer) clientRunDependencies {
 	return clientRunDependencies{
 		stderr: stderr,
-		setup: func(source.Source, *config.Args, []string) error {
-			return nil
+		setup: func(source.Source, *config.Args, []string) (config.RuntimeConfig, error) {
+			return clientRuntimeConfigForTest(), nil
 		},
 		currentUserName: func() (string, error) { return "test-user", nil },
-		colorsEnabled:   func() bool { return false },
 		printVersion:    func(bool) {},
 		newRuntime: func(context.Context, profiling.Flags, string) (clientRuntime, error) {
 			return &recordingClientRuntime{ctx: context.Background(), events: &[]string{}}, nil
 		},
-		interrupt:     func(context.Context, context.CancelFunc) <-chan string { return make(chan string) },
+		interrupt: func(context.Context, context.CancelFunc, time.Duration) <-chan string {
+			return make(chan string)
+		},
 		logBuildError: func(string, error) {},
+	}
+}
+
+func clientRuntimeConfigForTest() config.RuntimeConfig {
+	return config.RuntimeConfig{
+		Client: &config.ClientConfig{},
+		Server: config.NewDefaultServerConfigForTest(),
+		Common: &config.CommonConfig{HostnameOverride: "test-host"},
 	}
 }

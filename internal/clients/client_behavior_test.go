@@ -16,7 +16,7 @@ import (
 )
 
 func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
-	installClientTestConfig(t)
+	runtimeCfg := clientTestRuntimeConfig()
 
 	tests := []struct {
 		name      string
@@ -30,7 +30,7 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 			name: "cat",
 			args: config.Args{What: "app.log"},
 			build: func(args config.Args) (*baseClient, error) {
-				client, err := NewCatClient(args, LoggerDependencies{})
+				client, err := NewCatClient(args, runtimeCfg, LoggerDependencies{})
 				if client == nil {
 					return nil, err
 				}
@@ -42,7 +42,7 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 			name: "grep",
 			args: config.Args{What: "app.log", RegexStr: "ERROR"},
 			build: func(args config.Args) (*baseClient, error) {
-				client, err := NewGrepClient(args, LoggerDependencies{})
+				client, err := NewGrepClient(args, runtimeCfg, LoggerDependencies{})
 				if client == nil {
 					return nil, err
 				}
@@ -54,7 +54,7 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 			name: "tail",
 			args: config.Args{What: "app.log"},
 			build: func(args config.Args) (*baseClient, error) {
-				client, err := NewTailClient(args, LoggerDependencies{})
+				client, err := NewTailClient(args, runtimeCfg, LoggerDependencies{})
 				if client == nil {
 					return nil, err
 				}
@@ -66,7 +66,7 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 		{
 			name: "health",
 			build: func(args config.Args) (*baseClient, error) {
-				client, err := NewHealthClient(args, LoggerDependencies{})
+				client, err := NewHealthClient(args, runtimeCfg, LoggerDependencies{})
 				if client == nil {
 					return nil, err
 				}
@@ -114,7 +114,7 @@ func TestClientConstructorsRejectInvalidInputs(t *testing.T) {
 		{
 			name: "cat rejects regex",
 			build: func() error {
-				_, err := NewCatClient(config.Args{RegexStr: "ERROR"}, LoggerDependencies{})
+				_, err := NewCatClient(config.Args{RegexStr: "ERROR"}, config.RuntimeConfig{}, LoggerDependencies{})
 				return err
 			},
 			wantErr: "can't use regex",
@@ -122,7 +122,7 @@ func TestClientConstructorsRejectInvalidInputs(t *testing.T) {
 		{
 			name: "grep requires regex",
 			build: func() error {
-				_, err := NewGrepClient(config.Args{}, LoggerDependencies{})
+				_, err := NewGrepClient(config.Args{}, config.RuntimeConfig{}, LoggerDependencies{})
 				return err
 			},
 			wantErr: "no regex specified",
@@ -130,7 +130,7 @@ func TestClientConstructorsRejectInvalidInputs(t *testing.T) {
 		{
 			name: "map requires query",
 			build: func() error {
-				_, err := NewMaprClient(config.Args{}, DefaultMode, LoggerDependencies{})
+				_, err := NewMaprClient(config.Args{}, config.RuntimeConfig{}, DefaultMode, LoggerDependencies{})
 				return err
 			},
 			wantErr: "no mapreduce query specified",
@@ -148,7 +148,7 @@ func TestClientConstructorsRejectInvalidInputs(t *testing.T) {
 }
 
 func TestNewMaprClientDerivesModeAndRegex(t *testing.T) {
-	installClientTestConfig(t)
+	runtimeCfg := clientTestRuntimeConfig()
 
 	tests := []struct {
 		name      string
@@ -182,7 +182,7 @@ func TestNewMaprClientDerivesModeAndRegex(t *testing.T) {
 				QueryStr:          tt.query,
 				Serverless:        true,
 				ConnectionsPerCPU: 1,
-			}, tt.mode, LoggerDependencies{})
+			}, runtimeCfg, tt.mode, LoggerDependencies{})
 			if err != nil {
 				t.Fatalf("NewMaprClient() error = %v", err)
 			}
@@ -375,17 +375,10 @@ func TestMaprReporterStopsOnCanceledContext(t *testing.T) {
 	}
 }
 
-func installClientTestConfig(t *testing.T) {
-	t.Helper()
-	previousServer := config.Server
-	previousClient := config.Client
-	previousCommon := config.Common
-	config.Server = config.NewDefaultServerConfigForTest()
-	config.Client = &config.ClientConfig{}
-	config.Common = &config.CommonConfig{}
-	t.Cleanup(func() {
-		config.Server = previousServer
-		config.Client = previousClient
-		config.Common = previousCommon
-	})
+func clientTestRuntimeConfig() config.RuntimeConfig {
+	return config.RuntimeConfig{
+		Server: config.NewDefaultServerConfigForTest(),
+		Client: &config.ClientConfig{},
+		Common: &config.CommonConfig{HostnameOverride: "test-host"},
+	}
 }

@@ -56,6 +56,22 @@ func TestNewParserUsesRegistry(t *testing.T) {
 	}
 }
 
+func TestNewParserWithHostnameInjectsHostname(t *testing.T) {
+	const parserName = "unit-test-hostname-parser"
+	var gotHostname string
+	registerParserFactoryForTest(t, parserName, func(hostname, _ string, _ int) (Parser, error) {
+		gotHostname = hostname
+		return &testParser{}, nil
+	})
+
+	if _, err := NewParserWithHostname(parserName, nil, "configured-host"); err != nil {
+		t.Fatalf("NewParserWithHostname: %v", err)
+	}
+	if gotHostname != "configured-host" {
+		t.Fatalf("factory hostname = %q, want configured-host", gotHostname)
+	}
+}
+
 func TestNewParserRejectsUnknownFormatWithoutReturningParser(t *testing.T) {
 	parser, err := NewParser("missing-parser-format", nil)
 	if err == nil {

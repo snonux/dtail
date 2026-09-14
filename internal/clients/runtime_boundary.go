@@ -2,6 +2,7 @@ package clients
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -28,6 +29,8 @@ type clientRuntimeBoundary struct {
 	loggers           LoggerDependencies
 	stdout            func() io.Writer
 	colorizer         *brush.Brush
+	hostname          string
+	hostnameErr       error
 }
 
 func newClientRuntimeBoundary(cfg config.RuntimeConfig, loggers LoggerDependencies,
@@ -45,6 +48,7 @@ func newClientRuntimeBoundary(cfg config.RuntimeConfig, loggers LoggerDependenci
 	}
 
 	loggers = loggers.normalized()
+	hostname, hostnameErr := cfg.Hostname()
 	return &clientRuntimeBoundary{
 		sshPort:           sshPort,
 		sshConnectTimeout: sshConnectTimeout,
@@ -55,6 +59,8 @@ func newClientRuntimeBoundary(cfg config.RuntimeConfig, loggers LoggerDependenci
 		loggers:           loggers,
 		stdout:            func() io.Writer { return os.Stdout },
 		colorizer:         colorizer,
+		hostname:          hostname,
+		hostnameErr:       hostnameErr,
 	}
 }
 
@@ -74,6 +80,9 @@ func (r *clientRuntimeBoundary) InterruptPause() time.Duration {
 }
 
 func (r *clientRuntimeBoundary) NewServerlessHandler(ctx context.Context, userName string) (sessionHandlers.Handler, error) {
+	if r.hostnameErr != nil {
+		return nil, fmt.Errorf("create serverless handler: resolve hostname: %w", r.hostnameErr)
+	}
 	var permissionLookup user.PermissionLookup
 	if r.serverCfg != nil {
 		permissionLookup = r.serverCfg.UserPermissions
@@ -92,6 +101,7 @@ func (r *clientRuntimeBoundary) NewServerlessHandler(ctx context.Context, userNa
 		},
 		Capabilities: sessionHandlers.DetectCapabilities(),
 		Colorizer:    r.colorizer,
+		Hostname:     r.hostname,
 	}
 	if r.serverCfg != nil {
 		dependencies.CatLimiter = make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentCats, 2))

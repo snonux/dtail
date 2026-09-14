@@ -29,7 +29,7 @@ func newScheduler(cfg config.RuntimeConfig, loggers clients.LoggerDependencies, 
 		cfg:    cfg,
 		logger: logging.OrNop(loggers.Server),
 		newMaprClient: func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
-			return clients.NewMaprClient(args, mode, loggers, colorizer)
+			return clients.NewMaprClient(args, cfg, mode, loggers, colorizer)
 		},
 	}
 }
