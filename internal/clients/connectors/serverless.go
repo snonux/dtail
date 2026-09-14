@@ -101,11 +101,45 @@ func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 	throttleCh, statsCh chan struct{}) {
 
 	s.logger.Debug("Starting serverless connector")
+	releaseThrottle := func() {}
+	if throttleCh != nil {
+		s.logger.Debug(s.Server(), "Throttling connection", len(throttleCh), cap(throttleCh))
+		select {
+		case throttleCh <- struct{}{}:
+		case <-ctx.Done():
+			s.logger.Debug(s.Server(), "Not establishing connection as context is done",
+				len(throttleCh), cap(throttleCh))
+			return
+		}
+
+		var throttleReleased sync.Once
+		releaseThrottle = func() {
+			throttleReleased.Do(func() {
+				s.logger.Debug(s.Server(), "Unthrottling connection", len(throttleCh), cap(throttleCh))
+				<-throttleCh
+			})
+		}
+		defer releaseThrottle()
+	}
+
+	if statsCh != nil {
+		s.logger.Debug(s.Server(), "Incrementing connection stats")
+		select {
+		case statsCh <- struct{}{}:
+		case <-ctx.Done():
+			return
+		}
+		defer func() {
+			s.logger.Debug(s.Server(), "Decrementing connection stats")
+			<-statsCh
+		}()
+	}
+
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer cancel()
-		if err := s.handle(ctx, cancel); err != nil {
+		if err := s.handleConnection(ctx, cancel, releaseThrottle); err != nil {
 			if shouldReportConnectionError(ctx, err) {
 				s.handler.ReportServerError("serverless session failed: " + err.Error())
 			}
@@ -116,6 +150,11 @@ func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 }
 
 func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) error {
+	return s.handleConnection(ctx, cancel, func() {})
+}
+
+func (s *Serverless) handleConnection(ctx context.Context, cancel context.CancelFunc,
+	connectionEstablished func()) error {
 	s.logger.Debug("Creating server handler for a serverless session")
 
 	if s.handlerFactory == nil {
@@ -242,6 +281,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		s.sessionSpec, &s.sessionState, s.logger)
 	var transferErr error
 	if dispatchErr == nil {
+		connectionEstablished()
 		select {
 		case <-s.handler.Done():
 			s.logger.Trace("<-s.handler.Done()")
