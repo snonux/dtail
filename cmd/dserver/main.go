@@ -22,7 +22,6 @@ import (
 	"github.com/mimecast/dtail/internal/server"
 	"github.com/mimecast/dtail/internal/source"
 	"github.com/mimecast/dtail/internal/user"
-	"github.com/mimecast/dtail/internal/version"
 )
 
 type pprofShutdowner interface {
@@ -91,9 +90,10 @@ func run() int {
 	}
 
 	if displayVersion {
-		version.PrintAndExit(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
+		cli.PrintVersion(runtimeCfg.Client != nil && runtimeCfg.Client.TermColorsEnable)
+		return 0
 	}
-	version.Print(false)
+	cli.PrintVersion(false)
 	colorizer := brush.New(runtimeCfg.Client.TermColors)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())

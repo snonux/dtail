@@ -17,7 +17,6 @@ import (
 	"github.com/mimecast/dtail/internal/profiling"
 	"github.com/mimecast/dtail/internal/source"
 	"github.com/mimecast/dtail/internal/user"
-	"github.com/mimecast/dtail/internal/version"
 )
 
 // ClientHook runs at a defined point in the common client lifecycle. A hook
@@ -149,7 +148,7 @@ func (r *ClientRunner) RunClient(name string, build ClientBuilder) int {
 		stderr:          os.Stderr,
 		setup:           config.SetupRuntime,
 		currentUserName: user.CurrentName,
-		printVersion:    version.Print,
+		printVersion:    PrintVersion,
 		newBrushRuntime: func(ctx context.Context, flags profiling.Flags, name string,
 			cfg config.RuntimeConfig, colorizer *brush.Brush) (clientRuntime, error) {
 			return NewClientRuntime(ctx, flags, name, cfg, colorizer)
@@ -181,7 +180,7 @@ func (r *ClientRunner) RunClientWithBrush(name string, build BrushClientBuilder)
 		stderr:          os.Stderr,
 		setup:           config.SetupRuntime,
 		currentUserName: user.CurrentName,
-		printVersion:    version.Print,
+		printVersion:    PrintVersion,
 		newBrushRuntime: func(ctx context.Context, flags profiling.Flags, name string,
 			cfg config.RuntimeConfig, colorizer *brush.Brush) (clientRuntime, error) {
 			return NewClientRuntime(ctx, flags, name, cfg, colorizer)

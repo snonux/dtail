@@ -17,7 +17,6 @@ import (
 	"github.com/mimecast/dtail/internal/io/signal"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/source"
-	"github.com/mimecast/dtail/internal/version"
 )
 
 type healthClientFactory func(config.Args, config.RuntimeConfig,
@@ -60,7 +59,8 @@ func run() int {
 	flag.Parse()
 
 	if displayVersion {
-		version.PrintAndExit(false)
+		cli.PrintVersion(false)
+		return 0
 	}
 
 	runtimeCfg, err := config.SetupRuntime(source.HealthCheck, &args, flag.Args())
