@@ -76,6 +76,28 @@ func TestDirectWriter_ServerlessColored(t *testing.T) {
 	t.Skip("Requires color config initialization - tested via integration tests")
 }
 
+func TestDirectWriterServerlessColoredPreservesTerminalMessageDelimiter(t *testing.T) {
+	originalClient := config.Client
+	config.Client = &config.ClientConfig{}
+	t.Cleanup(func() {
+		config.Client = originalClient
+	})
+
+	content := append([]byte("payload"), protocol.MessageDelimiter)
+	var output bytes.Buffer
+	writer := NewDirectWriter(&output, "testhost", false, true)
+	if err := writer.WriteLineData(content, 7, "source.log"); err != nil {
+		t.Fatalf("WriteLineData() error = %v", err)
+	}
+	if err := writer.Flush(); err != nil {
+		t.Fatalf("Flush() error = %v", err)
+	}
+
+	if !bytes.Contains(output.Bytes(), content) {
+		t.Fatalf("colored output %q does not preserve terminal payload byte in %q", output.Bytes(), content)
+	}
+}
+
 // TestDirectWriter_NetworkPlain tests plain network mode output
 func TestDirectWriter_NetworkPlain(t *testing.T) {
 	var buf bytes.Buffer
@@ -171,6 +193,77 @@ func TestDirectWriter_WriteServerMessage_Serverless(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Errorf("Expected no output in serverless mode, got %q", buf.String())
 	}
+}
+
+func TestNetworkWriterSelectsServerMessageSinkAtConstruction(t *testing.T) {
+	tests := []struct {
+		name       string
+		serverless bool
+	}{
+		{name: "network routes message"},
+		{name: "serverless discards message", serverless: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			messages := make(chan string, 1)
+			writer := NewNetworkWriter(context.Background(), nil, messages, "testhost",
+				true, test.serverless, 7, nil, handlerTestLogger)
+
+			if err := writer.WriteServerMessage("hello"); err != nil {
+				t.Fatalf("WriteServerMessage: %v", err)
+			}
+
+			select {
+			case encoded := <-messages:
+				generation, got := decodeGeneratedMessage(encoded)
+				if test.serverless {
+					t.Fatalf("serverless writer routed message %q", got)
+				}
+				if generation != 7 || got != "hello" {
+					t.Fatalf("routed message = (%d, %q), want (7, %q)", generation, got, "hello")
+				}
+			default:
+				if !test.serverless {
+					t.Fatal("network writer discarded server message")
+				}
+			}
+		})
+	}
+}
+
+func TestWritersUseInjectedLineFormatter(t *testing.T) {
+	formatter := func(dst *bytes.Buffer, _ []byte, _ uint64, _ string) {
+		dst.WriteString("injected")
+	}
+
+	t.Run("direct", func(t *testing.T) {
+		var output bytes.Buffer
+		writer := newDirectWriter(&output, formatter)
+		if err := writer.WriteLineData([]byte("ignored"), 3, "direct.log"); err != nil {
+			t.Fatalf("WriteLineData: %v", err)
+		}
+		if err := writer.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		if got := output.String(); got != "injected" {
+			t.Fatalf("output = %q, want %q", got, "injected")
+		}
+	})
+
+	t.Run("network", func(t *testing.T) {
+		output := make(chan []byte, 1)
+		writer := newNetworkWriter(context.Background(), output, formatter, 0, nil, handlerTestLogger)
+		if err := writer.WriteLineData([]byte("ignored"), 4, "network.log"); err != nil {
+			t.Fatalf("WriteLineData: %v", err)
+		}
+		if err := writer.Flush(); err != nil {
+			t.Fatalf("Flush: %v", err)
+		}
+		if got := string(<-output); got != "injected" {
+			t.Fatalf("output = %q, want %q", got, "injected")
+		}
+	})
 }
 
 // TestDirectWriter_WriteServerMessage_HiddenMessage tests hidden message handling
@@ -289,14 +382,9 @@ func TestNetworkWriterWriteLineDataStopsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	writer := &NetworkWriter{
-		outputLines:      outputLines,
-		plain:            true,
-		generation:       1,
-		ctx:              ctx,
-		sendStateCh:      make(chan struct{}),
-		activeGeneration: activeGeneration.Load,
-	}
+	writer := NewNetworkWriter(ctx, outputLines, nil, "testhost", true, false,
+		1, activeGeneration.Load, handlerTestLogger)
+	writer.bufSize = 0
 
 	done := make(chan error, 1)
 	go func() {
@@ -324,14 +412,9 @@ func TestNetworkWriterStopsBlockedSendAfterGenerationAdvance(t *testing.T) {
 	var activeGeneration atomic.Uint64
 	activeGeneration.Store(1)
 
-	writer := &NetworkWriter{
-		outputLines:      outputLines,
-		plain:            true,
-		generation:       1,
-		ctx:              context.Background(),
-		sendStateCh:      make(chan struct{}),
-		activeGeneration: activeGeneration.Load,
-	}
+	writer := NewNetworkWriter(context.Background(), outputLines, nil, "testhost", true, false,
+		1, activeGeneration.Load, handlerTestLogger)
+	writer.bufSize = 0
 
 	done := make(chan error, 1)
 	go func() {
@@ -398,15 +481,9 @@ func TestNetworkWriterFlushWaitsForBufferedDataAndInFlightSend(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	writer := &NetworkWriter{
-		outputLines:      outputLines,
-		plain:            true,
-		generation:       1,
-		ctx:              ctx,
-		bufSize:          8,
-		sendStateCh:      make(chan struct{}),
-		activeGeneration: activeGeneration.Load,
-	}
+	writer := NewNetworkWriter(ctx, outputLines, nil, "testhost", true, false,
+		1, activeGeneration.Load, handlerTestLogger)
+	writer.bufSize = 8
 
 	if err := writer.WriteLineData([]byte("first"), 1, "app.log"); err != nil {
 		t.Fatalf("first WriteLineData failed: %v", err)
@@ -500,14 +577,9 @@ func TestNetworkWriterStopsWaitingWhenContextIsCancelled(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	writer := &NetworkWriter{
-		outputLines:      outputLines,
-		plain:            true,
-		generation:       1,
-		ctx:              ctx,
-		sendStateCh:      make(chan struct{}),
-		activeGeneration: activeGeneration.Load,
-	}
+	writer := NewNetworkWriter(ctx, outputLines, nil, "testhost", true, false,
+		1, activeGeneration.Load, handlerTestLogger)
+	writer.bufSize = 0
 
 	done := make(chan error, 1)
 	go func() {
@@ -553,15 +625,9 @@ func TestNetworkWriterFlushCancelsWhileWaitingOnInFlightSend(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	writer := &NetworkWriter{
-		outputLines:      outputLines,
-		plain:            true,
-		generation:       1,
-		ctx:              ctx,
-		bufSize:          8,
-		sendStateCh:      make(chan struct{}),
-		activeGeneration: activeGeneration.Load,
-	}
+	writer := NewNetworkWriter(ctx, outputLines, nil, "testhost", true, false,
+		1, activeGeneration.Load, handlerTestLogger)
+	writer.bufSize = 8
 
 	if err := writer.WriteLineData([]byte("first"), 1, "app.log"); err != nil {
 		t.Fatalf("first WriteLineData failed: %v", err)
@@ -791,12 +857,8 @@ func TestDirectWriter_StatsEmptyLine(t *testing.T) {
 func TestNetworkWriter_StatsBytesWrittenBelowThreshold(t *testing.T) {
 
 	outputLines := make(chan []byte, 1)
-	writer := &NetworkWriter{
-		outputLines: outputLines,
-		plain:       true,
-		ctx:         context.Background(),
-		bufSize:     64 * 1024,
-	}
+	writer := NewNetworkWriter(context.Background(), outputLines, nil, "testhost",
+		true, false, 0, nil, handlerTestLogger)
 
 	const numLines = 10
 	content := []byte("test line") // +1 byte for the message delimiter.
@@ -840,12 +902,9 @@ func TestNetworkWriter_StatsBytesWrittenAcrossFlushThreshold(t *testing.T) {
 
 	const numLines = 20
 	outputLines := make(chan []byte, numLines)
-	writer := &NetworkWriter{
-		outputLines: outputLines,
-		plain:       true,
-		ctx:         context.Background(),
-		bufSize:     32, // Three 11-byte lines accumulate before each send.
-	}
+	writer := NewNetworkWriter(context.Background(), outputLines, nil, "testhost",
+		true, false, 0, nil, handlerTestLogger)
+	writer.bufSize = 32 // Three 11-byte lines accumulate before each send.
 
 	content := []byte("0123456789") // 11 bytes with the message delimiter.
 	for i := uint64(1); i <= numLines; i++ {

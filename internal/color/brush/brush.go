@@ -36,8 +36,8 @@ func paintSeverity(sb *strings.Builder, text string) bool {
 }
 
 func paintRemote(sb *strings.Builder, line string) {
-	splitted := strings.SplitN(line, protocol.FieldDelimiter, 6)
-	if len(splitted) < 6 {
+	decoded, err := protocol.DecodeLine(line)
+	if err != nil {
 		// Malformed or short frame (e.g. from an older/buggy server):
 		// fall back to the plain-text default branch instead of
 		// indexing out of range.
@@ -45,7 +45,7 @@ func paintRemote(sb *strings.Builder, line string) {
 		return
 	}
 
-	color.PaintWithAttr(sb, splitted[0],
+	color.PaintWithAttr(sb, protocol.LineMessageID,
 		config.Client.TermColors.Remote.RemoteFg,
 		config.Client.TermColors.Remote.RemoteBg,
 		config.Client.TermColors.Remote.RemoteAttr)
@@ -55,7 +55,7 @@ func paintRemote(sb *strings.Builder, line string) {
 		config.Client.TermColors.Remote.DelimiterBg,
 		config.Client.TermColors.Remote.DelimiterAttr)
 
-	color.PaintWithAttr(sb, splitted[1],
+	color.PaintWithAttr(sb, decoded.Hostname,
 		config.Client.TermColors.Remote.HostnameFg,
 		config.Client.TermColors.Remote.HostnameBg,
 		config.Client.TermColors.Remote.HostnameAttr)
@@ -65,13 +65,13 @@ func paintRemote(sb *strings.Builder, line string) {
 		config.Client.TermColors.Remote.DelimiterBg,
 		config.Client.TermColors.Remote.DelimiterAttr)
 
-	if splitted[2] == "100" {
-		color.PaintWithAttr(sb, splitted[2],
+	if decoded.TransmittedPercent == "100" {
+		color.PaintWithAttr(sb, decoded.TransmittedPercent,
 			config.Client.TermColors.Remote.StatsOkFg,
 			config.Client.TermColors.Remote.StatsOkBg,
 			config.Client.TermColors.Remote.StatsOkAttr)
 	} else {
-		color.PaintWithAttr(sb, splitted[2],
+		color.PaintWithAttr(sb, decoded.TransmittedPercent,
 			config.Client.TermColors.Remote.StatsWarnFg,
 			config.Client.TermColors.Remote.StatsWarnBg,
 			config.Client.TermColors.Remote.StatsWarnAttr)
@@ -82,7 +82,7 @@ func paintRemote(sb *strings.Builder, line string) {
 		config.Client.TermColors.Remote.DelimiterBg,
 		config.Client.TermColors.Remote.DelimiterAttr)
 
-	color.PaintWithAttr(sb, splitted[3],
+	color.PaintWithAttr(sb, decoded.Number,
 		config.Client.TermColors.Remote.CountFg,
 		config.Client.TermColors.Remote.CountBg,
 		config.Client.TermColors.Remote.CountAttr)
@@ -92,7 +92,7 @@ func paintRemote(sb *strings.Builder, line string) {
 		config.Client.TermColors.Remote.DelimiterBg,
 		config.Client.TermColors.Remote.DelimiterAttr)
 
-	color.PaintWithAttr(sb, splitted[4],
+	color.PaintWithAttr(sb, decoded.SourceID,
 		config.Client.TermColors.Remote.IDFg,
 		config.Client.TermColors.Remote.IDBg,
 		config.Client.TermColors.Remote.IDAttr)
@@ -101,10 +101,10 @@ func paintRemote(sb *strings.Builder, line string) {
 		config.Client.TermColors.Remote.DelimiterBg,
 		config.Client.TermColors.Remote.DelimiterAttr)
 
-	if paintSeverity(sb, splitted[5]) {
+	if paintSeverity(sb, decoded.Content) {
 		return
 	}
-	color.PaintWithAttr(sb, splitted[5],
+	color.PaintWithAttr(sb, decoded.Content,
 		config.Client.TermColors.Remote.TextFg,
 		config.Client.TermColors.Remote.TextBg,
 		config.Client.TermColors.Remote.TextAttr)
@@ -148,13 +148,13 @@ func paintClient(sb *strings.Builder, line string) {
 }
 
 func paintServer(sb *strings.Builder, line string) {
-	splitted := strings.SplitN(line, protocol.FieldDelimiter, 3)
-	if len(splitted) < 3 {
+	decoded, err := protocol.DecodeMessage(line)
+	if err != nil || decoded.Kind != protocol.MessageServer {
 		paintDefault(sb, line)
 		return
 	}
 
-	color.PaintWithAttr(sb, splitted[0],
+	color.PaintWithAttr(sb, protocol.ServerMessageID,
 		config.Client.TermColors.Server.ServerFg,
 		config.Client.TermColors.Server.ServerBg,
 		config.Client.TermColors.Server.ServerAttr)
@@ -164,7 +164,7 @@ func paintServer(sb *strings.Builder, line string) {
 		config.Client.TermColors.Server.DelimiterBg,
 		config.Client.TermColors.Server.DelimiterAttr)
 
-	color.PaintWithAttr(sb, splitted[1],
+	color.PaintWithAttr(sb, decoded.Hostname,
 		config.Client.TermColors.Server.HostnameFg,
 		config.Client.TermColors.Server.HostnameBg,
 		config.Client.TermColors.Server.HostnameAttr)
@@ -174,11 +174,11 @@ func paintServer(sb *strings.Builder, line string) {
 		config.Client.TermColors.Server.DelimiterBg,
 		config.Client.TermColors.Server.DelimiterAttr)
 
-	if paintSeverity(sb, splitted[2]) {
+	if paintSeverity(sb, decoded.Content) {
 		return
 	}
 
-	color.PaintWithAttr(sb, splitted[2],
+	color.PaintWithAttr(sb, decoded.Content,
 		config.Client.TermColors.Server.TextFg,
 		config.Client.TermColors.Server.TextBg,
 		config.Client.TermColors.Server.TextAttr)
@@ -190,13 +190,13 @@ func Colorfy(line string) string {
 	defer pool.RecycleBuilderBuffer(sb)
 
 	switch {
-	case strings.HasPrefix(line, "REMOTE"):
+	case strings.HasPrefix(line, protocol.LineMessageID):
 		paintRemote(sb, line)
 
 	case strings.HasPrefix(line, "CLIENT"):
 		paintClient(sb, line)
 
-	case strings.HasPrefix(line, "SERVER"):
+	case strings.HasPrefix(line, protocol.ServerMessageID):
 		paintServer(sb, line)
 
 	default:

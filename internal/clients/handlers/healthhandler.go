@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	"strings"
-
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/protocol"
@@ -53,8 +51,10 @@ func (h *HealthHandler) handleMessage(message string) {
 		h.handleHiddenMessage(message)
 		return
 	}
-	s := strings.Split(message, protocol.FieldDelimiter)
-	message = s[len(s)-1]
+	decoded, err := protocol.DecodeMessage(message)
+	if err == nil && decoded.Kind != protocol.MessagePlain {
+		message = decoded.Content
+	}
 	if message == "OK" {
 		h.status = 0
 	}

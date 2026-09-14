@@ -238,9 +238,9 @@ func parseAuthKeyMessage(message string) (isAuthKeyMessage bool, ok bool, detail
 	}
 
 	payload := strings.TrimSpace(message)
-	parts := strings.Split(payload, protocol.FieldDelimiter)
-	if len(parts) > 0 {
-		payload = strings.TrimSpace(parts[len(parts)-1])
+	decoded, err := protocol.DecodeMessage(payload)
+	if err == nil && decoded.Kind != protocol.MessagePlain {
+		payload = strings.TrimSpace(decoded.Content)
 	}
 
 	switch {
@@ -418,11 +418,12 @@ func parseSessionOKAck(payload string, action string) (SessionAck, bool) {
 // trailing newline: it is emitted via the diagnostic (Log) sink, which appends
 // the newline itself (adding one here would produce a blank line).
 func formatServerErrorMessage(server string, message string) string {
-	return fmt.Sprintf("SERVER%s%s%sERROR%s%s",
-		protocol.FieldDelimiter,
-		server,
-		protocol.FieldDelimiter,
-		protocol.FieldDelimiter,
-		message,
-	)
+	var encoded bytes.Buffer
+	protocol.EncodeMessage(&encoded, protocol.Message{
+		Kind:     protocol.MessageServer,
+		Hostname: server,
+		Content:  "ERROR" + protocol.FieldDelimiter + message,
+	})
+	frame := encoded.Bytes()
+	return string(frame[:len(frame)-1])
 }

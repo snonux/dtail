@@ -9,13 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
 const networkWriterBufferSize = 64 * 1024
+
+type serverMessageSink func(string) error
 
 // LineWriter defines the interface for direct writing in output mode
 type LineWriter interface {
@@ -29,11 +30,11 @@ type LineWriter interface {
 
 // DirectWriter implements LineWriter for direct network writing
 type DirectWriter struct {
-	writer     io.Writer
-	hostname   string
-	plain      bool
-	serverless bool
-	generation uint64
+	writer           io.Writer
+	lineFormatter    lineFormatter
+	messageSink      serverMessageSink
+	flushDestination func() error
+	generation       uint64
 
 	// Buffering for efficiency
 	writeBuf bytes.Buffer
@@ -51,12 +52,36 @@ var _ LineWriter = (*DirectWriter)(nil)
 
 // NewDirectWriter creates a new output writer
 func NewDirectWriter(writer io.Writer, hostname string, plain, serverless bool) *DirectWriter {
+	format := lineFormatProtocol
+	switch {
+	case serverless && plain:
+		format = lineFormatNewline
+	case serverless:
+		format = lineFormatColored
+	case plain:
+		format = lineFormatNewline
+	}
+
+	w := newDirectWriter(writer, newLineFormatter(format, hostname))
+	if serverless {
+		w.messageSink = discardServerMessage
+		if flusher, ok := writer.(interface{ Flush() error }); ok {
+			w.flushDestination = flusher.Flush
+		}
+	} else {
+		w.messageSink = func(message string) error {
+			return w.writeServerMessage(hostname, plain, message)
+		}
+	}
+	return w
+}
+
+func newDirectWriter(writer io.Writer, formatter lineFormatter) *DirectWriter {
 	return &DirectWriter{
-		writer:     writer,
-		hostname:   hostname,
-		plain:      plain,
-		serverless: serverless,
-		bufSize:    64 * 1024, // 64KB buffer
+		writer:        writer,
+		lineFormatter: formatter,
+		messageSink:   discardServerMessage,
+		bufSize:       networkWriterBufferSize,
 	}
 }
 
@@ -69,7 +94,6 @@ func NewGeneratedDirectWriter(writer io.Writer, hostname string, plain, serverle
 }
 
 // WriteLineData writes formatted line data directly to output.
-// Dispatches to serverless or network mode handlers based on configuration.
 func (w *DirectWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error {
 	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
 		return nil
@@ -77,82 +101,17 @@ func (w *DirectWriter) WriteLineData(lineContent []byte, lineNum uint64, sourceI
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	if w.serverless {
-		return w.writeServerlessLine(lineContent, lineNum, sourceID)
-	}
-	return w.writeNetworkLine(lineContent, lineNum, sourceID)
-}
-
-// writeServerlessLine handles serverless mode output with buffered writes.
-// Supports both plain and colored output modes. Must be called with mutex held.
-func (w *DirectWriter) writeServerlessLine(lineContent []byte, lineNum uint64, sourceID string) error {
 	// writeBuf accumulates lines until bufSize before flushing, so record its
 	// length before appending: the bytesWritten stat must count only this
 	// line's formatted bytes, not the whole buffered backlog again.
 	bufLenBefore := w.writeBuf.Len()
-
-	if w.plain {
-		// For plain serverless mode, just write the line content
-		w.writeBuf.Write(lineContent)
-
-		// Ensure line has a newline if it doesn't already
-		if len(lineContent) > 0 && lineContent[len(lineContent)-1] != '\n' {
-			w.writeBuf.WriteByte('\n')
-		}
-	} else {
-		// For colored serverless mode with test compatibility
-		// Build the complete line with protocol formatting for integration tests
-		var lineBuf bytes.Buffer
-		formatRemoteHeader(&lineBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID)
-
-		// Remove trailing newline if present (it will be added back after coloring)
-		content := lineContent
-		if len(content) > 0 && content[len(content)-1] == '\n' {
-			content = content[:len(content)-1]
-		}
-		lineBuf.Write(content)
-
-		// Apply color formatting
-		coloredLine := brush.Colorfy(lineBuf.String())
-		w.writeBuf.WriteString(coloredLine)
-		w.writeBuf.WriteByte('\n')
-	}
+	w.lineFormatter(&w.writeBuf, lineContent, lineNum, sourceID)
 
 	// Update stats: add only the delta appended for this line.
 	w.linesWritten++
 	w.bytesWritten += uint64(w.writeBuf.Len() - bufLenBefore)
 
-	// Buffer writes for better performance - only flush when buffer is full
-	if w.writeBuf.Len() >= w.bufSize {
-		return w.flushBuffer()
-	}
-
-	return nil
-}
-
-// writeNetworkLine handles network mode output with protocol formatting.
-// Adds protocol headers for non-plain mode. Must be called with mutex held.
-func (w *DirectWriter) writeNetworkLine(lineContent []byte, lineNum uint64, sourceID string) error {
-	// writeBuf accumulates lines until bufSize before flushing, so record its
-	// length before appending: the bytesWritten stat must count only this
-	// line's formatted bytes, not the whole buffered backlog again.
-	bufLenBefore := w.writeBuf.Len()
-
-	if w.plain {
-		w.writeBuf.Write(lineContent)
-		// In plain mode, ensure line has a newline if it doesn't already.
-		if len(lineContent) > 0 && lineContent[len(lineContent)-1] != '\n' {
-			w.writeBuf.WriteByte('\n')
-		}
-	} else {
-		formatRemoteLine(&w.writeBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID, lineContent)
-	}
-
-	// Update stats: add only the delta appended for this line.
-	w.linesWritten++
-	w.bytesWritten += uint64(w.writeBuf.Len() - bufLenBefore)
-
-	// Flush if buffer is getting full
+	// Buffer writes for better performance - only flush when buffer is full.
 	if w.writeBuf.Len() >= w.bufSize {
 		return w.flushBuffer()
 	}
@@ -165,28 +124,7 @@ func (w *DirectWriter) WriteServerMessage(message string) error {
 	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
 		return nil
 	}
-	if w.serverless {
-		return nil
-	}
-
-	w.mutex.Lock()
-	defer w.mutex.Unlock()
-
-	// Skip empty server messages when in plain mode
-	if w.plain && (message == "" || message == "\n") {
-		return nil
-	}
-
-	// Handle hidden messages
-	if len(message) > 0 && message[0] == '.' {
-		w.writeBuf.WriteString(message)
-		w.writeBuf.WriteByte(protocol.MessageDelimiter)
-		return w.flushBuffer()
-	}
-
-	formatServerMessage(&w.writeBuf, w.hostname, message, w.plain)
-
-	return w.flushBuffer()
+	return w.messageSink(message)
 }
 
 // Flush ensures all buffered data is written
@@ -194,18 +132,33 @@ func (w *DirectWriter) Flush() error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	// Force flush any remaining data
+	// Force flush any remaining data.
 	err := w.flushBuffer()
-
-	// For serverless mode, ensure everything is written to output
-	if w.serverless {
-		// Ensure writer is flushed if it supports it
-		if flusher, ok := w.writer.(interface{ Flush() error }); ok {
-			err = errors.Join(err, flusher.Flush())
-		}
+	if w.flushDestination != nil {
+		err = errors.Join(err, w.flushDestination())
 	}
 
 	return err
+}
+
+func (w *DirectWriter) writeServerMessage(hostname string, plain bool, message string) error {
+	w.mutex.Lock()
+	defer w.mutex.Unlock()
+
+	if plain && (message == "" || message == "\n") {
+		return nil
+	}
+
+	kind := protocol.MessageServer
+	if plain || len(message) > 0 && message[0] == '.' {
+		kind = protocol.MessagePlain
+	}
+	protocol.EncodeMessage(&w.writeBuf, protocol.Message{
+		Kind:     kind,
+		Hostname: hostname,
+		Content:  message,
+	})
+	return w.flushBuffer()
 }
 
 // flushBuffer writes the buffer content to the writer (must be called with mutex held)
@@ -215,9 +168,6 @@ func (w *DirectWriter) flushBuffer() error {
 	}
 
 	data := w.writeBuf.Bytes()
-
-	// In serverless mode with colors, data is already processed line by line
-	// so we don't need to do any additional formatting here
 
 	for len(data) > 0 {
 		n, err := w.writer.Write(data)
@@ -246,15 +196,13 @@ func (w *DirectWriter) Stats() (linesWritten, bytesWritten uint64) {
 
 // NetworkWriter writes directly to the network connection bypassing channels
 type NetworkWriter struct {
-	logger         logging.Logger
-	outputLines    chan<- []byte
-	enqueueOutput  func(context.Context, uint64, []byte, func() uint64) error
-	serverMessages chan<- string
-	hostname       string
-	plain          bool
-	serverless     bool
-	generation     uint64
-	ctx            context.Context
+	logger        logging.Logger
+	outputLines   chan<- []byte
+	enqueueOutput func(context.Context, uint64, []byte, func() uint64) error
+	lineFormatter lineFormatter
+	messageSink   serverMessageSink
+	generation    uint64
+	ctx           context.Context
 
 	// Internal buffer for batching writes
 	writeBuf    bytes.Buffer
@@ -290,13 +238,34 @@ var _ LineWriter = (*NetworkWriter)(nil)
 func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
 	serverMessages chan<- string, hostname string, plain, serverless bool,
 	generation uint64, activeGeneration func() uint64, logger logging.Logger) *NetworkWriter {
+	format := lineFormatProtocol
+	if plain || serverless {
+		format = lineFormatDelimited
+	}
+	w := newNetworkWriter(ctx, outputLines, newLineFormatter(format, hostname), generation,
+		activeGeneration, logger)
+	if serverless || serverMessages == nil {
+		w.messageSink = discardServerMessage
+	} else {
+		w.messageSink = func(message string) error {
+			select {
+			case serverMessages <- encodeGeneratedMessage(generation, message):
+				return nil
+			default:
+				return fmt.Errorf("server message channel full")
+			}
+		}
+	}
+	return w
+}
+
+func newNetworkWriter(ctx context.Context, outputLines chan<- []byte, formatter lineFormatter,
+	generation uint64, activeGeneration func() uint64, logger logging.Logger) *NetworkWriter {
 	return &NetworkWriter{
 		logger:           logging.OrNop(logger),
 		outputLines:      outputLines,
-		serverMessages:   serverMessages,
-		hostname:         hostname,
-		plain:            plain,
-		serverless:       serverless,
+		lineFormatter:    formatter,
+		messageSink:      discardServerMessage,
 		generation:       generation,
 		ctx:              ctx,
 		bufSize:          networkWriterBufferSize,
@@ -333,12 +302,7 @@ func (w *NetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, source
 	// line's formatted bytes, not the whole buffered backlog again.
 	bufLenBefore := w.writeBuf.Len()
 
-	if !w.plain && !w.serverless {
-		formatRemoteLine(&w.writeBuf, w.hostname, defaultTransmittedPerc, lineNum, sourceID, lineContent)
-	} else {
-		w.writeBuf.Write(lineContent)
-		w.writeBuf.WriteByte(protocol.MessageDelimiter)
-	}
+	w.lineFormatter(&w.writeBuf, lineContent, lineNum, sourceID)
 
 	// Update stats: add only the delta appended for this line.
 	w.linesWritten++
@@ -498,17 +462,7 @@ func (w *NetworkWriter) WriteServerMessage(message string) error {
 	if !shouldWriteGeneration(w.generation, w.activeGeneration) {
 		return nil
 	}
-	// Server messages are less critical in output mode
-	// We can send them through the normal channel
-	if w.serverMessages != nil {
-		select {
-		case w.serverMessages <- encodeGeneratedMessage(w.generation, message):
-			return nil
-		default:
-			return fmt.Errorf("server message channel full")
-		}
-	}
-	return nil
+	return w.messageSink(message)
 }
 
 // Flush ensures all data is written
@@ -585,6 +539,10 @@ func shouldWriteGeneration(generation uint64, activeGeneration func() uint64) bo
 	}
 
 	return currentGeneration == generation
+}
+
+func discardServerMessage(string) error {
+	return nil
 }
 
 // DirectLineProcessor processes lines directly without channels in output mode

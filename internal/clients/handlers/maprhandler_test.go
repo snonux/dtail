@@ -108,6 +108,11 @@ func TestMaprHandlerClassifiesAuthKeyAckAsControl(t *testing.T) {
 			wantAggregate: true,
 		},
 		{
+			name:          "malformed aggregate data",
+			message:       protocol.AggregateMessageID + protocol.FieldDelimiter + "host1",
+			wantAggregate: true,
+		},
+		{
 			name:          "plain-mode authkey ack",
 			message:       "AUTHKEY OK",
 			wantAggregate: false,
@@ -139,6 +144,27 @@ func TestMaprHandlerClassifiesAuthKeyAckAsControl(t *testing.T) {
 					tc.message, got, tc.wantAggregate)
 			}
 		})
+	}
+}
+
+func TestMaprHandlerReportsMalformedAggregateFrame(t *testing.T) {
+	query, err := mapr.NewQuery("select status,count(status) from stats group by status", logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("NewQuery() error = %v", err)
+	}
+
+	logger := &recordingClientLogger{}
+	handler := NewMaprHandler("srv1", maprclient.NewSessionState(query, logging.NopLogger{}), logger)
+	malformed := protocol.AggregateMessageID + protocol.FieldDelimiter + "host1"
+	input := append([]byte(malformed), protocol.MessageDelimiter)
+	if _, err := handler.Write(input); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	logOutput := strings.Join(logger.errors, "\n")
+	if !strings.Contains(logOutput, "Unable to decode aggregate data") ||
+		!strings.Contains(logOutput, malformed) {
+		t.Fatalf("malformed aggregate was not reported as a protocol error: %q", logOutput)
 	}
 }
 

@@ -90,14 +90,24 @@ func (f *sessionFramer) readServerMessage(p []byte, message string) int {
 	}
 	message = decodedMessage
 	if len(message) > 0 && message[0] == '.' {
-		f.readBuf.WriteString(message)
-		f.readBuf.WriteByte(protocol.MessageDelimiter)
+		protocol.EncodeMessage(&f.readBuf, protocol.Message{
+			Kind:    protocol.MessagePlain,
+			Content: message,
+		})
 		return f.drainReadBuf(p)
 	}
 	if h.serverless || h.plain && (message == "" || message == "\n") {
 		return 0
 	}
-	formatServerMessage(&f.readBuf, h.hostname, message, h.plain)
+	kind := protocol.MessageServer
+	if h.plain {
+		kind = protocol.MessagePlain
+	}
+	protocol.EncodeMessage(&f.readBuf, protocol.Message{
+		Kind:     kind,
+		Hostname: h.hostname,
+		Content:  message,
+	})
 	return f.drainReadBuf(p)
 }
 
@@ -107,12 +117,11 @@ func (f *sessionFramer) readMaprMessage(p []byte, message string) int {
 	if h.shouldDropGeneration(generation) {
 		return 0
 	}
-	f.readBuf.WriteString(protocol.AggregateMessageID)
-	f.readBuf.WriteString(protocol.FieldDelimiter)
-	f.readBuf.WriteString(h.hostname)
-	f.readBuf.WriteString(protocol.FieldDelimiter)
-	f.readBuf.WriteString(decodedMessage)
-	f.readBuf.WriteByte(protocol.MessageDelimiter)
+	protocol.EncodeMessage(&f.readBuf, protocol.Message{
+		Kind:     protocol.MessageAggregate,
+		Hostname: h.hostname,
+		Content:  decodedMessage,
+	})
 	return f.drainReadBuf(p)
 }
 

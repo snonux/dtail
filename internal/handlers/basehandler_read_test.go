@@ -21,6 +21,16 @@ func newReadTestHandler() *baseHandler {
 	})
 }
 
+func encodeTestMessage(kind protocol.MessageKind, content string) bytes.Buffer {
+	var encoded bytes.Buffer
+	protocol.EncodeMessage(&encoded, protocol.Message{
+		Kind:     kind,
+		Hostname: "testhost",
+		Content:  content,
+	})
+	return encoded
+}
+
 // readExactly drains wantLen bytes from the handler using a buffer of bufSize
 // bytes per Read call, failing the test when Read errors or stalls. Stalls are
 // detected fast via consecutive empty reads and a wall-clock deadline: an
@@ -66,8 +76,7 @@ func TestBaseHandlerReadLargeServerMessageAcrossMultipleReads(t *testing.T) {
 	message := "server says: " + string(bytes.Repeat([]byte("y"), 500))
 	handler.serverMessages <- message
 
-	var want bytes.Buffer
-	formatServerMessage(&want, "testhost", message, false)
+	want := encodeTestMessage(protocol.MessageServer, message)
 	got := readExactly(t, handler, 32, want.Len())
 
 	if !bytes.Equal(got, want.Bytes()) {
@@ -84,13 +93,7 @@ func TestBaseHandlerReadLargeMaprMessageAcrossMultipleReads(t *testing.T) {
 	message := "aggregated " + string(bytes.Repeat([]byte("m"), 500))
 	handler.maprMessages <- message
 
-	var want bytes.Buffer
-	want.WriteString("AGGREGATE")
-	want.WriteString(protocol.FieldDelimiter)
-	want.WriteString("testhost")
-	want.WriteString(protocol.FieldDelimiter)
-	want.WriteString(message)
-	want.WriteByte(protocol.MessageDelimiter)
+	want := encodeTestMessage(protocol.MessageAggregate, message)
 
 	got := readExactly(t, handler, 32, want.Len())
 	if !bytes.Equal(got, want.Bytes()) {
@@ -125,8 +128,7 @@ func TestBaseHandlerReadDrainsRemainderBeforeOutputData(t *testing.T) {
 
 	message := "regular " + string(bytes.Repeat([]byte("r"), 200))
 	handler.serverMessages <- message
-	var want bytes.Buffer
-	formatServerMessage(&want, "testhost", message, false)
+	want := encodeTestMessage(protocol.MessageServer, message)
 
 	// First small Read leaves the rest of the message in readBuf.
 	p := make([]byte, 16)
@@ -163,8 +165,7 @@ func TestBaseHandlerReadDelimiterAloneInFinalRead(t *testing.T) {
 	handler := newReadTestHandler()
 
 	message := "delimiter boundary"
-	var want bytes.Buffer
-	formatServerMessage(&want, "testhost", message, false)
+	want := encodeTestMessage(protocol.MessageServer, message)
 	handler.serverMessages <- message
 
 	p := make([]byte, want.Len()-1)
@@ -192,8 +193,7 @@ func TestBaseHandlerReadExactFitBuffer(t *testing.T) {
 	handler := newReadTestHandler()
 
 	first := "exact fit"
-	var firstWant bytes.Buffer
-	formatServerMessage(&firstWant, "testhost", first, false)
+	firstWant := encodeTestMessage(protocol.MessageServer, first)
 
 	handler.serverMessages <- first
 	p := make([]byte, firstWant.Len())
@@ -206,8 +206,7 @@ func TestBaseHandlerReadExactFitBuffer(t *testing.T) {
 	}
 
 	second := "next message"
-	var secondWant bytes.Buffer
-	formatServerMessage(&secondWant, "testhost", second, false)
+	secondWant := encodeTestMessage(protocol.MessageServer, second)
 
 	handler.serverMessages <- second
 	got := readExactly(t, handler, firstWant.Len(), secondWant.Len())
