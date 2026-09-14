@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,6 +46,79 @@ type Reader struct {
 	follow            bool
 	forwardStderrHook func(context.Context, io.Reader) error
 	waitCommandHook   func(*exec.Cmd) error
+}
+
+// journalStderrQueue decouples draining the process pipe from delivery to the
+// session's bounded message channel. That distinction matters during Wait:
+// os/exec cannot interrupt its copy goroutine while the goroutine is blocked
+// writing to a caller-owned io.PipeWriter.
+type journalStderrQueue struct {
+	mu       sync.Mutex
+	messages []string
+	closed   bool
+	wake     chan struct{}
+}
+
+func newJournalStderrQueue() *journalStderrQueue {
+	return &journalStderrQueue{wake: make(chan struct{}, 1)}
+}
+
+func (q *journalStderrQueue) push(message string) {
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return
+	}
+	q.messages = append(q.messages, message)
+	q.mu.Unlock()
+	q.signal()
+}
+
+func (q *journalStderrQueue) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.mu.Unlock()
+	q.signal()
+}
+
+func (q *journalStderrQueue) next(ctx context.Context) (string, bool) {
+	for {
+		select {
+		case <-ctx.Done():
+			return "", false
+		default:
+		}
+
+		q.mu.Lock()
+		if len(q.messages) > 0 {
+			message := q.messages[0]
+			q.messages[0] = ""
+			q.messages = q.messages[1:]
+			if len(q.messages) == 0 {
+				q.messages = nil
+			}
+			q.mu.Unlock()
+			return message, true
+		}
+		closed := q.closed
+		q.mu.Unlock()
+		if closed {
+			return "", false
+		}
+
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-q.wake:
+		}
+	}
+}
+
+func (q *journalStderrQueue) signal() {
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
 }
 
 var _ fs.FileReader = (*Reader)(nil)
@@ -125,42 +199,72 @@ func (r *Reader) run(ctx context.Context, ltx lcontext.LContext, sink journalSin
 	if err != nil {
 		return fmt.Errorf("open journalctl stdout: %w", err)
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("open journalctl stderr: %w", err)
-	}
+	stderr, stderrWriter := io.Pipe()
+	cmd.Stderr = stderrWriter
 	if err := cmd.Start(); err != nil {
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		return fmt.Errorf("start journalctl: %w", err)
 	}
 
-	stderrDone := make(chan error, 1)
-	forwardStderr := r.forwardStderr
+	stderrQueue := newJournalStderrQueue()
+	stderrDrainDone := make(chan error, 1)
+	forwardStderr := func(ctx context.Context, stderr io.Reader) error {
+		return scanJournalStderr(ctx, stderr, stderrQueue.push)
+	}
 	if r.forwardStderrHook != nil {
 		forwardStderr = r.forwardStderrHook
 	}
 	go func() {
+		defer func() { _ = stderr.Close() }()
 		stderrErr := runJournalChild("stderr forwarding", func() error {
 			return forwardStderr(runCtx, stderr)
+		})
+		stderrQueue.close()
+		if stderrErr != nil {
+			cancel()
+		}
+		stderrDrainDone <- stderrErr
+	}()
+
+	stderrDeliveryDone := make(chan error, 1)
+	go func() {
+		stderrErr := runJournalChild("stderr delivery", func() error {
+			return r.deliverJournalStderr(runCtx, stderrQueue)
 		})
 		if stderrErr != nil {
 			cancel()
 		}
-		stderrDone <- stderrErr
+		stderrDeliveryDone <- stderrErr
 	}()
 
 	filter := newJournalFilter(ltx, sink, re, r.sourceID)
 	scanErr := runJournalChild("stdout scanning", func() error {
 		return r.scanStdout(runCtx, stdout, filter, flushLine)
 	})
+	if scanErr != nil {
+		// Stop the child before waiting; WaitDelay kills it if SIGTERM does not
+		// make it exit and bounds inherited stderr descriptors.
+		cancel()
+	}
 	waitCommand := cmd.Wait
 	if r.waitCommandHook != nil {
 		waitCommand = func() error { return r.waitCommandHook(cmd) }
 	}
-	waitErr := waitForJournalctlWith(cmd, scanErr != nil, waitCommand)
+	waitErr := waitForJournalctlWith(cmd, waitCommand)
 	if errors.Is(waitErr, fs.ErrReaderWorkerPanic) {
+		// A recovered Wait panic is fatal. Cancel before joining the stderr
+		// forwarder so a full server-message channel cannot strand it.
 		cancel()
 	}
-	stderrErr := <-stderrDone
+	// cmd.Stderr is an io.Writer, so Wait owns and joins the child-side copy.
+	// Closing our writer after that copy finishes publishes EOF to the line
+	// forwarder. Unlike StderrPipe, WaitDelay can close the os/exec-owned pipe
+	// if a descendant inherits stderr and keeps it open.
+	_ = stderrWriter.Close()
+	stderrDrainErr := <-stderrDrainDone
+	stderrDeliveryErr := <-stderrDeliveryDone
+	stderrErr := errors.Join(stderrDrainErr, stderrDeliveryErr)
 	filter.Close()
 
 	// A recovered child panic is a fatal reader failure even when it races
@@ -234,30 +338,8 @@ func killProcess(process *os.Process) {
 	_ = process.Kill()
 }
 
-func waitForJournalctlWith(cmd *exec.Cmd, earlyStop bool, wait func() error) error {
-	if !earlyStop {
-		return cleanupJournalWaitPanic(cmd, runJournalChild("journalctl wait", wait))
-	}
-
-	terminateProcess(cmd.Process)
-
-	waitDone := make(chan error, 1)
-	go func() {
-		waitDone <- runJournalChild("journalctl wait", wait)
-	}()
-
-	timer := time.NewTimer(processTerminateGrace)
-	defer timer.Stop()
-
-	var waitErr error
-	select {
-	case err := <-waitDone:
-		waitErr = err
-	case <-timer.C:
-		killProcess(cmd.Process)
-		waitErr = <-waitDone
-	}
-	return cleanupJournalWaitPanic(cmd, waitErr)
+func waitForJournalctlWith(cmd *exec.Cmd, wait func() error) error {
+	return cleanupJournalWaitPanic(cmd, runJournalChild("journalctl wait", wait))
 }
 
 func cleanupJournalWaitPanic(cmd *exec.Cmd, waitErr error) error {
@@ -266,9 +348,8 @@ func cleanupJournalWaitPanic(cmd *exec.Cmd, waitErr error) error {
 	}
 
 	// The injected/underlying wait callback may have panicked before calling
-	// cmd.Wait. Kill the process and synchronously reap it before run joins the
-	// stderr worker; otherwise a SIGTERM-ignoring child can hold stderr open
-	// forever or remain as a zombie.
+	// cmd.Wait. Kill the process and synchronously reap it so the child cannot
+	// survive or remain as a zombie.
 	killProcess(cmd.Process)
 	reapErr := runJournalChild("journalctl reap after wait panic", cmd.Wait)
 	if errors.Is(reapErr, fs.ErrReaderWorkerPanic) {
@@ -325,16 +406,19 @@ func (r *Reader) scanStdout(ctx context.Context, stdout io.Reader, filter *journ
 	return nil
 }
 
-func (r *Reader) forwardStderr(ctx context.Context, stderr io.Reader) error {
+func scanJournalStderr(ctx context.Context, stderr io.Reader, emit func(string)) error {
 	scanner := bufio.NewScanner(stderr)
 	bufPtr := pool.GetScannerBuffer()
 	defer pool.PutScannerBuffer(bufPtr)
 
 	scanner.Buffer(*bufPtr, maxScannerTokenSize)
 	for scanner.Scan() {
-		if !r.sendServerMessage(ctx, fmt.Sprintf("journalctl stderr: %s\n", scanner.Text())) {
+		select {
+		case <-ctx.Done():
 			return nil
+		default:
 		}
+		emit(fmt.Sprintf("journalctl stderr: %s\n", scanner.Text()))
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, os.ErrClosed) {
@@ -343,6 +427,18 @@ func (r *Reader) forwardStderr(ctx context.Context, stderr io.Reader) error {
 		return fmt.Errorf("scan journalctl stderr: %w", err)
 	}
 	return nil
+}
+
+func (r *Reader) deliverJournalStderr(ctx context.Context, messages *journalStderrQueue) error {
+	for {
+		message, ok := messages.next(ctx)
+		if !ok {
+			return nil
+		}
+		if !r.sendServerMessage(ctx, message) {
+			return nil
+		}
+	}
 }
 
 func (r *Reader) sendServerMessage(ctx context.Context, message string) bool {

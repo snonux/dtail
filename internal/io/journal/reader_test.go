@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -300,14 +301,17 @@ func TestStartFollowPassesFollowFlagsAndTerminatesOnCancel(t *testing.T) {
 }
 
 func TestStartSurfacesStderrAsServerMessages(t *testing.T) {
+	const stderrLineCount = 128
+	stderrLines := makeJournalStderrLines(stderrLineCount)
+
 	journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{
 			Lines:  []string{"alpha"},
-			Stderr: []string{"journal warning"},
+			Stderr: stderrLines,
 		},
 	})
 
-	serverMessages := make(chan string, 1)
+	serverMessages := make(chan string, stderrLineCount)
 	reader, err := NewReader(nil, "journal-id", false, serverMessages)
 	if err != nil {
 		t.Fatalf("new reader: %v", err)
@@ -318,13 +322,87 @@ func TestStartSurfacesStderrAsServerMessages(t *testing.T) {
 		t.Fatalf("start reader: %v", err)
 	}
 
-	select {
-	case message := <-serverMessages:
-		if message != "journalctl stderr: journal warning\n" {
-			t.Fatalf("unexpected server message: %q", message)
+	for i, stderrLine := range stderrLines {
+		select {
+		case message := <-serverMessages:
+			want := "journalctl stderr: " + stderrLine + "\n"
+			if message != want {
+				t.Fatalf("server message %d = %q, want %q", i, message, want)
+			}
+		default:
+			t.Fatalf("missing stderr server message %d of %d", i+1, len(stderrLines))
 		}
-	default:
-		t.Fatal("expected stderr server message")
+	}
+}
+
+func TestStartBoundsInheritedStderrAndPreservesBufferedMessages(t *testing.T) {
+	const stderrLineCount = 16
+	stderrLines := makeJournalStderrLines(stderrLineCount)
+
+	tempDir := t.TempDir()
+	pidPath := filepath.Join(tempDir, "descendant.pid")
+	scriptPath := filepath.Join(tempDir, "journalctl")
+	var script strings.Builder
+	script.WriteString("#!/bin/sh\n")
+	script.WriteString("printf 'alpha\\n'\n")
+	for _, stderrLine := range stderrLines {
+		script.WriteString("printf '%s\\n' '")
+		script.WriteString(stderrLine)
+		script.WriteString("' >&2\n")
+	}
+	script.WriteString("sleep 30 >/dev/null &\n")
+	script.WriteString("printf '%s\\n' \"$!\" > \"$DTAIL_JOURNAL_DESCENDANT_PID\"\n")
+	if err := os.WriteFile(scriptPath, []byte(script.String()), 0o700); err != nil {
+		t.Fatalf("write journalctl test script: %v", err)
+	}
+	t.Setenv("DTAIL_JOURNAL_DESCENDANT_PID", pidPath)
+	t.Cleanup(func() {
+		pidBytes, err := os.ReadFile(pidPath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				t.Errorf("read descendant pid: %v", err)
+			}
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+		if err != nil {
+			t.Errorf("parse descendant pid: %v", err)
+			return
+		}
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+
+	serverMessages := make(chan string, stderrLineCount)
+	reader := &Reader{
+		journalctlPath: scriptPath,
+		sourceID:       "journal-id",
+		serverMessages: serverMessages,
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.Start(context.Background(), lcontext.LContext{},
+			&captureProcessor{}, regex.NewNoop())
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, exec.ErrWaitDelay) {
+			t.Fatalf("reader error = %v, want exec.ErrWaitDelay", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader hung on inherited journalctl stderr")
+	}
+
+	for i, stderrLine := range stderrLines {
+		select {
+		case message := <-serverMessages:
+			want := "journalctl stderr: " + stderrLine + "\n"
+			if message != want {
+				t.Fatalf("server message %d = %q, want %q", i, message, want)
+			}
+		default:
+			t.Fatalf("missing stderr server message %d of %d", i+1, len(stderrLines))
+		}
 	}
 }
 
@@ -478,6 +556,46 @@ func TestRunKillsAndReapsTermIgnoringChildWhenWaitPanicsBeforeWait(t *testing.T)
 	}
 }
 
+func TestRunReapsAfterWaitPanicWhileStderrDeliveryBlocked(t *testing.T) {
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{
+			Lines:  []string{"line"},
+			Stderr: makeJournalStderrLines(128),
+		},
+	})
+	// The unread channel blocks delivery of the first diagnostic. Draining the
+	// process pipe must continue independently so stdout can close and the
+	// recovered Wait panic can still reap the child.
+	reader, err := NewReader(nil, "journal-id", false, make(chan string))
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+	reader.waitCommandHook = func(*exec.Cmd) error {
+		panic("wait child failed with blocked stderr delivery")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.Start(context.Background(), lcontext.LContext{},
+			&captureProcessor{}, regex.NewNoop())
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, fs.ErrReaderWorkerPanic) ||
+			!strings.Contains(err.Error(), "wait child failed with blocked stderr delivery") {
+			t.Fatalf("reader error = %v, want fatal wait worker panic", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader hung after Wait panic with blocked stderr delivery")
+	}
+
+	pid := mockPID(t, mock)
+	if processExists(pid) {
+		t.Fatalf("journalctl process %d survived or remained unreaped after wait panic", pid)
+	}
+}
+
 func TestRunRecoversScanProcessorPanicAndReapsTermIgnoringChild(t *testing.T) {
 	mock := journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{
@@ -525,7 +643,7 @@ func TestRunRecoversScanProcessorPanicAndReapsTermIgnoringChild(t *testing.T) {
 }
 
 func TestWaitForJournalctlRecoversWaitChildPanic(t *testing.T) {
-	err := waitForJournalctlWith(&exec.Cmd{}, true, func() error {
+	err := waitForJournalctlWith(&exec.Cmd{}, func() error {
 		panic("wait child failed")
 	})
 	if !errors.Is(err, fs.ErrReaderWorkerPanic) || !strings.Contains(err.Error(), "wait child failed") {
@@ -1000,4 +1118,13 @@ func waitForMockPID(t *testing.T, mock *journaltest.Mock) int {
 func processExists(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func makeJournalStderrLines(count int) []string {
+	payload := strings.Repeat("x", 1024)
+	lines := make([]string, count)
+	for i := range lines {
+		lines[i] = "journal warning " + strconv.Itoa(i) + " " + payload
+	}
+	return lines
 }
