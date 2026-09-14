@@ -158,8 +158,8 @@ func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec Sessi
 		return c.rollbackInteractiveReload(applied, prevArgs, prevSpec, err)
 	}
 
-	if committer, ok := c.maker.(sessionCommitter); ok {
-		if commitErr := committer.commitSessionSpec(nextSpec, generation); commitErr != nil {
+	if c.profile.commit != nil {
+		if commitErr := c.profile.commit(nextSpec, generation); commitErr != nil {
 			return c.rollbackInteractiveReload(applied, prevArgs, prevSpec,
 				fmt.Errorf("commit session state: %w", commitErr))
 		}

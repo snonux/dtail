@@ -91,7 +91,7 @@ func TestStartConnectionReconnectsWithLatestSessionSpec(t *testing.T) {
 	var capturedSpec SessionSpec
 	client := &baseClient{
 		mu:          newBaseClientMu(),
-		retry:       true,
+		profile:     clientProfile{retry: true},
 		sessionSpec: originalSpec,
 		stats: &stats{
 			connectionsEstCh: make(chan struct{}, 1),
@@ -153,7 +153,7 @@ func TestApplyInteractiveReloadConcurrentWithReconnect(t *testing.T) {
 	client := &baseClient{
 		mu:          newBaseClientMu(),
 		Args:        originalArgs,
-		retry:       true,
+		profile:     clientProfile{retry: true},
 		sessionSpec: originalSpec,
 		stats: &stats{
 			connectionsEstCh: make(chan struct{}, 1),
@@ -161,7 +161,6 @@ func TestApplyInteractiveReloadConcurrentWithReconnect(t *testing.T) {
 		connections: []connectors.Connector{
 			newReloadRetryConnector("srv1", originalSpec),
 		},
-		maker: &interactiveReloadMaker{},
 		connectionFactory: func(server string, _ []gossh.AuthMethod,
 			_ sshclient.HostKeyCallback, sessionSpec SessionSpec, _ bool) connectors.Connector {
 			reconnects.Add(1)

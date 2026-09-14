@@ -3,11 +3,13 @@ package clients
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/connectors"
+	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -19,12 +21,13 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 	runtimeCfg := clientTestRuntimeConfig()
 
 	tests := []struct {
-		name      string
-		args      config.Args
-		build     func(config.Args) (*baseClient, error)
-		wantMode  omode.Mode
-		wantRetry bool
-		wantUser  string
+		name            string
+		args            config.Args
+		build           func(config.Args) (*baseClient, error)
+		wantMode        omode.Mode
+		wantRetry       bool
+		wantUser        string
+		wantHandlerType reflect.Type
 	}{
 		{
 			name: "cat",
@@ -36,7 +39,8 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 				}
 				return &client.baseClient, err
 			},
-			wantMode: omode.CatClient,
+			wantMode:        omode.CatClient,
+			wantHandlerType: reflect.TypeOf((*handlers.ClientHandler)(nil)),
 		},
 		{
 			name: "grep",
@@ -48,7 +52,8 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 				}
 				return &client.baseClient, err
 			},
-			wantMode: omode.GrepClient,
+			wantMode:        omode.GrepClient,
+			wantHandlerType: reflect.TypeOf((*handlers.ClientHandler)(nil)),
 		},
 		{
 			name: "tail",
@@ -60,8 +65,9 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 				}
 				return &client.baseClient, err
 			},
-			wantMode:  omode.TailClient,
-			wantRetry: true,
+			wantMode:        omode.TailClient,
+			wantRetry:       true,
+			wantHandlerType: reflect.TypeOf((*handlers.ClientHandler)(nil)),
 		},
 		{
 			name: "health",
@@ -72,8 +78,9 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 				}
 				return &client.baseClient, err
 			},
-			wantMode: omode.HealthClient,
-			wantUser: config.HealthUser,
+			wantMode:        omode.HealthClient,
+			wantUser:        config.HealthUser,
+			wantHandlerType: reflect.TypeOf((*handlers.HealthHandler)(nil)),
 		},
 	}
 
@@ -86,15 +93,21 @@ func TestClientConstructorsBuildServerlessWorkloads(t *testing.T) {
 			if err != nil {
 				t.Fatalf("constructor error = %v", err)
 			}
-			if client.Mode != tt.wantMode || client.retry != tt.wantRetry || client.UserName != tt.wantUser {
+			if client.Mode != tt.wantMode || client.profile.retry != tt.wantRetry || client.UserName != tt.wantUser {
 				t.Fatalf("client state = mode:%v retry:%v user:%q, want mode:%v retry:%v user:%q",
-					client.Mode, client.retry, client.UserName, tt.wantMode, tt.wantRetry, tt.wantUser)
+					client.Mode, client.profile.retry, client.UserName, tt.wantMode, tt.wantRetry, tt.wantUser)
 			}
 			if len(client.connections) != 1 {
 				t.Fatalf("connections = %d, want one serverless connection", len(client.connections))
 			}
-			if client.stats == nil || client.runtime == nil || client.maker == nil {
+			if got := reflect.TypeOf(client.connections[0].Handler()); got != tt.wantHandlerType {
+				t.Fatalf("handler type = %v, want %v", got, tt.wantHandlerType)
+			}
+			if client.stats == nil || client.runtime == nil || client.profile.newHandler == nil {
 				t.Fatalf("constructor left runtime dependencies uninitialized: %#v", client)
+			}
+			if client.profile.commit != nil {
+				t.Fatal("non-map client profile has a session commit callback")
 			}
 			if client.sessionSpec.Mode != tt.wantMode {
 				t.Fatalf("session mode = %v, want %v", client.sessionSpec.Mode, tt.wantMode)
@@ -186,12 +199,18 @@ func TestNewMaprClientDerivesModeAndRegex(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewMaprClient() error = %v", err)
 			}
-			if client.retry != tt.wantRetry || client.RegexStr != tt.wantRegex || client.mode != tt.mode {
+			if client.profile.retry != tt.wantRetry || client.RegexStr != tt.wantRegex || client.mode != tt.mode {
 				t.Fatalf("map client = retry:%v regex:%q mode:%v, want retry:%v regex:%q mode:%v",
-					client.retry, client.RegexStr, client.mode, tt.wantRetry, tt.wantRegex, tt.mode)
+					client.profile.retry, client.RegexStr, client.mode, tt.wantRetry, tt.wantRegex, tt.mode)
 			}
-			if client.makeSessionSpec().Query != tt.query {
-				t.Fatalf("session query = %q, want %q", client.makeSessionSpec().Query, tt.query)
+			if client.sessionSpec.Query != tt.query {
+				t.Fatalf("session query = %q, want %q", client.sessionSpec.Query, tt.query)
+			}
+			if client.profile.commit == nil {
+				t.Fatal("map client profile has no session commit callback")
+			}
+			if _, ok := client.connections[0].Handler().(*handlers.MaprHandler); !ok {
+				t.Fatalf("map handler type = %T, want *handlers.MaprHandler", client.connections[0].Handler())
 			}
 		})
 	}

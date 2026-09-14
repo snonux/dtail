@@ -3,7 +3,6 @@ package clients
 import (
 	"context"
 	"fmt"
-	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/color/brush"
@@ -26,30 +25,15 @@ func NewHealthClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerD
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(config.HealthUser))
 	loggers = loggers.normalized()
 
-	c := HealthClient{
-		baseClient: baseClient{
-			mu:         newBaseClientMu(),
-			Args:       args,
-			cfg:        cfg,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
-			retry:      false,
-			loggers:    loggers,
-			colorizer:  firstColorizer(colorizers),
+	base, err := newBaseClient(args, cfg, loggers, firstColorizer(colorizers), clientProfile{
+		newHandler: func(server string) handlers.Handler {
+			return handlers.NewHealthHandler(server, loggers.Client)
 		},
-	}
-
-	if err := c.initialize(&c); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("initialize health client: %w", err)
 	}
-	return &c, nil
-}
-
-func (c *HealthClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewHealthHandler(server, c.clientLogger())
-}
-
-func (c *HealthClient) makeSessionSpec() SessionSpec {
-	return NewSessionSpec(c.Args)
+	return &HealthClient{baseClient: base}, nil
 }
 
 // Start the health client.

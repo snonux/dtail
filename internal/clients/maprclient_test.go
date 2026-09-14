@@ -64,10 +64,6 @@ func TestMaprClientCommitSessionSpecResetsSharedState(t *testing.T) {
 		t.Fatalf("RegexStr = %q, want WARNINGS table regex", client.RegexStr)
 	}
 
-	sessionSpec := client.makeSessionSpec()
-	if sessionSpec.Query != spec.Query {
-		t.Fatalf("session spec query = %q, want %q", sessionSpec.Query, spec.Query)
-	}
 }
 
 func TestMaprClientCommitSessionSpecRejectsMissingQuery(t *testing.T) {

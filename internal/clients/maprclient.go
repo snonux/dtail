@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
 	"sync"
 	"time"
 
@@ -74,24 +73,23 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 	retry := args.Mode == omode.TailClient && !query.HasOutfile()
 
 	c := MaprClient{
-		baseClient: baseClient{
-			mu:         newBaseClientMu(),
-			Args:       args,
-			cfg:        cfg,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
-			retry:      retry,
-			loggers:    loggers,
-			colorizer:  firstColorizer(colorizers),
-		},
 		session: maprclient.NewSessionState(query, loggers.Client),
 		mode:    maprClientMode,
 	}
-	loggers.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
-	c.setRegexForQuery(query)
-	if initErr := c.initialize(&c); initErr != nil {
+	args.RegexStr = maprRegexForQuery(query)
+	base, initErr := newBaseClient(args, cfg, loggers, firstColorizer(colorizers), clientProfile{
+		newHandler: func(server string) handlers.Handler {
+			return handlers.NewMaprHandler(server, c.session, loggers.Client)
+		},
+		retry:  retry,
+		commit: c.commitSessionSpec,
+	})
+	if initErr != nil {
 		return nil, fmt.Errorf("initialize mapreduce client: %w", initErr)
 	}
+	c.baseClient = base
+	loggers.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
 	return &c, nil
 }
@@ -112,20 +110,6 @@ func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status i
 	}
 
 	return
-}
-
-// NEXT: Make this a callback function rather trying to use polymorphism to call
-// this. This applies to all clients. It will make the code easier to read.
-func (c *MaprClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewMaprHandler(server, c.session, c.clientLogger())
-}
-
-func (c *MaprClient) makeSessionSpec() SessionSpec {
-	sessionSpec := NewSessionSpec(c.Args)
-	if snapshot := c.session.Snapshot(); snapshot.Query != nil {
-		sessionSpec.Query = snapshot.Query.RawQuery
-	}
-	return sessionSpec
 }
 
 func (c *MaprClient) periodicReportResults(ctx context.Context) {

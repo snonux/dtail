@@ -3,9 +3,7 @@ package clients
 import (
 	"errors"
 	"fmt"
-	"runtime"
 
-	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
@@ -25,28 +23,10 @@ func NewCatClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDepe
 	args.Mode = omode.CatClient
 	loggers = loggers.normalized()
 
-	c := CatClient{
-		baseClient: baseClient{
-			mu:         newBaseClientMu(),
-			Args:       args,
-			cfg:        cfg,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
-			retry:      false,
-			loggers:    loggers,
-			colorizer:  firstColorizer(colorizers),
-		},
-	}
-
-	if err := c.initialize(c); err != nil {
+	base, err := newBaseClient(args, cfg, loggers, firstColorizer(colorizers),
+		clientHandlerProfile(loggers.Client, false))
+	if err != nil {
 		return nil, fmt.Errorf("initialize cat client: %w", err)
 	}
-	return &c, nil
-}
-
-func (c CatClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewClientHandler(server, c.clientLogger())
-}
-
-func (c CatClient) makeSessionSpec() SessionSpec {
-	return NewSessionSpec(c.Args)
+	return &CatClient{baseClient: base}, nil
 }

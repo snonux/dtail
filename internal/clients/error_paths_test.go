@@ -28,8 +28,13 @@ func TestNewMaprClientReturnsInvalidQueryError(t *testing.T) {
 }
 
 func TestMakeConnectionsReturnsSessionCommandError(t *testing.T) {
-	client := &baseClient{}
-	err := client.makeConnections(invalidSessionMaker{})
+	client := &baseClient{
+		profile: clientProfile{
+			newHandler: func(string) handlers.Handler { return nil },
+		},
+		sessionSpec: SessionSpec{Mode: omode.Mode(255)},
+	}
+	err := client.makeConnections()
 	if err == nil || !strings.Contains(err.Error(), "build session commands") {
 		t.Fatalf("makeConnections error = %v, want wrapped session command error", err)
 	}
@@ -40,9 +45,13 @@ func TestInitializeClosesAuthenticationResourcesOnConnectionSetupError(t *testin
 	client := &baseClient{
 		Args:       config.Args{Serverless: true},
 		authCloser: closer,
+		profile: clientProfile{
+			newHandler: func(string) handlers.Handler { return nil },
+		},
+		sessionSpec: SessionSpec{Mode: omode.Mode(255)},
 	}
 
-	err := client.initialize(invalidSessionMaker{})
+	err := client.initialize()
 	if err == nil || !strings.Contains(err.Error(), "build session commands") {
 		t.Fatalf("initialize error = %v, want wrapped session command error", err)
 	}
@@ -61,9 +70,9 @@ func (c *recordingCloser) Close() error {
 	return nil
 }
 
-type invalidSessionMaker struct{}
-
-func (invalidSessionMaker) makeHandler(string) handlers.Handler { return nil }
-func (invalidSessionMaker) makeSessionSpec() SessionSpec {
-	return SessionSpec{Mode: omode.Mode(255)}
+func TestMakeConnectionsRejectsMissingHandlerFactory(t *testing.T) {
+	client := &baseClient{sessionSpec: SessionSpec{Mode: omode.CatClient}}
+	if err := client.makeConnections(); err == nil || !strings.Contains(err.Error(), "handler factory") {
+		t.Fatalf("makeConnections error = %v, want missing handler factory error", err)
+	}
 }

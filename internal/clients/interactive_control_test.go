@@ -140,14 +140,16 @@ func TestApplyInteractiveReloadRollsBackEarlyFailure(t *testing.T) {
 	connA := &interactiveReloadConnector{server: "srv1", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
 	connB := &interactiveReloadConnector{server: "srv2", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
 	connC := &interactiveReloadConnector{server: "srv3", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, applyErr: rollbackErr, generation: 4}
-	maker := &interactiveReloadMaker{}
+	recorder := &interactiveReloadRecorder{}
 
 	client := &baseClient{
 		mu:          newBaseClientMu(),
 		Args:        oldArgs,
 		sessionSpec: oldSpec,
 		connections: []connectors.Connector{connA, connB, connC},
-		maker:       maker,
+		profile: clientProfile{
+			commit: recorder.commitSessionSpec,
+		},
 	}
 
 	nextArgs := config.Args{
@@ -169,8 +171,8 @@ func TestApplyInteractiveReloadRollsBackEarlyFailure(t *testing.T) {
 	if !reflect.DeepEqual(client.Args, oldArgs) || !reflect.DeepEqual(client.sessionSpec, oldSpec) {
 		t.Fatalf("client state changed on partial failure: args=%#v spec=%#v", client.Args, client.sessionSpec)
 	}
-	if len(maker.commits) != 0 {
-		t.Fatalf("expected no committed shared state, got %#v", maker.commits)
+	if len(recorder.commits) != 0 {
+		t.Fatalf("expected no committed shared state, got %#v", recorder.commits)
 	}
 	if !reflect.DeepEqual(connA.committedSpec, oldSpec) || !reflect.DeepEqual(connB.committedSpec, oldSpec) {
 		t.Fatalf("expected successful connections to roll back to old spec: %#v %#v", connA.committedSpec, connB.committedSpec)
@@ -334,7 +336,7 @@ func TestApplyInteractiveReloadCommitsSharedState(t *testing.T) {
 	}
 	connA := &interactiveReloadConnector{server: "srv1", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
 	connB := &interactiveReloadConnector{server: "srv2", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
-	maker := &interactiveReloadMaker{}
+	recorder := &interactiveReloadRecorder{}
 
 	client := &baseClient{
 		mu: newBaseClientMu(),
@@ -350,7 +352,9 @@ func TestApplyInteractiveReloadCommitsSharedState(t *testing.T) {
 			Regex: "\\|MAPREDUCE:STATS\\|",
 		},
 		connections: []connectors.Connector{connA, connB},
-		maker:       maker,
+		profile: clientProfile{
+			commit: recorder.commitSessionSpec,
+		},
 	}
 
 	nextArgs := config.Args{
@@ -375,14 +379,49 @@ func TestApplyInteractiveReloadCommitsSharedState(t *testing.T) {
 	if client.What != "/tmp/new.log" || client.sessionSpec.Query != nextArgs.QueryStr {
 		t.Fatalf("client state not committed: args=%#v spec=%#v", client.Args, client.sessionSpec)
 	}
-	if len(maker.commits) != 1 {
-		t.Fatalf("expected one sessionCommitter call, got %d", len(maker.commits))
+	if len(recorder.commits) != 1 {
+		t.Fatalf("expected one profile commit call, got %d", len(recorder.commits))
 	}
-	if maker.commits[0].generation != 5 || maker.commits[0].spec.Query != nextArgs.QueryStr {
-		t.Fatalf("unexpected commit payload: %#v", maker.commits[0])
+	if recorder.commits[0].generation != 5 || recorder.commits[0].spec.Query != nextArgs.QueryStr {
+		t.Fatalf("unexpected commit payload: %#v", recorder.commits[0])
 	}
 	if connA.committedSpec.Query != nextArgs.QueryStr || connB.committedSpec.Query != nextArgs.QueryStr {
 		t.Fatalf("connectors did not receive new session spec: %#v %#v", connA.committedSpec, connB.committedSpec)
+	}
+}
+
+func TestApplyInteractiveReloadRollsBackProfileCommitError(t *testing.T) {
+	oldArgs := config.Args{Mode: omode.MapClient, What: "/var/log/app.log"}
+	oldSpec := SessionSpec{Mode: omode.MapClient, Files: []string{"/var/log/app.log"}, Query: "from STATS select count(*)"}
+	nextArgs := config.Args{Mode: omode.MapClient, What: "/tmp/new.log"}
+	nextSpec := SessionSpec{Mode: omode.MapClient, Files: []string{"/tmp/new.log"}, Query: "from WARNINGS select count(*)"}
+	connA := &interactiveReloadConnector{server: "srv1", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
+	connB := &interactiveReloadConnector{server: "srv2", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
+	commitErr := errors.New("commit failed")
+	client := &baseClient{
+		mu:          newBaseClientMu(),
+		Args:        oldArgs,
+		sessionSpec: oldSpec,
+		connections: []connectors.Connector{connA, connB},
+		profile: clientProfile{
+			commit: func(SessionSpec, uint64) error { return commitErr },
+		},
+	}
+
+	err := client.applyInteractiveReload(nextArgs, nextSpec)
+	if !errors.Is(err, commitErr) {
+		t.Fatalf("applyInteractiveReload() error = %v, want commit error", err)
+	}
+	if !reflect.DeepEqual(client.Args, oldArgs) || !reflect.DeepEqual(client.sessionSpec, oldSpec) {
+		t.Fatalf("client state changed after commit failure: args=%#v spec=%#v", client.Args, client.sessionSpec)
+	}
+	for _, conn := range []*interactiveReloadConnector{connA, connB} {
+		if !reflect.DeepEqual(conn.committedSpec, oldSpec) || !reflect.DeepEqual(conn.liveSpec, oldSpec) {
+			t.Fatalf("connection %s did not roll back: committed=%#v live=%#v", conn.server, conn.committedSpec, conn.liveSpec)
+		}
+		if conn.generation != 6 || conn.applyCount != 2 {
+			t.Fatalf("connection %s rollback state = generation:%d applies:%d, want 6 and 2", conn.server, conn.generation, conn.applyCount)
+		}
 	}
 }
 
@@ -394,7 +433,7 @@ func TestApplyInteractiveReloadRejectsMismatchedCommittedGenerations(t *testing.
 	}
 	connA := &interactiveReloadConnector{server: "srv1", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
 	connB := &interactiveReloadConnector{server: "srv2", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 5}
-	maker := &interactiveReloadMaker{}
+	recorder := &interactiveReloadRecorder{}
 
 	client := &baseClient{
 		mu: newBaseClientMu(),
@@ -409,7 +448,9 @@ func TestApplyInteractiveReloadRejectsMismatchedCommittedGenerations(t *testing.
 			Regex: "ERROR",
 		},
 		connections: []connectors.Connector{connA, connB},
-		maker:       maker,
+		profile: clientProfile{
+			commit: recorder.commitSessionSpec,
+		},
 	}
 
 	nextArgs := config.Args{
@@ -430,8 +471,8 @@ func TestApplyInteractiveReloadRejectsMismatchedCommittedGenerations(t *testing.
 	if client.What != "/var/log/app.log" || client.sessionSpec.Regex != "ERROR" {
 		t.Fatalf("client state changed on mismatched generations: args=%#v spec=%#v", client.Args, client.sessionSpec)
 	}
-	if len(maker.commits) != 0 {
-		t.Fatalf("expected no committed shared state, got %#v", maker.commits)
+	if len(recorder.commits) != 0 {
+		t.Fatalf("expected no committed shared state, got %#v", recorder.commits)
 	}
 	if connA.generation != 6 || connB.generation != 7 {
 		t.Fatalf("expected rollback to replay the previous spec remotely, got %d and %d", connA.generation, connB.generation)
@@ -614,7 +655,7 @@ func (c *interactiveReloadConnector) RestoreCommittedSession(spec sessionspec.Sp
 	c.generation = generation
 }
 
-type interactiveReloadMaker struct {
+type interactiveReloadRecorder struct {
 	commits []interactiveReloadCommit
 }
 
@@ -623,10 +664,8 @@ type interactiveReloadCommit struct {
 	spec       SessionSpec
 }
 
-func (*interactiveReloadMaker) makeHandler(string) handlers.Handler { return nil }
-
-func (m *interactiveReloadMaker) commitSessionSpec(spec SessionSpec, generation uint64) error { //nolint:unparam // The sessionCommitter contract permits commit errors.
-	m.commits = append(m.commits, interactiveReloadCommit{
+func (r *interactiveReloadRecorder) commitSessionSpec(spec SessionSpec, generation uint64) error { //nolint:unparam // The profile commit callback permits commit errors.
+	r.commits = append(r.commits, interactiveReloadCommit{
 		generation: generation,
 		spec:       spec,
 	})
