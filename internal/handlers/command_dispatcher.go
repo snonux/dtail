@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
 )
@@ -32,7 +31,6 @@ type commandDispatcher struct {
 	handleCommandCb         handleCommandCb
 	prepareCommandContextCb prepareCommandContextCb
 	codec                   protocolCodec
-	commandDone             *internal.Done
 	activeCommands          int32
 	commandMu               sync.Mutex
 	commandInitWg           sync.WaitGroup
@@ -125,7 +123,7 @@ func (d *commandDispatcher) handleCommand(command string) {
 		return
 	}
 
-	ctx, cancel := d.newCommandContext(context.Background())
+	ctx, cancel := d.newCommandContext()
 	ctx = withCommandCancel(ctx, cancel)
 	if dispatchErr := d.dispatchCommand(ctx, args, argc); dispatchErr != nil {
 		cancel()
@@ -179,24 +177,8 @@ func (d *commandDispatcher) handleRawCommand(ctx context.Context, command string
 	return d.dispatchCommand(ctx, args, len(args))
 }
 
-func (d *commandDispatcher) newCommandContext(parent context.Context) (context.Context, context.CancelFunc) {
-	h := d.handler
-	if parent == nil {
-		parent = context.Background()
-	}
-
-	ctx, cancel := context.WithCancel(parent)
-	commandDone := d.commandDone.Done()
-	go func() {
-		defer recoverHandlerPanic(h.Logger(), h.user, "command cancellation watcher", h.abortAfterPanic)
-		defer cancel()
-		select {
-		case <-commandDone:
-		case <-h.done.Done():
-		case <-ctx.Done():
-		}
-	}()
-	return ctx, cancel
+func (d *commandDispatcher) newCommandContext() (context.Context, context.CancelFunc) {
+	return context.WithCancel(d.handler.commandRootCtx)
 }
 
 func (d *commandDispatcher) handleAckCommand(argc int, args []string) {
@@ -272,6 +254,6 @@ func (d *commandDispatcher) stopCommandAdmission() {
 
 func (d *commandDispatcher) cancelCommandWork() {
 	d.commandMu.Lock()
-	d.commandDone.Shutdown()
+	d.handler.cancelCommands()
 	d.commandMu.Unlock()
 }

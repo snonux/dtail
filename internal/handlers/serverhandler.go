@@ -59,7 +59,7 @@ var _ Handler = (*ServerHandler)(nil)
 var handlerHostname = config.Hostname
 
 // NewServerHandler returns the server handler.
-func NewServerHandler(user *user.User, dependencies Dependencies) (*ServerHandler, error) {
+func NewServerHandler(ctx context.Context, user *user.User, dependencies Dependencies) (*ServerHandler, error) {
 
 	serverCfg := dependencies.ServerConfig
 	loggers := dependencies.Loggers
@@ -67,6 +67,9 @@ func NewServerHandler(user *user.User, dependencies Dependencies) (*ServerHandle
 	loggers.Diagnostics.Debug(user, "Creating new server handler")
 	if user == nil {
 		return nil, fmt.Errorf("create server handler: user must not be nil")
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("create server handler: context must not be nil")
 	}
 	if serverCfg == nil {
 		return nil, fmt.Errorf("create server handler: server config must not be nil")
@@ -80,7 +83,7 @@ func NewServerHandler(user *user.User, dependencies Dependencies) (*ServerHandle
 	}
 
 	h := ServerHandler{
-		baseHandler: newBaseHandler(baseHandlerConfig{
+		baseHandler: newBaseHandler(ctx, baseHandlerConfig{
 			logger:              loggers.Diagnostics,
 			readerLogger:        loggers.Reader,
 			serverlessOutput:    dependencies.ServerlessOutput,
@@ -142,7 +145,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 			return
 		}
 		if isInputBatchComplete(argc, args) {
-			h.completeCommandBatch()
+			h.completeCommandBatch(h.connCtx)
 			cancelCommandContext(ctx)
 			return
 		}
@@ -167,19 +170,18 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 			pendingFiles := atomic.LoadInt32(&h.pendingFiles)
 			h.Logger().Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
 
-			// Release the per-command context + watcher goroutine created for
-			// this invocation (see baseHandler.handleCommand). In the session
-			// dispatch path ctx carries no command cancel and this is a no-op;
-			// the session state owns cancellation there.
-			cancelCommandContext(ctx)
-
 			// Only shutdown if no active commands AND no pending files.
 			// AUTHKEY is a session-side effect command and should not terminate the shell
 			// because user commands may still follow in the same session.
 			if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 &&
 				!h.sessionState.keepAlive() && !h.isStopping() {
-				h.triggerIdleShutdown()
+				h.triggerIdleShutdown(ctx)
 			}
+
+			// Release this command's child context after any final output has
+			// drained. The handler's connection-derived root handles session-wide
+			// cancellation directly, without a watcher goroutine per command.
+			cancelCommandContext(ctx)
 		})
 	}
 	defer recoverHandlerPanic(h.Logger(), h.user, "command dispatch cleanup", h.abortAfterPanic)
@@ -214,11 +216,11 @@ func (h *ServerHandler) BeginCommandBatch() {
 	h.commandBatch.begin()
 }
 
-func (h *ServerHandler) completeCommandBatch() {
-	h.finishCommandBatch(&h.commandBatch)
+func (h *ServerHandler) completeCommandBatch(ctx context.Context) {
+	h.finishCommandBatch(ctx, &h.commandBatch)
 }
 
-func (h *ServerHandler) finishCommandBatch(batch *commandBatch) {
+func (h *ServerHandler) finishCommandBatch(ctx context.Context, batch *commandBatch) {
 	for _, aggregate := range batch.complete() {
 		aggregate.FinishInput()
 	}
@@ -229,16 +231,16 @@ func (h *ServerHandler) finishCommandBatch(batch *commandBatch) {
 		// acknowledgement.
 		go func() {
 			defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
-			h.triggerIdleShutdown()
+			h.triggerIdleShutdown(ctx)
 		}()
 	}
 }
 
-func (h *ServerHandler) triggerIdleShutdown() {
+func (h *ServerHandler) triggerIdleShutdown(ctx context.Context) {
 	if h.commandBatch.isOpen() || !h.idleShutdownStarted.CompareAndSwap(false, true) {
 		return
 	}
-	h.shutdown()
+	h.shutdown(ctx)
 }
 
 func shouldShutdownOnCommandCompletion(commandName string) bool {
@@ -269,7 +271,7 @@ func (h *ServerHandler) prepareCommandContext(ctx context.Context, commandName s
 		admission = &commandAdmissionResult{}
 		ctx = context.WithValue(ctx, commandAdmissionResultKey, admission)
 	}
-	reservation := newPendingInputReservation(h, mode)
+	reservation := newPendingInputReservation(ctx, h, mode)
 	reservation.admission = admission
 	batch := commandBatchFromContext(ctx)
 	if batch == nil {
@@ -338,7 +340,7 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 	// shutdown waits for admitted command initialization and can therefore
 	// never observe an aggregate whose Start goroutine has not published its
 	// result channel yet.
-	aggregate.PrepareOutput(maprMessages)
+	aggregate.PrepareOutput(ctx, maprMessages)
 	// Use the atomic setter so concurrent reads from Shutdown, Aggregate,
 	// and resetSessionAggregates are race-free.
 	h.setAggregate(aggregate)
@@ -422,21 +424,13 @@ func (h *ServerHandler) newGeneratedMaprMessagesChannel(generation uint64) (chan
 	}
 }
 
-// GracefulShutdown stops active serverless work, waits for every processor and
-// aggregate result to reach the protocol queues, then signals EOF. The
-// connector keeps Read running during this call and drains those queues before
-// it finalizes the client-side handler.
-func (h *ServerHandler) GracefulShutdown() {
-	h.GracefulShutdownContext(context.Background())
-}
-
 // GracefulShutdownContext gracefully drains serverless output while ctx says
 // the client output consumer is available. If the consumer fails, teardown
 // switches to Shutdown so blocked producers and forwarding goroutines are
 // released without depending on an unread protocol queue.
 func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
 	if ctx == nil {
-		ctx = context.Background()
+		panic("handlers: nil graceful shutdown context")
 	}
 
 	h.stopCommandAdmission()
@@ -463,12 +457,12 @@ func (h *ServerHandler) GracefulShutdownContext(ctx context.Context) {
 
 	ta := h.getAggregate()
 	if ta != nil {
-		ta.PrepareShutdownContext(ctx)
+		ta.PrepareShutdown(ctx)
 	}
 	h.cancelCommandWork()
 	if ta != nil {
 		h.Logger().Info(h.user, "Finalizing serverless output aggregate")
-		ta.ShutdownContext(ctx)
+		ta.Shutdown(ctx)
 	}
 	if ctx.Err() != nil {
 		h.Shutdown()

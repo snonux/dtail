@@ -2,6 +2,7 @@ package clients
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"testing"
@@ -106,7 +107,7 @@ func TestNewServerlessHandlerPreservesLoggerRoles(t *testing.T) {
 		},
 	}, NewLoggerDependencies(clientLogger, serverLogger, commonLogger))
 
-	handler, err := runtime.NewServerlessHandler("alice")
+	handler, err := runtime.NewServerlessHandler(context.Background(), "alice")
 	if err != nil {
 		t.Fatalf("NewServerlessHandler: %v", err)
 	}

@@ -49,7 +49,7 @@ type readCommandAggregates interface {
 type readCommandLifecycle interface {
 	CompletePendingFile() (remaining int32, activeCommands int32)
 	PendingAndActive() (pending int32, activeCommands int32)
-	TriggerShutdown()
+	TriggerShutdown(context.Context)
 	DebugReadLifecycle(message string, args ...any)
 }
 
@@ -259,11 +259,11 @@ func (h *ServerHandler) PendingAndActive() (pending int32, activeCommands int32)
 }
 
 // TriggerShutdown starts the handler shutdown sequence.
-func (h *ServerHandler) TriggerShutdown() {
+func (h *ServerHandler) TriggerShutdown(ctx context.Context) {
 	if h.sessionState.keepAlive() || h.isStopping() {
 		return
 	}
-	h.triggerIdleShutdown()
+	h.triggerIdleShutdown(ctx)
 }
 
 // DebugReadLifecycle records shutdown-coordination diagnostics without exposing

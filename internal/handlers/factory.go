@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"fmt"
 	"io"
 
 	"github.com/mimecast/dtail/internal/authkey"
@@ -20,9 +22,12 @@ type Dependencies struct {
 }
 
 // NewForUser creates the handler appropriate for the authenticated user.
-func NewForUser(user *user.User, dependencies Dependencies) (Handler, error) {
-	if user != nil && user.Name == config.HealthUser {
-		return NewHealthHandler(user, dependencies.ServerConfig, dependencies.Loggers.Diagnostics)
+func NewForUser(ctx context.Context, user *user.User, dependencies Dependencies) (Handler, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("create handler: context must not be nil")
 	}
-	return NewServerHandler(user, dependencies)
+	if user != nil && user.Name == config.HealthUser {
+		return NewHealthHandler(ctx, user, dependencies.ServerConfig, dependencies.Loggers.Diagnostics)
+	}
+	return NewServerHandler(ctx, user, dependencies)
 }

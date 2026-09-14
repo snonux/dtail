@@ -48,6 +48,7 @@ type pendingInputReservation struct {
 	lifecycle           readCommandLifecycle
 	aggregate           *mapaggregate.Aggregate
 	shutdownCoordinator *shutdownCoordinator
+	ctx                 context.Context
 	admission           *commandAdmissionResult
 	inputBatch          *commandBatch
 	inputBatchRead      commandBatchRead
@@ -55,12 +56,16 @@ type pendingInputReservation struct {
 	released            bool
 }
 
-func newPendingInputReservation(provider readCommandDependencyProvider, mode omode.Mode) *pendingInputReservation {
+func newPendingInputReservation(ctx context.Context, provider readCommandDependencyProvider, mode omode.Mode) *pendingInputReservation {
+	if ctx == nil {
+		panic("handlers: nil pending input context")
+	}
 	dependencies := provider.readCommandDependencies()
 	dependencies.server.AddPendingFiles(1)
 	aggregate := dependencies.aggregates.Aggregate()
 	oneShotInput := mode == omode.CatClient || mode == omode.GrepClient
 	return &pendingInputReservation{
+		ctx:       ctx,
 		lifecycle: dependencies.lifecycle,
 		aggregate: aggregate,
 		shutdownCoordinator: newShutdownCoordinator(dependencies.lifecycle, dependencies.aggregates,
@@ -95,7 +100,7 @@ func (r *pendingInputReservation) releaseIfUnclaimed() {
 		// this reservation kept pending input non-zero. Complete through the
 		// normal read lifecycle so the final zero transition can both finish a
 		// one-shot aggregate and start idle shutdown.
-		r.shutdownCoordinator.onFileProcessed("unclaimed read command")
+		r.shutdownCoordinator.onFileProcessed(r.ctx, "unclaimed read command")
 		r.completeInputBatch()
 		return
 	}
@@ -105,7 +110,7 @@ func (r *pendingInputReservation) releaseIfUnclaimed() {
 		// Dispatch can reject the command before admission (for example during
 		// graceful shutdown or option parsing). Preserve aggregate completion
 		// for an older read without starting a competing shutdown sequence.
-		r.shutdownCoordinator.maybeFinishAggregateInput()
+		r.shutdownCoordinator.maybeFinishAggregateInput(r.ctx)
 	}
 	r.completeInputBatch()
 }
@@ -160,7 +165,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	// path prevents this command from resolving concrete inputs, release its
 	// dispatch-time reservation here. Once an input is resolved, readPipe or
 	// readFiles transfers the reservation and this becomes a no-op.
-	defer r.releasePendingInputReservation()
+	defer func() { r.releasePendingInputReservation(ctx) }()
 	r.generation = sessionGenerationFromContext(ctx)
 
 	re := regex.NewNoop()
@@ -235,7 +240,7 @@ func (r *readCommand) completeInputBatch() {
 // balancing the unconditional decrement in onFileProcessed.
 func (r *readCommand) readPipe(ctx context.Context, ltx lcontext.LContext, re regex.Regex) {
 	r.registerPendingFiles(1)
-	defer r.shutdownCoordinator.onFileProcessed("-")
+	defer r.shutdownCoordinator.onFileProcessed(ctx, "-")
 	// Empty file path and globID "-" represents reading from the stdin pipe.
 	r.read(ctx, ltx, "", nil, "-", re)
 }
@@ -351,12 +356,12 @@ func (r *readCommand) registerPendingFiles(count int) int32 {
 	return pending
 }
 
-func (r *readCommand) releasePendingInputReservation() {
+func (r *readCommand) releasePendingInputReservation(ctx context.Context) {
 	if !r.pendingInputReserved {
 		return
 	}
 	r.pendingInputReserved = false
-	r.shutdownCoordinator.onFileProcessed("unresolved read command")
+	r.shutdownCoordinator.onFileProcessed(ctx, "unresolved read command")
 }
 
 func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LContext,
@@ -365,7 +370,7 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 	defer recoverHandlerPanic(r.logger, r.logContext, "file read cleanup", r.abortAfterPanic)
 	defer wg.Done()
 	defer func() {
-		r.shutdownCoordinator.onFileProcessed(path)
+		r.shutdownCoordinator.onFileProcessed(ctx, path)
 	}()
 	defer recoverHandlerPanic(r.logger, r.logContext, "file read", r.abortAfterPanic)
 

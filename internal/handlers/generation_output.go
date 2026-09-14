@@ -12,7 +12,10 @@ type sessionGenerationKey struct{}
 const generationOutputPrefix = "\x1egen:"
 
 func withSessionGeneration(ctx context.Context, generation uint64) context.Context {
-	if ctx == nil || generation == 0 {
+	if ctx == nil {
+		panic("handlers: nil session generation context")
+	}
+	if generation == 0 {
 		return ctx
 	}
 	return context.WithValue(ctx, sessionGenerationKey{}, generation)
@@ -20,7 +23,7 @@ func withSessionGeneration(ctx context.Context, generation uint64) context.Conte
 
 func sessionGenerationFromContext(ctx context.Context) uint64 {
 	if ctx == nil {
-		return 0
+		panic("handlers: nil session generation context")
 	}
 
 	generation, _ := ctx.Value(sessionGenerationKey{}).(uint64)

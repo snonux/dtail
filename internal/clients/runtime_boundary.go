@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"context"
 	"io"
 	"os"
 	"strings"
@@ -67,7 +68,7 @@ func (r *clientRuntimeBoundary) InterruptPause() time.Duration {
 	return r.interruptPause
 }
 
-func (r *clientRuntimeBoundary) NewServerlessHandler(userName string) (sessionHandlers.Handler, error) {
+func (r *clientRuntimeBoundary) NewServerlessHandler(ctx context.Context, userName string) (sessionHandlers.Handler, error) {
 	var permissionLookup user.PermissionLookup
 	if r.serverCfg != nil {
 		permissionLookup = r.serverCfg.UserPermissions
@@ -95,7 +96,7 @@ func (r *clientRuntimeBoundary) NewServerlessHandler(userName string) (sessionHa
 		)
 		dependencies.ServerlessOutput = r.serverlessOutputWriter()
 	}
-	return sessionHandlers.NewForUser(serverUser, dependencies)
+	return sessionHandlers.NewForUser(ctx, serverUser, dependencies)
 }
 
 func (r *clientRuntimeBoundary) serverlessOutputWriter() io.Writer {

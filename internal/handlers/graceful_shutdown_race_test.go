@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
@@ -26,7 +25,7 @@ func TestGracefulShutdownWaitsForAdmittedAggregatePublication(t *testing.T) {
 		close(commandEntered)
 		<-publish
 		messages, closeMessages := handler.newGeneratedMaprMessagesChannel(0)
-		aggregate.PrepareOutput(messages)
+		aggregate.PrepareOutput(context.Background(), messages)
 		handler.setAggregate(aggregate)
 		go func() {
 			aggregate.Start(ctx, messages)
@@ -45,7 +44,7 @@ func TestGracefulShutdownWaitsForAdmittedAggregatePublication(t *testing.T) {
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
-		handler.GracefulShutdown()
+		handler.GracefulShutdownContext(context.Background())
 	}()
 	select {
 	case <-shutdownDone:
@@ -73,7 +72,7 @@ func TestGracefulShutdownContextAbortsWhenFinalOutputCannotDrain(t *testing.T) {
 	groupCount := cap(handler.maprMessages) + 32
 	aggregate := newPopulatedTestAggregate(t, groupCount)
 	messages, closeMessages := handler.newGeneratedMaprMessagesChannel(0)
-	aggregate.PrepareOutput(messages)
+	aggregate.PrepareOutput(context.Background(), messages)
 	handler.setAggregate(aggregate)
 
 	startDone := make(chan struct{})
@@ -106,8 +105,6 @@ func TestGracefulShutdownContextAbortsWhenFinalOutputCannotDrain(t *testing.T) {
 
 func TestGracefulShutdownLetsAdmittedSessionUpdateDispatchReplacement(t *testing.T) {
 	handler := newSessionTestHandler("session-update-shutdown-user")
-	handler.commandDone = internal.NewDone()
-	handler.outputAbort = internal.NewDone()
 	handler.handleCommandCb = handler.handleUserCommand
 	readServerMessage(t, handler.serverMessages)
 
@@ -154,7 +151,7 @@ func TestGracefulShutdownLetsAdmittedSessionUpdateDispatchReplacement(t *testing
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
-		handler.GracefulShutdown()
+		handler.GracefulShutdownContext(context.Background())
 	}()
 	waitForHandlerStopping(t, handler)
 	close(resumeUpdate)
@@ -173,8 +170,6 @@ func TestGracefulShutdownLetsAdmittedSessionUpdateDispatchReplacement(t *testing
 
 func TestGracefulShutdownCanceledWhileInitializerBlockedOnFullQueue(t *testing.T) {
 	handler := newSessionTestHandler("blocked-init-shutdown-user")
-	handler.commandDone = internal.NewDone()
-	handler.outputAbort = internal.NewDone()
 	readServerMessage(t, handler.serverMessages)
 
 	for len(handler.serverMessages) < cap(handler.serverMessages) {
@@ -229,7 +224,7 @@ func TestGracefulShutdownAcceptsCloseAckAfterAdmissionSealed(t *testing.T) {
 	gracefulDone := make(chan struct{})
 	go func() {
 		defer close(gracefulDone)
-		handler.GracefulShutdown()
+		handler.GracefulShutdownContext(context.Background())
 	}()
 	waitForHandlerStopping(t, handler)
 	handler.handleUserCommand(context.Background(), lcontext.LContext{}, 3,

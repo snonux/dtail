@@ -47,6 +47,16 @@ func TestDirectWriter_ServerlessPlain(t *testing.T) {
 	}
 }
 
+func TestNewNetworkWriterRejectsNilContext(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("NewNetworkWriter accepted a nil context")
+		}
+	}()
+	var nilContext context.Context
+	NewNetworkWriter(nilContext, nil, nil, "testhost", false, false, 0, nil, handlerTestLogger)
+}
+
 // TestDirectWriter_ServerlessPlainWithNewline tests that existing newlines are preserved
 func TestDirectWriter_ServerlessPlainWithNewline(t *testing.T) {
 	var buf bytes.Buffer

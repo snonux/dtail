@@ -195,7 +195,7 @@ func TestBaseHandlerFlushWaitsForPartialReadBuffer(t *testing.T) {
 
 	flushDone := make(chan error, 1)
 	go func() {
-		flushDone <- handler.flush()
+		flushDone <- handler.flushContext(context.Background())
 	}()
 
 	pumpDone := make(chan []byte, 1)
@@ -250,7 +250,7 @@ func TestBaseHandlerFlushWaitsForExactReadDeliveryConfirmation(t *testing.T) {
 
 	flushDone := make(chan error, 1)
 	go func() {
-		flushDone <- handler.flush()
+		flushDone <- handler.flushContext(context.Background())
 	}()
 	readerDone := make(chan error, 1)
 	go func() {
@@ -289,7 +289,7 @@ func TestAttachedOutputReaderShutdownWaitsBeforeFirstRead(t *testing.T) {
 
 	shutdownDone := make(chan struct{})
 	go func() {
-		handler.shutdown()
+		handler.shutdown(context.Background())
 		close(shutdownDone)
 	}()
 	var ackOnce sync.Once
@@ -352,7 +352,7 @@ func TestBaseHandlerFlushTimeoutIsClientVisibleBeforeCloseSync(t *testing.T) {
 	handler.readerSeen.Store(true)
 	handler.serverMessages <- "undrained"
 
-	err := handler.flush()
+	err := handler.flushContext(context.Background())
 	if !errors.Is(err, errHandlerFlushTimeout) {
 		t.Fatalf("flush error = %v, want %v", err, errHandlerFlushTimeout)
 	}
@@ -429,7 +429,7 @@ func TestShutdownTimeoutDrainsQueuedAggregateBeforeReaderOwnedClose(t *testing.T
 
 	shutdownDone := make(chan struct{})
 	go func() {
-		handler.shutdown()
+		handler.shutdown(context.Background())
 		close(shutdownDone)
 	}()
 	var ackOnce sync.Once
@@ -515,7 +515,7 @@ func TestFlushRequestReceiptForcesFreshDrainBeforeTerminalClose(t *testing.T) {
 
 	handler.reportFlushError(0, errHandlerFlushTimeout)
 	handler.maprMessages <- "payload published at barrier boundary"
-	handler.requestCloseSync()
+	handler.requestCloseSync(context.Background())
 
 	buf := make([]byte, 512)
 	n, err := handler.Read(buf)

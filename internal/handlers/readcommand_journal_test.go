@@ -148,7 +148,7 @@ func (s *journalReadTestServer) PendingAndActive() (int32, int32) {
 	return atomic.LoadInt32(&s.pending), 0
 }
 
-func (s *journalReadTestServer) TriggerShutdown() {
+func (s *journalReadTestServer) TriggerShutdown(context.Context) {
 	atomic.AddInt32(&s.shutdowns, 1)
 }
 

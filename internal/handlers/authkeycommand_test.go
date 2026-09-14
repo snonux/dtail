@@ -104,7 +104,7 @@ func TestHandleAuthKeyCommandInvalidPayload(t *testing.T) {
 
 func newAuthKeyTestHandler(userName string, authKeyEnabled bool) *ServerHandler {
 	return &ServerHandler{
-		baseHandler: newBaseHandler(baseHandlerConfig{
+		baseHandler: newBaseHandler(context.Background(), baseHandlerConfig{
 			serverMessages: make(chan string, 4),
 			user:           &userserver.User{Name: userName},
 		}),

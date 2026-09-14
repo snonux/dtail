@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestNewServerHandlerPreservesInjectedRoles(t *testing.T) {
 	diagnostics := &handlerRecordingLogger{}
 	reader := &handlerRecordingLogger{}
 	var output bytes.Buffer
-	handler, err := NewServerHandler(
+	handler, err := NewServerHandler(context.Background(),
 		&userserver.User{Name: "logger-test"},
 		Dependencies{
 			CatLimiter:       make(chan struct{}, 1),
@@ -70,7 +71,7 @@ func TestNewServerHandlerPreservesInjectedRoles(t *testing.T) {
 
 func TestNewHealthHandlerPreservesInjectedLogger(t *testing.T) {
 	diagnostics := &handlerRecordingLogger{}
-	handler, err := NewHealthHandler(&userserver.User{Name: "health-logger-test"}, nil, diagnostics)
+	handler, err := NewHealthHandler(context.Background(), &userserver.User{Name: "health-logger-test"}, nil, diagnostics)
 	if err != nil {
 		t.Fatalf("NewHealthHandler: %v", err)
 	}

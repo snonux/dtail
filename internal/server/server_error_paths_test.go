@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mimecast/dtail/internal/config"
 )
@@ -37,5 +40,49 @@ func TestStartReturnsListenError(t *testing.T) {
 	status, err := server.Start(context.Background())
 	if err == nil || status != 1 {
 		t.Fatalf("Start status=%d error=%v, want status 1 listen error", status, err)
+	}
+}
+
+func TestStartCancellationStopsBlockedListen(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	entered := make(chan struct{})
+	server := &Server{
+		cfg: config.RuntimeConfig{
+			Server: &config.ServerConfig{SSHBindAddress: "127.0.0.1"},
+			Common: &config.CommonConfig{SSHPort: 2222},
+		},
+		logger: serverTestLoggers.Diagnostics,
+		listen: func(ctx context.Context, network, address string) (net.Listener, error) {
+			if network != "tcp" || address != "127.0.0.1:2222" {
+				t.Errorf("listen target = %s %s", network, address)
+			}
+			close(entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := server.Start(ctx)
+		result <- err
+	}()
+	<-entered
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Start error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Start did not stop a blocked listen after cancellation")
+	}
+}
+
+func TestStartRejectsNilContext(t *testing.T) {
+	var nilContext context.Context
+	status, err := (&Server{}).Start(nilContext)
+	if status != 1 || err == nil {
+		t.Fatalf("Start(nil) = (%d, %v), want status 1 and error", status, err)
 	}
 }

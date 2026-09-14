@@ -34,15 +34,24 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 		{
 			name: "missing config",
 			new: func() error {
-				_, err := NewServerHandler(serverUser, Dependencies{AuthKeyStore: store})
+				_, err := NewServerHandler(context.Background(), serverUser, Dependencies{AuthKeyStore: store})
 				return err
 			},
 			want: "server config",
 		},
 		{
+			name: "missing server context",
+			new: func() error {
+				var nilContext context.Context
+				_, err := NewServerHandler(nilContext, serverUser, Dependencies{AuthKeyStore: store})
+				return err
+			},
+			want: "context",
+		},
+		{
 			name: "missing auth store",
 			new: func() error {
-				_, err := NewServerHandler(serverUser, Dependencies{ServerConfig: &config.ServerConfig{}})
+				_, err := NewServerHandler(context.Background(), serverUser, Dependencies{ServerConfig: &config.ServerConfig{}})
 				return err
 			},
 			want: "auth-key store",
@@ -50,10 +59,19 @@ func TestServerHandlerConstructorsReturnRecoverableErrors(t *testing.T) {
 		{
 			name: "missing health user",
 			new: func() error {
-				_, err := NewHealthHandler(nil, nil, handlerTestLogger)
+				_, err := NewHealthHandler(context.Background(), nil, nil, handlerTestLogger)
 				return err
 			},
 			want: "user",
+		},
+		{
+			name: "missing health context",
+			new: func() error {
+				var nilContext context.Context
+				_, err := NewHealthHandler(nilContext, serverUser, nil, handlerTestLogger)
+				return err
+			},
+			want: "context",
 		},
 	}
 
@@ -73,7 +91,7 @@ func TestHandlerConstructorsReturnHostnameError(t *testing.T) {
 	t.Cleanup(func() { handlerHostname = original })
 
 	serverUser := &userserver.User{Name: "test-user"}
-	_, err := NewServerHandler(serverUser, Dependencies{
+	_, err := NewServerHandler(context.Background(), serverUser, Dependencies{
 		ServerConfig: &config.ServerConfig{},
 		AuthKeyStore: authkey.New(time.Hour, 5),
 	})
@@ -81,7 +99,7 @@ func TestHandlerConstructorsReturnHostnameError(t *testing.T) {
 		t.Fatalf("NewServerHandler error = %v, want wrapped hostname error", err)
 	}
 
-	_, err = NewHealthHandler(serverUser, nil, handlerTestLogger)
+	_, err = NewHealthHandler(context.Background(), serverUser, nil, handlerTestLogger)
 	if err == nil || !strings.Contains(err.Error(), "hostname unavailable") {
 		t.Fatalf("NewHealthHandler error = %v, want wrapped hostname error", err)
 	}
@@ -94,7 +112,7 @@ func TestNewServerHandlerSendsAdvertisedServerCapabilities(t *testing.T) {
 		protocol.CapabilityJournalV1,
 	}
 
-	handler, err := NewServerHandler(
+	handler, err := NewServerHandler(context.Background(),
 		&userserver.User{Name: "session-capability-user"},
 		Dependencies{
 			CatLimiter:   make(chan struct{}, 1),
@@ -456,7 +474,7 @@ func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testi
 func newSessionTestHandler(userName string) *ServerHandler {
 	testUser := &userserver.User{Name: userName}
 	handler := &ServerHandler{
-		baseHandler: newBaseHandler(baseHandlerConfig{
+		baseHandler: newBaseHandler(context.Background(), baseHandlerConfig{
 			logger:         handlerTestLogger,
 			serverMessages: make(chan string, 8),
 			maprMessages:   make(chan string, 4),

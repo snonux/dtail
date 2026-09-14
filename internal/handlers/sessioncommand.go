@@ -135,7 +135,7 @@ func (s *sessionCommandState) start(parentCtx context.Context, handler *ServerHa
 		s.mu.Unlock()
 		return 0, fmt.Errorf("session already started")
 	}
-	ctx, cancel := handler.newCommandContext(sessionCommandContext(parentCtx))
+	ctx, cancel := context.WithCancel(sessionCommandContext(handler.commandRootCtx, parentCtx))
 	s.active = true
 	s.generation = 1
 	s.spec = spec
@@ -165,7 +165,7 @@ func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerH
 		return 0, fmt.Errorf("session not started")
 	}
 	oldCancel := s.cancel
-	ctx, cancel := handler.newCommandContext(sessionCommandContext(parentCtx))
+	ctx, cancel := context.WithCancel(sessionCommandContext(handler.commandRootCtx, parentCtx))
 	if generation == 0 {
 		generation = s.generation + 1
 	}
@@ -199,8 +199,11 @@ func prepareSessionCommands(spec session.Spec) ([]string, error) {
 	return commands, nil
 }
 
-func sessionCommandContext(parent context.Context) context.Context {
-	ctx := context.Background()
+func sessionCommandContext(connCtx, parent context.Context) context.Context {
+	if connCtx == nil || parent == nil {
+		panic("handlers: nil session command context")
+	}
+	ctx := connCtx
 	if hasSessionCommandAdmission(parent) {
 		ctx = withSessionCommandAdmission(ctx)
 	}
@@ -251,7 +254,7 @@ func (h *ServerHandler) dispatchSessionCommands(ctx context.Context, commands []
 	batch := &commandBatch{}
 	batch.begin()
 	ctx = withCommandBatch(ctx, batch)
-	defer h.finishCommandBatch(batch)
+	defer h.finishCommandBatch(ctx, batch)
 
 	for _, command := range commands {
 		commandCtx := ctx

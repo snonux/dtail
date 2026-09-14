@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,7 +67,7 @@ func TestNewForUserSelectsHandlerAndUsesExplicitDependencies(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			handler, err := NewForUser(&sessionuser.User{Name: test.userName}, dependencies)
+			handler, err := NewForUser(context.Background(), &sessionuser.User{Name: test.userName}, dependencies)
 			if err != nil {
 				t.Fatalf("NewForUser: %v", err)
 			}
@@ -75,8 +77,16 @@ func TestNewForUserSelectsHandlerAndUsesExplicitDependencies(t *testing.T) {
 }
 
 func TestNewForUserRejectsMissingUser(t *testing.T) {
-	_, err := NewForUser(nil, Dependencies{})
+	_, err := NewForUser(context.Background(), nil, Dependencies{})
 	if err == nil {
 		t.Fatal("NewForUser accepted a nil user")
+	}
+}
+
+func TestNewForUserRejectsNilContext(t *testing.T) {
+	var nilContext context.Context
+	_, err := NewForUser(nilContext, &sessionuser.User{Name: "alice"}, Dependencies{})
+	if err == nil || !strings.Contains(err.Error(), "context") {
+		t.Fatalf("NewForUser nil-context error = %v, want context error", err)
 	}
 }

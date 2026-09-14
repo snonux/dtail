@@ -17,11 +17,14 @@ type HealthHandler struct {
 }
 
 // NewHealthHandler returns the server handler.
-func NewHealthHandler(user *user.User, serverCfg *config.ServerConfig, logger logging.Logger) (*HealthHandler, error) {
+func NewHealthHandler(ctx context.Context, user *user.User, serverCfg *config.ServerConfig, logger logging.Logger) (*HealthHandler, error) {
 	logger = logging.OrNop(logger)
 	logger.Debug(user, "Creating new server health handler")
 	if user == nil {
 		return nil, fmt.Errorf("create health handler: user must not be nil")
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("create health handler: context must not be nil")
 	}
 
 	// A nil configuration uses the protocol-safe default for isolated health checks.
@@ -31,7 +34,7 @@ func NewHealthHandler(user *user.User, serverCfg *config.ServerConfig, logger lo
 	}
 
 	h := HealthHandler{
-		baseHandler: newBaseHandler(baseHandlerConfig{
+		baseHandler: newBaseHandler(ctx, baseHandlerConfig{
 			logger:              logger,
 			user:                user,
 			maxCommandFrameSize: maxFrameSize,
@@ -61,9 +64,8 @@ func (h *HealthHandler) handleHealthCommand(ctx context.Context,
 		h.send(h.serverMessages, h.Logger().Error(h.user,
 			"Received unknown health command", commandName, argc, args))
 	}
-	// Release the per-command cancel before shutdown so the watcher
-	// goroutine spawned by newCommandContext exits via <-ctx.Done() and
-	// not only via the <-h.done.Done() safety net.
+	h.shutdown(ctx)
+	// shutdown drains the response before canceling the handler's command root.
+	// Release the command-local child as well for callers that supply their own.
 	cancelCommandContext(ctx)
-	h.shutdown()
 }

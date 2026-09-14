@@ -309,7 +309,7 @@ func (t *outputManager) signalEOFAckLocked() {
 // that true for any future replacement path or caller.
 func (t *outputManager) waitForEOFAck(ctx context.Context, timeout time.Duration) bool {
 	if ctx == nil {
-		ctx = context.Background()
+		panic("handlers: nil EOF acknowledgement context")
 	}
 	t.mu.Lock()
 	eofAck := t.eofAck
@@ -344,7 +344,7 @@ func (t *outputManager) enqueue(ctx context.Context, generation uint64, payload 
 	activeGeneration func() uint64) error {
 
 	if ctx == nil {
-		ctx = context.Background()
+		panic("handlers: nil output enqueue context")
 	}
 	if len(payload) == 0 {
 		return nil
@@ -557,7 +557,7 @@ func (t *outputManager) releaseOutputLocked(payloadBytes, retainedBytes int, ent
 // to empty, which avoids both polling and lost wakeups.
 func (t *outputManager) flush(ctx context.Context, user *user.User) error {
 	if ctx == nil {
-		ctx = context.Background()
+		panic("handlers: nil output flush context")
 	}
 
 	t.mu.Lock()

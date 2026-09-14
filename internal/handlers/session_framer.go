@@ -74,6 +74,7 @@ func (f *sessionFramer) Write(p []byte) (n int, err error) {
 					"limit", f.maxCommandFrameSize,
 				)
 				f.writeBuf.Reset()
+				h.cancelCommands()
 				h.done.Shutdown()
 				return len(p), io.ErrClosedPipe
 			}

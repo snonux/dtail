@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -63,7 +64,7 @@ func TestBaseHandlerReadDropsStaleFlushError(t *testing.T) {
 
 func TestGeneratedMaprMessagesChannelCloseWaitsForForwarding(t *testing.T) {
 	handler := &ServerHandler{
-		baseHandler: newBaseHandler(baseHandlerConfig{maprMessages: make(chan string)}),
+		baseHandler: newBaseHandler(context.Background(), baseHandlerConfig{maprMessages: make(chan string)}),
 	}
 
 	generated, closeGenerated := handler.newGeneratedMaprMessagesChannel(7)
@@ -120,7 +121,7 @@ func TestOutputManagerTryReadDropsStaleGeneration(t *testing.T) {
 }
 
 func newGenerationTestHandler(activeGeneration uint64) *baseHandler {
-	return newBaseHandler(baseHandlerConfig{
+	return newBaseHandler(context.Background(), baseHandlerConfig{
 		serverMessages: make(chan string, 2),
 		maprMessages:   make(chan string, 2),
 		hostname:       "testhost",

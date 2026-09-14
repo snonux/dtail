@@ -44,9 +44,11 @@ type Server struct {
 	authStrategies map[string]authStrategy
 	// In-memory auth key cache for fast reconnect.
 	authKeyStore *authkey.Store
+	listen       func(context.Context, string, string) (net.Listener, error)
+	lookupIPAddr func(context.Context, string) ([]net.IPAddr, error)
 }
 
-type authStrategy func(*user.User, string, string) bool
+type authStrategy func(context.Context, *user.User, string, string) bool
 
 // BackgroundJobs runs configured scheduled and continuous client workloads.
 type BackgroundJobs interface {
@@ -110,7 +112,6 @@ func New(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers, backgroundJo
 	}
 	s.authStrategies = s.newAuthStrategies()
 
-	s.sshServerConfig.PasswordCallback = s.Callback
 	s.sshServerConfig.PublicKeyCallback = server.NewPublicKeyCallback(
 		cfg.Server.AuthKeyEnabled,
 		cfg.Common.CacheDir,
@@ -134,11 +135,14 @@ func New(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers, backgroundJo
 
 // Start the server.
 func (s *Server) Start(ctx context.Context) (int, error) {
+	if ctx == nil {
+		return 1, fmt.Errorf("start server: context must not be nil")
+	}
 	s.log().Info("Starting server")
 	bindAt := net.JoinHostPort(s.cfg.Server.SSHBindAddress, fmt.Sprintf("%d", s.cfg.Common.SSHPort))
 	s.log().Info("Binding server", bindAt)
 
-	listener, err := net.Listen("tcp", bindAt)
+	listener, err := s.listenContext(ctx, "tcp", bindAt)
 	if err != nil {
 		return 1, fmt.Errorf("listen on %s: %w", bindAt, err)
 	}
@@ -147,11 +151,27 @@ func (s *Server) Start(ctx context.Context) (int, error) {
 	if s.backgroundJobs != nil {
 		go s.backgroundJobs.Start(ctx)
 	}
-	go s.listenerLoop(ctx, listener)
+	listenerDone := make(chan struct{})
+	go func() {
+		defer close(listenerDone)
+		s.listenerLoop(ctx, listener)
+	}()
 
 	<-ctx.Done()
+	if closeErr := listener.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) {
+		s.log().Trace("Close listener", closeErr)
+	}
+	<-listenerDone
 	// For future use.
 	return 0, nil
+}
+
+func (s *Server) listenContext(ctx context.Context, network, address string) (net.Listener, error) {
+	if s.listen != nil {
+		return s.listen(ctx, network, address)
+	}
+	var listenConfig net.ListenConfig
+	return listenConfig.Listen(ctx, network, address)
 }
 
 func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
@@ -166,6 +186,10 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 			}
 			s.log().Error("Failed to accept incoming connection", err)
 			continue
+		}
+		if ctx.Err() != nil {
+			_ = conn.Close()
+			return
 		}
 
 		if limitErr := s.stats.serverLimitExceeded(); limitErr != nil {
@@ -183,6 +207,10 @@ func (s *Server) listenerLoop(ctx context.Context, listener net.Listener) {
 }
 
 func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
+	connCtx, cancelConnection := context.WithCancel(ctx)
+	defer cancelConnection()
+	stopCloseOnCancel := context.AfterFunc(connCtx, func() { _ = conn.Close() })
+	defer stopCloseOnCancel()
 	defer s.recoverGoroutinePanic("SSH connection", conn.RemoteAddr(), nil)
 	defer func() { _ = conn.Close() }()
 
@@ -209,7 +237,11 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 	}
 
 	activeConn := newActivityConn(conn)
-	sshConn, chans, reqs, err := gossh.NewServerConn(activeConn, s.sshServerConfig)
+	sshConfig := *s.sshServerConfig
+	sshConfig.PasswordCallback = func(metadata gossh.ConnMetadata, authPayload []byte) (*gossh.Permissions, error) {
+		return s.Callback(connCtx, metadata, authPayload)
+	}
+	sshConn, chans, reqs, err := gossh.NewServerConn(activeConn, &sshConfig)
 	if err != nil {
 		// Handshake failed (auth error, timeout, or connection reset).
 		// Release the pre-auth slot so the limit accurately reflects reality.
@@ -242,7 +274,7 @@ func (s *Server) handleConnection(ctx context.Context, conn net.Conn) {
 		gossh.DiscardRequests(reqs)
 	}()
 	for newChannel := range chans {
-		go s.handleChannel(ctx, sshConn, newChannel)
+		go s.handleChannel(connCtx, sshConn, newChannel)
 	}
 }
 
@@ -310,7 +342,7 @@ func (s *Server) handleRequests(ctx context.Context, sshConn gossh.Conn,
 func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	channel gossh.Channel, user *user.User, req *gossh.Request) {
 
-	handler, err := handlers.NewForUser(user, handlers.Dependencies{
+	handler, err := handlers.NewForUser(ctx, user, handlers.Dependencies{
 		ServerConfig: s.cfg.Server,
 		CatLimiter:   s.catLimiter,
 		TailLimiter:  s.tailLimiter,
@@ -401,8 +433,11 @@ func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 }
 
 // Callback for SSH authentication.
-func (s *Server) Callback(c gossh.ConnMetadata,
+func (s *Server) Callback(ctx context.Context, c gossh.ConnMetadata,
 	authPayload []byte) (*gossh.Permissions, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("authenticate SSH connection: context must not be nil")
+	}
 
 	authenticatedUser, err := user.New(c.User(), c.RemoteAddr().String(), s.cfg.Server.UserPermissions, s.log())
 	if err != nil {
@@ -418,7 +453,7 @@ func (s *Server) Callback(c gossh.ConnMetadata,
 		remoteIP = remoteAddr
 	}
 
-	if strategy, found := s.authStrategies[authenticatedUser.Name]; found && strategy(authenticatedUser, authInfo, remoteIP) {
+	if strategy, found := s.authStrategies[authenticatedUser.Name]; found && strategy(ctx, authenticatedUser, authInfo, remoteIP) {
 		return nil, nil
 	}
 
@@ -433,7 +468,10 @@ func (s *Server) newAuthStrategies() map[string]authStrategy {
 	}
 }
 
-func (s *Server) authorizeHealthUser(user *user.User, authInfo, _ string) bool {
+func (s *Server) authorizeHealthUser(ctx context.Context, user *user.User, authInfo, _ string) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	// Use constant-time comparison to avoid timing side-channel attacks.
 	// An attacker who can measure response latency must not be able to infer
 	// how many bytes of the secret matched.
@@ -444,10 +482,13 @@ func (s *Server) authorizeHealthUser(user *user.User, authInfo, _ string) bool {
 	return true
 }
 
-func (s *Server) authorizeScheduleUser(user *user.User, authInfo, remoteIP string) bool {
+func (s *Server) authorizeScheduleUser(ctx context.Context, user *user.User, authInfo, remoteIP string) bool {
 	for i := range s.cfg.Server.Schedule {
+		if ctx.Err() != nil {
+			return false
+		}
 		job := &s.cfg.Server.Schedule[i]
-		if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
+		if s.backgroundCanSSH(ctx, user, authInfo, remoteIP, job.Name, job.AllowFrom) {
 			s.log().Debug(user, "Granting SSH connection")
 			return true
 		}
@@ -455,10 +496,13 @@ func (s *Server) authorizeScheduleUser(user *user.User, authInfo, remoteIP strin
 	return false
 }
 
-func (s *Server) authorizeContinuousUser(user *user.User, authInfo, remoteIP string) bool {
+func (s *Server) authorizeContinuousUser(ctx context.Context, user *user.User, authInfo, remoteIP string) bool {
 	for i := range s.cfg.Server.Continuous {
+		if ctx.Err() != nil {
+			return false
+		}
 		job := &s.cfg.Server.Continuous[i]
-		if s.backgroundCanSSH(user, authInfo, remoteIP, job.Name, job.AllowFrom) {
+		if s.backgroundCanSSH(ctx, user, authInfo, remoteIP, job.Name, job.AllowFrom) {
 			s.log().Debug(user, "Granting SSH connection")
 			return true
 		}
@@ -476,7 +520,7 @@ func (s *Server) authorizeContinuousUser(user *user.User, authInfo, remoteIP str
 //   - authInfo/jobName MUST NOT appear in any log line — if debug logging is
 //     ever enabled in production the shared secret would leak. Log only the
 //     operator-visible allowedJobName or a fixed placeholder.
-func (s *Server) backgroundCanSSH(user *user.User, authInfo, remoteIP,
+func (s *Server) backgroundCanSSH(ctx context.Context, user *user.User, authInfo, remoteIP,
 	allowedJobName string, allowFrom []string) bool {
 
 	// Do not log authInfo (the client-presented secret) — only log the
@@ -491,10 +535,16 @@ func (s *Server) backgroundCanSSH(user *user.User, authInfo, remoteIP,
 			"Job name does not match, skipping to next one...", "allowedJobName", allowedJobName)
 		return false
 	}
+	if ctx.Err() != nil {
+		return false
+	}
 
 	for _, myAddr := range allowFrom {
-		ips, err := net.LookupIP(myAddr)
+		ips, err := s.lookupIPAddresses(ctx, myAddr)
 		if err != nil {
+			if ctx.Err() != nil {
+				return false
+			}
 			s.log().Debug(user, "backgroundCanSSH", "Unable to lookup IP "+
 				"address for allowed hosts lookup, skipping to next one...",
 				"allowedJobName", allowedJobName, "addr", myAddr, "error", err)
@@ -502,12 +552,19 @@ func (s *Server) backgroundCanSSH(user *user.User, authInfo, remoteIP,
 		}
 		for _, ip := range ips {
 			s.log().Debug(user, "backgroundCanSSH", "Comparing IP addresses",
-				"allowedJobName", allowedJobName, "remoteIP", remoteIP, "candidateIP", ip.String())
-			if remoteIP == ip.String() {
+				"allowedJobName", allowedJobName, "remoteIP", remoteIP, "candidateIP", ip.IP.String())
+			if remoteIP == ip.IP.String() {
 				return true
 			}
 		}
 	}
 
 	return false
+}
+
+func (s *Server) lookupIPAddresses(ctx context.Context, host string) ([]net.IPAddr, error) {
+	if s.lookupIPAddr != nil {
+		return s.lookupIPAddr(ctx, host)
+	}
+	return net.DefaultResolver.LookupIPAddr(ctx, host)
 }

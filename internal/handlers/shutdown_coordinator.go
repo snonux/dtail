@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"context"
 	"time"
 
+	"github.com/mimecast/dtail/internal/ctxutil"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 )
 
@@ -21,7 +23,7 @@ type shutdownCoordinator struct {
 	// inputBatchOwned is set when this read was admitted inside an explicit
 	// input batch. The batch's end marker owns FinishInput for this aggregate.
 	inputBatchOwned bool
-	legacyInputWait func()
+	legacyInputWait func(context.Context, time.Duration) bool
 }
 
 type aggregateInputBatchCoordinator interface {
@@ -47,7 +49,7 @@ func newShutdownCoordinator(lifecycle readCommandLifecycle, aggregates readComma
 	}
 }
 
-func (c *shutdownCoordinator) onFileProcessed(path string) {
+func (c *shutdownCoordinator) onFileProcessed(ctx context.Context, path string) {
 	remaining, activeCommands := c.lifecycle.CompletePendingFile()
 	c.lifecycle.DebugReadLifecycle("File processing complete", "path", path, "remainingPending", remaining)
 
@@ -58,13 +60,13 @@ func (c *shutdownCoordinator) onFileProcessed(path string) {
 	// All pending file reads are drained: for one-shot inputs let a output
 	// aggregate finish so a blocked server-mode map command can return (see
 	// maybeFinishAggregateInput for the circular wait this prevents).
-	c.maybeFinishAggregateInput()
+	c.maybeFinishAggregateInput(ctx)
 
 	if activeCommands != 0 {
 		return
 	}
 
-	c.finalizeWhenIdle()
+	c.finalizeWhenIdle(ctx)
 }
 
 // maybeFinishAggregateInput signals input-exhausted to the output
@@ -79,7 +81,10 @@ func (c *shutdownCoordinator) onFileProcessed(path string) {
 // The aggregate pointer is captured when the read command is admitted and
 // compared before finishing, so an interactive :reload cannot have its fresh
 // aggregate finished by a stale observation from the old generation.
-func (c *shutdownCoordinator) maybeFinishAggregateInput() {
+func (c *shutdownCoordinator) maybeFinishAggregateInput(ctx context.Context) {
+	if ctx == nil {
+		panic("handlers: nil aggregate completion context")
+	}
 	if !c.oneShotInput {
 		return
 	}
@@ -97,10 +102,12 @@ func (c *shutdownCoordinator) maybeFinishAggregateInput() {
 	// A markerless peer predates input batching, so there is no protocol event
 	// that proves the next transport frame is not another read. Preserve the
 	// legacy bounded recheck for that mixed-version direction only.
-	if c.legacyInputWait != nil {
-		c.legacyInputWait()
-	} else {
-		time.Sleep(c.timings.legacyAggregateInputGrace)
+	wait := c.legacyInputWait
+	if wait == nil {
+		wait = ctxutil.Sleep
+	}
+	if !wait(ctx, c.timings.legacyAggregateInputGrace) {
+		return
 	}
 	if pending, _ := c.lifecycle.PendingAndActive(); pending != 0 {
 		return
@@ -111,7 +118,7 @@ func (c *shutdownCoordinator) maybeFinishAggregateInput() {
 	aggregate.FinishInput()
 }
 
-func (c *shutdownCoordinator) finalizeWhenIdle() {
+func (c *shutdownCoordinator) finalizeWhenIdle(ctx context.Context) {
 	// Pending input is registered before work starts. A map command remains
 	// active until Aggregate.Start synchronously completes its final
 	// Aggregate.Shutdown serialization. Reaching idle is
@@ -120,7 +127,7 @@ func (c *shutdownCoordinator) finalizeWhenIdle() {
 	finalPending, finalActive := c.lifecycle.PendingAndActive()
 	if finalPending == 0 && finalActive == 0 {
 		c.lifecycle.DebugReadLifecycle("No active commands and no pending files after double-check, triggering shutdown")
-		c.lifecycle.TriggerShutdown()
+		c.lifecycle.TriggerShutdown(ctx)
 		return
 	}
 

@@ -10,7 +10,7 @@ import (
 
 func TestSessionFramerPreservesFragmentedAndAdjacentCommands(t *testing.T) {
 	var got [][]string
-	handler := newBaseHandler(baseHandlerConfig{})
+	handler := newBaseHandler(context.Background(), baseHandlerConfig{})
 	handler.handleCommandCb = func(ctx context.Context, _ lcontext.LContext,
 		_ int, args []string, _ string) {
 		got = append(got, append([]string(nil), args...))

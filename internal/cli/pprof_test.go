@@ -1,12 +1,17 @@
 package cli
 
 import (
+	"context"
+	"errors"
+	"net"
+	"net/http"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestNewPProfServerSetsReadHeaderTimeout(t *testing.T) {
-	server, err := NewPProfServer("127.0.0.1:0")
+	server, err := NewPProfServer(context.Background(), "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewPProfServer: %v", err)
 	}
@@ -14,6 +19,70 @@ func TestNewPProfServerSetsReadHeaderTimeout(t *testing.T) {
 
 	if got := server.server.ReadHeaderTimeout; got != pprofReadHeaderTimeout {
 		t.Fatalf("ReadHeaderTimeout = %v, want %v", got, pprofReadHeaderTimeout)
+	}
+}
+
+func TestNewPProfServerCancellationStopsBlockedListen(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	entered := make(chan struct{})
+	result := make(chan error, 1)
+	go func() {
+		_, err := newPProfServer(ctx, "127.0.0.1:0",
+			func(ctx context.Context, network, address string) (net.Listener, error) {
+				if network != "tcp" || address != "127.0.0.1:0" {
+					t.Errorf("listen target = %s %s", network, address)
+				}
+				close(entered)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			})
+		result <- err
+	}()
+	<-entered
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("blocked listen error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pprof listen did not stop after context cancellation")
+	}
+}
+
+func TestNewPProfServerRejectsNilContext(t *testing.T) {
+	var nilContext context.Context
+	server, err := NewPProfServer(nilContext, "127.0.0.1:0")
+	if server != nil || err == nil {
+		t.Fatalf("NewPProfServer(nil) = (%v, %v), want nil server and error", server, err)
+	}
+}
+
+func TestPProfShutdownCancellationStopsBlockedServeWait(t *testing.T) {
+	server := &PProfServer{
+		server: &http.Server{},
+		done:   make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- server.Shutdown(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Shutdown error = %v, want context.Canceled", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Shutdown ignored cancellation while Serve completion was blocked")
+	}
+}
+
+func TestPProfShutdownRejectsNilContext(t *testing.T) {
+	server := &PProfServer{server: &http.Server{}, done: make(chan struct{})}
+	var nilContext context.Context
+	if err := server.Shutdown(nilContext); err == nil {
+		t.Fatal("Shutdown(nil) succeeded, want context error")
 	}
 }
 

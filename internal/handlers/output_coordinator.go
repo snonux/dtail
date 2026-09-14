@@ -232,12 +232,16 @@ func (c *outputCoordinator) acknowledgeClose() {
 	})
 }
 
-func (c *outputCoordinator) waitForCloseAcknowledgement() {
+func (c *outputCoordinator) waitForCloseAcknowledgement(ctx context.Context) {
+	if ctx == nil {
+		panic("handlers: nil close acknowledgement context")
+	}
 	h := c.handler
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
 	case <-c.ackCloseReceived:
+	case <-ctx.Done():
 	case <-timer.C:
 		h.Logger().Debug(h.user, "Shutdown timeout reached, enforcing shutdown")
 	case <-h.done.Done():
@@ -277,14 +281,10 @@ func (c *outputCoordinator) ensureFlushChannels() {
 	})
 }
 
-func (c *outputCoordinator) flush() error {
-	return c.flushContext(context.Background())
-}
-
 func (c *outputCoordinator) flushContext(ctx context.Context) error {
 	h := c.handler
 	if ctx == nil {
-		ctx = context.Background()
+		panic("handlers: nil flush context")
 	}
 	c.ensureFlushChannels()
 	h.Logger().Trace(h.user, "flush()")
@@ -368,13 +368,17 @@ func (c *outputCoordinator) reportFlushError(generation uint64, err error) {
 	}
 }
 
-func (c *outputCoordinator) requestCloseSync() {
+func (c *outputCoordinator) requestCloseSync(ctx context.Context) {
+	if ctx == nil {
+		panic("handlers: nil close synchronization context")
+	}
 	h := c.handler
 	if !c.readerSeen.Load() {
 		go func() {
 			defer recoverHandlerPanic(h.Logger(), h.user, "shutdown acknowledgement sender", h.abortAfterPanic)
 			select {
 			case c.serverMessages <- ".syn close connection":
+			case <-ctx.Done():
 			case <-h.done.Done():
 			}
 		}()

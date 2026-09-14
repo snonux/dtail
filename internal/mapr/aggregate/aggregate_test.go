@@ -115,7 +115,7 @@ func TestAggregateSerializationLoopTickProgressesWithPendingRequest(t *testing.T
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	aggregate.PrepareOutput(make(chan string, 1))
+	aggregate.PrepareOutput(context.Background(), make(chan string, 1))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ticker := time.NewTicker(time.Millisecond)
@@ -267,7 +267,7 @@ func TestAggregateShutdownSerializesWithPendingRequest(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	messages := make(chan string, 10)
-	aggregate.PrepareOutput(messages)
+	aggregate.PrepareOutput(context.Background(), messages)
 
 	processor := NewProcessor(aggregate, "test")
 	line := "INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|MAPREDUCE:STATS|currentConnections=0|lifetimeConnections=1"
@@ -282,7 +282,7 @@ func TestAggregateShutdownSerializesWithPendingRequest(t *testing.T) {
 	if got := len(aggregate.serialize); got != 1 {
 		t.Fatalf("pending serialization requests = %d, want 1", got)
 	}
-	aggregate.Shutdown()
+	aggregate.Shutdown(context.Background())
 
 	select {
 	case result := <-messages:
@@ -334,7 +334,7 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 	// in AggregateSet.Serialize. While it is blocked we advance the live state
 	// for the same group, then cancel the serialize context.
 	messages := make(chan string)
-	agg.maprMessages = messages
+	agg.PrepareOutput(context.Background(), messages)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -397,6 +397,236 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 	}
 	if got := set.FValues[lenStorage]; got != float64(len("new-len")) {
 		t.Fatalf("expected latest len() numeric value to survive cancel, got %v", got)
+	}
+}
+
+func TestAggregateShutdownHonorsContextWhileSerializationOwnsPermit(t *testing.T) {
+	ensureTestServerConfig(t)
+
+	aggregate, err := New(
+		`from STATS select count($time),$time group by $time interval 3600`,
+		config.Server.MapreduceLogFormat, logging.NopLogger{},
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	messages := make(chan string)
+	aggregate.PrepareOutput(context.Background(), messages)
+
+	aggregate.groupMu.Lock()
+	aggregate.groupSets["held"] = &mapr.AggregateSet{
+		Samples: 1,
+		FValues: map[string]float64{aggregate.query.Select[0].FieldStorage: 1},
+		SValues: map[string]string{aggregate.query.Select[1].FieldStorage: "held"},
+	}
+	aggregate.groupMu.Unlock()
+
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	firstDone := make(chan struct{})
+	go func() {
+		aggregate.doSerialize(firstCtx)
+		close(firstDone)
+	}()
+	waitForAggregateSnapshot(t, aggregate)
+
+	secondCtx, cancelSecond := context.WithCancel(context.Background())
+	secondDone := make(chan struct{})
+	go func() {
+		aggregate.Shutdown(secondCtx)
+		close(secondDone)
+	}()
+	waitForAggregateCondition(t, time.Second, "Shutdown did not start finalization", func() bool {
+		aggregate.terminalMu.Lock()
+		defer aggregate.terminalMu.Unlock()
+		return aggregate.terminalState == aggregateFinalizing
+	})
+	select {
+	case <-secondDone:
+		t.Fatal("Shutdown returned while another serialization retained ownership")
+	default:
+	}
+	cancelSecond()
+	select {
+	case <-secondDone:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Shutdown ignored cancellation while waiting for serialization ownership")
+	}
+	select {
+	case <-firstDone:
+		t.Fatal("first serialization did not retain ownership while its send was blocked")
+	default:
+	}
+
+	cancelFirst()
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first serialization did not stop after cancellation")
+	}
+}
+
+func TestAggregateShutdownHonorsContextWhileProcessorIsActive(t *testing.T) {
+	ensureTestServerConfig(t)
+	aggregate, err := New(
+		`from STATS select count($time) interval 3600`,
+		config.Server.MapreduceLogFormat, logging.NopLogger{},
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	processor := NewProcessor(aggregate, "blocked")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		aggregate.Shutdown(ctx)
+		close(done)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Shutdown ignored cancellation while waiting for an active processor")
+	}
+	if err := processor.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestAggregateShutdownJoiningCallerHonorsItsOwnContext(t *testing.T) {
+	ensureTestServerConfig(t)
+	aggregate, err := New(
+		`from STATS select count($time) interval 3600`,
+		config.Server.MapreduceLogFormat, logging.NopLogger{},
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	processor := NewProcessor(aggregate, "blocked")
+	ownerClaimed := make(chan struct{})
+	releaseOwner := make(chan struct{})
+	aggregate.finalizationOwnerHook = func() {
+		close(ownerClaimed)
+		<-releaseOwner
+	}
+
+	ownerDone := make(chan struct{})
+	go func() {
+		aggregate.Shutdown(context.Background())
+		close(ownerDone)
+	}()
+	select {
+	case <-ownerClaimed:
+	case <-time.After(time.Second):
+		t.Fatal("Shutdown did not claim finalizer ownership")
+	}
+
+	joinCtx, cancelJoin := context.WithCancel(context.Background())
+	joinDone := make(chan struct{})
+	go func() {
+		aggregate.Shutdown(joinCtx)
+		close(joinDone)
+	}()
+	cancelJoin()
+	select {
+	case <-joinDone:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("joining Shutdown ignored its own canceled context")
+	}
+	select {
+	case <-ownerDone:
+		t.Fatal("joining caller cancellation stopped the owning finalization")
+	default:
+	}
+
+	if err := processor.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(releaseOwner)
+	select {
+	case <-ownerDone:
+	case <-time.After(time.Second):
+		t.Fatal("owning Shutdown did not finish after processor close")
+	}
+}
+
+func TestAggregatePrepareOutputNilDisablesSerialization(t *testing.T) {
+	ensureTestServerConfig(t)
+	aggregate, err := New(
+		`from STATS select count($time) interval 3600`,
+		config.Server.MapreduceLogFormat, logging.NopLogger{},
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	aggregate.groupMu.Lock()
+	aggregate.groupSets[""] = &mapr.AggregateSet{
+		Samples: 1,
+		FValues: map[string]float64{aggregate.query.Select[0].FieldStorage: 1},
+		SValues: make(map[string]string),
+	}
+	aggregate.groupMu.Unlock()
+
+	aggregate.PrepareOutput(context.Background(), make(chan string, 1))
+	aggregate.PrepareOutput(context.Background(), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		aggregate.doSerialize(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("serialization blocked on a nil output channel")
+	}
+	if got := aggregate.countGroups(); got != 1 {
+		t.Fatalf("serialization with nil output retained %d groups, want 1", got)
+	}
+}
+
+func TestAggregateRejectsNilContexts(t *testing.T) {
+	ensureTestServerConfig(t)
+	var nilContext context.Context
+
+	tests := map[string]func(*Aggregate){
+		"Start": func(aggregate *Aggregate) {
+			aggregate.Start(nilContext, make(chan string, 1))
+		},
+		"PrepareOutput": func(aggregate *Aggregate) {
+			aggregate.PrepareOutput(nilContext, make(chan string, 1))
+		},
+		"Serialize": func(aggregate *Aggregate) {
+			aggregate.Serialize(nilContext)
+		},
+		"PrepareShutdown": func(aggregate *Aggregate) {
+			aggregate.PrepareShutdown(nilContext)
+		},
+		"Shutdown": func(aggregate *Aggregate) {
+			aggregate.Shutdown(nilContext)
+		},
+		"AbortAndWait": func(aggregate *Aggregate) {
+			aggregate.AbortAndWait(nilContext)
+		},
+	}
+
+	for name, invoke := range tests {
+		t.Run(name, func(t *testing.T) {
+			aggregate, err := New(
+				`from STATS select count($time) interval 3600`,
+				config.Server.MapreduceLogFormat, logging.NopLogger{},
+			)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			defer func() {
+				if recover() == nil {
+					t.Fatal("nil context did not panic")
+				}
+			}()
+			invoke(aggregate)
+		})
 	}
 }
 
@@ -463,7 +693,7 @@ func TestAggregateProducesResults(t *testing.T) {
 		}
 
 		// Shutdown and get results
-		agg.Shutdown()
+		agg.Shutdown(context.Background())
 
 		// Cancel context to stop background goroutines
 		cancel()
@@ -563,7 +793,7 @@ func TestAggregateConcurrency(t *testing.T) {
 	wg.Wait()
 
 	// Shutdown and get results
-	agg.Shutdown()
+	agg.Shutdown(context.Background())
 	cancel()
 	<-startDone
 
@@ -656,7 +886,7 @@ func TestAggregateAbruptTerminationWinsBeforeProducerChannelCloses(t *testing.T)
 						panicValue <- recovered
 					}
 				}()
-				aggregate.Shutdown()
+				aggregate.Shutdown(context.Background())
 			}()
 			select {
 			case <-shutdownDone:
@@ -683,10 +913,10 @@ func TestAggregateFinalizationWinsConcurrentAbort(t *testing.T) {
 	// unbuffered output channel then holds Shutdown inside final serialization
 	// while Abort races with it. Start must stay alive, keeping channel ownership
 	// with the producer until the winning serialization completes.
-	aggregate.PrepareShutdown()
+	aggregate.PrepareShutdown(context.Background())
 	shutdownDone := make(chan struct{})
 	go func() {
-		aggregate.Shutdown()
+		aggregate.Shutdown(context.Background())
 		close(shutdownDone)
 	}()
 	waitForAggregateSnapshot(t, aggregate)
@@ -767,10 +997,10 @@ func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
 
 	// Graceful shutdown claims and binds its output context before canceling
 	// command work. Deliberately let Start wake and enter shutdown first: it
-	// must still use drainCtx, otherwise the over-capacity result blocks until
-	// the context-insensitive ten-second fallback expires.
+	// must still use drainCtx, otherwise the over-capacity result cannot be
+	// canceled by the output consumer.
 	drainCtx, cancelDrain := context.WithCancel(context.Background())
-	aggregate.PrepareShutdownContext(drainCtx)
+	aggregate.PrepareShutdown(drainCtx)
 	cancelCommand()
 
 	waitForAggregateCondition(t, 2*time.Second, "Start did not enter final serialization", func() bool {
@@ -791,7 +1021,7 @@ func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
 
 	// A later graceful participant joins the completed terminal result rather
 	// than starting a second serialization with a different context.
-	aggregate.ShutdownContext(context.Background())
+	aggregate.Shutdown(context.Background())
 	var emitted int
 	for range messages {
 		emitted++
@@ -849,7 +1079,7 @@ func TestAggregateProcessorCloseReleasesAccountingWhenFlushPanics(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		aggregate.AbortAndWait()
+		aggregate.AbortAndWait(context.Background())
 		close(done)
 	}()
 	select {
@@ -1000,7 +1230,7 @@ func TestAggregateStreamingContinuesWithoutFinishInput(t *testing.T) {
 	if err := processor.Close(); err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-	agg.Shutdown()
+	agg.Shutdown(context.Background())
 	select {
 	case <-startDone:
 	case <-time.After(2 * time.Second):
@@ -1014,9 +1244,8 @@ func TestAggregateStreamingContinuesWithoutFinishInput(t *testing.T) {
 // in production via baseHandler.Shutdown -> Aggregate.Shutdown ->
 // doSerialize, which runs on a different goroutine than the one executing Start.
 // Before the fix the write in Start was unsynchronized while doSerialize read
-// the field under serializeMu: a data race under the Go memory model even though
-// the nil check prevented a crash. Start now publishes the field under
-// serializeMu (the same lock doSerialize holds), establishing happens-before, so
+// the field: a data race under the Go memory model even though the nil check
+// prevented a crash. PrepareOutput now publishes an atomic output holder, so
 // -race must stay clean across many tight iterations.
 func TestAggregateStartDoSerializeFieldRace(t *testing.T) {
 	ensureTestServerConfig(t)

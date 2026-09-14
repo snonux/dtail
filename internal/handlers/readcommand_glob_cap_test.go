@@ -156,7 +156,7 @@ func (s *globCapTestServer) CompletePendingFile() (int32, int32) {
 func (s *globCapTestServer) PendingAndActive() (int32, int32) {
 	return atomic.LoadInt32(&s.pendingFiles), 0
 }
-func (s *globCapTestServer) TriggerShutdown() {}
+func (s *globCapTestServer) TriggerShutdown(context.Context) {}
 
 // verify the interface is satisfied at compile time
 var _ readCommandServer = (*globCapTestServer)(nil)

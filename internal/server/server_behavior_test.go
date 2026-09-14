@@ -111,7 +111,7 @@ func TestInternalUserAuthenticationPolicies(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := s.Callback(testConnMetadata{user: tt.user, remoteAddr: tt.remoteAddr}, []byte(tt.secret))
+			_, err := s.Callback(context.Background(), testConnMetadata{user: tt.user, remoteAddr: tt.remoteAddr}, []byte(tt.secret))
 			if tt.wantOK && err != nil {
 				t.Fatalf("Callback() error = %v, want authorization", err)
 			}
@@ -126,11 +126,41 @@ func TestBackgroundCanSSHSkipsUnresolvableAllowlistEntries(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{logger: logging.NopLogger{}}
-	if s.backgroundCanSSH(nil, "secret", "127.0.0.1", "secret", []string{"%%%", "127.0.0.1"}) != true {
+	if s.backgroundCanSSH(context.Background(), nil, "secret", "127.0.0.1", "secret", []string{"%%%", "127.0.0.1"}) != true {
 		t.Fatal("backgroundCanSSH() did not continue past an invalid allowlist entry")
 	}
-	if s.backgroundCanSSH(nil, "wrong", "127.0.0.1", "secret", []string{"127.0.0.1"}) {
+	if s.backgroundCanSSH(context.Background(), nil, "wrong", "127.0.0.1", "secret", []string{"127.0.0.1"}) {
 		t.Fatal("backgroundCanSSH() accepted the wrong secret")
+	}
+}
+
+func TestBackgroundCanSSHCancellationStopsBlockedDNSLookup(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	entered := make(chan struct{})
+	s := &Server{
+		logger: logging.NopLogger{},
+		lookupIPAddr: func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "blocked.example" {
+				t.Errorf("lookup host = %q, want blocked.example", host)
+			}
+			close(entered)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	result := make(chan bool, 1)
+	go func() {
+		result <- s.backgroundCanSSH(ctx, nil, "secret", "127.0.0.1", "secret", []string{"blocked.example"})
+	}()
+	<-entered
+	cancel()
+	select {
+	case authorized := <-result:
+		if authorized {
+			t.Fatal("backgroundCanSSH authorized after canceled DNS lookup")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("backgroundCanSSH did not stop blocked DNS lookup after cancellation")
 	}
 }
 
@@ -227,6 +257,33 @@ func TestHandleConnectionReleasesPreAuthOnEarlyFailures(t *testing.T) {
 			t.Fatalf("pre-auth connections = %d, want 0", s.stats.preAuthConnections)
 		}
 	})
+}
+
+func TestHandleConnectionCancellationInterruptsSSHHandshake(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+	s := &Server{
+		logger:          logging.NopLogger{},
+		stats:           newStats(2, nil),
+		sshServerConfig: &gossh.ServerConfig{},
+	}
+	s.stats.reservePreAuth()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.handleConnection(ctx, serverConn)
+		close(done)
+	}()
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("canceled connection context did not interrupt SSH handshake")
+	}
+	if s.stats.preAuthConnections != 0 {
+		t.Fatalf("pre-auth connections = %d after cancellation, want 0", s.stats.preAuthConnections)
+	}
 }
 
 func TestHandleRequests(t *testing.T) {

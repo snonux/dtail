@@ -44,7 +44,7 @@ type dserverLifecycleDependencies struct {
 	stderr               io.Writer
 	loggers              clients.LoggerDependencies
 	enableProfilingRates func()
-	newPProfServer       func(string) (profileServer, error)
+	newPProfServer       func(context.Context, string) (profileServer, error)
 	newBackgroundJobs    func(config.RuntimeConfig, clients.LoggerDependencies) server.BackgroundJobs
 	newServer            func(config.RuntimeConfig, handlers.HandlerLoggers, server.BackgroundJobs) (dserverService, error)
 	notifyContext        notifyContextFunc
@@ -110,8 +110,8 @@ func run() int {
 			stderr:               os.Stderr,
 			loggers:              loggers,
 			enableProfilingRates: cli.EnableProfilingRates,
-			newPProfServer: func(address string) (profileServer, error) {
-				return cli.NewPProfServer(address)
+			newPProfServer: func(ctx context.Context, address string) (profileServer, error) {
+				return cli.NewPProfServer(ctx, address)
 			},
 			newBackgroundJobs: func(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) server.BackgroundJobs {
 				return jobs.New(cfg, loggers)
@@ -140,13 +140,13 @@ func runDServerLifecycle(parent context.Context, cancel context.CancelFunc, wg *
 		// are gated on --pprof so they cost nothing when profiling is off.
 		deps.enableProfilingRates()
 
-		pprofServer, pprofErr := deps.newPProfServer(pprofAddress)
+		pprofServer, pprofErr := deps.newPProfServer(parent, pprofAddress)
 		if pprofErr != nil {
 			deps.loggers.Client.Error("Unable to start PProf", pprofErr)
 		} else {
 			deps.loggers.Client.Info("Starting PProf", pprofServer.Address())
 			pprofServer.Start(nil)
-			defer shutdownPProf(pprofServer, deps.loggers.Client)
+			defer shutdownPProf(parent, pprofServer, deps.loggers.Client)
 		}
 	}
 
@@ -184,8 +184,8 @@ func runDServerLifecycle(parent context.Context, cancel context.CancelFunc, wg *
 	return status
 }
 
-func shutdownPProf(pprofServer pprofShutdowner, logger logging.Logger) {
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+func shutdownPProf(parent context.Context, pprofServer pprofShutdowner, logger logging.Logger) {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer shutdownCancel()
 	if err := pprofServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Unable to stop PProf", err)

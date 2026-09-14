@@ -62,7 +62,7 @@ func TestRunDServerLifecycleCleansUpConstructionFailureInOrder(t *testing.T) {
 		enableProfilingRates: func() {
 			recorder.add("profiling enabled")
 		},
-		newPProfServer: func(address string) (profileServer, error) {
+		newPProfServer: func(_ context.Context, address string) (profileServer, error) {
 			recorder.add("pprof created: " + address)
 			return profile, nil
 		},

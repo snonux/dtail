@@ -29,8 +29,14 @@ type baseHandler struct {
 	logger           logging.Logger
 	readerLogger     logging.Logger
 	serverlessOutput io.Writer
-	done             *internal.Done
-	user             *user.User
+	// connCtx is the SSH or in-process connection lifetime. commandRootCtx is
+	// its session-work child, canceled for handler-wide command replacement or
+	// shutdown without canceling the owning transport.
+	connCtx        context.Context
+	commandRootCtx context.Context
+	cancelCommands context.CancelFunc
+	done           *internal.Done
+	user           *user.User
 
 	// aggregate is written by handleMapCommand on the command-dispatch
 	// goroutine and read concurrently by Shutdown, Aggregate, and
@@ -45,7 +51,11 @@ type baseHandler struct {
 // newBaseHandler builds the three focused session components and binds them to
 // one stable handler pointer. Keeping this wiring in one place prevents partial
 // handlers whose components disagree about the session they serve.
-func newBaseHandler(cfg baseHandlerConfig) *baseHandler {
+func newBaseHandler(connCtx context.Context, cfg baseHandlerConfig) *baseHandler {
+	if connCtx == nil {
+		panic("handlers: nil connection context")
+	}
+	commandRootCtx, cancelCommands := context.WithCancel(connCtx)
 	serverMessages := cfg.serverMessages
 	if serverMessages == nil {
 		serverMessages = make(chan string, 10)
@@ -59,6 +69,9 @@ func newBaseHandler(cfg baseHandlerConfig) *baseHandler {
 		logger:           logging.OrNop(cfg.logger),
 		readerLogger:     logging.OrNop(cfg.readerLogger),
 		serverlessOutput: cfg.serverlessOutput,
+		connCtx:          connCtx,
+		commandRootCtx:   commandRootCtx,
+		cancelCommands:   cancelCommands,
 		done:             internal.NewDone(),
 		user:             cfg.user,
 	}
@@ -67,10 +80,9 @@ func newBaseHandler(cfg baseHandlerConfig) *baseHandler {
 		maxCommandFrameSize: cfg.maxCommandFrameSize,
 	}
 	h.commandDispatcher = &commandDispatcher{
-		handler:     h,
-		codec:       newProtocolCodec(cfg.user, cfg.logger),
-		commandDone: internal.NewDone(),
-		serverless:  cfg.serverless,
+		handler:    h,
+		codec:      newProtocolCodec(cfg.user, cfg.logger),
+		serverless: cfg.serverless,
 	}
 	h.outputCoordinator = &outputCoordinator{
 		handler:          h,
@@ -101,15 +113,15 @@ func (h *baseHandler) Shutdown() {
 	h.stopping = true
 	h.aborting = true
 	h.outputAbort.Shutdown()
+	h.cancelCommands()
 	if aggregate := h.getAggregate(); aggregate != nil {
 		aggregate.Abort()
 	}
-	h.commandDone.Shutdown()
 	h.commandMu.Unlock()
 
 	if aggregate := h.getAggregate(); aggregate != nil {
 		h.Logger().Info(h.user, "Aborting output aggregate")
-		aggregate.AbortAndWait()
+		aggregate.AbortAndWait(h.connCtx)
 	}
 	h.done.Shutdown()
 	h.commandWg.Wait()
@@ -132,28 +144,32 @@ func (h *baseHandler) setAggregate(aggregate *mapaggregate.Aggregate) {
 
 // shutdown gracefully drains output, performs the close acknowledgement
 // handshake, and then closes the session.
-func (h *baseHandler) shutdown() {
+func (h *baseHandler) shutdown(ctx context.Context) {
+	if ctx == nil {
+		panic("handlers: nil shutdown context")
+	}
 	activeCommands := atomic.LoadInt32(&h.activeCommands)
 	h.Logger().Info(h.user, "shutdown() called", "activeCommands", activeCommands,
 		"outputMode", h.output.enabled())
 
 	if h.output.enabled() {
-		if err := h.flushOutput(context.Background()); err != nil {
+		if err := h.flushOutput(ctx); err != nil {
 			h.reportFlushError(0, fmt.Errorf("flush direct output: %w", err))
 		}
 	}
 
 	if aggregate := h.getAggregate(); aggregate != nil {
 		h.Logger().Info(h.user, "Shutting down output aggregate in shutdown()")
-		aggregate.Shutdown()
+		aggregate.Shutdown(ctx)
 	}
 
-	if err := h.flush(); err != nil {
+	if err := h.flushContext(ctx); err != nil {
 		h.reportFlushError(0, err)
 	}
 
-	h.requestCloseSync()
-	h.waitForCloseAcknowledgement()
+	h.requestCloseSync(ctx)
+	h.waitForCloseAcknowledgement(ctx)
+	h.cancelCommands()
 	h.done.Shutdown()
 }
 
@@ -164,7 +180,7 @@ func (h *baseHandler) abortAfterPanic() {
 	h.stopping = true
 	h.aborting = true
 	h.outputAbort.Shutdown()
-	h.commandDone.Shutdown()
+	h.cancelCommands()
 	aggregate := h.getAggregate()
 	h.commandMu.Unlock()
 	if aggregate != nil {

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"testing"
@@ -18,7 +19,7 @@ import (
 func frameSizeTestServerHandler(maxFrameBytes int) *ServerHandler {
 	u := &userserver.User{Name: "frame-size-test-user"}
 	h := &ServerHandler{
-		baseHandler: newBaseHandler(baseHandlerConfig{
+		baseHandler: newBaseHandler(context.Background(), baseHandlerConfig{
 			logger:              handlerTestLogger,
 			serverMessages:      make(chan string, 8),
 			maprMessages:        make(chan string, 4),
@@ -40,7 +41,7 @@ func frameSizeTestServerHandler(maxFrameBytes int) *ServerHandler {
 func frameSizeTestHealthHandler(maxFrameBytes int) *HealthHandler {
 	u := &userserver.User{Name: "frame-size-health-test-user"}
 	return &HealthHandler{
-		baseHandler: newBaseHandler(baseHandlerConfig{
+		baseHandler: newBaseHandler(context.Background(), baseHandlerConfig{
 			logger:              handlerTestLogger,
 			serverMessages:      make(chan string, 8),
 			maprMessages:        make(chan string, 4),
@@ -75,6 +76,12 @@ func TestWriteOversizeFrameClosesSession(t *testing.T) {
 	default:
 		t.Fatalf("expected handler done channel to be closed after oversize frame")
 	}
+	select {
+	case <-h.commandRootCtx.Done():
+		// expected
+	default:
+		t.Fatal("expected oversize frame shutdown to cancel command work")
+	}
 }
 
 // TestWriteOversizeFrameHealthHandlerClosesSession exercises the same limit
@@ -98,6 +105,12 @@ func TestWriteOversizeFrameHealthHandlerClosesSession(t *testing.T) {
 		// expected
 	default:
 		t.Fatalf("expected health handler done channel to be closed after oversize frame")
+	}
+	select {
+	case <-h.commandRootCtx.Done():
+		// expected
+	default:
+		t.Fatal("expected oversize health frame shutdown to cancel command work")
 	}
 }
 

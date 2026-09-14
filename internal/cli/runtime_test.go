@@ -32,6 +32,22 @@ func TestNewClientRuntimeReturnsLoggerStartError(t *testing.T) {
 	}
 }
 
+func TestNewClientRuntimeRejectsNilContext(t *testing.T) {
+	started := false
+	var nilContext context.Context
+	runtime, err := newClientRuntime(nilContext, profiling.Flags{}, "test",
+		func(context.Context, *sync.WaitGroup, source.Source) error {
+			started = true
+			return nil
+		})
+	if runtime != nil || err == nil || !strings.Contains(err.Error(), "context") {
+		t.Fatalf("newClientRuntime(nil) = (%v, %v), want nil runtime and context error", runtime, err)
+	}
+	if started {
+		t.Fatal("logger started before nil context was rejected")
+	}
+}
+
 func TestNewClientRuntimeStopsEnabledProfilerWhenLoggerStartFails(t *testing.T) {
 	profiler := &recordingClientProfiler{}
 	runtime, err := newClientRuntimeWithProfiler(

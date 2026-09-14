@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
-	"fmt"
+	"errors"
 	"runtime"
 	"testing"
 	"time"
@@ -14,10 +14,7 @@ import (
 
 // TestHandleCommandCancelsContextAfterCommandFinished verifies that
 // baseHandler.handleCommand no longer discards the cancel func returned by
-// newCommandContext. Pre-fix the cancel was dropped, so the per-command
-// context (and the watcher goroutine spawned by newCommandContext) leaked
-// for the lifetime of the SSH session. The cancel must fire when
-// commandFinished is invoked.
+// newCommandContext. The cancel must fire when commandFinished is invoked.
 func TestHandleCommandCancelsContextAfterCommandFinished(t *testing.T) {
 
 	handler := newSessionTestHandler("handle-command-cancel-user")
@@ -63,53 +60,27 @@ func TestHandleCommandCancelsContextAfterCommandFinished(t *testing.T) {
 	}
 }
 
-// TestNewCommandContextReleasesWatcherGoroutine ensures the watcher
-// goroutine spawned by newCommandContext exits promptly once either the
-// per-command cancel fires or the handler is shut down. This is the
-// defensive safety net that keeps a leak from accumulating even if a
-// future caller forgets to invoke cancel.
-func TestNewCommandContextReleasesWatcherGoroutine(t *testing.T) {
-	h := newBaseHandler(baseHandlerConfig{})
-	t.Cleanup(h.done.Shutdown)
+// TestNewCommandContextDoesNotSpawnWatcherGoroutine proves command context
+// construction has constant goroutine cost. Cancellation flows through the
+// handler-owned parent context instead of a goroutine watching a done channel.
+func TestNewCommandContextDoesNotSpawnWatcherGoroutine(t *testing.T) {
+	h := newBaseHandler(context.Background(), baseHandlerConfig{})
+	t.Cleanup(h.Shutdown)
 
 	baseline := runtime.NumGoroutine()
 
 	const N = 100
-	for i := 0; i < N; i++ {
-		_, cancel := h.newCommandContext(context.Background())
-		cancel()
-	}
-
-	waitForHandlerCondition(t, time.Second, "watcher goroutines did not exit after cancellation", func() bool {
-		return runtime.NumGoroutine()-baseline <= 4
-	}, func() string {
-		return fmt.Sprintf("goroutine delta=%d", runtime.NumGoroutine()-baseline)
-	})
-}
-
-// TestNewCommandContextHandlerShutdownReleasesWatcher verifies the
-// defensive safety net: if a caller forgets to cancel a per-command
-// context, shutting down the handler still drains the watcher goroutine
-// rather than leaving it blocked until process exit.
-func TestNewCommandContextHandlerShutdownReleasesWatcher(t *testing.T) {
-	h := newBaseHandler(baseHandlerConfig{})
-
-	baseline := runtime.NumGoroutine()
-
-	const N = 50
 	ctxs := make([]context.Context, 0, N)
 	for i := 0; i < N; i++ {
-		ctx, _ := h.newCommandContext(context.Background())
+		ctx, _ := h.newCommandContext()
 		ctxs = append(ctxs, ctx)
 	}
 
-	waitForHandlerCondition(t, time.Second, "command watchers did not start", func() bool {
-		return runtime.NumGoroutine()-baseline >= N/2
-	}, func() string {
-		return fmt.Sprintf("goroutine delta=%d, want at least %d", runtime.NumGoroutine()-baseline, N/2)
-	})
+	if delta := runtime.NumGoroutine() - baseline; delta > 4 {
+		t.Fatalf("creating %d command contexts spawned goroutines: delta=%d", N, delta)
+	}
 
-	h.done.Shutdown()
+	h.cancelCommands()
 
 	deadline := time.Now().Add(time.Second)
 	for i, ctx := range ctxs {
@@ -124,9 +95,36 @@ func TestNewCommandContextHandlerShutdownReleasesWatcher(t *testing.T) {
 		}
 	}
 
-	waitForHandlerCondition(t, time.Until(deadline), "watcher goroutines leaked past shutdown", func() bool {
-		return runtime.NumGoroutine()-baseline <= 4
-	}, func() string {
-		return fmt.Sprintf("goroutine delta=%d", runtime.NumGoroutine()-baseline)
-	})
+}
+
+func TestConnectionCancellationStopsBlockedCommand(t *testing.T) {
+	connCtx, cancelConnection := context.WithCancel(context.Background())
+	h := newBaseHandler(connCtx, baseHandlerConfig{})
+	t.Cleanup(h.Shutdown)
+	started := make(chan context.Context, 1)
+	stopped := make(chan struct{})
+	h.handleCommandCb = func(ctx context.Context, _ lcontext.LContext, _ int, _ []string, _ string) {
+		started <- ctx
+		<-ctx.Done()
+		close(stopped)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("BLOCK"))
+	go h.handleCommand("protocol " + protocol.ProtocolCompat + " base64 " + encoded)
+	var commandCtx context.Context
+	select {
+	case commandCtx = <-started:
+	case <-time.After(time.Second):
+		t.Fatal("command did not start")
+	}
+
+	cancelConnection()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("blocked command outlived its connection context")
+	}
+	if !errors.Is(commandCtx.Err(), context.Canceled) {
+		t.Fatalf("command context error = %v, want context.Canceled", commandCtx.Err())
+	}
 }

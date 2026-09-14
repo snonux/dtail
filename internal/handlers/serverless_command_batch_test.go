@@ -218,7 +218,7 @@ func TestShutdownCoordinatorDelegatesAggregateCompletionToCommandBatch(t *testin
 	}
 	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, admittedAggregate)
 
-	coordinator.maybeFinishAggregateInput()
+	coordinator.maybeFinishAggregateInput(context.Background())
 
 	if got := server.coordinationCalls.Load(); got != 1 {
 		t.Fatalf("batch coordination calls = %d, want 1", got)
@@ -274,8 +274,8 @@ func TestReadCommandProcessorUsesAggregateCapturedAtAdmission(t *testing.T) {
 	}
 
 	oldOutput := make(chan string, 4)
-	oldAggregate.PrepareOutput(oldOutput)
-	oldAggregate.Shutdown()
+	oldAggregate.PrepareOutput(context.Background(), oldOutput)
+	oldAggregate.Shutdown(context.Background())
 	select {
 	case result := <-oldOutput:
 		if !strings.Contains(result, "count($time)≔1") {
@@ -286,8 +286,8 @@ func TestReadCommandProcessorUsesAggregateCapturedAtAdmission(t *testing.T) {
 	}
 
 	replacementOutput := make(chan string, 4)
-	replacementAggregate.PrepareOutput(replacementOutput)
-	replacementAggregate.Shutdown()
+	replacementAggregate.PrepareOutput(context.Background(), replacementOutput)
+	replacementAggregate.Shutdown(context.Background())
 	select {
 	case result := <-replacementOutput:
 		t.Fatalf("replacement aggregate received stale read result %q", result)
@@ -487,10 +487,10 @@ func TestSessionCommandBatchContextsKeepOverlappingGenerationsSeparate(t *testin
 		t.Fatalf("overlapping session state = pending %d, active %d; want 2, 2", pending, active)
 	}
 
-	reads[0].releasePendingInputReservation()
+	reads[0].releasePendingInputReservation(context.Background())
 	reads[0].completeInputBatch()
 	finishes[0]()
-	reads[1].releasePendingInputReservation()
+	reads[1].releasePendingInputReservation(context.Background())
 	reads[1].completeInputBatch()
 	finishes[1]()
 	if pending, active := handler.PendingAndActive(); pending != 0 || active != 0 {

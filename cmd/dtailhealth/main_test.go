@@ -86,7 +86,7 @@ func TestRunHealthLifecycleCleansUpConstructionFailureInOrder(t *testing.T) {
 	}, &wg, config.Args{}, "test-profile", healthLifecycleDependencies{
 		stderr:  &stderr,
 		loggers: loggers,
-		newPProfServer: func(address string) (profileServer, error) {
+		newPProfServer: func(_ context.Context, address string) (profileServer, error) {
 			recorder.add("pprof created: " + address)
 			return profile, nil
 		},
@@ -126,7 +126,7 @@ func TestRunHealthLifecycleCleansUpConstructionFailureInOrder(t *testing.T) {
 }
 
 func TestShutdownPProfStopsServer(t *testing.T) {
-	profile, err := cli.NewPProfServer("127.0.0.1:0")
+	profile, err := cli.NewPProfServer(context.Background(), "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("NewPProfServer: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestShutdownPProfStopsServer(t *testing.T) {
 	stopped := false
 	t.Cleanup(func() {
 		if !stopped {
-			shutdownPProf(profile, logging.NopLogger{})
+			shutdownPProf(context.Background(), profile, logging.NopLogger{})
 		}
 	})
 
@@ -156,7 +156,7 @@ func TestShutdownPProfStopsServer(t *testing.T) {
 		t.Fatalf("pprof status = %d, want %d", statusCode, http.StatusOK)
 	}
 
-	shutdownPProf(profile, logging.NopLogger{})
+	shutdownPProf(context.Background(), profile, logging.NopLogger{})
 	stopped = true
 
 	response, err = client.Get(url)

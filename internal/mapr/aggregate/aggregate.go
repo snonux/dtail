@@ -36,8 +36,9 @@ type Aggregate struct {
 	// Group sets are swapped out during serialization to avoid clone-heavy flushes.
 	groupMu   sync.Mutex
 	groupSets map[string]*mapr.AggregateSet
-	// serializeMu ensures only one serialization runs at a time.
-	serializeMu sync.Mutex
+	// serializationPermit ensures only one serialization runs at a time while
+	// still allowing a caller to abandon the wait when its context is canceled.
+	serializationPermit chan struct{}
 	// Batch processing
 	batchMu   sync.Mutex
 	batch     []rawLine
@@ -49,45 +50,45 @@ type Aggregate struct {
 	// stopSerializeTicker, which is reachable from Shutdown/Abort on the external
 	// teardown goroutine with no other happens-before edge to Start's write. An
 	// atomic.Pointer gives that publish-once/read-many access a lock-free
-	// happens-before guarantee without coupling the ticker to serializeMu:
-	// guarding it with serializeMu would make Abort's stop block behind an
+	// happens-before guarantee without coupling the ticker to the serialization
+	// permit: sharing ownership would make Abort's stop block behind an
 	// in-flight doSerialize, violating Abort's immediate, non-blocking preemption
 	// contract.
 	serializeTicker atomic.Pointer[time.Ticker]
 	serialize       chan struct{}
-	// maprMessages is the output channel for serialized results. Start or its
-	// caller publishes it through PrepareOutput, and doSerialize reads it while
-	// holding the same mutex. This lets ServerHandler publish the destination
-	// before exposing the aggregate to concurrent graceful shutdown.
-	maprMessages chan<- string
+	// maprMessages is the output channel for serialized results. Atomic
+	// publication lets ServerHandler bind the destination before exposing the
+	// aggregate to concurrent graceful shutdown without waiting behind an
+	// in-flight serialization.
+	maprMessages atomic.Pointer[aggregateOutput]
 	// Stats
 	linesProcessed atomic.Uint64
 	errors         atomic.Uint64
 	filesProcessed atomic.Uint64
 	// Synchronization for clean shutdown.
-	processorsWg sync.WaitGroup
-	processorMu  sync.Mutex
-	// processorsSealed prevents Wait from racing a late processor registration.
-	// Shutdown/Abort seals registration before waiting or returning; readers
-	// that reach processor creation after cancellation receive an inert processor.
+	processorMu sync.Mutex
+	// processorsSealed prevents completion waiting from racing a late processor
+	// registration. Shutdown/Abort seals registration before waiting or
+	// returning; readers that reach processor creation after cancellation receive
+	// an inert processor.
 	processorsSealed bool
+	processorCount   int
+	processorsDone   chan struct{}
 	// Track active file processors
 	activeProcessors atomic.Int32
 	startOnce        sync.Once
 	started          chan struct{}
-	shutdownOnce     sync.Once
+	shutdownStarted  bool
 	shutdownDone     chan struct{}
 	terminalMu       sync.Mutex
 	terminalState    aggregateTerminalState
-	// finalizationCtx and finalizationCancelable are fixed when finalization
-	// wins the terminal-state transition. Start may subsequently be the
-	// goroutine that executes shutdownOnce, but it must use the graceful
-	// caller's output context rather than silently replacing it with the
-	// context-insensitive Shutdown behavior.
-	finalizationCtx        context.Context
-	finalizationCancelable bool
-	serializationLoopHook  func()
-	serializationTickHook  func()
+	// finalizationCtx is fixed when finalization wins the terminal-state
+	// transition. Start may subsequently be the goroutine that executes
+	// finalization, but it must use the graceful caller's output context.
+	finalizationCtx       context.Context
+	finalizationOwnerHook func()
+	serializationLoopHook func()
+	serializationTickHook func()
 }
 
 type aggregateTerminalState uint8
@@ -101,6 +102,10 @@ const (
 type rawLine struct {
 	content  *bytes.Buffer
 	sourceID string
+}
+
+type aggregateOutput struct {
+	messages chan<- string
 }
 
 func (a *Aggregate) stopping() bool {
@@ -142,19 +147,22 @@ func New(queryStr string, defaultLogFormat string, logger logging.Logger) (*Aggr
 			return nil, fmt.Errorf("create fallback generic log format parser: %w", err)
 		}
 	}
+	serializationPermit := make(chan struct{}, 1)
+	serializationPermit <- struct{}{}
 
 	return &Aggregate{
-		logger:        logger,
-		done:          internal.NewDone(),
-		inputFinished: internal.NewDone(),
-		serialize:     make(chan struct{}, 1), // Buffered to avoid blocking
-		query:         query,
-		parser:        logParser,
-		groupSets:     make(map[string]*mapr.AggregateSet),
-		batchSize:     100, // Process 100 lines at a time
-		batch:         make([]rawLine, 0, 100),
-		started:       make(chan struct{}),
-		shutdownDone:  make(chan struct{}),
+		logger:              logger,
+		done:                internal.NewDone(),
+		inputFinished:       internal.NewDone(),
+		serialize:           make(chan struct{}, 1), // Buffered to avoid blocking
+		serializationPermit: serializationPermit,
+		query:               query,
+		parser:              logParser,
+		groupSets:           make(map[string]*mapr.AggregateSet),
+		batchSize:           100, // Process 100 lines at a time
+		batch:               make([]rawLine, 0, 100),
+		started:             make(chan struct{}),
+		shutdownDone:        make(chan struct{}),
 	}, nil
 }
 
@@ -165,55 +173,63 @@ func (a *Aggregate) countGroups() int {
 	return len(a.groupSets)
 }
 
-// Shutdown the aggregation engine.
-func (a *Aggregate) Shutdown() {
-	a.shutdown(context.Background(), false)
-}
-
-// ShutdownContext finalizes the aggregation while output remains writable.
+// Shutdown finalizes the aggregation while output remains writable.
 // Canceling ctx abandons blocked final sends promptly; the unsent snapshot is
 // re-merged before shutdown completes so cancellation never corrupts state.
-func (a *Aggregate) ShutdownContext(ctx context.Context) {
-	a.shutdown(ctx, true)
+func (a *Aggregate) Shutdown(ctx context.Context) {
+	a.shutdown(ctx, false)
 }
 
-func (a *Aggregate) shutdown(outputCtx context.Context, outputCancelable bool) {
-	finalizationCtx, finalizationCancelable, ok := a.claimFinalization(outputCtx, outputCancelable)
+// shutdown finalizes the aggregate and waits for either completion or the
+// caller's context. The Start goroutine retains ownership of its output channel
+// until finalization has completely stopped, even when its command context has
+// already been canceled.
+func (a *Aggregate) shutdown(ctx context.Context, retainOutput bool) {
+	finalizationCtx, owner, ok := a.claimFinalization(ctx, true)
 	if !ok {
 		return
 	}
-	a.shutdownOnce.Do(func() {
-		defer close(a.shutdownDone)
-		a.sealProcessors()
-		a.done.Shutdown()
-		a.stopSerializeTicker()
-		a.processorsWg.Wait()
-		a.processBatchAndWait()
-		ctx, cancel := context.WithTimeout(finalizationCtx, 10*time.Second)
-		defer cancel()
-		if finalizationCancelable {
-			a.doSerializeCancelable(ctx)
-		} else {
-			a.doSerialize(ctx)
+
+	if owner {
+		if a.finalizationOwnerHook != nil {
+			a.finalizationOwnerHook()
 		}
-	})
-	<-a.shutdownDone
+		func() {
+			defer close(a.shutdownDone)
+			processorsDone := a.sealProcessors()
+			a.done.Shutdown()
+			a.stopSerializeTicker()
+			finalizeCtx, cancel := context.WithTimeout(finalizationCtx, 10*time.Second)
+			defer cancel()
+			select {
+			case <-processorsDone:
+			case <-finalizeCtx.Done():
+				return
+			}
+			a.processBatchAndWait()
+			a.doSerialize(finalizeCtx)
+		}()
+	}
+	if retainOutput {
+		// The finalizer observes finalizationCtx itself. The Start goroutine must
+		// wait until that finalizer has completely stopped sending before its
+		// caller can close the output channel.
+		<-a.shutdownDone
+		return
+	}
+	select {
+	case <-a.shutdownDone:
+	case <-ctx.Done():
+	}
 }
 
-// PrepareShutdown claims final serialization before the aggregate's command
-// context is canceled. If Abort already owns termination, it has no effect.
-// Claiming first keeps Start from returning and letting its caller close the
-// result channel while a concurrent graceful shutdown serializes the last batch.
-func (a *Aggregate) PrepareShutdown() {
-	a.claimFinalization(context.Background(), false)
-}
-
-// PrepareShutdownContext claims final serialization and binds the output
-// lifetime that every shutdown participant must use. This must happen before
-// canceling command work so Start cannot wake first and choose an
-// context-insensitive final drain.
-func (a *Aggregate) PrepareShutdownContext(ctx context.Context) {
-	a.claimFinalization(ctx, true)
+// PrepareShutdown claims final serialization and binds the output lifetime
+// that every shutdown participant must use. This must happen before canceling
+// command work so Start cannot wake first, choose an unrelated drain context,
+// and let its caller close the result channel during final serialization. If
+// Abort already owns termination, PrepareShutdown has no effect.
+func (a *Aggregate) PrepareShutdown(ctx context.Context) {
+	a.claimFinalization(ctx, false)
 }
 
 // Abort requests output-free termination and stops background processing
@@ -234,9 +250,15 @@ func (a *Aggregate) abort() bool {
 
 // AbortAndWait requests output-free termination and waits until every input
 // processor has released its file and buffer resources.
-func (a *Aggregate) AbortAndWait() {
+func (a *Aggregate) AbortAndWait(ctx context.Context) {
+	if ctx == nil {
+		panic("aggregate: nil abort context")
+	}
 	a.Abort()
-	a.processorsWg.Wait()
+	select {
+	case <-a.processorsDoneChannel():
+	case <-ctx.Done():
+	}
 }
 
 // FinishInput signals that all one-shot input (cat/grep style file reads)
@@ -255,15 +277,13 @@ func (a *Aggregate) FinishInput() {
 // all input has been consumed, in which case all remaining data is flushed
 // and serialized before returning.
 func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
-	// Publish the output channel under serializeMu. doSerialize reads
-	// a.maprMessages while holding serializeMu (see line ~355), and it can be
-	// invoked from a different goroutine than this one — Shutdown() is called
-	// from the handler teardown path (baseHandler.Shutdown) concurrently with
-	// this Start goroutine. Writing under the same lock the reader holds
-	// establishes a happens-before edge, so the read is never torn or stale.
-	// The internal serializationLoop reader is already ordered by the go
-	// statement below, but the external Shutdown reader needs this lock.
-	a.PrepareOutput(maprMessages)
+	if ctx == nil {
+		panic("aggregate: nil start context")
+	}
+	// Publish before launching the serialization loop. ServerHandler may have
+	// already published this same destination before exposing the aggregate to
+	// graceful shutdown; repeating the atomic store is harmless.
+	a.PrepareOutput(ctx, maprMessages)
 	interval := a.query.Interval
 	if interval <= 0 {
 		interval = time.Second
@@ -317,7 +337,7 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 		// Shutdown owns the final processor join and serialization. Waiting here
 		// keeps the producer channel valid until the final result has been sent,
 		// including when command cancellation and external shutdown race.
-		a.Shutdown()
+		a.shutdown(ctx, true)
 	}
 
 	// Stop the serialization loop and wait for it to exit before returning,
@@ -340,19 +360,23 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 // scheduled. ServerHandler uses this barrier before exposing the aggregate to
 // concurrent graceful shutdown; direct callers may continue to rely on Start
 // publishing the same channel itself.
-func (a *Aggregate) PrepareOutput(maprMessages chan<- string) {
-	a.serializeMu.Lock()
-	a.maprMessages = maprMessages
-	a.serializeMu.Unlock()
+func (a *Aggregate) PrepareOutput(ctx context.Context, maprMessages chan<- string) {
+	if ctx == nil {
+		panic("aggregate: nil output context")
+	}
+	if maprMessages == nil {
+		a.maprMessages.Store(nil)
+		return
+	}
+	a.maprMessages.Store(&aggregateOutput{messages: maprMessages})
 }
 
 // claimFinalization makes graceful final output the aggregate's terminal
 // outcome. Abort and finalization race through this single state transition,
 // so only one can win. Repeated Shutdown calls join the same finalization.
-func (a *Aggregate) claimFinalization(outputCtx context.Context, outputCancelable bool) (context.Context, bool, bool) {
+func (a *Aggregate) claimFinalization(outputCtx context.Context, start bool) (context.Context, bool, bool) {
 	if outputCtx == nil {
-		outputCtx = context.Background()
-		outputCancelable = false
+		panic("aggregate: nil finalization context")
 	}
 
 	a.terminalMu.Lock()
@@ -361,16 +385,18 @@ func (a *Aggregate) claimFinalization(outputCtx context.Context, outputCancelabl
 	switch a.terminalState {
 	case aggregateRunning:
 		a.terminalState = aggregateFinalizing
-		a.finalizationCancelable = outputCancelable
 		a.finalizationCtx = outputCtx
-		return a.finalizationCtx, a.finalizationCancelable, true
 	case aggregateFinalizing:
-		return a.finalizationCtx, a.finalizationCancelable, true
 	case aggregateAborted:
 		return nil, false, false
 	default:
 		return nil, false, false
 	}
+	owner := start && !a.shutdownStarted
+	if owner {
+		a.shutdownStarted = true
+	}
+	return a.finalizationCtx, owner, true
 }
 
 // claimAbort makes abrupt, output-free termination the aggregate's terminal
@@ -554,6 +580,9 @@ func (a *Aggregate) serializationLoop(ctx context.Context) {
 // while one is already pending; that pending pass will observe all data added
 // before it acquires the aggregate locks.
 func (a *Aggregate) Serialize(ctx context.Context) {
+	if ctx == nil {
+		panic("aggregate: nil serialize context")
+	}
 	select {
 	case <-ctx.Done():
 		return
@@ -572,21 +601,21 @@ func (a *Aggregate) Serialize(ctx context.Context) {
 
 // doSerialize performs the actual serialization.
 func (a *Aggregate) doSerialize(ctx context.Context) {
-	serializeCtx := ctx
-	if _, ok := ctx.Deadline(); ok {
-		var cancel context.CancelFunc
-		serializeCtx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+	if ctx == nil {
+		panic("aggregate: nil serialization context")
 	}
-	a.doSerializeCancelable(serializeCtx)
+	a.doSerializeCancelable(ctx)
 }
 
 func (a *Aggregate) doSerializeCancelable(ctx context.Context) {
-	a.serializeMu.Lock()
-	defer a.serializeMu.Unlock()
+	if !a.acquireSerialization(ctx) {
+		return
+	}
+	defer a.releaseSerialization()
 
 	a.processBatchAndWait()
-	if a.maprMessages == nil {
+	output := a.maprMessages.Load()
+	if output == nil {
 		a.logger.Error("Aggregate maprMessages channel is nil")
 		return
 	}
@@ -602,10 +631,27 @@ func (a *Aggregate) doSerializeCancelable(ctx context.Context) {
 		*groupSet = *aggregateSet
 	}
 
-	remaining := group.Serialize(ctx, a.maprMessages)
+	remaining := group.Serialize(ctx, output.messages)
 	if len(remaining) > 0 {
 		a.mergeRemainingLocked(remaining)
 	}
+}
+
+func (a *Aggregate) acquireSerialization(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-a.serializationPermit:
+		if ctx.Err() != nil {
+			a.releaseSerialization()
+			return false
+		}
+		return true
+	}
+}
+
+func (a *Aggregate) releaseSerialization() {
+	a.serializationPermit <- struct{}{}
 }
 
 // mergeRemainingLocked re-inserts aggregate sets that could not be sent during
@@ -705,7 +751,8 @@ func NewProcessor(aggregate *Aggregate, globID string) *Processor {
 	aggregate.processorMu.Lock()
 	registered := !aggregate.processorsSealed
 	if registered {
-		aggregate.processorsWg.Add(1)
+		aggregate.ensureProcessorsDoneLocked()
+		aggregate.processorCount++
 		aggregate.activeProcessors.Add(1)
 	}
 	aggregate.processorMu.Unlock()
@@ -746,7 +793,7 @@ func (p *Processor) Close() error {
 			// Register accounting release before Flush. If batch processing
 			// panics, aggregate abort/shutdown must still be able to join every
 			// processor rather than waiting forever on a leaked reservation.
-			defer p.aggregate.processorsWg.Done()
+			defer p.aggregate.releaseProcessor()
 			defer p.aggregate.activeProcessors.Add(-1)
 		}
 		err = p.Flush()
@@ -754,8 +801,35 @@ func (p *Processor) Close() error {
 	return err
 }
 
-func (a *Aggregate) sealProcessors() {
+func (a *Aggregate) sealProcessors() <-chan struct{} {
 	a.processorMu.Lock()
+	defer a.processorMu.Unlock()
+	a.ensureProcessorsDoneLocked()
+	if a.processorsSealed {
+		return a.processorsDone
+	}
 	a.processorsSealed = true
-	a.processorMu.Unlock()
+	if a.processorCount == 0 {
+		close(a.processorsDone)
+	}
+	return a.processorsDone
+}
+
+func (a *Aggregate) processorsDoneChannel() <-chan struct{} {
+	return a.sealProcessors()
+}
+
+func (a *Aggregate) ensureProcessorsDoneLocked() {
+	if a.processorsDone == nil {
+		a.processorsDone = make(chan struct{})
+	}
+}
+
+func (a *Aggregate) releaseProcessor() {
+	a.processorMu.Lock()
+	defer a.processorMu.Unlock()
+	a.processorCount--
+	if a.processorsSealed && a.processorCount == 0 {
+		close(a.processorsDone)
+	}
 }

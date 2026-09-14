@@ -15,11 +15,7 @@ import (
 
 // ServerlessHandlerFactory creates the in-process server-side handler used by serverless mode.
 type ServerlessHandlerFactory interface {
-	NewServerlessHandler(userName string) (sessionHandlers.Handler, error)
-}
-
-type gracefulServerlessHandler interface {
-	GracefulShutdown()
+	NewServerlessHandler(context.Context, string) (sessionHandlers.Handler, error)
 }
 
 type contextGracefulServerlessHandler interface {
@@ -125,7 +121,13 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	if s.handlerFactory == nil {
 		return io.ErrClosedPipe
 	}
-	serverHandler, err := s.handlerFactory.NewServerlessHandler(s.userName)
+	// Keep the in-process server lifetime independent from client work
+	// cancellation until GracefulShutdownContext has claimed final aggregate
+	// output. Output failure cancels this context immediately and selects abrupt
+	// shutdown below.
+	outputDrainCtx, cancelOutputDrain := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelOutputDrain()
+	serverHandler, err := s.handlerFactory.NewServerlessHandler(outputDrainCtx, s.userName)
 	if err != nil {
 		return err
 	}
@@ -146,8 +148,6 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	// Error tracking
 	errChan := make(chan error, 4)
 	clientOutputErr := make(chan error, 1)
-	outputDrainCtx, cancelOutputDrain := context.WithCancel(context.Background())
-	defer cancelOutputDrain()
 	var ioWg sync.WaitGroup
 
 	// Read from client handler
@@ -277,8 +277,6 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		serverHandler.Shutdown()
 	} else if gracefulHandler, ok := serverHandler.(contextGracefulServerlessHandler); ok {
 		gracefulHandler.GracefulShutdownContext(outputDrainCtx)
-	} else if gracefulHandler, ok := serverHandler.(gracefulServerlessHandler); ok {
-		gracefulHandler.GracefulShutdown()
 	} else {
 		serverHandler.Shutdown()
 	}

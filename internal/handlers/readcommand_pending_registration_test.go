@@ -64,7 +64,7 @@ var _ aggregateInputBatchCoordinator = (*pendingRegistrationTestServer)(nil)
 var _ readCommandDependencyProvider = (*pendingRegistrationTestServer)(nil)
 
 func newReservedTestReadCommand(server readCommandDependencyProvider, mode omode.Mode) *readCommand {
-	reservation := newPendingInputReservation(server, mode)
+	reservation := newPendingInputReservation(context.Background(), server, mode)
 	command := newReadCommandWithAggregate(server, mode, reservation.aggregate)
 	command.adoptPendingInputReservation(reservation)
 	return command
@@ -175,7 +175,7 @@ func TestDispatchedReadCommandsRegisterAllPendingFilesBeforeCompletion(t *testin
 		for range fileCount {
 			go func(command *readCommand) {
 				defer completeWg.Done()
-				command.shutdownCoordinator.onFileProcessed("test.log")
+				command.shutdownCoordinator.onFileProcessed(context.Background(), "test.log")
 			}(command)
 		}
 	}
@@ -184,7 +184,7 @@ func TestDispatchedReadCommandsRegisterAllPendingFilesBeforeCompletion(t *testin
 	// transferred to concrete files it must be harmless and must not decrement
 	// the shared counter a second time.
 	for _, command := range commands {
-		command.releasePendingInputReservation()
+		command.releasePendingInputReservation(context.Background())
 	}
 
 	if pending, _ := server.PendingAndActive(); pending != 0 {
@@ -203,7 +203,7 @@ func TestDispatchedReadCommandReleasesReservationOnEarlyReturn(t *testing.T) {
 		t.Fatalf("pending before command start = %d, want 1", pending)
 	}
 	command.Start(context.Background(), lcontext.LContext{}, 0, nil, 1)
-	command.releasePendingInputReservation()
+	command.releasePendingInputReservation(context.Background())
 
 	if pending, _ := server.PendingAndActive(); pending != 0 {
 		t.Fatalf("pending after parse failure = %d, want 0", pending)
@@ -216,10 +216,10 @@ func TestDispatchedReadCommandReleasesReservationOnEarlyReturn(t *testing.T) {
 func TestUnclaimedReservationCompletesOlderAggregateAtFinalZero(t *testing.T) {
 	server := newPendingRegistrationTestServer()
 	olderRead := newReservedTestReadCommand(server, omode.CatClient)
-	unclaimed := newPendingInputReservation(server, omode.CatClient)
+	unclaimed := newPendingInputReservation(context.Background(), server, omode.CatClient)
 	olderRead.registerPendingFiles(1)
 
-	olderRead.shutdownCoordinator.onFileProcessed("older.log")
+	olderRead.shutdownCoordinator.onFileProcessed(context.Background(), "older.log")
 	if pending, _ := server.PendingAndActive(); pending != 1 {
 		t.Fatalf("pending after older read = %d, want unclaimed reservation", pending)
 	}
@@ -356,7 +356,7 @@ func TestDispatchedReadCommandReleasesReservationWhenRetryIsCanceled(t *testing.
 func TestDispatchedTailReleasesReservationWithoutFinishingAggregate(t *testing.T) {
 	server := newPendingRegistrationTestServer()
 	command := newReservedTestReadCommand(server, omode.TailClient)
-	command.releasePendingInputReservation()
+	command.releasePendingInputReservation(context.Background())
 
 	if pending, _ := server.PendingAndActive(); pending != 0 {
 		t.Fatalf("pending after tail cancellation = %d, want 0", pending)
@@ -397,14 +397,19 @@ func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
 	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, aggregate)
 	waiting := make(chan struct{})
 	release := make(chan struct{})
-	coordinator.legacyInputWait = func() {
+	coordinator.legacyInputWait = func(ctx context.Context, _ time.Duration) bool {
 		close(waiting)
-		<-release
+		select {
+		case <-release:
+			return true
+		case <-ctx.Done():
+			return false
+		}
 	}
 
 	done := make(chan struct{})
 	go func() {
-		coordinator.maybeFinishAggregateInput()
+		coordinator.maybeFinishAggregateInput(context.Background())
 		close(done)
 	}()
 	select {
@@ -427,11 +432,45 @@ func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
 	}
 }
 
+func TestMarkerlessReadRecheckStopsOnContextCancellation(t *testing.T) {
+	aggregate, err := mapaggregate.New(
+		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("create aggregate: %v", err)
+	}
+	t.Cleanup(aggregate.Abort)
+	server := &markerlessInputTestServer{
+		globCapTestServer: newGlobCapTestServer(1),
+		aggregate:         aggregate,
+	}
+	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, aggregate)
+	entered := make(chan struct{})
+	coordinator.legacyInputWait = func(ctx context.Context, _ time.Duration) bool {
+		close(entered)
+		<-ctx.Done()
+		return false
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		coordinator.maybeFinishAggregateInput(ctx)
+		close(done)
+	}()
+	<-entered
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("aggregate completion recheck ignored context cancellation")
+	}
+}
+
 func TestUnbatchedReadFinishesImmediatelyAfterPendingInputDrains(t *testing.T) {
 	server := newPendingRegistrationTestServer()
 	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, server.aggregate)
 
-	coordinator.maybeFinishAggregateInput()
+	coordinator.maybeFinishAggregateInput(context.Background())
 
 	if calls := server.inputFinishedCalls.Load(); calls != 1 {
 		t.Fatalf("aggregate input completion calls = %d, want exactly 1", calls)
@@ -443,7 +482,7 @@ func TestModernBatchOwnedReadDefersAggregateCompletionToBatch(t *testing.T) {
 	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, server.aggregate)
 	coordinator.inputBatchOwned = true
 
-	coordinator.maybeFinishAggregateInput()
+	coordinator.maybeFinishAggregateInput(context.Background())
 
 	if calls := server.inputFinishedCalls.Load(); calls != 0 {
 		t.Fatalf("batch-owned read finished aggregate input %d times, want 0", calls)

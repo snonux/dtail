@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"strings"
@@ -14,7 +15,7 @@ import (
 // newReadTestHandler returns a baseHandler suitable for exercising Read
 // directly, without any output or generation scoping involved.
 func newReadTestHandler() *baseHandler {
-	return newBaseHandler(baseHandlerConfig{
+	return newBaseHandler(context.Background(), baseHandlerConfig{
 		serverMessages: make(chan string, 4),
 		maprMessages:   make(chan string, 4),
 		hostname:       "testhost",

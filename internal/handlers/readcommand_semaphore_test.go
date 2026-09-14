@@ -44,7 +44,7 @@ func buildLimiterTestHandler(t *testing.T, capacity int) (*ServerHandler, chan s
 	}
 
 	handler := &ServerHandler{
-		baseHandler: newBaseHandler(baseHandlerConfig{
+		baseHandler: newBaseHandler(context.Background(), baseHandlerConfig{
 			logger:         handlerTestLogger,
 			serverMessages: make(chan string, 64),
 			maprMessages:   make(chan string, 4),

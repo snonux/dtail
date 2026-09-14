@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -38,11 +39,21 @@ type PProfServer struct {
 	done     chan struct{}
 }
 
+type contextListener func(context.Context, string, string) (net.Listener, error)
+
 // NewPProfServer creates a pprof HTTP server bound to address.
-func NewPProfServer(address string) (*PProfServer, error) {
-	listener, err := net.Listen("tcp", address)
+func NewPProfServer(ctx context.Context, address string) (*PProfServer, error) {
+	var listenConfig net.ListenConfig
+	return newPProfServer(ctx, address, listenConfig.Listen)
+}
+
+func newPProfServer(ctx context.Context, address string, listen contextListener) (*PProfServer, error) {
+	if ctx == nil {
+		return nil, errors.New("create pprof server: context must not be nil")
+	}
+	listener, err := listen(ctx, "tcp", address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listen for pprof: %w", err)
 	}
 
 	return &PProfServer{
@@ -100,10 +111,17 @@ func (s *PProfServer) Shutdown(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
+	if ctx == nil {
+		return errors.New("shutdown pprof server: context must not be nil")
+	}
 
 	err := s.server.Shutdown(ctx)
-	<-s.done
-	return err
+	select {
+	case <-s.done:
+		return err
+	case <-ctx.Done():
+		return errors.Join(err, ctx.Err())
+	}
 }
 
 func newPProfServeMux() *http.ServeMux {

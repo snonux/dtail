@@ -3,15 +3,25 @@ package connectors
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/authkey"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/config"
 	sessionHandlers "github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/mapr"
+	maprclient "github.com/mimecast/dtail/internal/mapr/client"
+	"github.com/mimecast/dtail/internal/omode"
 	sessionspec "github.com/mimecast/dtail/internal/session"
+	userserver "github.com/mimecast/dtail/internal/sessionuser"
 )
 
 func TestServerlessStartReturnsAfterCancellationAndDrainsServerOutput(t *testing.T) {
@@ -54,6 +64,105 @@ func TestServerlessStartReturnsAfterCancellationAndDrainsServerOutput(t *testing
 	}
 	if got := serverHandler.gracefulShutdownCalls(); got != 1 {
 		t.Fatalf("server handler GracefulShutdown calls = %d, want 1", got)
+	}
+}
+
+func TestServerlessCancellationDrainsRealHandlerFinalAggregate(t *testing.T) {
+	const statsLine = "INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|" +
+		"MAPREDUCE:STATS|currentConnections=0|lifetimeConnections=1"
+	queryText := "from STATS select count($time),$time group by $time interval 3600"
+	query, err := mapr.NewQuery(queryText, logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("create client query: %v", err)
+	}
+	state := maprclient.NewSessionState(query, logging.NopLogger{})
+	clientHandler := handlers.NewMaprHandler("local(serverless)", state, clientlog.NopLogger{})
+
+	path := t.TempDir() + "/stats.log"
+	if writeErr := os.WriteFile(path, nil, 0o600); writeErr != nil {
+		t.Fatalf("create tail input: %v", writeErr)
+	}
+	readerLogger := newServerlessReaderSignalLogger()
+	serverCfg := config.NewDefaultServerConfigForTest()
+	serverCfg.MaxLineLength = len(statsLine) + 1
+	serverCfg.ReadRetryIntervalMs = 10
+	factory := realServerlessMapFactory{
+		serverCfg:    serverCfg,
+		readerLogger: readerLogger,
+	}
+	spec := sessionspec.Spec{
+		Mode:    omode.TailClient,
+		Files:   []string{path},
+		Options: "plain=true:serverless=true",
+		Query:   queryText,
+		Regex:   "MAPREDUCE:STATS",
+	}
+	commands, err := spec.Commands()
+	if err != nil {
+		t.Fatalf("build serverless commands: %v", err)
+	}
+	connector := NewServerless(
+		config.ContinuousUser,
+		clientHandler,
+		commands,
+		spec,
+		false,
+		factory,
+		logging.NopLogger{},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		connector.Start(ctx, cancel, nil, nil)
+	}()
+	readerLogger.waitForOpen(t)
+
+	file, openErr := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if openErr != nil {
+		cancel()
+		t.Fatalf("open tail input: %v", openErr)
+	}
+	for range 3 {
+		if _, appendErr := file.WriteString(statsLine + "\n"); appendErr != nil {
+			_ = file.Close()
+			cancel()
+			t.Fatalf("append stats input: %v", appendErr)
+		}
+	}
+	if _, appendErr := file.WriteString(strings.Repeat("x", 128*1024) + "\n"); appendErr != nil {
+		_ = file.Close()
+		cancel()
+		t.Fatalf("append processing sentinel: %v", appendErr)
+	}
+	if closeErr := file.Close(); closeErr != nil {
+		cancel()
+		t.Fatalf("close tail input: %v", closeErr)
+	}
+	readerLogger.waitForLongLine(t)
+
+	// Cancel the client work context while the real tail command is active.
+	// The connector must first let GracefulShutdownContext claim finalization;
+	// otherwise the handler's connection context aborts the aggregate and loses
+	// these three samples.
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serverless connector did not finish graceful cancellation")
+	}
+
+	snapshot := state.Snapshot()
+	result, rows, renderErr := snapshot.GlobalGroup.Result(snapshot.Query, 10, nil)
+	if renderErr != nil {
+		t.Fatalf("render final aggregate: %v", renderErr)
+	}
+	resultLines := strings.Split(strings.TrimSpace(result), "\n")
+	resultFields := strings.Fields(resultLines[len(resultLines)-1])
+	if rows != 1 || len(resultFields) == 0 || resultFields[0] != "3" {
+		t.Fatalf("final aggregate rows=%d result=%q, want three drained samples", rows, result)
 	}
 }
 
@@ -160,13 +269,85 @@ type serverlessLifecycleFactory struct {
 	handler sessionHandlers.Handler
 }
 
+type realServerlessMapFactory struct {
+	serverCfg    *config.ServerConfig
+	readerLogger logging.Logger
+}
+
+func (f realServerlessMapFactory) NewServerlessHandler(ctx context.Context, _ string) (sessionHandlers.Handler, error) {
+	return sessionHandlers.NewServerHandler(ctx, &userserver.User{Name: config.ContinuousUser}, sessionHandlers.Dependencies{
+		ServerConfig: f.serverCfg,
+		CatLimiter:   make(chan struct{}, f.serverCfg.MaxConcurrentCats),
+		TailLimiter:  make(chan struct{}, f.serverCfg.MaxConcurrentTails),
+		AuthKeyStore: authkey.New(
+			time.Duration(f.serverCfg.AuthKeyTTLSeconds)*time.Second,
+			f.serverCfg.AuthKeyMaxPerUser,
+		),
+		Loggers: sessionHandlers.HandlerLoggers{
+			Diagnostics: logging.NopLogger{},
+			Reader:      f.readerLogger,
+		},
+	})
+}
+
+type serverlessReaderSignalLogger struct {
+	logging.NopLogger
+	openOnce     sync.Once
+	longLineOnce sync.Once
+	opened       chan struct{}
+	longLine     chan struct{}
+}
+
+func newServerlessReaderSignalLogger() *serverlessReaderSignalLogger {
+	return &serverlessReaderSignalLogger{
+		opened:   make(chan struct{}),
+		longLine: make(chan struct{}),
+	}
+}
+
+func (l *serverlessReaderSignalLogger) Trace(args ...any) string {
+	for _, arg := range args {
+		if message, ok := arg.(string); ok && message == "Opened file reader" {
+			l.openOnce.Do(func() { close(l.opened) })
+		}
+	}
+	return ""
+}
+
+func (l *serverlessReaderSignalLogger) Warn(args ...any) string {
+	for _, arg := range args {
+		if message, ok := arg.(string); ok && message == "Long log line, splitting into multiple lines" {
+			l.longLineOnce.Do(func() { close(l.longLine) })
+		}
+	}
+	return fmt.Sprint(args...)
+}
+
+func (l *serverlessReaderSignalLogger) waitForOpen(t *testing.T) {
+	t.Helper()
+	select {
+	case <-l.opened:
+	case <-time.After(5 * time.Second):
+		t.Fatal("real serverless tail reader did not open")
+	}
+}
+
+func (l *serverlessReaderSignalLogger) waitForLongLine(t *testing.T) {
+	t.Helper()
+	select {
+	case <-l.longLine:
+	case <-time.After(5 * time.Second):
+		t.Fatal("real serverless tail reader did not consume processing sentinel")
+	}
+}
+
 type serverlessErrorFactory struct{ err error }
 
-func (f serverlessErrorFactory) NewServerlessHandler(string) (sessionHandlers.Handler, error) {
+func (f serverlessErrorFactory) NewServerlessHandler(context.Context, string) (sessionHandlers.Handler, error) {
 	return nil, f.err
 }
 
-func (f serverlessLifecycleFactory) NewServerlessHandler(string) (sessionHandlers.Handler, error) {
+func (f serverlessLifecycleFactory) NewServerlessHandler(context.Context, string) (sessionHandlers.Handler, error) {
 	return f.handler, nil
 }
 

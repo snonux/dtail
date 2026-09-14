@@ -161,7 +161,7 @@ func TestReadViaProcessorClosesAggregateProcessorAfterReaderPanic(t *testing.T) 
 
 	done := make(chan struct{})
 	go func() {
-		aggregate.AbortAndWait()
+		aggregate.AbortAndWait(context.Background())
 		close(done)
 	}()
 	select {

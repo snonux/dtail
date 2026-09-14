@@ -43,7 +43,7 @@ func newClientRuntime(parent context.Context, profileFlags profiling.Flags, prof
 func newClientRuntimeWithProfiler(parent context.Context, profileFlags profiling.Flags, profileName string,
 	startLogger clientLoggerStarter, newProfiler clientProfilerFactory) (*ClientRuntime, error) {
 	if parent == nil {
-		parent = context.Background()
+		return nil, fmt.Errorf("create client runtime: context must not be nil")
 	}
 	ctx, cancel := context.WithCancel(parent)
 	// The work context may be canceled by a timeout or signal before clients
@@ -88,7 +88,7 @@ func (r *ClientRuntime) StartPProf(address string) {
 
 	r.stopPProf()
 
-	server, err := NewPProfServer(address)
+	server, err := NewPProfServer(r.ctx, address)
 	if err != nil {
 		dlog.Client.Error("Unable to start PProf", err)
 		return
@@ -129,7 +129,7 @@ func (r *ClientRuntime) stopPProf() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.ctx), 5*time.Second)
 	defer cancel()
 
 	if err := r.pprofServer.Shutdown(ctx); err != nil {

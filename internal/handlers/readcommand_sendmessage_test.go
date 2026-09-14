@@ -10,7 +10,7 @@ package handlers
 // per permission-denied file, and a single glob may fan out to up to
 // MaxGlobTargets goroutines. sendServerMessage must therefore abandon the send
 // when the per-command context is cancelled (the context is cancelled on
-// command completion and handler shutdown via baseHandler.newCommandContext).
+// command completion and handler shutdown via the handler-owned command root).
 
 import (
 	"context"
@@ -190,14 +190,12 @@ func TestSendServerMessageDeliversToDrainedChannel(t *testing.T) {
 }
 
 // TestSendServerMessageReleasedByHandlerShutdown exercises the production
-// wiring end-to-end: the per-command context comes from
-// baseHandler.newCommandContext, whose watcher goroutine cancels it when the
-// handler's done channel is shut down (the client-disconnect path). A
-// warn-sender stuck on a full serverMessages channel must be released by
-// done.Shutdown() alone — this is exactly the goroutine leak the fix removes.
+// wiring end-to-end: the per-command context comes from the handler's
+// connection-derived command root. A warn-sender stuck on a full
+// serverMessages channel must be released directly by handler shutdown.
 func TestSendServerMessageReleasedByHandlerShutdown(t *testing.T) {
 
-	handler := newBaseHandler(baseHandlerConfig{
+	handler := newBaseHandler(context.Background(), baseHandlerConfig{
 		serverMessages: make(chan string, 1),
 	})
 
@@ -210,7 +208,7 @@ func TestSendServerMessageReleasedByHandlerShutdown(t *testing.T) {
 
 	fillServerMessagesChannel(t, handler.serverMessages)
 
-	ctx, cancel := handler.newCommandContext(context.Background())
+	ctx, cancel := handler.newCommandContext()
 	defer cancel()
 
 	started := make(chan struct{})
@@ -232,13 +230,13 @@ func TestSendServerMessageReleasedByHandlerShutdown(t *testing.T) {
 		// Still pending, as expected.
 	}
 
-	// Simulate the session teardown after a client disconnect: nothing drains
-	// serverMessages anymore, only the done channel fires.
-	handler.done.Shutdown()
+	// Simulate session teardown after a client disconnect while nothing drains
+	// serverMessages.
+	handler.Shutdown()
 
 	select {
 	case <-returned:
-		// Released via newCommandContext's done watcher cancelling ctx.
+		// Released via the handler-owned connection-derived command context.
 	case <-time.After(2 * time.Second):
 		t.Fatal("sendServerMessage not released by handler shutdown (goroutine leak)")
 	}

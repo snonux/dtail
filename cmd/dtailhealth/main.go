@@ -34,7 +34,7 @@ type profileServer interface {
 type healthLifecycleDependencies struct {
 	stderr          io.Writer
 	loggers         clients.LoggerDependencies
-	newPProfServer  func(string) (profileServer, error)
+	newPProfServer  func(context.Context, string) (profileServer, error)
 	newHealthClient healthClientFactory
 }
 
@@ -80,8 +80,8 @@ func run() int {
 	return runHealthLifecycle(ctx, cancel, &wg, args, pprof, healthLifecycleDependencies{
 		stderr:  os.Stderr,
 		loggers: loggers,
-		newPProfServer: func(address string) (profileServer, error) {
-			return cli.NewPProfServer(address)
+		newPProfServer: func(ctx context.Context, address string) (profileServer, error) {
+			return cli.NewPProfServer(ctx, address)
 		},
 		newHealthClient: func(args config.Args, loggers clients.LoggerDependencies) (clients.Client, error) {
 			return clients.NewHealthClient(args, loggers)
@@ -98,13 +98,13 @@ func runHealthLifecycle(ctx context.Context, cancel context.CancelFunc, wg *sync
 	}()
 
 	if pprofAddress != "" {
-		pprofServer, pprofErr := deps.newPProfServer(pprofAddress)
+		pprofServer, pprofErr := deps.newPProfServer(ctx, pprofAddress)
 		if pprofErr != nil {
 			deps.loggers.Client.Error("Unable to start PProf", pprofErr)
 		} else {
 			deps.loggers.Client.Info("Starting PProf", pprofServer.Address())
 			pprofServer.Start(nil)
-			defer shutdownPProf(pprofServer, deps.loggers.Client)
+			defer shutdownPProf(ctx, pprofServer, deps.loggers.Client)
 		}
 	}
 
@@ -116,8 +116,8 @@ func runHealthLifecycle(ctx context.Context, cancel context.CancelFunc, wg *sync
 	return healthClient.Start(ctx, signal.NoCh(ctx))
 }
 
-func shutdownPProf(pprofServer pprofShutdowner, logger logging.Logger) {
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+func shutdownPProf(parent context.Context, pprofServer pprofShutdowner, logger logging.Logger) {
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 	defer shutdownCancel()
 	if err := pprofServer.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Unable to stop PProf", err)

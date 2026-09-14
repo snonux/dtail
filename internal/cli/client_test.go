@@ -175,6 +175,54 @@ func TestClientRunnerSetupErrorStopsBeforeRuntime(t *testing.T) {
 	}
 }
 
+func TestClientRunnerRejectsInvalidContextFactoryResults(t *testing.T) {
+	tests := map[string]struct {
+		factory ClientContextFactory
+		want    string
+	}{
+		"nil context": {
+			factory: func(config.Args) (context.Context, context.CancelFunc) {
+				return nil, func() {}
+			},
+			want: "nil context",
+		},
+		"nil cancel": {
+			factory: func(config.Args) (context.Context, context.CancelFunc) {
+				return context.Background(), nil
+			},
+			want: "nil cancel function",
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			runner, stderr := newTestClientRunner(t)
+			runner.WithContext(test.factory)
+			deps := clientDependenciesForTest(stderr)
+			runtimeStarted := false
+			deps.newRuntime = func(context.Context, profiling.Flags, string) (clientRuntime, error) {
+				runtimeStarted = true
+				return nil, nil
+			}
+
+			status := runner.runClient("dcat", func(config.Args, clients.LoggerDependencies) (clients.Client, error) {
+				t.Fatal("build called after invalid context factory result")
+				return nil, nil
+			}, deps)
+
+			if status != 1 {
+				t.Fatalf("status = %d, want 1", status)
+			}
+			if runtimeStarted {
+				t.Fatal("runtime started after invalid context factory result")
+			}
+			if got := stderr.String(); !strings.Contains(got, test.want) {
+				t.Fatalf("stderr = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestClientRunnerBuildErrorCleansUpRuntimeAndContext(t *testing.T) {
 	runner, stderr := newTestClientRunner(t)
 	events := []string{}

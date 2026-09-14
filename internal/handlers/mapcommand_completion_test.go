@@ -51,7 +51,7 @@ func newMapTestHandlerWithReaderLogger(t *testing.T, readerLogger logging.Logger
 		MapreduceLogFormat: "default",
 		AuthKeyEnabled:     true,
 	}
-	handler, err := NewServerHandler(user, Dependencies{
+	handler, err := NewServerHandler(context.Background(), user, Dependencies{
 		CatLimiter:   make(chan struct{}, 4),
 		TailLimiter:  make(chan struct{}, 4),
 		ServerConfig: serverCfg,
@@ -372,7 +372,7 @@ func TestServerModeMapFollowSessionKeepsStreaming(t *testing.T) {
 	// Tear down like a disconnecting client and join all command goroutines
 	// so nothing outlives the test (the session keeps commands alive until
 	// their contexts are cancelled by the handler shutdown).
-	handler.done.Shutdown()
+	handler.Shutdown()
 	select {
 	case <-readerDone:
 	case <-time.After(5 * time.Second):
@@ -463,7 +463,7 @@ func TestServerlessMapFollowGracefulShutdownDrainsFinalResult(t *testing.T) {
 	shutdownDone := make(chan struct{})
 	go func() {
 		defer close(shutdownDone)
-		handler.GracefulShutdown()
+		handler.GracefulShutdownContext(context.Background())
 	}()
 	select {
 	case <-shutdownDone:

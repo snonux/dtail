@@ -11,6 +11,7 @@ package handlers
 // output aggregate via the atomic accessors so the test is self-contained.
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -24,7 +25,7 @@ func TestAggregatePointerRaceWithShutdown(t *testing.T) {
 	const iterations = 200
 
 	for i := 0; i < iterations; i++ {
-		h := newBaseHandler(baseHandlerConfig{
+		h := newBaseHandler(context.Background(), baseHandlerConfig{
 			serverMessages: make(chan string, 8),
 			maprMessages:   make(chan string, 4),
 			user:           &userserver.User{Name: "race-test-output-user"},

@@ -190,14 +190,22 @@ func (r *ClientRunner) runClient(name string,
 		}
 	}
 
-	parentCtx, cancel := context.Background(), func() {}
-	if r.contextFactory != nil {
+	var parentCtx context.Context
+	var cancel context.CancelFunc
+	if r.contextFactory == nil {
+		parentCtx, cancel = context.WithCancel(context.Background())
+	} else {
 		parentCtx, cancel = r.contextFactory(*r.args)
 		if parentCtx == nil {
-			parentCtx = context.Background()
+			if cancel != nil {
+				cancel()
+			}
+			_, _ = fmt.Fprintf(deps.stderr, "unable to initialize %s runtime: context factory returned nil context\n", name)
+			return 1
 		}
 		if cancel == nil {
-			cancel = func() {}
+			_, _ = fmt.Fprintf(deps.stderr, "unable to initialize %s runtime: context factory returned nil cancel function\n", name)
+			return 1
 		}
 	}
 	defer cancel()

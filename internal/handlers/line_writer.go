@@ -261,6 +261,9 @@ func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
 
 func newNetworkWriter(ctx context.Context, outputLines chan<- []byte, formatter lineFormatter,
 	generation uint64, activeGeneration func() uint64, logger logging.Logger) *NetworkWriter {
+	if ctx == nil {
+		panic("handlers: nil network writer context")
+	}
 	return &NetworkWriter{
 		logger:           logging.OrNop(logger),
 		outputLines:      outputLines,
@@ -396,9 +399,6 @@ func (w *NetworkWriter) sendToChannel(data []byte) error {
 	}
 
 	ctx := w.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if w.enqueueOutput != nil {
 		return w.enqueueOutput(ctx, w.generation, data, w.activeGeneration)
 	}
@@ -470,9 +470,6 @@ func (w *NetworkWriter) Flush() error {
 	writerTrace(w.log(), "NetworkWriter.Flush", "called")
 
 	ctx := w.ctx
-	if ctx == nil {
-		ctx = context.Background()
-	}
 
 	for {
 		if err := w.waitForSendAvailability(ctx); err != nil {
