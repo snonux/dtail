@@ -31,6 +31,7 @@ type ServerHandler struct {
 	catLimiter          chan struct{}
 	tailLimiter         chan struct{}
 	serverCfg           *config.ServerConfig
+	readTimings         readTimings
 	authKeyStore        *sshserver.AuthKeyStore
 	regex               string
 	commands            map[string]commandHandler
@@ -105,6 +106,7 @@ func NewServerHandler(user *user.User, catLimiter,
 		catLimiter:   catLimiter,
 		tailLimiter:  tailLimiter,
 		serverCfg:    serverCfg,
+		readTimings:  newReadTimings(serverCfg),
 		authKeyStore: authKeyStore,
 		regex:        ".",
 	}

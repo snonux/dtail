@@ -195,6 +195,14 @@ func (s *recordingBatchCoordinatorServer) Aggregate() *maprserver.Aggregate {
 	return s.current
 }
 
+func (s *recordingBatchCoordinatorServer) readCommandDependencies() readCommandDependencies {
+	dependencies := s.globCapTestServer.readCommandDependencies()
+	dependencies.server = s
+	dependencies.lifecycle = s
+	dependencies.aggregates = s
+	return dependencies
+}
+
 func (s *recordingBatchCoordinatorServer) coordinateAggregateInputCompletion(aggregate *maprserver.Aggregate) bool {
 	s.coordinationCalls.Add(1)
 	s.coordinated.Store(aggregate)
@@ -208,7 +216,7 @@ func TestShutdownCoordinatorDelegatesAggregateCompletionToCommandBatch(t *testin
 		globCapTestServer: newGlobCapTestServer(1),
 		current:           replacementAggregate,
 	}
-	coordinator := newShutdownCoordinator(server, true, admittedAggregate)
+	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, admittedAggregate)
 
 	coordinator.maybeFinishAggregateInput()
 
@@ -227,6 +235,14 @@ type aggregateSwapReadServer struct {
 
 func (s *aggregateSwapReadServer) Aggregate() *maprserver.Aggregate {
 	return s.current.Load()
+}
+
+func (s *aggregateSwapReadServer) readCommandDependencies() readCommandDependencies {
+	dependencies := s.globCapTestServer.readCommandDependencies()
+	dependencies.server = s
+	dependencies.lifecycle = s
+	dependencies.aggregates = s
+	return dependencies
 }
 
 func TestReadCommandProcessorUsesAggregateCapturedAtAdmission(t *testing.T) {

@@ -66,6 +66,24 @@ func (s *panicReadServer) PrepareReadTarget(string) (fs.ValidatedReadTarget, boo
 func (s *panicReadServer) Logger() logging.Logger { return s.logger }
 func (s *panicReadServer) abortAfterPanic()       { s.aborted.Store(true) }
 
+func (s *panicReadServer) readCommandDependencies() readCommandDependencies {
+	dependencies := s.globCapTestServer.readCommandDependencies()
+	dependencies.server = s
+	dependencies.lifecycle = s
+	dependencies.aggregates = s
+	dependencies.logger = s.logger
+	dependencies.abortAfterPanic = s.abortAfterPanic
+	return dependencies
+}
+
+func (s *panicAggregateServer) readCommandDependencies() readCommandDependencies {
+	dependencies := s.globCapTestServer.readCommandDependencies()
+	dependencies.server = s
+	dependencies.lifecycle = s
+	dependencies.aggregates = s
+	return dependencies
+}
+
 func TestReadFileGoroutineRecoversPanicAndReleasesAccounting(t *testing.T) {
 	logger := &panicReadLogger{errors: make(chan string, 2)}
 	server := &panicReadServer{
@@ -148,3 +166,5 @@ func TestReadViaProcessorClosesAggregateProcessorAfterReaderPanic(t *testing.T) 
 var _ readCommandServer = (*panicReadServer)(nil)
 var _ fs.FileReader = panickingFileReader{}
 var _ readCommandServer = (*panicAggregateServer)(nil)
+var _ readCommandDependencyProvider = (*panicReadServer)(nil)
+var _ readCommandDependencyProvider = (*panicAggregateServer)(nil)

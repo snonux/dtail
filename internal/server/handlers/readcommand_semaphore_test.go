@@ -57,8 +57,8 @@ func buildLimiterTestHandler(t *testing.T, capacity int) (*ServerHandler, chan s
 		catLimiter:  limiter,
 		tailLimiter: limiter,
 	}
-	// activeGeneration must be set so newGeneratedServerMessagesChannel works
-	// correctly; use the session-state helper the real constructor would use.
+	// activeGeneration must be set so generation-bound writers match the
+	// production constructor's session state.
 	handler.activeGeneration = handler.sessionState.currentGeneration
 
 	return handler, limiter

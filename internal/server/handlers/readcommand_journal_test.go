@@ -5,7 +5,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,37 +58,79 @@ func (s *journalReadTestServer) PrepareReadTarget(path string) (fs.ValidatedRead
 	return target, err == nil
 }
 
-func (s *journalReadTestServer) CatLimiter() chan struct{} {
-	return s.catLimiter
+func (s *journalReadTestServer) readCommandDependencies() readCommandDependencies {
+	return readCommandDependencies{
+		server:       s,
+		lifecycle:    s,
+		aggregates:   s,
+		logger:       s.Logger(),
+		readerLogger: s.ReaderLogger(),
+		logContext:   s.LogContext(),
+		timings: readTimings{
+			globRetryInterval:         time.Millisecond,
+			readRetryInterval:         time.Millisecond,
+			outputEOFAckTimeout:       time.Millisecond,
+			legacyAggregateInputGrace: time.Millisecond,
+			maxLineLength:             1024 * 1024,
+			maxGlobTargets:            1000,
+		},
+		newLineWriter: func(ctx context.Context, generation uint64) LineWriter {
+			return NewNetworkWriter(ctx, s.outputLines, s.serverMessage, "testhost", false, false,
+				generation, func() uint64 { return 0 }, s.Logger())
+		},
+	}
 }
 
-func (s *journalReadTestServer) TailLimiter() chan struct{} {
-	return s.tailLimiter
+func (s *journalReadTestServer) AcquireReadSlot(ctx context.Context, mode omode.Mode, _ string) (func(), bool) {
+	limiter := s.tailLimiter
+	if mode == omode.CatClient || mode == omode.GrepClient {
+		limiter = s.catLimiter
+	}
+	select {
+	case limiter <- struct{}{}:
+		return func() { <-limiter }, true
+	case <-ctx.Done():
+		return nil, false
+	}
 }
 
-func (s *journalReadTestServer) SendServerMessage(message string) {
-	s.serverMessage <- message
+func (s *journalReadTestServer) SendReadMessage(ctx context.Context, generation uint64, message string) {
+	select {
+	case s.serverMessage <- encodeGeneratedMessage(generation, message+"\n"):
+	case <-ctx.Done():
+	}
 }
 
-func (s *journalReadTestServer) ServerMessagesChannel() chan string {
-	return s.serverMessage
+func (s *journalReadTestServer) NewReadMessages(ctx context.Context, generation uint64) (chan string, func()) {
+	messages := make(chan string, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case message, ok := <-messages:
+				if !ok {
+					return
+				}
+				select {
+				case s.serverMessage <- encodeGeneratedMessage(generation, message):
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return messages, func() {
+		close(messages)
+		<-done
+	}
 }
 
-func (s *journalReadTestServer) Hostname() string {
-	return "testhost"
-}
+func (*journalReadTestServer) FinishReadBatch(context.Context, omode.Mode, uint64) {}
 
-func (s *journalReadTestServer) PlainOutput() bool {
-	return false
-}
-
-func (s *journalReadTestServer) Serverless() bool {
-	return false
-}
-
-func (s *journalReadTestServer) ServerlessOutput() io.Writer {
-	return io.Discard
-}
+func (*journalReadTestServer) DebugReadLifecycle(string, ...any) {}
 
 func (s *journalReadTestServer) Aggregate() *maprserver.Aggregate {
 	return nil
@@ -107,71 +148,12 @@ func (s *journalReadTestServer) PendingAndActive() (int32, int32) {
 	return atomic.LoadInt32(&s.pending), 0
 }
 
-func (s *journalReadTestServer) ActiveSessionGeneration() uint64 {
-	return 0
-}
-
 func (s *journalReadTestServer) TriggerShutdown() {
 	atomic.AddInt32(&s.shutdowns, 1)
 }
 
-func (s *journalReadTestServer) DirectOutputActive() bool {
-	return false
-}
-
-func (s *journalReadTestServer) EnableDirectOutput() bool { return false }
-
-func (s *journalReadTestServer) HasOutputEOF() bool {
-	return false
-}
-
-func (s *journalReadTestServer) FlushOutput(context.Context) error    { return nil }
-func (s *journalReadTestServer) ReportOutputFlushError(uint64, error) {}
-
-func (s *journalReadTestServer) OutputEpoch() uint64 { return 0 }
-
-func (s *journalReadTestServer) SignalOutputEOF(epoch uint64) {}
-
-func (s *journalReadTestServer) EnqueueOutput(ctx context.Context, generation uint64, payload []byte,
-	activeGeneration func() uint64) error {
-	select {
-	case s.outputLines <- encodeGeneratedBytes(generation, payload):
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-func (s *journalReadTestServer) OutputBufferBytes() int {
-	return len(s.outputLines)
-}
-
-func (s *journalReadTestServer) WaitForOutputEOFAck(context.Context, time.Duration) bool {
-	return true
-}
-
-func (s *journalReadTestServer) ReadGlobRetryInterval() time.Duration {
-	return time.Millisecond
-}
-
-func (s *journalReadTestServer) ReadRetryInterval() time.Duration {
-	return time.Millisecond
-}
-
-func (s *journalReadTestServer) MaxLineLength() int {
-	return 1024 * 1024
-}
-
-func (s *journalReadTestServer) OutputEOFAckTimeout() time.Duration {
-	return time.Millisecond
-}
-
-// MaxGlobTargets returns a permissive cap suitable for journal test scenarios.
-func (s *journalReadTestServer) MaxGlobTargets() int {
-	return 1000
-}
-
 var _ readCommandServer = (*journalReadTestServer)(nil)
+var _ readCommandDependencyProvider = (*journalReadTestServer)(nil)
 
 func TestReadCommandDispatchesJournalSpecWithoutGlob(t *testing.T) {
 

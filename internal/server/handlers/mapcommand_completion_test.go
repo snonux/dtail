@@ -389,7 +389,7 @@ func TestServerModeMapFollowSessionKeepsStreaming(t *testing.T) {
 func TestServerlessMapFollowGracefulShutdownDrainsFinalResult(t *testing.T) {
 	readyLogger := newReaderReadyLogger()
 	handler := newMapTestHandlerWithReaderLogger(t, readyLogger)
-	handler.serverCfg.MaxLineLength = len(testStatsLine) + 1
+	handler.readTimings.maxLineLength = len(testStatsLine) + 1
 	path := writeTestStatsFile(t, 0)
 
 	spec := session.Spec{

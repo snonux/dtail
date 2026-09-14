@@ -30,7 +30,7 @@ var _ fs.FileReader = retryOnlyFileReader{}
 
 func TestExecuteReadLoopStopsPromptlyWhenContextCanceledDuringRetrySleep(t *testing.T) {
 	handler := newSessionTestHandler("readcommand-cancel-user")
-	handler.serverCfg.ReadRetryIntervalMs = 1000
+	handler.readTimings.readRetryInterval = time.Second
 
 	command := newReadCommand(handler, omode.TailClient)
 	reader := retryOnlyFileReader{}

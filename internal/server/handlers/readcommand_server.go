@@ -7,93 +7,118 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/logging"
-	"github.com/mimecast/dtail/internal/mapr/server"
+	maprserver "github.com/mimecast/dtail/internal/mapr/server"
+	"github.com/mimecast/dtail/internal/omode"
 )
 
-type readCommandContext interface {
-	LogContext() any
-	Logger() logging.Logger
-	ReaderLogger() logging.Logger
+type readTimings struct {
+	globRetryInterval         time.Duration
+	readRetryInterval         time.Duration
+	outputEOFAckTimeout       time.Duration
+	legacyAggregateInputGrace time.Duration
+	maxLineLength             int
+	maxGlobTargets            int
 }
 
-type readCommandFiles interface {
-	PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool)
-	CatLimiter() chan struct{}
-	TailLimiter() chan struct{}
+type lineWriterFactory func(context.Context, uint64) LineWriter
+
+type readCommandDependencies struct {
+	server          readCommandServer
+	lifecycle       readCommandLifecycle
+	aggregates      readCommandAggregates
+	logger          logging.Logger
+	readerLogger    logging.Logger
+	logContext      any
+	timings         readTimings
+	newLineWriter   lineWriterFactory
+	abortAfterPanic func()
+	serverless      bool
 }
 
-type readCommandMessages interface {
-	SendServerMessage(message string)
-	ServerMessagesChannel() chan string
-	Hostname() string
-	PlainOutput() bool
-	Serverless() bool
-	ServerlessOutput() io.Writer
+type readCommandDependencyProvider interface {
+	readCommandDependencies() readCommandDependencies
 }
 
 type readCommandAggregates interface {
-	Aggregate() *server.Aggregate
+	Aggregate() *maprserver.Aggregate
 }
 
 type readCommandLifecycle interface {
-	AddPendingFiles(delta int32) int32
 	CompletePendingFile() (remaining int32, activeCommands int32)
 	PendingAndActive() (pending int32, activeCommands int32)
-	ActiveSessionGeneration() uint64
 	TriggerShutdown()
+	DebugReadLifecycle(message string, args ...any)
 }
 
-type readCommandOutput interface {
-	DirectOutputActive() bool
-	// EnableDirectOutput atomically enables output mode; it returns true when this
-	// call performed the off->on transition and false when it was already on.
-	EnableDirectOutput() bool
-	HasOutputEOF() bool
-	FlushOutput(context.Context) error
-	ReportOutputFlushError(uint64, error)
-	// OutputEpoch returns the output handshake epoch; capture it before the
-	// pending-work check and pass it to SignalOutputEOF (see baseHandler).
-	OutputEpoch() uint64
-	// SignalOutputEOF drops the signal when the epoch is no longer current.
-	SignalOutputEOF(epoch uint64)
-	EnqueueOutput(context.Context, uint64, []byte, func() uint64) error
-	OutputBufferBytes() int
-	WaitForOutputEOFAck(context.Context, time.Duration) bool
-}
-
-type readCommandTiming interface {
-	ReadGlobRetryInterval() time.Duration
-	ReadRetryInterval() time.Duration
-	MaxLineLength() int
-	OutputEOFAckTimeout() time.Duration
-	// MaxGlobTargets returns the maximum number of file paths a single glob
-	// expansion may produce before excess paths are dropped. This caps the
-	// number of goroutines and memory consumed per read command.
-	MaxGlobTargets() int
-}
-
+// readCommandServer exposes only the handler operations that a read command
+// drives directly. Logging, aggregate completion, writer creation, and timing
+// are injected as separate values or focused collaborators.
 type readCommandServer interface {
-	readCommandContext
-	readCommandFiles
-	readCommandMessages
-	readCommandAggregates
-	readCommandLifecycle
-	readCommandOutput
-	readCommandTiming
+	PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool)
+	AcquireReadSlot(context.Context, omode.Mode, string) (release func(), acquired bool)
+	SendReadMessage(context.Context, uint64, string)
+	NewReadMessages(context.Context, uint64) (chan string, func())
+	AddPendingFiles(delta int32) int32
+	PendingAndActive() (pending int32, activeCommands int32)
+	FinishReadBatch(context.Context, omode.Mode, uint64)
+}
+
+// readBatchCompletionState is the handler-internal seam for the EOF handshake.
+// Keeping the orchestration behind this focused interface lets the ordering of
+// epoch capture and the pending-work check be pinned by a deterministic test.
+type readBatchCompletionState interface {
+	DirectOutputActive() bool
+	HasOutputEOF() bool
+	OutputEpoch() uint64
+	PendingAndActive() (pending int32, activeCommands int32)
+	traceSkippedReadBatchEOF(int32, int32)
+	flushReadBatch(context.Context, uint64) bool
+	SignalOutputEOF(uint64)
+	waitForReadBatchAck(context.Context)
 }
 
 var _ readCommandServer = (*ServerHandler)(nil)
+var _ readCommandLifecycle = (*ServerHandler)(nil)
+var _ readCommandAggregates = (*ServerHandler)(nil)
+var _ readCommandDependencyProvider = (*ServerHandler)(nil)
 
-// LogContext returns the logger context associated with the current user/session.
-func (h *ServerHandler) LogContext() any {
-	return h.user
+func newReadTimings(serverCfg *config.ServerConfig) readTimings {
+	if serverCfg == nil {
+		serverCfg = &config.ServerConfig{}
+	}
+	return readTimings{
+		globRetryInterval:         durationFromMilliseconds(serverCfg.ReadGlobRetryIntervalMs, 5*time.Second),
+		readRetryInterval:         durationFromMilliseconds(serverCfg.ReadRetryIntervalMs, 2*time.Second),
+		outputEOFAckTimeout:       durationFromMilliseconds(serverCfg.OutputEOFAckTimeoutMs, 2*time.Second),
+		legacyAggregateInputGrace: legacyUnbatchedAggregateInputGrace,
+		maxLineLength:             positiveIntOrDefault(serverCfg.MaxLineLength, 1024*1024),
+		maxGlobTargets:            positiveIntOrDefault(serverCfg.MaxGlobTargets, 1000),
+	}
 }
 
-// SendServerMessage sends a formatted server message to the client.
-func (h *ServerHandler) SendServerMessage(message string) {
-	h.sendln(h.serverMessages, message)
+func (t readTimings) withDefaults() readTimings {
+	if t.globRetryInterval <= 0 {
+		t.globRetryInterval = 5 * time.Second
+	}
+	if t.readRetryInterval <= 0 {
+		t.readRetryInterval = 2 * time.Second
+	}
+	if t.outputEOFAckTimeout <= 0 {
+		t.outputEOFAckTimeout = 2 * time.Second
+	}
+	if t.legacyAggregateInputGrace <= 0 {
+		t.legacyAggregateInputGrace = legacyUnbatchedAggregateInputGrace
+	}
+	if t.maxLineLength <= 0 {
+		t.maxLineLength = 1024 * 1024
+	}
+	if t.maxGlobTargets <= 0 {
+		t.maxGlobTargets = 1000
+	}
+	return t
 }
 
 // PrepareReadTarget validates the current user's access to the given path.
@@ -101,38 +126,7 @@ func (h *ServerHandler) PrepareReadTarget(path string) (fs.ValidatedReadTarget, 
 	return h.user.ValidateReadTarget(path, "readfiles")
 }
 
-// ServerMessagesChannel returns the server message channel.
-func (h *ServerHandler) ServerMessagesChannel() chan string {
-	return h.serverMessages
-}
-
-// CatLimiter returns the concurrency limiter for cat/grep style reads.
-func (h *ServerHandler) CatLimiter() chan struct{} {
-	return h.catLimiter
-}
-
-// TailLimiter returns the concurrency limiter for tail reads.
-func (h *ServerHandler) TailLimiter() chan struct{} {
-	return h.tailLimiter
-}
-
-// Hostname returns the short hostname used for response formatting.
-func (h *ServerHandler) Hostname() string {
-	return h.hostname
-}
-
-// PlainOutput reports whether plain output mode is enabled.
-func (h *ServerHandler) PlainOutput() bool {
-	return h.plain
-}
-
-// Serverless reports whether the current session is running in serverless mode.
-func (h *ServerHandler) Serverless() bool {
-	return h.serverless
-}
-
-// ServerlessOutput returns the output destination supplied by the client
-// composition root. A nil destination preserves the historical stdout path.
+// ServerlessOutput returns the configured in-process output destination.
 func (h *ServerHandler) ServerlessOutput() io.Writer {
 	if h.serverlessOutput == nil {
 		return os.Stdout
@@ -140,9 +134,108 @@ func (h *ServerHandler) ServerlessOutput() io.Writer {
 	return h.serverlessOutput
 }
 
+// AcquireReadSlot waits for the concurrency slot associated with mode and
+// returns an idempotent release function when the slot is acquired.
+func (h *ServerHandler) AcquireReadSlot(ctx context.Context, mode omode.Mode, path string) (func(), bool) {
+	limiter := h.tailLimiter
+	if mode == omode.CatClient || mode == omode.GrepClient {
+		limiter = h.catLimiter
+	}
+
+	select {
+	case limiter <- struct{}{}:
+		h.Logger().Debug(h.user, "Got limiter slot immediately", "path", path)
+	case <-ctx.Done():
+		h.Logger().Debug(h.user, "Context cancelled while waiting for limiter", "path", path)
+		return nil, false
+	default:
+		h.Logger().Info(h.user, "Server limit hit, queueing file", "limiterLen", len(limiter), "path", path, "maxConcurrent", cap(limiter))
+		select {
+		case limiter <- struct{}{}:
+			h.Logger().Info(h.user, "Server limit OK now, processing file", "limiterLen", len(limiter), "path", path)
+		case <-ctx.Done():
+			h.Logger().Debug(h.user, "Context cancelled while queued for limiter", "path", path)
+			return nil, false
+		}
+	}
+
+	var released atomic.Bool
+	return func() {
+		if released.CompareAndSwap(false, true) {
+			<-limiter
+		}
+	}, true
+}
+
+// SendReadMessage forwards a generation-bound message to the session output.
+func (h *ServerHandler) SendReadMessage(ctx context.Context, generation uint64, message string) {
+	select {
+	case h.serverMessages <- encodeGeneratedMessage(generation, message+"\n"):
+	case <-ctx.Done():
+	}
+}
+
+// NewReadMessages returns a per-reader message channel and a join function.
+// The forwarding goroutine binds each message to the command generation.
+func (h *ServerHandler) NewReadMessages(ctx context.Context, generation uint64) (chan string, func()) {
+	messages := make(chan string, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer recoverHandlerPanic(h.Logger(), h.user, "server message forwarding", h.abortAfterPanic)
+		for {
+			select {
+			case message, ok := <-messages:
+				if !ok {
+					return
+				}
+				select {
+				case h.serverMessages <- encodeGeneratedMessage(generation, message):
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return messages, func() {
+		close(messages)
+		<-done
+	}
+}
+
+// FinishReadBatch owns the output EOF handshake for a completed read batch.
+func (h *ServerHandler) FinishReadBatch(ctx context.Context, mode omode.Mode, generation uint64) {
+	finishReadBatch(ctx, mode, generation, h)
+}
+
+func finishReadBatch(ctx context.Context, mode omode.Mode, generation uint64,
+	state readBatchCompletionState) {
+
+	if !isDirectReadMode(mode) || ctx.Err() != nil || !state.DirectOutputActive() || !state.HasOutputEOF() {
+		return
+	}
+
+	// Capture the epoch before observing pending work. A joining command bumps
+	// the epoch, making a stale signal harmless even while flush blocks.
+	epoch := state.OutputEpoch()
+	pending, active := state.PendingAndActive()
+	if pending != 0 {
+		state.traceSkippedReadBatchEOF(pending, active)
+		return
+	}
+
+	if !state.flushReadBatch(ctx, generation) {
+		return
+	}
+	state.SignalOutputEOF(epoch)
+	state.waitForReadBatchAck(ctx)
+}
+
 // Aggregate returns the MapReduce aggregate if enabled for the session.
 // Uses the atomic accessor to avoid a race with concurrent handleMapCommand writes.
-func (h *ServerHandler) Aggregate() *server.Aggregate {
+func (h *ServerHandler) Aggregate() *maprserver.Aggregate {
 	return h.getAggregate()
 }
 
@@ -165,11 +258,6 @@ func (h *ServerHandler) PendingAndActive() (pending int32, activeCommands int32)
 	return pending, activeCommands
 }
 
-// ActiveSessionGeneration returns the currently active interactive session generation.
-func (h *ServerHandler) ActiveSessionGeneration() uint64 {
-	return h.sessionState.currentGeneration()
-}
-
 // TriggerShutdown starts the handler shutdown sequence.
 func (h *ServerHandler) TriggerShutdown() {
 	if h.sessionState.keepAlive() || h.isStopping() {
@@ -178,19 +266,80 @@ func (h *ServerHandler) TriggerShutdown() {
 	h.triggerIdleShutdown()
 }
 
-// FlushOutput waits until pending output has reached the session reader.
-func (h *ServerHandler) FlushOutput(ctx context.Context) error {
-	return h.flushOutput(ctx)
+// DebugReadLifecycle records shutdown-coordination diagnostics without exposing
+// the handler's logger or user object to the coordinator.
+func (h *ServerHandler) DebugReadLifecycle(message string, args ...any) {
+	values := make([]any, 0, len(args)+2)
+	values = append(values, h.user, message)
+	values = append(values, args...)
+	h.Logger().Debug(values...)
 }
 
-// ReportOutputFlushError queues a nonblocking client-visible flush failure.
-func (h *ServerHandler) ReportOutputFlushError(generation uint64, err error) {
-	h.reportFlushError(generation, err)
+func (h *ServerHandler) readCommandDependencies() readCommandDependencies {
+	return readCommandDependencies{
+		server:          h,
+		lifecycle:       h,
+		aggregates:      h,
+		logger:          h.Logger(),
+		readerLogger:    h.ReaderLogger(),
+		logContext:      h.user,
+		timings:         h.readTimings.withDefaults(),
+		newLineWriter:   h.newReadLineWriter,
+		abortAfterPanic: h.abortAfterPanic,
+		serverless:      h.serverless,
+	}
 }
 
-// OutputEOFAckTimeout returns the timeout used while waiting for output EOF ACK.
-func (h *ServerHandler) OutputEOFAckTimeout() time.Duration {
-	return durationFromMilliseconds(h.serverCfg.OutputEOFAckTimeoutMs, 2*time.Second)
+func (h *ServerHandler) newReadLineWriter(ctx context.Context, generation uint64) LineWriter {
+	if h.EnableDirectOutput() {
+		h.SendReadMessage(ctx, generation, ".output wake")
+	}
+	if h.serverless {
+		return NewGeneratedDirectWriter(h.ServerlessOutput(), h.hostname, h.plain, true,
+			generation, h.sessionState.currentGeneration)
+	}
+
+	writer := NewNetworkWriter(ctx, nil, h.serverMessages, h.hostname, h.plain, false,
+		generation, h.sessionState.currentGeneration, h.Logger())
+	writer.enqueueOutput = h.EnqueueOutput
+	return writer
+}
+
+func isDirectReadMode(mode omode.Mode) bool {
+	return mode == omode.CatClient || mode == omode.GrepClient || mode == omode.TailClient
+}
+
+func (h *ServerHandler) traceSkippedReadBatchEOF(pending, active int32) {
+	h.Logger().Trace(h.user, "Skipping output EOF signal for non-final command",
+		"pending", pending, "active", active)
+}
+
+func (h *ServerHandler) flushReadBatch(ctx context.Context, generation uint64) bool {
+	h.Logger().Debug(h.user, "Output mode: flushing data before EOF signal")
+	if err := h.flushOutput(ctx); err != nil {
+		if ctx.Err() != nil {
+			return false
+		}
+		h.Logger().Error(h.user, "Unable to flush output", err)
+		h.reportFlushError(generation, err)
+	}
+	return true
+}
+
+func (h *ServerHandler) waitForReadBatchAck(ctx context.Context) {
+	if h.serverless {
+		return
+	}
+	timeout := h.readTimings.withDefaults().outputEOFAckTimeout
+	if h.WaitForOutputEOFAck(ctx, timeout) {
+		h.Logger().Debug(h.user, "Output EOF handshake released (reader ack or handover)")
+		return
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	h.Logger().Warn(h.user, "Timeout waiting for output EOF acknowledgement",
+		"timeout", timeout, "remainingBytes", h.OutputBufferBytes())
 }
 
 func durationFromMilliseconds(value int, fallback time.Duration) time.Duration {
@@ -205,28 +354,6 @@ func positiveIntOrDefault(value int, fallback int) int {
 		return fallback
 	}
 	return value
-}
-
-// ReadGlobRetryInterval returns the retry interval for glob expansion failures.
-func (h *ServerHandler) ReadGlobRetryInterval() time.Duration {
-	return durationFromMilliseconds(h.serverCfg.ReadGlobRetryIntervalMs, 5*time.Second)
-}
-
-// ReadRetryInterval returns the retry interval for repeated file reads.
-func (h *ServerHandler) ReadRetryInterval() time.Duration {
-	return durationFromMilliseconds(h.serverCfg.ReadRetryIntervalMs, 2*time.Second)
-}
-
-// MaxLineLength returns the configured max line length for file readers.
-func (h *ServerHandler) MaxLineLength() int {
-	return positiveIntOrDefault(h.serverCfg.MaxLineLength, 1024*1024)
-}
-
-// MaxGlobTargets returns the maximum number of paths a glob may expand to.
-// Excess paths beyond the cap are silently dropped (with a warning logged)
-// to prevent goroutine/memory exhaustion from a broad read permission glob.
-func (h *ServerHandler) MaxGlobTargets() int {
-	return positiveIntOrDefault(h.serverCfg.MaxGlobTargets, 1000)
 }
 
 func (h *ServerHandler) outputManagerConfig() outputManagerConfig {

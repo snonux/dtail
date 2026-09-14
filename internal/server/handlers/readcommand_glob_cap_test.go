@@ -13,7 +13,6 @@ package handlers
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -28,10 +27,9 @@ import (
 	"github.com/mimecast/dtail/internal/regex"
 )
 
-// globCapTestServer is a minimal readCommandServer implementation whose sole
-// purpose is to count PrepareReadTarget invocations (i.e. dispatched files).
-// All output/aggregate/lifecycle methods are stubs. The catLimiter is
-// generously sized so it never blocks the test.
+// globCapTestServer supplies the focused read-command roles while recording
+// PrepareReadTarget invocations. Its limiter is generously sized so it never
+// blocks these tests.
 type globCapTestServer struct {
 	catLimiter    chan struct{}
 	tailLimiter   chan struct{}
@@ -40,7 +38,7 @@ type globCapTestServer struct {
 	preparedCount int32
 	// pendingFiles mirrors the lifecycle counter used by readFiles.
 	pendingFiles int32
-	// maxGlobTargets is the cap returned by MaxGlobTargets().
+	// maxGlobTargets is copied into the command's immutable read timings.
 	maxGlobTargets int
 }
 
@@ -67,25 +65,80 @@ func (s *globCapTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarg
 	return fs.ValidatedReadTarget{Kind: fs.FileKind}, true
 }
 
-func (s *globCapTestServer) CatLimiter() chan struct{}  { return s.catLimiter }
-func (s *globCapTestServer) TailLimiter() chan struct{} { return s.tailLimiter }
+func (s *globCapTestServer) LogContext() any              { return "glob-cap-test" }
+func (s *globCapTestServer) Logger() logging.Logger       { return logging.NopLogger{} }
+func (s *globCapTestServer) ReaderLogger() logging.Logger { return logging.NopLogger{} }
 
-func (s *globCapTestServer) LogContext() any                    { return "glob-cap-test" }
-func (s *globCapTestServer) Logger() logging.Logger             { return logging.NopLogger{} }
-func (s *globCapTestServer) ReaderLogger() logging.Logger       { return logging.NopLogger{} }
-func (s *globCapTestServer) SendServerMessage(msg string)       { s.drainOrStore(msg) }
-func (s *globCapTestServer) ServerMessagesChannel() chan string { return s.serverMessage }
-func (s *globCapTestServer) Hostname() string                   { return "testhost" }
-func (s *globCapTestServer) PlainOutput() bool                  { return false }
-func (s *globCapTestServer) Serverless() bool                   { return false }
-func (s *globCapTestServer) ServerlessOutput() io.Writer        { return io.Discard }
-
-func (s *globCapTestServer) drainOrStore(msg string) {
-	select {
-	case s.serverMessage <- msg:
-	default:
+func (s *globCapTestServer) readCommandDependencies() readCommandDependencies {
+	return readCommandDependencies{
+		server:       s,
+		lifecycle:    s,
+		aggregates:   s,
+		logger:       s.Logger(),
+		readerLogger: s.ReaderLogger(),
+		logContext:   s.LogContext(),
+		timings: readTimings{
+			globRetryInterval:         time.Millisecond,
+			readRetryInterval:         time.Millisecond,
+			outputEOFAckTimeout:       time.Millisecond,
+			legacyAggregateInputGrace: time.Millisecond,
+			maxLineLength:             1024 * 1024,
+			maxGlobTargets:            s.maxGlobTargets,
+		},
+		newLineWriter: func(context.Context, uint64) LineWriter { return nopLineWriter{} },
 	}
 }
+
+func (s *globCapTestServer) AcquireReadSlot(ctx context.Context, mode omode.Mode, _ string) (func(), bool) {
+	limiter := s.tailLimiter
+	if mode == omode.CatClient || mode == omode.GrepClient {
+		limiter = s.catLimiter
+	}
+	select {
+	case limiter <- struct{}{}:
+		return func() { <-limiter }, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+func (s *globCapTestServer) SendReadMessage(ctx context.Context, generation uint64, message string) {
+	select {
+	case s.serverMessage <- encodeGeneratedMessage(generation, message+"\n"):
+	case <-ctx.Done():
+	}
+}
+
+func (s *globCapTestServer) NewReadMessages(ctx context.Context, generation uint64) (chan string, func()) {
+	messages := make(chan string, 16)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case message, ok := <-messages:
+				if !ok {
+					return
+				}
+				select {
+				case s.serverMessage <- encodeGeneratedMessage(generation, message):
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return messages, func() {
+		close(messages)
+		<-done
+	}
+}
+
+func (*globCapTestServer) FinishReadBatch(context.Context, omode.Mode, uint64) {}
+
+func (*globCapTestServer) DebugReadLifecycle(string, ...any) {}
 
 func (s *globCapTestServer) Aggregate() *maprserver.Aggregate { return nil }
 
@@ -103,32 +156,12 @@ func (s *globCapTestServer) CompletePendingFile() (int32, int32) {
 func (s *globCapTestServer) PendingAndActive() (int32, int32) {
 	return atomic.LoadInt32(&s.pendingFiles), 0
 }
-func (s *globCapTestServer) ActiveSessionGeneration() uint64 { return 0 }
-func (s *globCapTestServer) TriggerShutdown()                {}
-
-func (s *globCapTestServer) DirectOutputActive() bool             { return false }
-func (s *globCapTestServer) EnableDirectOutput() bool             { return false }
-func (s *globCapTestServer) HasOutputEOF() bool                   { return false }
-func (s *globCapTestServer) FlushOutput(context.Context) error    { return nil }
-func (s *globCapTestServer) ReportOutputFlushError(uint64, error) {}
-func (s *globCapTestServer) OutputEpoch() uint64                  { return 0 }
-func (s *globCapTestServer) SignalOutputEOF(epoch uint64)         {}
-func (s *globCapTestServer) EnqueueOutput(context.Context, uint64, []byte, func() uint64) error {
-	return nil
-}
-func (s *globCapTestServer) OutputBufferBytes() int                                  { return 0 }
-func (s *globCapTestServer) WaitForOutputEOFAck(context.Context, time.Duration) bool { return true }
-
-func (s *globCapTestServer) ReadGlobRetryInterval() time.Duration { return time.Millisecond }
-func (s *globCapTestServer) ReadRetryInterval() time.Duration     { return time.Millisecond }
-func (s *globCapTestServer) MaxLineLength() int                   { return 1024 * 1024 }
-func (s *globCapTestServer) OutputEOFAckTimeout() time.Duration   { return time.Millisecond }
-
-// MaxGlobTargets returns the configurable cap for this test server.
-func (s *globCapTestServer) MaxGlobTargets() int { return s.maxGlobTargets }
+func (s *globCapTestServer) TriggerShutdown() {}
 
 // verify the interface is satisfied at compile time
 var _ readCommandServer = (*globCapTestServer)(nil)
+var _ readCommandLifecycle = (*globCapTestServer)(nil)
+var _ readCommandDependencyProvider = (*globCapTestServer)(nil)
 
 // createTempFiles creates n empty files named file0000.log … in dir and
 // returns the glob pattern that matches all of them.

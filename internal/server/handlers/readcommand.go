@@ -13,6 +13,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/journal"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr/server"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/regex"
@@ -20,6 +21,13 @@ import (
 
 type readCommand struct {
 	server               readCommandServer
+	logger               logging.Logger
+	readerLogger         logging.Logger
+	logContext           any
+	timings              readTimings
+	newLineWriter        lineWriterFactory
+	abort                func()
+	serverless           bool
 	aggregate            *server.Aggregate
 	mode                 omode.Mode
 	generation           uint64
@@ -38,7 +46,7 @@ var pendingInputReservationKey pendingInputReservationKeyType
 // by the dispatch goroutine before the handler returns; the read goroutine owns
 // the pending counter only after claim succeeds.
 type pendingInputReservation struct {
-	server              readCommandServer
+	lifecycle           readCommandLifecycle
 	aggregate           *server.Aggregate
 	shutdownCoordinator *shutdownCoordinator
 	admission           *commandAdmissionResult
@@ -48,14 +56,16 @@ type pendingInputReservation struct {
 	released            bool
 }
 
-func newPendingInputReservation(server readCommandServer, mode omode.Mode) *pendingInputReservation {
-	server.AddPendingFiles(1)
-	aggregate := server.Aggregate()
+func newPendingInputReservation(provider readCommandDependencyProvider, mode omode.Mode) *pendingInputReservation {
+	dependencies := provider.readCommandDependencies()
+	dependencies.server.AddPendingFiles(1)
+	aggregate := dependencies.aggregates.Aggregate()
 	oneShotInput := mode == omode.CatClient || mode == omode.GrepClient
 	return &pendingInputReservation{
-		server:              server,
-		aggregate:           aggregate,
-		shutdownCoordinator: newShutdownCoordinator(server, oneShotInput, aggregate),
+		lifecycle: dependencies.lifecycle,
+		aggregate: aggregate,
+		shutdownCoordinator: newShutdownCoordinator(dependencies.lifecycle, dependencies.aggregates,
+			dependencies.timings, oneShotInput, aggregate),
 	}
 }
 
@@ -91,7 +101,7 @@ func (r *pendingInputReservation) releaseIfUnclaimed() {
 		return
 	}
 
-	remaining, _ := r.server.CompletePendingFile()
+	remaining, _ := r.lifecycle.CompletePendingFile()
 	if remaining == 0 {
 		// Dispatch can reject the command before admission (for example during
 		// graceful shutdown or option parsing). Preserve aggregate completion
@@ -114,20 +124,34 @@ func (r *pendingInputReservation) completeInputBatch() {
 
 type readStrategy func(context.Context, lcontext.LContext, fs.FileReader, regex.Regex) error
 
-func newReadCommand(server readCommandServer, mode omode.Mode) *readCommand {
-	return newReadCommandWithAggregate(server, mode, server.Aggregate())
+func newReadCommand(provider readCommandDependencyProvider, mode omode.Mode) *readCommand {
+	dependencies := provider.readCommandDependencies()
+	return newReadCommandWithDependencies(dependencies, mode, dependencies.aggregates.Aggregate())
 }
 
-func newReadCommandWithAggregate(server readCommandServer, mode omode.Mode, aggregate *server.Aggregate) *readCommand {
+func newReadCommandWithAggregate(provider readCommandDependencyProvider, mode omode.Mode, aggregate *server.Aggregate) *readCommand {
+	return newReadCommandWithDependencies(provider.readCommandDependencies(), mode, aggregate)
+}
+
+func newReadCommandWithDependencies(dependencies readCommandDependencies, mode omode.Mode,
+	aggregate *server.Aggregate) *readCommand {
 	// cat/grep reads are one-shot: their input is exhausted once every file
 	// has been read to EOF. tail follows its files indefinitely, so its input
 	// never exhausts and must not finish a output aggregate.
 	oneShotInput := mode == omode.CatClient || mode == omode.GrepClient
 	return &readCommand{
-		server:              server,
-		aggregate:           aggregate,
-		mode:                mode,
-		shutdownCoordinator: newShutdownCoordinator(server, oneShotInput, aggregate),
+		server:        dependencies.server,
+		logger:        logging.OrNop(dependencies.logger),
+		readerLogger:  logging.OrNop(dependencies.readerLogger),
+		logContext:    dependencies.logContext,
+		timings:       dependencies.timings.withDefaults(),
+		newLineWriter: dependencies.newLineWriter,
+		abort:         dependencies.abortAfterPanic,
+		serverless:    dependencies.serverless,
+		aggregate:     aggregate,
+		mode:          mode,
+		shutdownCoordinator: newShutdownCoordinator(dependencies.lifecycle, dependencies.aggregates,
+			dependencies.timings, oneShotInput, aggregate),
 	}
 }
 
@@ -144,14 +168,14 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	if argc >= 4 {
 		deserializedRegex, err := regex.Deserialize(strings.Join(args[2:], " "))
 		if err != nil {
-			r.sendServerMessage(ctx, r.server.Logger().Error(r.server.LogContext(),
+			r.sendServerMessage(ctx, r.logger.Error(r.logContext,
 				"Unable to parse command", err))
 			return
 		}
 		re = deserializedRegex
 	}
 	if argc < 3 {
-		r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
+		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 			"Unable to parse command", args, argc))
 		return
 	}
@@ -162,13 +186,13 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	isPipe := r.isInputFromPipe() && (argc < 2 || args[1] == "" || args[1] == "-")
 	switch {
 	case isPipe:
-		r.server.Logger().Debug("Reading data from stdin pipe")
+		r.logger.Debug("Reading data from stdin pipe")
 		r.readPipe(ctx, ltx, re)
 	case fs.IsJournalSpec(args[1]):
-		r.server.Logger().Debug("Reading data from journal")
+		r.logger.Debug("Reading data from journal")
 		r.readJournal(ctx, ltx, args[1], re)
 	default:
-		r.server.Logger().Debug("Reading data from file(s)")
+		r.logger.Debug("Reading data from file(s)")
 		r.readGlob(ctx, ltx, args[1], re, retries)
 	}
 }
@@ -226,13 +250,13 @@ func (r *readCommand) readJournal(ctx context.Context, ltx lcontext.LContext,
 func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 	glob string, re regex.Regex, retries int) {
 
-	retryInterval := r.server.ReadGlobRetryInterval()
+	retryInterval := r.timings.globRetryInterval
 	glob = filepath.Clean(glob)
 
 	for retryCount := 0; retryCount < retries; retryCount++ {
 		paths, err := filepath.Glob(glob)
 		if err != nil {
-			r.server.Logger().Warn(r.server.LogContext(), glob, err)
+			r.logger.Warn(r.logContext, glob, err)
 			if !ctxutil.Sleep(ctx, retryInterval) {
 				return
 			}
@@ -240,8 +264,8 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		}
 
 		if numPaths := len(paths); numPaths == 0 {
-			r.server.Logger().Error(r.server.LogContext(), "No such file(s) to read", glob)
-			r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
+			r.logger.Error(r.logContext, "No such file(s) to read", glob)
+			r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 				"Unable to read file(s), check server logs"))
 			select {
 			case <-ctx.Done():
@@ -258,10 +282,10 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		// read permission from spawning an unbounded number of goroutines and
 		// exhausting server memory. Excess paths are dropped with a warning so
 		// the partial result is still delivered rather than failing entirely.
-		if maxTargets := r.server.MaxGlobTargets(); len(paths) > maxTargets {
-			r.server.Logger().Warn(r.server.LogContext(), "Glob expansion exceeded cap, truncating",
+		if maxTargets := r.timings.maxGlobTargets; len(paths) > maxTargets {
+			r.logger.Warn(r.logContext, "Glob expansion exceeded cap, truncating",
 				"glob", glob, "matched", len(paths), "cap", maxTargets)
-			r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
+			r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 				"Glob expansion exceeded server limit, only first targets served",
 				"limit", maxTargets, "matched", len(paths)))
 			paths = paths[:maxTargets]
@@ -271,21 +295,21 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 
-	r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
+	r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 		"Giving up to read file(s)"))
 }
 
 func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	paths []string, glob string, re regex.Regex) {
 
-	r.server.Logger().Info(r.server.LogContext(), "Processing files", "count", len(paths), "glob", glob)
+	r.logger.Info(r.logContext, "Processing files", "count", len(paths), "glob", glob)
 
 	// Transfer the dispatch-time reservation to the resolved paths before any
 	// file goroutine can complete. Adding len(paths)-1 preserves a non-zero
 	// count throughout the hand-off. Direct unit callers without a reservation
 	// continue to register the full path count.
 	totalPending := r.registerPendingFiles(len(paths))
-	r.server.Logger().Info(r.server.LogContext(), "Added pending files", "count", len(paths), "totalPending", totalPending)
+	r.logger.Info(r.logContext, "Added pending files", "count", len(paths), "totalPending", totalPending)
 
 	var wg sync.WaitGroup
 	wg.Add(len(paths))
@@ -294,7 +318,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	}
 	wg.Wait()
 
-	r.server.Logger().Info(r.server.LogContext(), "All files processed", "count", len(paths))
+	r.logger.Info(r.logContext, "All files processed", "count", len(paths))
 
 	select {
 	case <-ctx.Done():
@@ -302,97 +326,9 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	default:
 	}
 
-	// In output mode, signal EOF once all pending file work is drained.
-	// Active command count may still include side-effect commands (for example AUTHKEY),
-	// so relying on "active == 1" can skip EOF signaling and lead to dropped output.
-	//
-	// Output is now the only runtime path, so the former config gating has been
-	// removed. This EOF handshake runs for every
-	// cat/grep/tail read.
-	//
-	// The guard is the mode check rather than Aggregate() == nil:
-	// SERVER-MODE dmap also enables output mode (readWithProcessor ->
-	// ensureOutputEnabled) even though its lines feed the Aggregate
-	// rather than the output channel writer, and it RELIES on this epilogue's
-	// SignalOutputEOF to disable output mode on the session output goroutine so the
-	// client receives EOF and the session terminates. Excluding the
-	// output-aggregate case here (as Aggregate() == nil would) hangs
-	// server-mode dmap: output mode stays enabled and the client waits forever for
-	// output that never ends. dmap uses map mode (not cat/grep/tail) so it is
-	// already excluded from this direct-output epilogue.
-	//
-	// For serverless dmap the epilogue is likewise not reached (map mode): the
-	// output aggregate is finalized through FinishInput in the shutdown
-	// coordinator, independently of this direct-output handshake.
-	if r.mode == omode.CatClient || r.mode == omode.GrepClient || r.mode == omode.TailClient {
-		if r.server.DirectOutputActive() && r.server.HasOutputEOF() {
-			// Capture the handshake epoch BEFORE the pending check. A command
-			// that joins the session afterwards bumps the epoch (readFiles
-			// increments the pending count before its per-file work enables
-			// output mode), so a joiner invisible to the pending==0 check below
-			// is guaranteed to advance the epoch after this capture — turning
-			// our SignalOutputEOF into a no-op instead of cutting off the
-			// joiner's output mid-batch. The window between the checks below
-			// and the signal is wide (FlushOutput may block for seconds),
-			// which is exactly what this guard covers.
-			//
-			// Note the never-signaling-joiner class: a output-aggregate (dmap)
-			// command joining the live session also bumps the epoch via its
-			// enable, but map mode is excluded from this epilogue and never
-			// signals EOF itself. Our signal is then dropped and the ack wait
-			// below runs into its bounded timeout — a spurious warning, but no
-			// data loss: our data was flushed above and session shutdown
-			// flushes the rest (see outputManager.signalEOF).
-			epoch := r.server.OutputEpoch()
-
-			pending, active := r.server.PendingAndActive()
-			shouldSignalEOF := pending == 0
-			if !shouldSignalEOF {
-				r.server.Logger().Trace(r.server.LogContext(), "Skipping output EOF signal for non-final command",
-					"pending", pending, "active", active)
-				return
-			}
-
-			r.server.Logger().Debug(r.server.LogContext(), "Output mode: flushing data before EOF signal")
-
-			// Ensure all output data is flushed before signaling EOF. A hard
-			// deadline prevents a slow or vanished client from pinning this
-			// command forever, and the protocol message makes the failure visible
-			// to a client that is still consuming the session.
-			if err := r.server.FlushOutput(ctx); err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				r.server.Logger().Error(r.server.LogContext(), "Unable to flush output", err)
-				r.server.ReportOutputFlushError(r.generation, err)
-			}
-
-			// Signal EOF by closing the channel, but only once — and only if
-			// no newer batch joined since the epoch capture above.
-			r.server.SignalOutputEOF(epoch)
-
-			// Wait for an explicit reader acknowledgement instead of timing guesses.
-			if !r.server.Serverless() {
-				timeout := r.server.OutputEOFAckTimeout()
-				if r.server.WaitForOutputEOFAck(ctx, timeout) {
-					// The wait is also released when enable() hands the
-					// handshake over to a new batch (stale refresh), not only
-					// by a reader ack — the log wording covers both.
-					r.server.Logger().Debug(r.server.LogContext(), "Output EOF handshake released (reader ack or handover)")
-				} else {
-					if ctx.Err() != nil {
-						return
-					}
-					r.server.Logger().Warn(
-						r.server.LogContext(),
-						"Timeout waiting for output EOF acknowledgement",
-						"timeout", timeout,
-						"remainingBytes", r.server.OutputBufferBytes(),
-					)
-				}
-			}
-		}
-	}
+	// The handler owns output draining and the epoch-protected EOF handshake.
+	// readCommand only announces that this group of file reads has completed.
+	r.server.FinishReadBatch(ctx, r.mode, r.generation)
 
 	// In output mode with aggregate, we don't close the shared channel here
 	// because it will be used across multiple invocations
@@ -427,18 +363,18 @@ func (r *readCommand) releasePendingInputReservation() {
 func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LContext,
 	wg *sync.WaitGroup, path, glob string, re regex.Regex) {
 
-	defer recoverHandlerPanic(r.server.Logger(), r.server.LogContext(), "file read cleanup", r.abortAfterPanic)
+	defer recoverHandlerPanic(r.logger, r.logContext, "file read cleanup", r.abortAfterPanic)
 	defer wg.Done()
 	defer func() {
 		r.shutdownCoordinator.onFileProcessed(path)
 	}()
-	defer recoverHandlerPanic(r.server.Logger(), r.server.LogContext(), "file read", r.abortAfterPanic)
+	defer recoverHandlerPanic(r.logger, r.logContext, "file read", r.abortAfterPanic)
 
 	globID := r.makeGlobID(ctx, path, glob)
 	target, ok := r.server.PrepareReadTarget(path)
 	if !ok {
-		r.server.Logger().Error(r.server.LogContext(), "No permission to read file", path, globID)
-		r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(),
+		r.logger.Error(r.logContext, "No permission to read file", path, globID)
+		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 			"Unable to read file(s), check server logs"))
 		return
 	}
@@ -448,12 +384,11 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	path string, target *fs.ValidatedReadTarget, globID string, re regex.Regex) {
 
-	r.server.Logger().Info(r.server.LogContext(), "Start reading", path, globID)
+	r.logger.Info(r.logContext, "Start reading", path, globID)
 	r.logRegexMode(re)
 
 	var reader fs.FileReader
-	var limiter chan struct{}
-	serverMessages, closeServerMessages := r.newGeneratedServerMessagesChannel(ctx)
+	serverMessages, closeServerMessages := r.server.NewReadMessages(ctx, r.generation)
 	defer closeServerMessages()
 
 	switch r.mode {
@@ -462,19 +397,18 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		case target != nil && target.Kind == fs.JournalKind:
 			journalReader, err := journal.NewReader(journalArgs(path), path, false, serverMessages)
 			if err != nil {
-				r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(), "Unable to read journal", err))
+				r.sendServerMessage(ctx, r.logger.Warn(r.logContext, "Unable to read journal", err))
 				return
 			}
 			reader = journalReader
 		case target != nil:
 			catFile := fs.NewValidatedCatFile(path, *target, globID, serverMessages,
-				r.server.MaxLineLength(), r.server.ReaderLogger())
+				r.timings.maxLineLength, r.readerLogger)
 			reader = &catFile
 		default:
-			catFile := fs.NewCatFile(path, globID, serverMessages, r.server.MaxLineLength(), r.server.ReaderLogger())
+			catFile := fs.NewCatFile(path, globID, serverMessages, r.timings.maxLineLength, r.readerLogger)
 			reader = &catFile
 		}
-		limiter = r.server.CatLimiter()
 	case omode.TailClient:
 		fallthrough
 	default:
@@ -482,50 +416,25 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		case target != nil && target.Kind == fs.JournalKind:
 			journalReader, err := journal.NewReader(journalArgs(path), path, true, serverMessages)
 			if err != nil {
-				r.sendServerMessage(ctx, r.server.Logger().Warn(r.server.LogContext(), "Unable to read journal", err))
+				r.sendServerMessage(ctx, r.logger.Warn(r.logContext, "Unable to read journal", err))
 				return
 			}
 			reader = journalReader
 		case target != nil:
 			tailFile := fs.NewValidatedTailFile(path, *target, globID, serverMessages,
-				r.server.MaxLineLength(), r.server.ReaderLogger())
+				r.timings.maxLineLength, r.readerLogger)
 			reader = &tailFile
 		default:
-			tailFile := fs.NewTailFile(path, globID, serverMessages, r.server.MaxLineLength(), r.server.ReaderLogger())
+			tailFile := fs.NewTailFile(path, globID, serverMessages, r.timings.maxLineLength, r.readerLogger)
 			reader = &tailFile
 		}
-		limiter = r.server.TailLimiter()
 	}
 
-	// acquired tracks whether this goroutine successfully sent to the limiter.
-	// The defer must only release a slot when this goroutine actually holds one;
-	// an unconditional release would steal a slot from another goroutine that
-	// is still holding it, permanently reducing the effective semaphore capacity.
-	var acquired bool
-	defer func() {
-		if acquired {
-			<-limiter
-		}
-	}()
-
-	select {
-	case limiter <- struct{}{}:
-		acquired = true
-		r.server.Logger().Debug(r.server.LogContext(), "Got limiter slot immediately", "path", path)
-	case <-ctx.Done():
-		r.server.Logger().Debug(r.server.LogContext(), "Context cancelled while waiting for limiter", "path", path)
+	release, acquired := r.server.AcquireReadSlot(ctx, r.mode, path)
+	if !acquired {
 		return
-	default:
-		r.server.Logger().Info(r.server.LogContext(), "Server limit hit, queueing file", "limiterLen", len(limiter), "path", path, "maxConcurrent", cap(limiter))
-		select {
-		case limiter <- struct{}{}:
-			acquired = true
-			r.server.Logger().Info(r.server.LogContext(), "Server limit OK now, processing file", "limiterLen", len(limiter), "path", path)
-		case <-ctx.Done():
-			r.server.Logger().Debug(r.server.LogContext(), "Context cancelled while queued for limiter", "path", path)
-			return
-		}
 	}
+	defer release()
 
 	// Output is the one and only read path. read() is only ever invoked for the
 	// cat/grep/tail command handlers (see makeReadCommandHandler), and MapReduce
@@ -537,9 +446,9 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	// (readViaChannels feeding the regular server.Aggregate) was removed once
 	// serverless MapReduce migrated to the output aggregate (tasks sv0/hv0), so
 	// there is no non-output path left here.
-	r.server.Logger().Debug(r.server.LogContext(), "Selecting read mode",
+	r.logger.Debug(r.logContext, "Selecting read mode",
 		"mode", r.mode, "hasAggregate", r.aggregate != nil)
-	r.server.Logger().Info(r.server.LogContext(), "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
+	r.logger.Info(r.logContext, "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
 	r.readWithProcessor(ctx, ltx, path, globID, re, reader)
 }
 
@@ -554,11 +463,10 @@ func journalArgs(spec string) []string {
 func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LContext,
 	path, globID string, re regex.Regex, reader fs.FileReader) {
 
-	r.server.Logger().Info(r.server.LogContext(), "Using output channel-less implementation", path, globID)
+	r.logger.Info(r.logContext, "Using output channel-less implementation", path, globID)
 	r.logRegexMode(re)
 
-	r.ensureOutputEnabled(ctx)
-	writer := r.makeWriter(ctx)
+	writer := r.newLineWriter(ctx, r.generation)
 
 	r.executeReadLoop(ctx, ltx, path, globID, re, reader, r.readViaProcessor(path, globID, writer))
 }
@@ -568,7 +476,7 @@ func (r *readCommand) executeReadLoop(ctx context.Context, ltx lcontext.LContext
 
 	for {
 		if err := strategy(ctx, ltx, reader, re); err != nil {
-			r.server.Logger().Error(r.server.LogContext(), path, globID, err)
+			r.logger.Error(r.logContext, path, globID, err)
 			if errors.Is(err, fs.ErrReaderWorkerPanic) {
 				panic(err)
 			}
@@ -583,16 +491,16 @@ func (r *readCommand) executeReadLoop(ctx context.Context, ltx lcontext.LContext
 			}
 		}
 
-		if !ctxutil.Sleep(ctx, r.server.ReadRetryInterval()) {
+		if !ctxutil.Sleep(ctx, r.timings.readRetryInterval) {
 			return
 		}
-		r.server.Logger().Info(path, globID, "Reading file again")
+		r.logger.Info(path, globID, "Reading file again")
 	}
 }
 
 func (r *readCommand) readViaProcessor(path, globID string, writer LineWriter) readStrategy {
 	return func(ctx context.Context, ltx lcontext.LContext, reader fs.FileReader, re regex.Regex) error {
-		r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> starting read loop iteration")
+		r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> starting read loop iteration")
 
 		processor := r.makeProcessor(path, globID, writer)
 
@@ -603,20 +511,20 @@ func (r *readCommand) readViaProcessor(path, globID string, writer LineWriter) r
 			defer func() {
 				closeErr := processor.Close()
 				if closeErr != nil {
-					r.server.Logger().Error(r.server.LogContext(), path, globID, "close error", closeErr)
+					r.logger.Error(r.logContext, path, globID, "close error", closeErr)
 				}
-				r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> processor closed")
+				r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> processor closed")
 			}()
 			defer func() {
-				r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> flushing processor")
+				r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> flushing processor")
 				if flushErr := processor.Flush(); flushErr != nil {
-					r.server.Logger().Error(r.server.LogContext(), path, globID, "flush error", flushErr)
+					r.logger.Error(r.logContext, path, globID, "flush error", flushErr)
 				}
 			}()
 
-			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.Start -> about to start")
+			r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> reader.Start -> about to start")
 			err := reader.Start(ctx, ltx, processor, re)
-			r.server.Logger().Trace(r.server.LogContext(), path, globID, "readWithProcessor -> reader.Start -> completed")
+			r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> reader.Start -> completed")
 			return err
 		}()
 
@@ -624,44 +532,13 @@ func (r *readCommand) readViaProcessor(path, globID string, writer LineWriter) r
 	}
 }
 
-func (r *readCommand) ensureOutputEnabled(ctx context.Context) {
-	// EnableDirectOutput is an atomic check-and-enable guarded by the output
-	// manager's mutex, so mode and channel initialization are always observed
-	// together — no visibility double-check is needed here. It returns false
-	// when output mode was already active.
-	if !r.server.EnableDirectOutput() {
-		return
-	}
-	// Wake a potentially blocked reader goroutine so it can switch to output drain path.
-	r.sendServerMessage(ctx, ".output wake")
-}
-
-func (r *readCommand) makeWriter(ctx context.Context) LineWriter {
-	// Create a writer instance per file to keep concurrent processing isolated.
-	if r.server.Serverless() {
-		return NewGeneratedDirectWriter(r.server.ServerlessOutput(), r.server.Hostname(), r.server.PlainOutput(), r.server.Serverless(), r.generation, r.server.ActiveSessionGeneration)
-	}
-
-	// Use NewNetworkWriter so bufSize is set to 64KB. A bare struct literal
-	// here previously left bufSize at zero, which disabled write batching and
-	// sent every line as its own output-channel payload (one SSH packet + one
-	// write syscall per line), making server-mode output output far slower than
-	// it should be.
-	writer := NewNetworkWriter(ctx, nil,
-		r.server.ServerMessagesChannel(), r.server.Hostname(),
-		r.server.PlainOutput(), r.server.Serverless(), r.generation,
-		r.server.ActiveSessionGeneration, r.server.Logger())
-	writer.enqueueOutput = r.server.EnqueueOutput
-	return writer
-}
-
 func (r *readCommand) makeProcessor(path, globID string, writer LineWriter) line.Processor {
 	if aggregate := r.aggregate; aggregate != nil {
-		r.server.Logger().Info(r.server.LogContext(), "Using turbo aggregate processor for MapReduce", path, globID)
+		r.logger.Info(r.logContext, "Using turbo aggregate processor for MapReduce", path, globID)
 		return server.NewAggregateProcessor(aggregate, globID)
 	}
 
-	return NewDirectLineProcessor(writer, globID, r.server.Logger())
+	return NewDirectLineProcessor(writer, globID, r.logger)
 }
 
 func (r *readCommand) logRegexMode(re regex.Regex) {
@@ -670,9 +547,9 @@ func (r *readCommand) logRegexMode(re regex.Regex) {
 	}
 	switch {
 	case re.IsLiteral():
-		r.server.Logger().Info(r.server.LogContext(), "Using optimized literal string matching for pattern:", re.Pattern())
+		r.logger.Info(r.logContext, "Using optimized literal string matching for pattern:", re.Pattern())
 	default:
-		r.server.Logger().Info(r.server.LogContext(), "Using regex matching for pattern:", re.Pattern())
+		r.logger.Info(r.logContext, "Using regex matching for pattern:", re.Pattern())
 	}
 }
 
@@ -693,7 +570,7 @@ func (r *readCommand) makeGlobID(ctx context.Context, path, glob string) string 
 		return pathParts[len(pathParts)-1]
 	}
 
-	r.sendServerMessage(ctx, r.server.Logger().Warn("Empty file path given?", path, glob))
+	r.sendServerMessage(ctx, r.logger.Warn("Empty file path given?", path, glob))
 	return ""
 }
 
@@ -706,48 +583,17 @@ func (r *readCommand) makeGlobID(ctx context.Context, path, glob string) string 
 // cancelled on command completion and on handler shutdown (see
 // baseHandler.newCommandContext), mirroring the done-guarded baseHandler.send.
 func (r *readCommand) sendServerMessage(ctx context.Context, message string) {
-	select {
-	case r.server.ServerMessagesChannel() <- encodeGeneratedMessage(r.generation, message+"\n"):
-	case <-ctx.Done():
-	}
-}
-
-func (r *readCommand) newGeneratedServerMessagesChannel(ctx context.Context) (chan string, func()) {
-	serverMessages := make(chan string, 16)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		defer recoverHandlerPanic(r.server.Logger(), r.server.LogContext(), "server message forwarding", r.abortAfterPanic)
-		for {
-			select {
-			case message, ok := <-serverMessages:
-				if !ok {
-					return
-				}
-				select {
-				case r.server.ServerMessagesChannel() <- encodeGeneratedMessage(r.generation, message):
-				case <-ctx.Done():
-					return
-				}
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return serverMessages, func() {
-		close(serverMessages)
-		<-done
-	}
+	r.server.SendReadMessage(ctx, r.generation, message)
 }
 
 func (r *readCommand) abortAfterPanic() {
-	if aborter, ok := r.server.(interface{ abortAfterPanic() }); ok {
-		aborter.abortAfterPanic()
+	if r.abort != nil {
+		r.abort()
 	}
 }
 
 func (r *readCommand) isInputFromPipe() bool {
-	if !r.server.Serverless() {
+	if !r.serverless {
 		// Can read from pipe only in serverless mode.
 		return false
 	}

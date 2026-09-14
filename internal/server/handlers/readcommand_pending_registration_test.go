@@ -51,10 +51,19 @@ func (s *pendingRegistrationTestServer) coordinateAggregateInputCompletion(
 	return true
 }
 
+func (s *pendingRegistrationTestServer) readCommandDependencies() readCommandDependencies {
+	dependencies := s.globCapTestServer.readCommandDependencies()
+	dependencies.server = s
+	dependencies.lifecycle = s
+	dependencies.aggregates = s
+	return dependencies
+}
+
 var _ readCommandServer = (*pendingRegistrationTestServer)(nil)
 var _ aggregateInputBatchCoordinator = (*pendingRegistrationTestServer)(nil)
+var _ readCommandDependencyProvider = (*pendingRegistrationTestServer)(nil)
 
-func newReservedTestReadCommand(server readCommandServer, mode omode.Mode) *readCommand {
+func newReservedTestReadCommand(server readCommandDependencyProvider, mode omode.Mode) *readCommand {
 	reservation := newPendingInputReservation(server, mode)
 	command := newReadCommandWithAggregate(server, mode, reservation.aggregate)
 	command.adoptPendingInputReservation(reservation)
@@ -366,6 +375,14 @@ func (s *markerlessInputTestServer) Aggregate() *maprserver.Aggregate {
 	return s.aggregate
 }
 
+func (s *markerlessInputTestServer) readCommandDependencies() readCommandDependencies {
+	dependencies := s.globCapTestServer.readCommandDependencies()
+	dependencies.server = s
+	dependencies.lifecycle = s
+	dependencies.aggregates = s
+	return dependencies
+}
+
 func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
 	aggregate, err := maprserver.NewAggregate(
 		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
@@ -377,7 +394,7 @@ func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
 		globCapTestServer: newGlobCapTestServer(1),
 		aggregate:         aggregate,
 	}
-	coordinator := newShutdownCoordinator(server, true, aggregate)
+	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, aggregate)
 	waiting := make(chan struct{})
 	release := make(chan struct{})
 	coordinator.legacyInputWait = func() {
@@ -412,7 +429,7 @@ func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
 
 func TestUnbatchedReadFinishesImmediatelyAfterPendingInputDrains(t *testing.T) {
 	server := newPendingRegistrationTestServer()
-	coordinator := newShutdownCoordinator(server, true, server.aggregate)
+	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, server.aggregate)
 
 	coordinator.maybeFinishAggregateInput()
 
@@ -423,7 +440,7 @@ func TestUnbatchedReadFinishesImmediatelyAfterPendingInputDrains(t *testing.T) {
 
 func TestModernBatchOwnedReadDefersAggregateCompletionToBatch(t *testing.T) {
 	server := newPendingRegistrationTestServer()
-	coordinator := newShutdownCoordinator(server, true, server.aggregate)
+	coordinator := newShutdownCoordinator(server, server, readTimings{}, true, server.aggregate)
 	coordinator.inputBatchOwned = true
 
 	coordinator.maybeFinishAggregateInput()

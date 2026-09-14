@@ -7,7 +7,9 @@ import (
 )
 
 type shutdownCoordinator struct {
-	server readCommandServer
+	lifecycle  readCommandLifecycle
+	aggregates readCommandAggregates
+	timings    readTimings
 	// aggregate is captured when the read command is admitted. An interactive
 	// update may replace the handler's current aggregate before this read exits;
 	// completion must still apply only to the generation this read fed.
@@ -33,20 +35,21 @@ type aggregateInputBatchCoordinator interface {
 // never take this path.
 const legacyUnbatchedAggregateInputGrace = 100 * time.Millisecond
 
-func newShutdownCoordinator(server readCommandServer, oneShotInput bool, aggregate *maprserver.Aggregate) *shutdownCoordinator {
+func newShutdownCoordinator(lifecycle readCommandLifecycle, aggregates readCommandAggregates,
+	timings readTimings, oneShotInput bool, aggregate *maprserver.Aggregate) *shutdownCoordinator {
+	timings = timings.withDefaults()
 	return &shutdownCoordinator{
-		server:       server,
+		lifecycle:    lifecycle,
+		aggregates:   aggregates,
+		timings:      timings,
 		aggregate:    aggregate,
 		oneShotInput: oneShotInput,
-		legacyInputWait: func() {
-			time.Sleep(legacyUnbatchedAggregateInputGrace)
-		},
 	}
 }
 
 func (c *shutdownCoordinator) onFileProcessed(path string) {
-	remaining, activeCommands := c.server.CompletePendingFile()
-	c.server.Logger().Debug(c.server.LogContext(), "File processing complete", "path", path, "remainingPending", remaining)
+	remaining, activeCommands := c.lifecycle.CompletePendingFile()
+	c.lifecycle.DebugReadLifecycle("File processing complete", "path", path, "remainingPending", remaining)
 
 	if remaining != 0 {
 		return
@@ -87,18 +90,22 @@ func (c *shutdownCoordinator) maybeFinishAggregateInput() {
 	if c.inputBatchOwned {
 		return
 	}
-	if batch, ok := c.server.(aggregateInputBatchCoordinator); ok && batch.coordinateAggregateInputCompletion(aggregate) {
+	if batch, ok := c.aggregates.(aggregateInputBatchCoordinator); ok && batch.coordinateAggregateInputCompletion(aggregate) {
 		return
 	}
 
 	// A markerless peer predates input batching, so there is no protocol event
 	// that proves the next transport frame is not another read. Preserve the
 	// legacy bounded recheck for that mixed-version direction only.
-	c.legacyInputWait()
-	if pending, _ := c.server.PendingAndActive(); pending != 0 {
+	if c.legacyInputWait != nil {
+		c.legacyInputWait()
+	} else {
+		time.Sleep(c.timings.legacyAggregateInputGrace)
+	}
+	if pending, _ := c.lifecycle.PendingAndActive(); pending != 0 {
 		return
 	}
-	if c.server.Aggregate() != aggregate {
+	if c.aggregates.Aggregate() != aggregate {
 		return
 	}
 	aggregate.FinishInput()
@@ -110,12 +117,12 @@ func (c *shutdownCoordinator) finalizeWhenIdle() {
 	// Aggregate.Shutdown serialization. Reaching idle is
 	// therefore already the aggregate-completion signal; handler shutdown also
 	// joins Aggregate.Shutdown defensively.
-	finalPending, finalActive := c.server.PendingAndActive()
+	finalPending, finalActive := c.lifecycle.PendingAndActive()
 	if finalPending == 0 && finalActive == 0 {
-		c.server.Logger().Debug(c.server.LogContext(), "No active commands and no pending files after double-check, triggering shutdown")
-		c.server.TriggerShutdown()
+		c.lifecycle.DebugReadLifecycle("No active commands and no pending files after double-check, triggering shutdown")
+		c.lifecycle.TriggerShutdown()
 		return
 	}
 
-	c.server.Logger().Debug(c.server.LogContext(), "Shutdown check cancelled", "finalPending", finalPending, "finalActive", finalActive)
+	c.lifecycle.DebugReadLifecycle("Shutdown check cancelled", "finalPending", finalPending, "finalActive", finalActive)
 }
