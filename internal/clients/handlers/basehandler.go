@@ -418,12 +418,5 @@ func parseSessionOKAck(payload string, action string) (SessionAck, bool) {
 // trailing newline: it is emitted via the diagnostic (Log) sink, which appends
 // the newline itself (adding one here would produce a blank line).
 func formatServerErrorMessage(server string, message string) string {
-	var encoded bytes.Buffer
-	protocol.EncodeMessage(&encoded, protocol.Message{
-		Kind:     protocol.MessageServer,
-		Hostname: server,
-		Content:  "ERROR" + protocol.FieldDelimiter + message,
-	})
-	frame := encoded.Bytes()
-	return string(frame[:len(frame)-1])
+	return protocol.EncodeServerError(server, message)
 }

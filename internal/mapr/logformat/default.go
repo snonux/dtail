@@ -58,10 +58,9 @@ func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error
 	fields := make(map[string]string, p.fieldsCapacity)
 	tokenIndex := 0
 	start := 0
-	delimiter := protocol.FieldDelimiter[0]
 
 	for {
-		token, next, done := scanDelimitedField(maprLine, start, delimiter)
+		token, next, done := protocol.ScanField(maprLine, start)
 		switch tokenIndex {
 		case 0:
 			if !strings.HasPrefix(token, "INFO") {

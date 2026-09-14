@@ -20,10 +20,9 @@ func (p *genericKVParser) MakeFields(maprLine, _ string) (map[string]string, err
 	fields := make(map[string]string, p.fieldsCapacity)
 	p.addDefaultFields(fields, maprLine)
 	start := 0
-	delimiter := protocol.FieldDelimiter[0]
 
 	for {
-		token, next, done := scanDelimitedField(maprLine, start, delimiter)
+		token, next, done := protocol.ScanField(maprLine, start)
 		// Generic key-value logs may mix structured and unstructured fields.
 		// Ignore malformed fields while continuing to parse later tokens.
 		_ = p.addKeyValueField(fields, token)
