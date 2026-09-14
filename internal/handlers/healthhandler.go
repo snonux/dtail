@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
@@ -14,7 +13,7 @@ import (
 
 // HealthHandler is for the remote health check.
 type HealthHandler struct {
-	baseHandler
+	*baseHandler
 }
 
 // NewHealthHandler returns the server handler.
@@ -32,16 +31,11 @@ func NewHealthHandler(user *user.User, serverCfg *config.ServerConfig, logger lo
 	}
 
 	h := HealthHandler{
-		baseHandler: baseHandler{
+		baseHandler: newBaseHandler(baseHandlerConfig{
 			logger:              logger,
-			done:                internal.NewDone(),
-			serverMessages:      make(chan string, 10),
-			maprMessages:        make(chan string, 10),
-			ackCloseReceived:    make(chan struct{}),
 			user:                user,
-			codec:               newProtocolCodec(user, logger),
 			maxCommandFrameSize: maxFrameSize,
-		},
+		}),
 	}
 	h.handleCommandCb = h.handleHealthCommand
 

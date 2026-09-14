@@ -25,7 +25,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/omode"
@@ -45,14 +44,12 @@ func buildLimiterTestHandler(t *testing.T, capacity int) (*ServerHandler, chan s
 	}
 
 	handler := &ServerHandler{
-		baseHandler: baseHandler{
-			done:             internal.NewDone(),
-			serverMessages:   make(chan string, 64),
-			maprMessages:     make(chan string, 4),
-			ackCloseReceived: make(chan struct{}),
-			user:             &userserver.User{Name: "semaphore-test-user"},
-			codec:            newProtocolCodec(&userserver.User{Name: "semaphore-test-user"}, handlerTestLogger),
-		},
+		baseHandler: newBaseHandler(baseHandlerConfig{
+			logger:         handlerTestLogger,
+			serverMessages: make(chan string, 64),
+			maprMessages:   make(chan string, 4),
+			user:           &userserver.User{Name: "semaphore-test-user"},
+		}),
 		serverCfg:   &config.ServerConfig{},
 		catLimiter:  limiter,
 		tailLimiter: limiter,

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
 	userserver "github.com/mimecast/dtail/internal/sessionuser"
@@ -19,15 +18,13 @@ import (
 func frameSizeTestServerHandler(maxFrameBytes int) *ServerHandler {
 	u := &userserver.User{Name: "frame-size-test-user"}
 	h := &ServerHandler{
-		baseHandler: baseHandler{
-			done:                internal.NewDone(),
+		baseHandler: newBaseHandler(baseHandlerConfig{
+			logger:              handlerTestLogger,
 			serverMessages:      make(chan string, 8),
 			maprMessages:        make(chan string, 4),
-			ackCloseReceived:    make(chan struct{}),
 			user:                u,
-			codec:               newProtocolCodec(u, handlerTestLogger),
 			maxCommandFrameSize: maxFrameBytes,
-		},
+		}),
 		serverCfg: &config.ServerConfig{
 			AuthKeyEnabled: true,
 		},
@@ -43,15 +40,13 @@ func frameSizeTestServerHandler(maxFrameBytes int) *ServerHandler {
 func frameSizeTestHealthHandler(maxFrameBytes int) *HealthHandler {
 	u := &userserver.User{Name: "frame-size-health-test-user"}
 	return &HealthHandler{
-		baseHandler: baseHandler{
-			done:                internal.NewDone(),
+		baseHandler: newBaseHandler(baseHandlerConfig{
+			logger:              handlerTestLogger,
 			serverMessages:      make(chan string, 8),
 			maprMessages:        make(chan string, 4),
-			ackCloseReceived:    make(chan struct{}),
 			user:                u,
-			codec:               newProtocolCodec(u, handlerTestLogger),
 			maxCommandFrameSize: maxFrameBytes,
-		},
+		}),
 	}
 }
 

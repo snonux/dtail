@@ -8,19 +8,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
 // newReadTestHandler returns a baseHandler suitable for exercising Read
 // directly, without any output or generation scoping involved.
-func newReadTestHandler() baseHandler {
-	return baseHandler{
-		done:           internal.NewDone(),
+func newReadTestHandler() *baseHandler {
+	return newBaseHandler(baseHandlerConfig{
 		serverMessages: make(chan string, 4),
 		maprMessages:   make(chan string, 4),
 		hostname:       "testhost",
-	}
+	})
 }
 
 // readExactly drains wantLen bytes from the handler using a buffer of bufSize
@@ -70,7 +68,7 @@ func TestBaseHandlerReadLargeServerMessageAcrossMultipleReads(t *testing.T) {
 
 	var want bytes.Buffer
 	formatServerMessage(&want, "testhost", message, false)
-	got := readExactly(t, &handler, 32, want.Len())
+	got := readExactly(t, handler, 32, want.Len())
 
 	if !bytes.Equal(got, want.Bytes()) {
 		t.Fatalf("large server message corrupted across reads:\ngot  %q\nwant %q",
@@ -94,7 +92,7 @@ func TestBaseHandlerReadLargeMaprMessageAcrossMultipleReads(t *testing.T) {
 	want.WriteString(message)
 	want.WriteByte(protocol.MessageDelimiter)
 
-	got := readExactly(t, &handler, 32, want.Len())
+	got := readExactly(t, handler, 32, want.Len())
 	if !bytes.Equal(got, want.Bytes()) {
 		t.Fatalf("large mapr message corrupted across reads:\ngot  %q\nwant %q",
 			got, want.Bytes())
@@ -111,7 +109,7 @@ func TestBaseHandlerReadLargeHiddenMessageAcrossMultipleReads(t *testing.T) {
 	handler.serverMessages <- message
 
 	want := append([]byte(message), protocol.MessageDelimiter)
-	got := readExactly(t, &handler, 32, len(want))
+	got := readExactly(t, handler, 32, len(want))
 	if !bytes.Equal(got, want) {
 		t.Fatalf("large hidden message corrupted across reads:\ngot  %q\nwant %q",
 			got, want)
@@ -146,7 +144,7 @@ func TestBaseHandlerReadDrainsRemainderBeforeOutputData(t *testing.T) {
 	mustEnqueueOutput(t, &handler.output, 0, outputPayload)
 
 	total := want.Len() + len(outputPayload)
-	got = append(got, readExactly(t, &handler, 16, total-len(got))...)
+	got = append(got, readExactly(t, handler, 16, total-len(got))...)
 
 	if !bytes.Equal(got[:want.Len()], want.Bytes()) {
 		t.Fatalf("output data preempted pending remainder:\ngot  %q\nwant %q",
@@ -212,7 +210,7 @@ func TestBaseHandlerReadExactFitBuffer(t *testing.T) {
 	formatServerMessage(&secondWant, "testhost", second, false)
 
 	handler.serverMessages <- second
-	got := readExactly(t, &handler, firstWant.Len(), secondWant.Len())
+	got := readExactly(t, handler, firstWant.Len(), secondWant.Len())
 	if !bytes.Equal(got, secondWant.Bytes()) {
 		t.Fatalf("stale remainder leaked into next message:\ngot  %q\nwant %q",
 			got, secondWant.Bytes())

@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -198,10 +197,9 @@ func TestSendServerMessageDeliversToDrainedChannel(t *testing.T) {
 // done.Shutdown() alone — this is exactly the goroutine leak the fix removes.
 func TestSendServerMessageReleasedByHandlerShutdown(t *testing.T) {
 
-	handler := &baseHandler{
-		done:           internal.NewDone(),
+	handler := newBaseHandler(baseHandlerConfig{
 		serverMessages: make(chan string, 1),
-	}
+	})
 
 	// Wire the readCommand's server messages channel to the real handler's
 	// channel so the stuck send targets the same channel baseHandler.Read

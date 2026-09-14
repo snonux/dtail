@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -455,15 +454,14 @@ func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testi
 }
 
 func newSessionTestHandler(userName string) *ServerHandler {
+	testUser := &userserver.User{Name: userName}
 	handler := &ServerHandler{
-		baseHandler: baseHandler{
-			done:             internal.NewDone(),
-			serverMessages:   make(chan string, 8),
-			maprMessages:     make(chan string, 4),
-			ackCloseReceived: make(chan struct{}),
-			user:             &userserver.User{Name: userName},
-			codec:            newProtocolCodec(&userserver.User{Name: userName}, handlerTestLogger),
-		},
+		baseHandler: newBaseHandler(baseHandlerConfig{
+			logger:         handlerTestLogger,
+			serverMessages: make(chan string, 8),
+			maprMessages:   make(chan string, 4),
+			user:           testUser,
+		}),
 		serverCfg: &config.ServerConfig{
 			AuthKeyEnabled: true,
 		},

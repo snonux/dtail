@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	userserver "github.com/mimecast/dtail/internal/sessionuser"
 )
 
@@ -25,7 +24,7 @@ func TestBaseHandlerReadDropsStaleServerMessage(t *testing.T) {
 	handler.serverMessages <- encodeGeneratedMessage(1, "stale\n")
 	handler.serverMessages <- encodeGeneratedMessage(2, "fresh\n")
 
-	got := readHandlerOutput(t, &handler)
+	got := readHandlerOutput(t, handler)
 	if strings.Contains(got, "stale") {
 		t.Fatalf("unexpected stale output: %q", got)
 	}
@@ -39,7 +38,7 @@ func TestBaseHandlerReadDropsStaleMaprMessage(t *testing.T) {
 	handler.maprMessages <- encodeGeneratedMessage(2, "old aggregate")
 	handler.maprMessages <- encodeGeneratedMessage(3, "new aggregate")
 
-	got := readHandlerOutput(t, &handler)
+	got := readHandlerOutput(t, handler)
 	if strings.Contains(got, "old aggregate") {
 		t.Fatalf("unexpected stale aggregate output: %q", got)
 	}
@@ -53,7 +52,7 @@ func TestBaseHandlerReadDropsStaleFlushError(t *testing.T) {
 	handler.reportFlushError(1, errors.New("stale flush failure"))
 	handler.reportFlushError(2, errors.New("current flush failure"))
 
-	got := readHandlerOutput(t, &handler)
+	got := readHandlerOutput(t, handler)
 	if strings.Contains(got, "stale flush failure") {
 		t.Fatalf("unexpected stale flush error: %q", got)
 	}
@@ -64,10 +63,7 @@ func TestBaseHandlerReadDropsStaleFlushError(t *testing.T) {
 
 func TestGeneratedMaprMessagesChannelCloseWaitsForForwarding(t *testing.T) {
 	handler := &ServerHandler{
-		baseHandler: baseHandler{
-			done:         internal.NewDone(),
-			maprMessages: make(chan string),
-		},
+		baseHandler: newBaseHandler(baseHandlerConfig{maprMessages: make(chan string)}),
 	}
 
 	generated, closeGenerated := handler.newGeneratedMaprMessagesChannel(7)
@@ -123,16 +119,15 @@ func TestOutputManagerTryReadDropsStaleGeneration(t *testing.T) {
 	}
 }
 
-func newGenerationTestHandler(activeGeneration uint64) baseHandler {
-	return baseHandler{
-		done:           internal.NewDone(),
+func newGenerationTestHandler(activeGeneration uint64) *baseHandler {
+	return newBaseHandler(baseHandlerConfig{
 		serverMessages: make(chan string, 2),
 		maprMessages:   make(chan string, 2),
 		hostname:       "testhost",
 		activeGeneration: func() uint64 {
 			return activeGeneration
 		},
-	}
+	})
 }
 
 func readHandlerOutput(t *testing.T, handler *baseHandler) string {

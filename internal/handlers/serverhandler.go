@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -24,7 +23,7 @@ import (
 // the Bi-directional communication between SSH client and server.
 // This handler implements the handler of the SSH server.
 type ServerHandler struct {
-	baseHandler
+	*baseHandler
 	catLimiter          chan struct{}
 	tailLimiter         chan struct{}
 	serverCfg           *config.ServerConfig
@@ -81,22 +80,13 @@ func NewServerHandler(user *user.User, dependencies Dependencies) (*ServerHandle
 	}
 
 	h := ServerHandler{
-		baseHandler: baseHandler{
+		baseHandler: newBaseHandler(baseHandlerConfig{
 			logger:              loggers.Diagnostics,
 			readerLogger:        loggers.Reader,
 			serverlessOutput:    dependencies.ServerlessOutput,
-			done:                internal.NewDone(),
-			serverMessages:      make(chan string, 10),
-			maprMessages:        make(chan string, 10),
-			ackCloseReceived:    make(chan struct{}),
-			flushRequests:       make(chan chan struct{}),
-			flushErrors:         make(chan string, 2),
-			commandDone:         internal.NewDone(),
-			outputAbort:         internal.NewDone(),
 			user:                user,
-			codec:               newProtocolCodec(user, loggers.Diagnostics),
 			maxCommandFrameSize: serverCfg.MaxCommandFrameSize,
-		},
+		}),
 		catLimiter:   dependencies.CatLimiter,
 		tailLimiter:  dependencies.TailLimiter,
 		serverCfg:    serverCfg,

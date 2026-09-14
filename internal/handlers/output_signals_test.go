@@ -503,8 +503,9 @@ func TestFlushRequestReceiptForcesFreshDrainBeforeTerminalClose(t *testing.T) {
 	// Model Read reaching the barrier after its queue scan. Receipt must not
 	// acknowledge immediately because the flush deadline can win and publish
 	// its error and terminal request at this exact boundary.
-	if n, handled := handler.tryReadQueued(make([]byte, 64)); n != 0 || !handled {
-		t.Fatalf("barrier receipt = (%d, %v), want (0, true) fresh-pass request", n, handled)
+	if result, handled := handler.tryReadQueued(); result.kind != outputReadRetry || !handled {
+		t.Fatalf("barrier receipt = (%v, %v), want (retry, true) fresh-pass request",
+			result.kind, handled)
 	}
 	select {
 	case <-flushAck:

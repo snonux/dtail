@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
@@ -105,11 +104,10 @@ func TestHandleAuthKeyCommandInvalidPayload(t *testing.T) {
 
 func newAuthKeyTestHandler(userName string, authKeyEnabled bool) *ServerHandler {
 	return &ServerHandler{
-		baseHandler: baseHandler{
-			done:           internal.NewDone(),
+		baseHandler: newBaseHandler(baseHandlerConfig{
 			serverMessages: make(chan string, 4),
 			user:           &userserver.User{Name: userName},
-		},
+		}),
 		serverCfg: &config.ServerConfig{
 			AuthKeyEnabled: authKeyEnabled,
 		},

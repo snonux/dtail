@@ -14,7 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	userserver "github.com/mimecast/dtail/internal/sessionuser"
@@ -25,12 +24,11 @@ func TestAggregatePointerRaceWithShutdown(t *testing.T) {
 	const iterations = 200
 
 	for i := 0; i < iterations; i++ {
-		h := &baseHandler{
-			done:           internal.NewDone(),
+		h := newBaseHandler(baseHandlerConfig{
 			serverMessages: make(chan string, 8),
 			maprMessages:   make(chan string, 4),
 			user:           &userserver.User{Name: "race-test-output-user"},
-		}
+		})
 
 		ta, err := mapaggregate.New("select count($0) from .", "", logging.NopLogger{})
 		if err != nil {

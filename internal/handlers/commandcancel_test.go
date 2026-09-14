@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -70,7 +69,7 @@ func TestHandleCommandCancelsContextAfterCommandFinished(t *testing.T) {
 // defensive safety net that keeps a leak from accumulating even if a
 // future caller forgets to invoke cancel.
 func TestNewCommandContextReleasesWatcherGoroutine(t *testing.T) {
-	h := &baseHandler{done: internal.NewDone()}
+	h := newBaseHandler(baseHandlerConfig{})
 	t.Cleanup(h.done.Shutdown)
 
 	baseline := runtime.NumGoroutine()
@@ -93,7 +92,7 @@ func TestNewCommandContextReleasesWatcherGoroutine(t *testing.T) {
 // context, shutting down the handler still drains the watcher goroutine
 // rather than leaving it blocked until process exit.
 func TestNewCommandContextHandlerShutdownReleasesWatcher(t *testing.T) {
-	h := &baseHandler{done: internal.NewDone()}
+	h := newBaseHandler(baseHandlerConfig{})
 
 	baseline := runtime.NumGoroutine()
 
