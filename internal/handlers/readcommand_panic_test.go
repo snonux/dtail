@@ -114,13 +114,21 @@ func TestReadFileGoroutineRecoversPanicAndReleasesAccounting(t *testing.T) {
 func TestExecuteReadLoopEscalatesReaderWorkerPanic(t *testing.T) {
 	server := newGlobCapTestServer(1)
 	command := newReadCommand(server, omode.CatClient)
-	reader := fs.NewCatFile("", "worker-panic", nil, 1024, logging.NopLogger{})
+	reader, err := fs.NewReadFile(fs.ReadOptions{
+		Mode:          omode.CatClient,
+		GlobID:        "worker-panic",
+		MaxLineLength: 1024,
+		Logger:        logging.NopLogger{},
+	})
+	if err != nil {
+		t.Fatalf("create file reader: %v", err)
+	}
 
 	var recovered any
 	func() {
 		defer func() { recovered = recover() }()
 		command.executeReadLoop(context.Background(), lcontext.LContext{}, "panic.log", "panic.log",
-			regex.NewNoop(), &reader, func(context.Context, lcontext.LContext, fs.FileReader, regex.Regex) error {
+			regex.NewNoop(), reader, func(context.Context, lcontext.LContext, fs.FileReader, regex.Regex) error {
 				return fmt.Errorf("truncate failure: %w", fs.ErrReaderWorkerPanic)
 			})
 	}()

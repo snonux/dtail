@@ -56,7 +56,7 @@ func TestTailFileFollowsCopytruncateAndRenameRotations(t *testing.T) {
 	path := filepath.Join(dir, "application.log")
 	writeTestPath(t, path, "historical\n")
 
-	tail := NewTailFile(path, "application.log", nil, defaultMaxLineLength, testLogger)
+	tail := newFollowReadFile(path, "application.log", nil, defaultMaxLineLength, testLogger)
 	opened := make(chan struct{}, 4)
 	var checkerStarts atomic.Int32
 	var checkerStops atomic.Int32
@@ -156,7 +156,7 @@ func TestTailFileFollowsCopytruncateAndRenameRotations(t *testing.T) {
 func TestTailFileRotationGapPreservesReopenFromStart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "application.log")
 	writeTestPath(t, path, "historical\n")
-	tail := NewTailFile(path, "application.log", nil, defaultMaxLineLength, testLogger)
+	tail := newFollowReadFile(path, "application.log", nil, defaultMaxLineLength, testLogger)
 
 	initialReader, initialFD, initialDecompressor, err := tail.makeReader(context.Background())
 	if err != nil {
@@ -274,7 +274,7 @@ func TestTailFileCopytruncateResetsLongLineWarning(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "long-line.log")
 	writeTestPath(t, path, "historical\n")
 	warnings := make(chan string, 2)
-	tail := NewTailFile(path, "long-line.log", warnings, 4, testLogger)
+	tail := newFollowReadFile(path, "long-line.log", warnings, 4, testLogger)
 	_, fd, decompressor, err := tail.makeReader(context.Background())
 	if err != nil {
 		t.Fatalf("open long-line tail: %v", err)
@@ -313,7 +313,7 @@ func TestTailFileCopytruncateResetsLongLineWarning(t *testing.T) {
 func TestNonFollowReadersStillStartAtBeginningOnEveryOpen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "snapshot.log")
 	writeTestPath(t, path, "alpha\nbeta\n")
-	cat := NewCatFile(path, "snapshot.log", nil, defaultMaxLineLength, testLogger)
+	cat := newSnapshotReadFile(path, "snapshot.log", nil, defaultMaxLineLength, testLogger)
 
 	for attempt := 1; attempt <= 2; attempt++ {
 		processor := &captureProcessor{}
@@ -352,7 +352,7 @@ func TestCompressedNonFollowReaderUnaffected(t *testing.T) {
 		t.Fatalf("close gzip snapshot: %v", err)
 	}
 
-	cat := NewCatFile(path, "snapshot.log.gz", nil, defaultMaxLineLength, testLogger)
+	cat := newSnapshotReadFile(path, "snapshot.log.gz", nil, defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 	if err := cat.Start(
 		context.Background(),
@@ -386,7 +386,7 @@ func runCopytruncateContextBoundaryTest(t *testing.T, localContext lcontext.LCon
 
 	path := filepath.Join(t.TempDir(), "context.log")
 	writeTestPath(t, path, strings.Repeat("historical-data", 16)+"\n")
-	tail := NewTailFile(path, "context.log", nil, defaultMaxLineLength, testLogger)
+	tail := newFollowReadFile(path, "context.log", nil, defaultMaxLineLength, testLogger)
 	_, fd, decompressor, err := tail.makeReader(context.Background())
 	if err != nil {
 		t.Fatalf("open context tail: %v", err)

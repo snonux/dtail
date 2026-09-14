@@ -17,12 +17,63 @@ import (
 	"github.com/mimecast/dtail/internal/regex"
 )
 
+const maxReadScannerTokenSize = 1024 * 1024
+
+type followLineProcessor struct {
+	file        *ReadFile
+	filter      *filteringProcessor
+	partialLine *bytes.Buffer
+	hasContext  bool
+}
+
 // readWithProcessorOptimized reads from the file using buffered line reading
 // instead of byte-by-byte reading for better performance
-func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, reader *bufio.Reader,
+func (f *ReadFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, reader *bufio.Reader,
 	truncate <-chan struct{}, ltx lcontext.LContext, processor line.Processor, re regex.Regex) error {
 
-	// Create a line filter processor that wraps the given processor
+	filterProcessor := f.newFilteringProcessor(ltx, processor, re)
+	defer filterProcessor.resetGeneration()
+
+	hasContext := ltx.Has()
+	scanner := bufio.NewScanner(reader)
+	bufPtr := pool.GetScannerBuffer()
+	defer pool.PutScannerBuffer(bufPtr)
+	scanner.Buffer(*bufPtr, maxReadScannerTokenSize)
+
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		return f.scanLinesWithMaxLength(ctx, data, atEOF)
+	})
+
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+		if err := f.checkSnapshotTruncation(fd, truncate); err != nil {
+			return err
+		}
+		if err := f.processSnapshotLine(filterProcessor, hasContext, scanner.Bytes()); err != nil {
+			if isEarlyStop(err) {
+				return nil
+			}
+			return err
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if errors.Is(err, io.EOF) && f.follow {
+			return nil
+		}
+		return err
+	}
+
+	return nil
+}
+
+func (f *ReadFile) newFilteringProcessor(ltx lcontext.LContext,
+	processor line.Processor, re regex.Regex) *filteringProcessor {
+
 	filterProcessor := &filteringProcessor{
 		processor: processor,
 		re:        re,
@@ -33,98 +84,33 @@ func (f *readFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	if f.bufferRecycleObserver != nil {
 		filterProcessor.recycle = f.recycleBytesBuffer
 	}
-	defer filterProcessor.resetGeneration()
+	return filterProcessor
+}
 
-	// Compute the local-context predicate once. When no context is requested we
-	// can take the zero-copy fast path (match before copy); when it is, every
-	// line must be buffered so surrounding before/after lines remain available.
-	hasContext := ltx.Has()
-
-	// Use a scanner for efficient line reading
-	scanner := bufio.NewScanner(reader)
-
-	// Get a buffer from the pool instead of allocating a new one
-	bufPtr := pool.GetScannerBuffer()
-	buf := *bufPtr
-	maxTokenSize := 1024 * 1024 // 1MB max token size
-	scanner.Buffer(buf, maxTokenSize)
-
-	// Ensure we return the buffer to the pool when done
-	defer pool.PutScannerBuffer(bufPtr)
-
-	// Use the cancellation-aware split function so long-line warnings can be
-	// abandoned if the caller cancels while the reader is blocked.
-	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
-		return f.scanLinesWithMaxLength(ctx, data, atEOF)
-	})
-
-	for scanner.Scan() {
-		// Check context cancellation
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-		}
-
-		// Check for file truncation. The periodicTruncateCheck goroutine
-		// (started in Start) already ticks every 3s and
-		// signals on the unbuffered truncate channel, so this non-blocking
-		// receive only re-stats the file on that cadence. Keeping the timing in
-		// the goroutine lets the per-line cost be a single atomic load on an
-		// empty channel (Go's non-blocking chanrecv fast path) instead of a
-		// per-line time.Since/runtime.nanotime call, which profiling showed as
-		// 10-18% of serverless dcat/dgrep CPU. This path is non-follow
-		// (cat/grep) only; follow mode uses tailWithProcessorOptimized, which
-		// has its own truncate handling.
-		select {
-		case <-truncate:
-			if isTruncated, err := f.truncated(fd); isTruncated {
-				return err
-			}
-		default:
-		}
-
-		// Get the line data. scanner.Bytes() is only valid until the next
-		// Scan(); we must not retain it across iterations.
-		lineData := scanner.Bytes()
-		f.updatePosition()
-
-		if !hasContext {
-			// Fast path: run the regex on the scanner's slice directly and only
-			// copy into a pooled buffer on a match. At low hit rates this skips
-			// the pool.Get + copy for the discarded (non-matching) lines.
-			if err := filterProcessor.ProcessFilteredRaw(lineData); err != nil {
-				if isEarlyStop(err) {
-					return nil
-				}
-				return err
-			}
-			continue
-		}
-
-		// Local-context path: buffer every line (before/after context needs the
-		// surrounding non-matching lines), so copy into a pooled buffer first.
-		lineBuf := pool.BytesBuffer.Get().(*bytes.Buffer)
-		lineBuf.Write(lineData)
-		if err := filterProcessor.ProcessFilteredLine(lineBuf); err != nil {
-			if isEarlyStop(err) {
-				return nil
-			}
+// checkSnapshotTruncation handles the periodic signal outside the per-line
+// processing concern. The empty-channel path remains one non-blocking receive.
+func (f *ReadFile) checkSnapshotTruncation(fd *os.File, truncate <-chan struct{}) error {
+	select {
+	case <-truncate:
+		if truncated, err := f.truncated(fd); truncated {
 			return err
 		}
+	default:
 	}
-
-	// Check for scanner errors
-	if err := scanner.Err(); err != nil {
-		// Handle EOF specially for tailing
-		if errors.Is(err, io.EOF) && f.follow {
-			// For tail mode, we want to keep reading
-			return nil
-		}
-		return err
-	}
-
 	return nil
+}
+
+func (f *ReadFile) processSnapshotLine(filterProcessor *filteringProcessor,
+	hasContext bool, data []byte) error {
+
+	f.updatePosition()
+	if !hasContext {
+		return filterProcessor.ProcessFilteredRaw(data)
+	}
+
+	lineBuf := pool.BytesBuffer.Get().(*bytes.Buffer)
+	lineBuf.Write(data)
+	return filterProcessor.ProcessFilteredLine(lineBuf)
 }
 
 // isEarlyStop reports whether err is the io.EOF sentinel that filteringProcessor
@@ -147,7 +133,7 @@ func isEarlyStop(err error) bool {
 
 // scanLinesWithMaxLength is a custom split function for bufio.Scanner that respects MaxLineLength.
 // It is kept context-aware so long-line warnings can still be dropped when the reader is canceled.
-func (f *readFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEOF bool) (advance int, token []byte, err error) {
+func (f *ReadFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil
 	}
@@ -197,7 +183,7 @@ func (f *readFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEO
 }
 
 // Start reads a log file using buffered line reading and a line processor.
-func (f *readFile) Start(ctx context.Context, ltx lcontext.LContext,
+func (f *ReadFile) Start(ctx context.Context, ltx lcontext.LContext,
 	processor line.Processor, re regex.Regex) error {
 
 	truncateCtx, cancelTruncate := context.WithCancel(ctx)
@@ -246,169 +232,158 @@ func (f *readFile) Start(ctx context.Context, ltx lcontext.LContext,
 }
 
 // tailWithProcessorOptimized handles continuous reading for tail mode
-func (f *readFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, reader *bufio.Reader,
+func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, reader *bufio.Reader,
 	truncate <-chan struct{}, ltx lcontext.LContext, processor line.Processor, re regex.Regex) error {
 
-	// Create a line filter processor
-	filterProcessor := &filteringProcessor{
-		processor: processor,
-		re:        re,
-		ltx:       ltx,
-		stats:     &f.stats,
-		globID:    f.globID,
-	}
-	if f.bufferRecycleObserver != nil {
-		filterProcessor.recycle = f.recycleBytesBuffer
-	}
+	filterProcessor := f.newFilteringProcessor(ltx, processor, re)
 	defer filterProcessor.resetGeneration()
 
-	// Compute the local-context predicate once (see readWithProcessorOptimized):
-	// without context we take the zero-copy match-before-copy fast path.
-	hasContext := ltx.Has()
-
-	// Buffer for partial lines
 	partialLine := pool.BytesBuffer.Get().(*bytes.Buffer)
 	defer pool.RecycleBytesBuffer(partialLine)
+	lineProcessor := followLineProcessor{
+		file:        f,
+		filter:      filterProcessor,
+		partialLine: partialLine,
+		hasContext:  ltx.Has(),
+	}
 
-	// Get a buffer from the pool for reading
 	bufPtr := pool.GetMediumBuffer()
 	defer pool.PutMediumBuffer(bufPtr)
 
-	// processPartialLine advances the line position and hands the currently
-	// accumulated partialLine to the filter. Without local context it takes the
-	// zero-copy fast path (match on partialLine.Bytes(), copy only on a match);
-	// with context it copies into a pooled buffer so surrounding lines stay
-	// buffered. partialLine is owned by this loop (reset after each call), so the
-	// fast path never retains its slice past the copy-on-match.
-	processPartialLine := func() error {
-		f.updatePosition()
-		if !hasContext {
-			return filterProcessor.ProcessFilteredRaw(partialLine.Bytes())
-		}
-		lineBuf := pool.BytesBuffer.Get().(*bytes.Buffer)
-		lineBuf.Write(partialLine.Bytes())
-		return filterProcessor.ProcessFilteredLine(lineBuf)
-	}
-
 	for {
-		// Read available data using pooled buffer
-		buf := (*bufPtr)[:cap(*bufPtr)] // Reset to full capacity
+		buf := (*bufPtr)[:cap(*bufPtr)]
 		n, readErr := reader.Read(buf)
 
 		if n > 0 {
-			// Process the data we read
-			data := buf[:n]
-
-			// Process complete lines
-			for len(data) > 0 {
-				// Find newline
-				idx := bytes.IndexByte(data, '\n')
-
-				if idx >= 0 {
-					// Complete line found
-					partialLine.Write(data[:idx])
-
-					// Process the line if it's not empty
-					if partialLine.Len() > 0 {
-						if processErr := processPartialLine(); processErr != nil {
-							// Max-count early stop is a clean stop, not an error
-							// (see isEarlyStop).
-							if isEarlyStop(processErr) {
-								return nil
-							}
-							return processErr
-						}
-					}
-
-					partialLine.Reset()
-					data = data[idx+1:]
-
-					// Reset long line warning
-					f.warnedAboutLongLine = false
-				} else {
-					// No newline, add to partial line
-					partialLine.Write(data)
-
-					// Check if line is too long
-					if partialLine.Len() >= f.lineLimit() {
-						if !f.warnAboutLongLine(ctx) {
-							return nil
-						}
-
-						// Process the partial line
-						if processErr := processPartialLine(); processErr != nil {
-							if isEarlyStop(processErr) {
-								return nil
-							}
-							return processErr
-						}
-
-						partialLine.Reset()
-					}
-
-					break
-				}
+			stop, err := lineProcessor.processChunk(ctx, buf[:n])
+			if err != nil {
+				return err
 			}
-
-			// Flush processor periodically
+			if stop {
+				return nil
+			}
 			if flushErr := processor.Flush(); flushErr != nil {
 				return flushErr
 			}
 		}
 
-		// Handle read errors
 		if readErr != nil {
-			if !errors.Is(readErr, io.EOF) {
-				return readErr
-			}
-
-			// Check on every follow EOF rather than waiting for the three-second
-			// background cadence. This keeps the copytruncate observation window
-			// bounded by the 100ms follow poll and detects replacements by identity.
-			select {
-			case <-ctx.Done():
-				return nil
-			default:
-			}
-			if isTruncated, err := f.truncated(fd); isTruncated {
-				f.warnedAboutLongLine = false
-				if errors.Is(err, errFileTruncated) {
-					if _, seekErr := fd.Seek(0, io.SeekStart); seekErr != nil {
-						return fmt.Errorf("rewind truncated file %s: %w", f.FilePath(), seekErr)
-					}
-					reader.Reset(fd)
-					partialLine.Reset()
-					filterProcessor.resetGeneration()
-					f.logger.Info(f.FilePath(), "File got truncated, reading from beginning")
-					continue
-				}
+			keepReading, err := lineProcessor.handleReadError(ctx, fd, reader, truncate, readErr)
+			if err != nil {
 				return err
 			}
-
-			// Drain a periodic notification if one is waiting. The optimized
-			// follow path already checked above; consuming the signal keeps the
-			// shared checker responsive without doing a duplicate stat.
-			select {
-			case <-truncate:
-			default:
-			}
-
-			if !ctxutil.Sleep(ctx, 100*time.Millisecond) {
+			if !keepReading {
 				return nil
 			}
 		}
 
-		// Check for cancellation
-		select {
-		case <-ctx.Done():
-			// Process any remaining partial line
-			if partialLine.Len() > 0 {
-				if err := processPartialLine(); err != nil && !isEarlyStop(err) {
-					return err
-				}
-			}
-			return nil
-		default:
+		if ctx.Err() != nil {
+			return lineProcessor.finish()
 		}
 	}
+}
+
+func (p *followLineProcessor) processChunk(ctx context.Context, data []byte) (bool, error) {
+	for len(data) > 0 {
+		newline := bytes.IndexByte(data, '\n')
+		if newline < 0 {
+			return p.processFragment(ctx, data)
+		}
+
+		p.partialLine.Write(data[:newline])
+		if p.partialLine.Len() > 0 {
+			if stop, err := stopForProcessingError(p.processPartialLine()); stop || err != nil {
+				return stop, err
+			}
+		}
+		p.partialLine.Reset()
+		p.file.warnedAboutLongLine = false
+		data = data[newline+1:]
+	}
+	return false, nil
+}
+
+func (p *followLineProcessor) processFragment(ctx context.Context, data []byte) (bool, error) {
+	p.partialLine.Write(data)
+	if p.partialLine.Len() < p.file.lineLimit() {
+		return false, nil
+	}
+	if !p.file.warnAboutLongLine(ctx) {
+		return true, nil
+	}
+
+	stop, err := stopForProcessingError(p.processPartialLine())
+	if !stop && err == nil {
+		p.partialLine.Reset()
+	}
+	return stop, err
+}
+
+func (p *followLineProcessor) processPartialLine() error {
+	p.file.updatePosition()
+	if !p.hasContext {
+		return p.filter.ProcessFilteredRaw(p.partialLine.Bytes())
+	}
+
+	lineBuf := pool.BytesBuffer.Get().(*bytes.Buffer)
+	lineBuf.Write(p.partialLine.Bytes())
+	return p.filter.ProcessFilteredLine(lineBuf)
+}
+
+func (p *followLineProcessor) handleReadError(ctx context.Context, fd *os.File,
+	reader *bufio.Reader, truncate <-chan struct{}, readErr error) (bool, error) {
+
+	if !errors.Is(readErr, io.EOF) {
+		return false, readErr
+	}
+	if ctx.Err() != nil {
+		return false, nil
+	}
+
+	truncated, err := p.file.truncated(fd)
+	if truncated {
+		return p.handleTruncation(fd, reader, err)
+	}
+
+	select {
+	case <-truncate:
+	default:
+	}
+	return ctxutil.Sleep(ctx, 100*time.Millisecond), nil
+}
+
+func (p *followLineProcessor) handleTruncation(fd *os.File, reader *bufio.Reader,
+	truncateErr error) (bool, error) {
+
+	p.file.warnedAboutLongLine = false
+	if !errors.Is(truncateErr, errFileTruncated) {
+		return false, truncateErr
+	}
+	if _, err := fd.Seek(0, io.SeekStart); err != nil {
+		return false, fmt.Errorf("rewind truncated file %s: %w", p.file.FilePath(), err)
+	}
+
+	reader.Reset(fd)
+	p.partialLine.Reset()
+	p.filter.resetGeneration()
+	p.file.logger.Info(p.file.FilePath(), "File got truncated, reading from beginning")
+	return true, nil
+}
+
+func (p *followLineProcessor) finish() error {
+	if p.partialLine.Len() == 0 {
+		return nil
+	}
+	err := p.processPartialLine()
+	if isEarlyStop(err) {
+		return nil
+	}
+	return err
+}
+
+func stopForProcessingError(err error) (bool, error) {
+	if isEarlyStop(err) {
+		return true, nil
+	}
+	return false, err
 }

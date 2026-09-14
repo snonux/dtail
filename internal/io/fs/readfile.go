@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/omode"
 )
 
 const defaultMaxLineLength = 1024 * 1024
@@ -23,8 +24,20 @@ var (
 	errFileRotated   = errors.New("file got rotated")
 )
 
-// Used to tail and filter a local log file.
-type readFile struct {
+// ReadOptions configures a file-backed reader.
+type ReadOptions struct {
+	Mode           omode.Mode
+	Target         *ValidatedReadTarget
+	FilePath       string
+	GlobID         string
+	ServerMessages chan<- string
+	SeekEOF        bool
+	MaxLineLength  int
+	Logger         logging.Logger
+}
+
+// ReadFile reads and filters a local file or serverless pipe.
+type ReadFile struct {
 	// Logger for filesystem diagnostics.
 	logger logging.Logger
 	// Various statistics (e.g. regex hit percentage, transfer percentage).
@@ -60,8 +73,51 @@ type readFile struct {
 	bufferRecycleObserver func(*bytes.Buffer)
 }
 
-// String returns the string representation of the readFile
-func (f *readFile) String() string {
+var _ FileReader = (*ReadFile)(nil)
+
+// NewReadFile returns a reader configured for a snapshot or follow operation.
+func NewReadFile(options ReadOptions) (*ReadFile, error) {
+	retry, canSkipLines, follow, err := readBehavior(options.Mode)
+	if err != nil {
+		return nil, err
+	}
+
+	var target *ValidatedReadTarget
+	if options.Target != nil {
+		if options.Target.Kind != FileKind {
+			return nil, fmt.Errorf("read file requires target kind %d, got %d", FileKind, options.Target.Kind)
+		}
+		targetCopy := *options.Target
+		target = &targetCopy
+	}
+
+	return &ReadFile{
+		logger:          logging.OrNop(options.Logger),
+		filePath:        options.FilePath,
+		validatedTarget: target,
+		globID:          options.GlobID,
+		serverMessages:  options.ServerMessages,
+		retry:           retry,
+		canSkipLines:    canSkipLines,
+		follow:          follow,
+		seekInitialEOF:  options.SeekEOF,
+		maxLineLength:   options.MaxLineLength,
+	}, nil
+}
+
+func readBehavior(mode omode.Mode) (retry, canSkipLines, follow bool, err error) {
+	switch mode {
+	case omode.CatClient, omode.GrepClient:
+		return false, false, false, nil
+	case omode.TailClient:
+		return true, true, true, nil
+	default:
+		return false, false, false, fmt.Errorf("unsupported read mode: %s (%d)", mode, mode)
+	}
+}
+
+// String returns the string representation of the ReadFile
+func (f *ReadFile) String() string {
 	return fmt.Sprintf(
 		"readFile(filePath:%s,globID:%s,retry:%v,canSkipLines:%v,follow:%v,seekInitialEOF:%v)",
 		f.filePath,
@@ -73,23 +129,23 @@ func (f *readFile) String() string {
 }
 
 // FilePath returns the full file path.
-func (f *readFile) FilePath() string {
+func (f *ReadFile) FilePath() string {
 	return f.filePath
 }
 
 // Retry reading the file on error?
-func (f *readFile) Retry() bool {
+func (f *ReadFile) Retry() bool {
 	return f.retry
 }
 
-func (f *readFile) lineLimit() int {
+func (f *ReadFile) lineLimit() int {
 	if f.maxLineLength <= 0 {
 		return defaultMaxLineLength
 	}
 	return f.maxLineLength
 }
 
-func (f *readFile) warnAboutLongLine(ctx context.Context) bool {
+func (f *ReadFile) warnAboutLongLine(ctx context.Context) bool {
 	if f.warnedAboutLongLine {
 		return true
 	}
@@ -109,14 +165,14 @@ func (f *readFile) warnAboutLongLine(ctx context.Context) bool {
 	}
 }
 
-func (f *readFile) makeReader(ctx context.Context) (*bufio.Reader, *os.File, io.Closer, error) {
+func (f *ReadFile) makeReader(ctx context.Context) (*bufio.Reader, *os.File, io.Closer, error) {
 	if f.filePath == "" && f.globID == "-" {
 		return f.makePipeReader(ctx)
 	}
 	return f.makeFileReader()
 }
 
-func (f *readFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompressor io.Closer, err error) {
+func (f *ReadFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompressor io.Closer, err error) {
 	seekInitialEOF := f.seekInitialEOF
 	if fd, err = f.openFile(); err != nil {
 		return
@@ -136,14 +192,14 @@ func (f *readFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompre
 	return
 }
 
-func (f *readFile) openFile() (*os.File, error) {
+func (f *ReadFile) openFile() (*os.File, error) {
 	if f.validatedTarget != nil {
 		return f.validatedTarget.Open()
 	}
 	return os.Open(f.filePath)
 }
 
-func (f *readFile) makePipeReader(ctx context.Context) (*bufio.Reader, *os.File, io.Closer, error) {
+func (f *ReadFile) makePipeReader(ctx context.Context) (*bufio.Reader, *os.File, io.Closer, error) {
 	input := f.pipeInput
 	if input == nil {
 		input = os.Stdin
@@ -155,7 +211,7 @@ func (f *readFile) makePipeReader(ctx context.Context) (*bufio.Reader, *os.File,
 	return bufio.NewReader(reader), nil, reader, nil
 }
 
-func (f *readFile) periodicTruncateCheck(ctx context.Context, truncate chan<- struct{}) {
+func (f *ReadFile) periodicTruncateCheck(ctx context.Context, truncate chan<- struct{}) {
 	ticker := time.NewTicker(time.Second * 3)
 	defer ticker.Stop()
 
@@ -173,7 +229,7 @@ func (f *readFile) periodicTruncateCheck(ctx context.Context, truncate chan<- st
 	}
 }
 
-func (f *readFile) startPeriodicTruncateCheck(ctx context.Context, cancel context.CancelFunc,
+func (f *ReadFile) startPeriodicTruncateCheck(ctx context.Context, cancel context.CancelFunc,
 	truncate chan<- struct{}) <-chan error {
 	done := make(chan error, 1)
 	check := f.periodicTruncateCheck
@@ -195,7 +251,7 @@ func (f *readFile) startPeriodicTruncateCheck(ctx context.Context, cancel contex
 	return done
 }
 
-func (f *readFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {
+func (f *ReadFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {
 	switch {
 	case strings.HasSuffix(f.FilePath(), ".gz"):
 		fallthrough
@@ -219,7 +275,7 @@ func (f *readFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, 
 // truncated reports whether the open file was truncated in place or replaced
 // at its path. A replacement must be detected by identity, because its size can
 // equal or exceed the current read offset.
-func (f *readFile) truncated(fd *os.File) (bool, error) {
+func (f *ReadFile) truncated(fd *os.File) (bool, error) {
 	if fd == nil {
 		return false, nil
 	}
@@ -249,7 +305,7 @@ func (f *readFile) truncated(fd *os.File) (bool, error) {
 	return false, nil
 }
 
-func (f *readFile) pathInfo() (os.FileInfo, error) {
+func (f *ReadFile) pathInfo() (os.FileInfo, error) {
 	if f.validatedTarget == nil {
 		info, err := os.Stat(f.filePath)
 		if err != nil {

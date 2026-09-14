@@ -26,7 +26,7 @@ type filteringProcessor struct {
 	maxReached bool
 }
 
-func (f *readFile) recycleBytesBuffer(buf *bytes.Buffer) {
+func (f *ReadFile) recycleBytesBuffer(buf *bytes.Buffer) {
 	pool.RecycleBytesBuffer(buf)
 	if f.bufferRecycleObserver != nil {
 		f.bufferRecycleObserver(buf)

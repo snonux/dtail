@@ -85,7 +85,7 @@ func TestReadSemaphoreNotStolenOnCancelBeforeAcquire(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			cmd := newReadCommand(handler, omode.CatClient)
-			// Pass nil target so read() uses the non-validated CatFile path.
+			// Pass nil target so read() uses the non-validated snapshot path.
 			cmd.read(ctx, lcontext.LContext{}, "/nonexistent/file.log", nil, "test-glob", regex.NewNoop())
 		}()
 	}

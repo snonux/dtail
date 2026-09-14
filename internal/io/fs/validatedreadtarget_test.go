@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/regex"
 )
 
@@ -18,8 +19,15 @@ func TestValidatedCatFileStartReadsAllLines(t *testing.T) {
 	target := mustValidatedReadTarget(t, filePath)
 	re := regex.NewNoop()
 
-	cat := NewValidatedCatFile(filePath, target, "glob-id", make(chan string, 1),
-		defaultMaxLineLength, testLogger)
+	cat := mustNewReadFile(ReadOptions{
+		Mode:           omode.CatClient,
+		Target:         &target,
+		FilePath:       filePath,
+		GlobID:         "glob-id",
+		ServerMessages: make(chan string, 1),
+		MaxLineLength:  defaultMaxLineLength,
+		Logger:         testLogger,
+	})
 	processor := &captureProcessor{}
 
 	if err := cat.Start(
@@ -160,8 +168,16 @@ func TestValidatedTailFileTruncatedReopenDetectsTruncation(t *testing.T) {
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	target := mustValidatedReadTarget(t, filePath)
 
-	tail := NewValidatedTailFile(filePath, target, "glob-id", make(chan string, 1),
-		defaultMaxLineLength, testLogger)
+	tail := mustNewReadFile(ReadOptions{
+		Mode:           omode.TailClient,
+		Target:         &target,
+		FilePath:       filePath,
+		GlobID:         "glob-id",
+		ServerMessages: make(chan string, 1),
+		SeekEOF:        true,
+		MaxLineLength:  defaultMaxLineLength,
+		Logger:         testLogger,
+	})
 	fd, openErr := target.Open()
 	if openErr != nil {
 		t.Fatalf("open validated target: %v", openErr)

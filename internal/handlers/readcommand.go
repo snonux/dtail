@@ -10,7 +10,6 @@ import (
 
 	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/fs"
-	"github.com/mimecast/dtail/internal/io/journal"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
@@ -387,50 +386,29 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	r.logger.Info(r.logContext, "Start reading", path, globID)
 	r.logRegexMode(re)
 
-	var reader fs.FileReader
 	serverMessages, closeServerMessages := r.server.NewReadMessages(ctx, r.generation)
 	defer closeServerMessages()
 
-	switch r.mode {
-	case omode.GrepClient, omode.CatClient:
-		switch {
-		case target != nil && target.Kind == fs.JournalKind:
-			journalReader, err := journal.NewReader(journalArgs(path), path, false, serverMessages)
-			if err != nil {
-				r.sendServerMessage(ctx, r.logger.Warn(r.logContext, "Unable to read journal", err))
-				return
-			}
-			reader = journalReader
-		case target != nil:
-			catFile := fs.NewValidatedCatFile(path, *target, globID, serverMessages,
-				r.timings.maxLineLength, r.readerLogger)
-			reader = &catFile
-		default:
-			catFile := fs.NewCatFile(path, globID, serverMessages, r.timings.maxLineLength, r.readerLogger)
-			reader = &catFile
+	factory := readerFactoryFor(r.mode)
+	reader, limiter, err := factory(readerFactoryOptions{
+		slots:          r.server,
+		target:         target,
+		path:           path,
+		globID:         globID,
+		serverMessages: serverMessages,
+		maxLineLength:  r.timings.maxLineLength,
+		logger:         r.readerLogger,
+	})
+	if err != nil {
+		message := "Unable to create file reader"
+		if target != nil && target.Kind == fs.JournalKind {
+			message = "Unable to read journal"
 		}
-	case omode.TailClient:
-		fallthrough
-	default:
-		switch {
-		case target != nil && target.Kind == fs.JournalKind:
-			journalReader, err := journal.NewReader(journalArgs(path), path, true, serverMessages)
-			if err != nil {
-				r.sendServerMessage(ctx, r.logger.Warn(r.logContext, "Unable to read journal", err))
-				return
-			}
-			reader = journalReader
-		case target != nil:
-			tailFile := fs.NewValidatedTailFile(path, *target, globID, serverMessages,
-				r.timings.maxLineLength, r.readerLogger)
-			reader = &tailFile
-		default:
-			tailFile := fs.NewTailFile(path, globID, serverMessages, r.timings.maxLineLength, r.readerLogger)
-			reader = &tailFile
-		}
+		r.sendServerMessage(ctx, r.logger.Warn(r.logContext, message, err))
+		return
 	}
 
-	release, acquired := r.server.AcquireReadSlot(ctx, r.mode, path)
+	release, acquired := limiter(ctx, path)
 	if !acquired {
 		return
 	}
@@ -450,14 +428,6 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		"mode", r.mode, "hasAggregate", r.aggregate != nil)
 	r.logger.Info(r.logContext, "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
 	r.readWithProcessor(ctx, ltx, path, globID, re, reader)
-}
-
-func journalArgs(spec string) []string {
-	source := strings.TrimPrefix(spec, fs.JournalSpecPrefix)
-	if source == "" {
-		return nil
-	}
-	return []string{"-u", source}
 }
 
 func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LContext,
