@@ -35,6 +35,11 @@ type ParserFactory func(hostname, timeZoneName string, timeZoneOffset int) (Pars
 var parserFactories = make(map[string]ParserFactory)
 var parserFactoriesMu sync.RWMutex
 
+// Built-in parsers are a package invariant shared by clients, the server,
+// tests, and library callers. Registering them here keeps every importer from
+// observing a partially initialized registry and avoids duplicating setup in
+// each command's composition root. RegisterParser remains available for
+// optional parsers and test overrides.
 func init() {
 	registerBuiltInParsers()
 }
