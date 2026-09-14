@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -32,35 +33,9 @@ type Aggregate struct {
 	// The mapr query
 	query *mapr.Query
 	// The mapr log format parser
-	parser logformat.Parser
-	// Group sets are swapped out during serialization to avoid clone-heavy flushes.
-	groupMu   sync.Mutex
-	groupSets map[string]*mapr.AggregateSet
-	// serializationPermit ensures only one serialization runs at a time while
-	// still allowing a caller to abandon the wait when its context is canceled.
-	serializationPermit chan struct{}
-	// Batch processing
-	batchMu   sync.Mutex
-	batch     []rawLine
-	batchSize int
-	// Periodic serialization.
-	// serializeTicker is published once by Start (before the serializationLoop
-	// goroutine is launched) and read from two other places: serializationLoop's
-	// select (ordered after the store by the go statement) and
-	// stopSerializeTicker, which is reachable from Shutdown/Abort on the external
-	// teardown goroutine with no other happens-before edge to Start's write. An
-	// atomic.Pointer gives that publish-once/read-many access a lock-free
-	// happens-before guarantee without coupling the ticker to the serialization
-	// permit: sharing ownership would make Abort's stop block behind an
-	// in-flight doSerialize, violating Abort's immediate, non-blocking preemption
-	// contract.
-	serializeTicker atomic.Pointer[time.Ticker]
-	serialize       chan struct{}
-	// maprMessages is the output channel for serialized results. Atomic
-	// publication lets ServerHandler bind the destination before exposing the
-	// aggregate to concurrent graceful shutdown without waiting behind an
-	// in-flight serialization.
-	maprMessages atomic.Pointer[aggregateOutput]
+	parser     logformat.Parser
+	batcher    *batcher
+	serializer *serializer
 	// Stats
 	linesProcessed atomic.Uint64
 	errors         atomic.Uint64
@@ -99,13 +74,49 @@ const (
 	aggregateAborted
 )
 
-type rawLine struct {
-	content  *bytes.Buffer
-	sourceID string
+// New returns an aggregator using dependencies resolved by the command layer.
+func New(query *mapr.Query, parser logformat.Parser, hostname string,
+	logger logging.Logger) (*Aggregate, error) {
+	logger = logging.OrNop(logger)
+	if query == nil {
+		return nil, fmt.Errorf("create aggregate: query must not be nil")
+	}
+	if nilParser(parser) {
+		return nil, fmt.Errorf("create aggregate: log format parser must not be nil")
+	}
+	lineBatcher, err := newBatcher(100)
+	if err != nil {
+		return nil, err
+	}
+
+	a := &Aggregate{
+		logger:        logger,
+		done:          internal.NewDone(),
+		inputFinished: internal.NewDone(),
+		query:         query,
+		parser:        parser,
+		batcher:       lineBatcher,
+		started:       make(chan struct{}),
+		shutdownDone:  make(chan struct{}),
+	}
+	a.serializer = newSerializer(query, logger, a.processBatchAndWait)
+	logger.Debug("Created MapReduce aggregate", "hostname", hostname)
+	return a, nil
 }
 
-type aggregateOutput struct {
-	messages chan<- string
+func nilParser(parser logformat.Parser) bool {
+	if parser == nil {
+		return true
+	}
+	value := reflect.ValueOf(parser)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	case reflect.UnsafePointer:
+		return value.IsZero()
+	default:
+		return false
+	}
 }
 
 func (a *Aggregate) stopping() bool {
@@ -118,74 +129,12 @@ func (a *Aggregate) stopping() bool {
 }
 
 func (a *Aggregate) stopSerializeTicker() {
-	// Load is safe from the external Shutdown/Abort teardown goroutine: Start
-	// publishes the ticker with an atomic Store, so a nil load simply means
-	// Start has not created it yet and there is nothing to stop.
-	if ticker := a.serializeTicker.Load(); ticker != nil {
-		ticker.Stop()
-	}
-}
-
-// New returns a new aggregator.
-func New(queryStr string, defaultLogFormat string, logger logging.Logger) (*Aggregate, error) {
-	return newAggregate(queryStr, defaultLogFormat, logformat.NewParser, logger)
-}
-
-// NewWithHostname returns a new aggregator using an injected process hostname.
-func NewWithHostname(queryStr, defaultLogFormat, hostname string,
-	logger logging.Logger) (*Aggregate, error) {
-	return newAggregate(queryStr, defaultLogFormat,
-		func(name string, query *mapr.Query) (logformat.Parser, error) {
-			return logformat.NewParserWithHostname(name, query, hostname)
-		}, logger)
-}
-
-func newAggregate(queryStr, defaultLogFormat string,
-	newParser func(string, *mapr.Query) (logformat.Parser, error),
-	logger logging.Logger) (*Aggregate, error) {
-	logger = logging.OrNop(logger)
-	query, err := mapr.NewQuery(queryStr, logger)
-	if err != nil {
-		return nil, err
-	}
-
-	parserName := resolveParserName(query, defaultLogFormat)
-
-	logger.Info("Creating log format parser",
-		"parserName", parserName,
-		"queryTable", query.Table,
-		"queryLogFormat", query.LogFormat)
-	logParser, err := newParser(parserName, query)
-	if err != nil {
-		logger.Error("Could not create log format parser. Falling back to 'generic'", err)
-		if logParser, err = newParser("generic", query); err != nil {
-			return nil, fmt.Errorf("create fallback generic log format parser: %w", err)
-		}
-	}
-	serializationPermit := make(chan struct{}, 1)
-	serializationPermit <- struct{}{}
-
-	return &Aggregate{
-		logger:              logger,
-		done:                internal.NewDone(),
-		inputFinished:       internal.NewDone(),
-		serialize:           make(chan struct{}, 1), // Buffered to avoid blocking
-		serializationPermit: serializationPermit,
-		query:               query,
-		parser:              logParser,
-		groupSets:           make(map[string]*mapr.AggregateSet),
-		batchSize:           100, // Process 100 lines at a time
-		batch:               make([]rawLine, 0, 100),
-		started:             make(chan struct{}),
-		shutdownDone:        make(chan struct{}),
-	}, nil
+	a.serializer.stopTicker()
 }
 
 // countGroups returns the current number of groups in the aggregation.
 func (a *Aggregate) countGroups() int {
-	a.groupMu.Lock()
-	defer a.groupMu.Unlock()
-	return len(a.groupSets)
+	return a.serializer.countGroups()
 }
 
 // Shutdown finalizes the aggregation while output remains writable.
@@ -306,8 +255,8 @@ func (a *Aggregate) Start(ctx context.Context, maprMessages chan<- string) {
 	// Publish the ticker before launching serializationLoop below. The store
 	// happens-before that goroutine's Load via the go statement, and any later
 	// stopSerializeTicker on the teardown goroutine observes it through the
-	// atomic (see the serializeTicker field comment).
-	a.serializeTicker.Store(time.NewTicker(interval))
+	// serializer's atomic ticker pointer.
+	a.serializer.startTicker(interval)
 	a.startOnce.Do(func() {
 		if a.started != nil {
 			close(a.started)
@@ -380,10 +329,10 @@ func (a *Aggregate) PrepareOutput(ctx context.Context, maprMessages chan<- strin
 		panic("aggregate: nil output context")
 	}
 	if maprMessages == nil {
-		a.maprMessages.Store(nil)
+		a.serializer.prepareOutput(nil)
 		return
 	}
-	a.maprMessages.Store(&aggregateOutput{messages: maprMessages})
+	a.serializer.prepareOutput(maprMessages)
 }
 
 // claimFinalization makes graceful final output the aggregate's terminal
@@ -443,40 +392,17 @@ func (a *Aggregate) ProcessLineDirect(lineContent *bytes.Buffer, sourceID string
 
 	a.linesProcessed.Add(1)
 
-	// Add to batch
-	a.batchMu.Lock()
-	a.batch = append(a.batch, rawLine{content: lineContent, sourceID: sourceID})
-	shouldProcess := len(a.batch) >= a.batchSize
-	a.batchMu.Unlock()
-
-	if shouldProcess {
-		a.processBatch()
+	if batch := a.batcher.add(rawLine{content: lineContent, sourceID: sourceID}); len(batch) > 0 {
+		a.processRawBatch(batch)
 	}
 
 	return nil
 }
 
-// processBatch processes a full batch immediately.
-func (a *Aggregate) processBatch() {
-	a.processRawBatch(a.takeBatch())
-}
-
 // processBatchAndWait processes a batch of lines synchronously and waits for completion.
 // This is used when flushing to ensure all data is processed before continuing.
 func (a *Aggregate) processBatchAndWait() {
-	a.processRawBatch(a.takeBatch())
-}
-
-func (a *Aggregate) takeBatch() []rawLine {
-	a.batchMu.Lock()
-	if len(a.batch) == 0 {
-		a.batchMu.Unlock()
-		return nil
-	}
-	batch := a.batch
-	a.batch = make([]rawLine, 0, a.batchSize)
-	a.batchMu.Unlock()
-	return batch
+	a.processRawBatch(a.batcher.take())
 }
 
 func (a *Aggregate) processRawBatch(batch []rawLine) {
@@ -515,44 +441,8 @@ func (a *Aggregate) processLine(lineContent *bytes.Buffer, sourceID string) erro
 	}
 
 	// Aggregate the fields
-	a.aggregate(parsedFields)
+	a.serializer.aggregate(parsedFields)
 	return nil
-}
-
-// aggregate adds fields to the appropriate group. The set is only created (or
-// looked up) after at least one select field matches, preventing empty sets with
-// Samples==0 from entering the map and causing 0/0 = NaN on the client for Avg.
-func (a *Aggregate) aggregate(fields map[string]string) {
-	groupKey := buildGroupKey(a.query.GroupBy, fields)
-	a.groupMu.Lock()
-
-	var set *mapr.AggregateSet
-	var addedSample bool
-
-	for _, sc := range a.query.Select {
-		val, ok := fields[sc.Field]
-		if !ok {
-			continue
-		}
-		// Lazily look up or allocate the aggregate set on the first matching
-		// field so that lines with no matching fields never create empty entries.
-		if set == nil {
-			set, ok = a.groupSets[groupKey]
-			if !ok {
-				set = mapr.NewAggregateSet()
-				a.groupSets[groupKey] = set
-			}
-		}
-		if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
-			a.logger.Error("Aggregate aggregation error", err, "field", sc.Field, "operation", sc.Operation)
-			continue
-		}
-		addedSample = true
-	}
-	if addedSample {
-		set.Samples++
-	}
-	a.groupMu.Unlock()
 }
 
 // serializationLoop handles periodic serialization.
@@ -560,35 +450,7 @@ func (a *Aggregate) serializationLoop(ctx context.Context) {
 	if a.serializationLoopHook != nil {
 		a.serializationLoopHook()
 	}
-	// Start stores serializeTicker before launching this goroutine, so the load
-	// is ordered-after that store and never nil here. Tests also publish their
-	// controlled ticker before launching the loop.
-	ticker := a.serializeTicker.Load()
-	for {
-		// Prefer termination over work that was already ready when the loop
-		// reached its select. Shutdown performs its own final serialization.
-		select {
-		case <-ctx.Done():
-			return
-		case <-a.done.Done():
-			return
-		default:
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-a.done.Done():
-			return
-		case <-ticker.C:
-			if a.serializationTickHook != nil {
-				a.serializationTickHook()
-			}
-			a.doSerialize(ctx)
-		case <-a.serialize:
-			a.doSerialize(ctx)
-		}
-	}
+	a.serializer.loop(ctx, a.done.Done(), a.serializationTickHook)
 }
 
 // Serialize requests serialization of all aggregated data. Requests coalesce
@@ -598,20 +460,7 @@ func (a *Aggregate) Serialize(ctx context.Context) {
 	if ctx == nil {
 		panic("aggregate: nil serialize context")
 	}
-	select {
-	case <-ctx.Done():
-		return
-	case <-a.done.Done():
-		return
-	default:
-	}
-
-	select {
-	case a.serialize <- struct{}{}:
-	case <-ctx.Done():
-	case <-a.done.Done():
-	default:
-	}
+	a.serializer.request(ctx, a.done.Done())
 }
 
 // doSerialize performs the actual serialization.
@@ -619,78 +468,7 @@ func (a *Aggregate) doSerialize(ctx context.Context) {
 	if ctx == nil {
 		panic("aggregate: nil serialization context")
 	}
-	a.doSerializeCancelable(ctx)
-}
-
-func (a *Aggregate) doSerializeCancelable(ctx context.Context) {
-	if !a.acquireSerialization(ctx) {
-		return
-	}
-	defer a.releaseSerialization()
-
-	a.processBatchAndWait()
-	output := a.maprMessages.Load()
-	if output == nil {
-		a.logger.Error("Aggregate maprMessages channel is nil")
-		return
-	}
-
-	snapshot := a.swapGroupSets()
-	if len(snapshot) == 0 {
-		return
-	}
-
-	group := mapr.NewGroupSet(a.logger)
-	for groupKey, aggregateSet := range snapshot {
-		groupSet := group.GetSet(groupKey)
-		*groupSet = *aggregateSet
-	}
-
-	remaining := group.Serialize(ctx, output.messages)
-	if len(remaining) > 0 {
-		a.mergeRemainingLocked(remaining)
-	}
-}
-
-func (a *Aggregate) acquireSerialization(ctx context.Context) bool {
-	select {
-	case <-ctx.Done():
-		return false
-	case <-a.serializationPermit:
-		if ctx.Err() != nil {
-			a.releaseSerialization()
-			return false
-		}
-		return true
-	}
-}
-
-func (a *Aggregate) releaseSerialization() {
-	a.serializationPermit <- struct{}{}
-}
-
-// mergeRemainingLocked re-inserts aggregate sets that could not be sent during
-// serialization back into the live groupSets map. Without this path the
-// snapshot taken by swapGroupSets would be silently discarded on ctx
-// cancellation and the next Serialize would not be able to retry the data.
-//
-// Concurrent ProcessLine calls may have already added new samples for the same
-// group keys while the serialize was in flight. In that case we must preserve
-// the newer live state for overwrite-style aggregations such as last() and
-// len(), while still adding numeric contributions from the canceled snapshot.
-func (a *Aggregate) mergeRemainingLocked(remaining map[string]*mapr.AggregateSet) {
-	a.groupMu.Lock()
-	defer a.groupMu.Unlock()
-	for key, set := range remaining {
-		existing, ok := a.groupSets[key]
-		if !ok {
-			a.groupSets[key] = set
-			continue
-		}
-		mergeCancelledSnapshot(a.query, existing, set, a.logger)
-	}
-	a.logger.Warn("Aggregate serialize interrupted; re-merged unsent groups",
-		"remaining", len(remaining))
+	a.serializer.serialize(ctx)
 }
 
 func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet,
@@ -737,19 +515,6 @@ func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet
 				"operation", sc.Operation, "storage", storage)
 		}
 	}
-}
-
-func (a *Aggregate) swapGroupSets() map[string]*mapr.AggregateSet {
-	a.groupMu.Lock()
-	defer a.groupMu.Unlock()
-
-	if len(a.groupSets) == 0 {
-		return nil
-	}
-
-	snapshot := a.groupSets
-	a.groupSets = make(map[string]*mapr.AggregateSet, len(snapshot))
-	return snapshot
 }
 
 // Processor implements the line processor interface for aggregation.

@@ -10,20 +10,33 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
+	"github.com/mimecast/dtail/internal/mapr/logformat"
 )
 
-// ensureTestServerConfig initialises the minimum globals required by
-// aggregate tests. Safe to call from multiple tests; it is idempotent.
-func ensureTestServerConfig(t *testing.T) {
-	t.Helper()
-	if config.Server == nil {
-		config.Server = &config.ServerConfig{
-			MapreduceLogFormat: "default",
+const testDefaultLogFormat = "default"
+
+type aggregateTestParser struct{}
+
+func (*aggregateTestParser) MakeFields(line, _ string) (map[string]string, error) {
+	return map[string]string{"$line": line}, nil
+}
+
+func newAggregateFromTextForTest(queryText string, logger logging.Logger) (*Aggregate, error) {
+	query, err := mapr.NewQuery(queryText, logger)
+	if err != nil {
+		return nil, err
+	}
+	parser, err := logformat.NewParserWithHostname(
+		query.EffectiveLogFormat(testDefaultLogFormat), query, "aggregate-test")
+	if err != nil {
+		parser, err = logformat.NewParserWithHostname("generic", query, "aggregate-test")
+		if err != nil {
+			return nil, err
 		}
 	}
+	return New(query, parser, "aggregate-test", logger)
 }
 
 type aggregatePanicLogger struct {
@@ -46,34 +59,49 @@ func (l *aggregatePanicLogger) output() string {
 	return strings.Join(l.messages, "\n")
 }
 
-func TestNewAggregateFallsBackToGenericParserForUnknownFormat(t *testing.T) {
-	logger := &aggregatePanicLogger{}
-	aggregate, err := New(
-		`from STATS select count($line) logformat unit-test-missing-format`,
-		"default",
-		logger,
-	)
+func TestNewAggregateValidatesDependencies(t *testing.T) {
+	query, err := mapr.NewQuery(`select count($line)`, logging.NopLogger{})
 	if err != nil {
-		t.Fatalf("New failed: %v", err)
+		t.Fatalf("NewQuery: %v", err)
 	}
-	if !strings.Contains(logger.output(), "Falling back to 'generic'") {
-		t.Fatalf("fallback diagnostic missing from log output %q", logger.output())
+	parser := &aggregateTestParser{}
+	var typedNilParser *aggregateTestParser
+
+	tests := []struct {
+		name     string
+		query    *mapr.Query
+		parser   logformat.Parser
+		hostname string
+		wantErr  string
+	}{
+		{name: "nil query", parser: parser, hostname: "server", wantErr: "query must not be nil"},
+		{name: "nil parser", query: query, hostname: "server", wantErr: "parser must not be nil"},
+		{name: "typed nil parser", query: query, parser: typedNilParser, hostname: "server", wantErr: "parser must not be nil"},
 	}
 
-	if err := aggregate.processLine(bytes.NewBufferString("fallback input"), "source"); err != nil {
-		t.Fatalf("generic fallback parser failed to process a line: %v", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, newErr := New(tc.query, tc.parser, tc.hostname, logging.NopLogger{})
+			if newErr == nil || !strings.Contains(newErr.Error(), tc.wantErr) {
+				t.Fatalf("New error = %v, want substring %q", newErr, tc.wantErr)
+			}
+		})
 	}
-	if got := aggregate.countGroups(); got != 1 {
-		t.Fatalf("aggregate groups after generic fallback = %d, want 1", got)
+
+	aggregate, err := New(query, parser, "server", nil)
+	if err != nil {
+		t.Fatalf("New with injected dependencies: %v", err)
+	}
+	if aggregate.query != query || aggregate.parser != parser {
+		t.Fatal("New did not retain the injected query and parser")
 	}
 }
 
 func TestAggregateSerializationChildPanicPropagatesToStart(t *testing.T) {
-	ensureTestServerConfig(t)
 	logger := &aggregatePanicLogger{}
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time),$time group by $time interval 3600`,
-		config.Server.MapreduceLogFormat, logger,
+		logger,
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -106,11 +134,10 @@ func TestAggregateSerializationChildPanicPropagatesToStart(t *testing.T) {
 }
 
 func TestAggregateSerializationLoopTickProgressesWithPendingRequest(t *testing.T) {
-	ensureTestServerConfig(t)
 
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time),$time group by $time interval 3600`,
-		config.Server.MapreduceLogFormat, logging.NopLogger{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -119,7 +146,7 @@ func TestAggregateSerializationLoopTickProgressesWithPendingRequest(t *testing.T
 
 	ctx, cancel := context.WithCancel(context.Background())
 	ticker := time.NewTicker(time.Millisecond)
-	aggregate.serializeTicker.Store(ticker)
+	aggregate.serializer.ticker.Store(ticker)
 	firstTick := make(chan struct{})
 	releaseFirstTick := make(chan struct{})
 	secondTick := make(chan struct{})
@@ -164,7 +191,7 @@ func TestAggregateSerializationLoopTickProgressesWithPendingRequest(t *testing.T
 	// before it performs the periodic serialization. The old loop called
 	// Serialize here and blocked trying to send behind this pending token.
 	aggregate.Serialize(ctx)
-	if got := len(aggregate.serialize); got != 1 {
+	if got := len(aggregate.serializer.requests); got != 1 {
 		t.Fatalf("pending serialization requests = %d, want 1", got)
 	}
 	release()
@@ -177,13 +204,12 @@ func TestAggregateSerializationLoopTickProgressesWithPendingRequest(t *testing.T
 }
 
 func TestAggregateSerializeCoalescesAndHonorsTermination(t *testing.T) {
-	ensureTestServerConfig(t)
 
 	newAggregate := func(t *testing.T) *Aggregate {
 		t.Helper()
-		aggregate, err := New(
+		aggregate, err := newAggregateFromTextForTest(
 			`from STATS select count($time),$time group by $time interval 3600`,
-			config.Server.MapreduceLogFormat, logging.NopLogger{},
+			logging.NopLogger{},
 		)
 		if err != nil {
 			t.Fatalf("New: %v", err)
@@ -193,7 +219,7 @@ func TestAggregateSerializeCoalescesAndHonorsTermination(t *testing.T) {
 
 	t.Run("pending request", func(t *testing.T) {
 		aggregate := newAggregate(t)
-		aggregate.serialize <- struct{}{}
+		aggregate.serializer.requests <- struct{}{}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
@@ -209,7 +235,7 @@ func TestAggregateSerializeCoalescesAndHonorsTermination(t *testing.T) {
 			<-returned
 			t.Fatal("Serialize blocked behind a pending request")
 		}
-		if got := len(aggregate.serialize); got != 1 {
+		if got := len(aggregate.serializer.requests); got != 1 {
 			t.Fatalf("coalesced serialization requests = %d, want 1", got)
 		}
 	})
@@ -220,14 +246,14 @@ func TestAggregateSerializeCoalescesAndHonorsTermination(t *testing.T) {
 		cancel()
 
 		aggregate.Serialize(ctx)
-		if got := len(aggregate.serialize); got != 0 {
+		if got := len(aggregate.serializer.requests); got != 0 {
 			t.Fatalf("requests queued after context cancellation = %d, want 0", got)
 		}
 	})
 
 	t.Run("aggregate stopped", func(t *testing.T) {
 		aggregate := newAggregate(t)
-		aggregate.serialize <- struct{}{}
+		aggregate.serializer.requests <- struct{}{}
 		aggregate.done.Shutdown()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -244,24 +270,23 @@ func TestAggregateSerializeCoalescesAndHonorsTermination(t *testing.T) {
 			<-returned
 			t.Fatal("Serialize did not return promptly after aggregate shutdown")
 		}
-		if got := len(aggregate.serialize); got != 1 {
+		if got := len(aggregate.serializer.requests); got != 1 {
 			t.Fatalf("pending requests after aggregate shutdown = %d, want 1", got)
 		}
 
-		<-aggregate.serialize
+		<-aggregate.serializer.requests
 		aggregate.Serialize(context.Background())
-		if got := len(aggregate.serialize); got != 0 {
+		if got := len(aggregate.serializer.requests); got != 0 {
 			t.Fatalf("requests queued after aggregate shutdown = %d, want 0", got)
 		}
 	})
 }
 
 func TestAggregateShutdownSerializesWithPendingRequest(t *testing.T) {
-	ensureTestServerConfig(t)
 
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time),$time from - group by $time`,
-		config.Server.MapreduceLogFormat, logging.NopLogger{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -279,7 +304,7 @@ func TestAggregateShutdownSerializesWithPendingRequest(t *testing.T) {
 	}
 
 	aggregate.Serialize(context.Background())
-	if got := len(aggregate.serialize); got != 1 {
+	if got := len(aggregate.serializer.requests); got != 1 {
 		t.Fatalf("pending serialization requests = %d, want 1", got)
 	}
 	aggregate.Shutdown(context.Background())
@@ -300,10 +325,9 @@ func TestAggregateShutdownSerializesWithPendingRequest(t *testing.T) {
 // values. This guards against stale last()/len() values clobbering more recent
 // updates that arrived after swapGroupSets.
 func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
-	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),last($message),len($message) from - group by $service`
-	agg, err := New(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
+	agg, err := newAggregateFromTextForTest(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
@@ -312,8 +336,8 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 	lastStorage := agg.query.Select[1].FieldStorage
 	lenStorage := agg.query.Select[2].FieldStorage
 
-	agg.groupMu.Lock()
-	agg.groupSets["svc"] = &mapr.AggregateSet{
+	agg.serializer.groupMu.Lock()
+	agg.serializer.groupSets["svc"] = &mapr.AggregateSet{
 		Samples: 1,
 		FValues: map[string]float64{
 			countStorage: 1,
@@ -324,7 +348,7 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 			lenStorage:  "old-len",
 		},
 	}
-	agg.groupMu.Unlock()
+	agg.serializer.groupMu.Unlock()
 
 	if got := agg.countGroups(); got != 1 {
 		t.Fatalf("precondition: expected 1 group, got %d", got)
@@ -355,8 +379,8 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 		}
 	}
 
-	agg.groupMu.Lock()
-	agg.groupSets["svc"] = &mapr.AggregateSet{
+	agg.serializer.groupMu.Lock()
+	agg.serializer.groupSets["svc"] = &mapr.AggregateSet{
 		Samples: 2,
 		FValues: map[string]float64{
 			countStorage: 2,
@@ -367,7 +391,7 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 			lenStorage:  "new-len",
 		},
 	}
-	agg.groupMu.Unlock()
+	agg.serializer.groupMu.Unlock()
 
 	cancel()
 
@@ -377,9 +401,9 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 		t.Fatal("doSerialize did not return after ctx cancel")
 	}
 
-	agg.groupMu.Lock()
-	set, ok := agg.groupSets["svc"]
-	agg.groupMu.Unlock()
+	agg.serializer.groupMu.Lock()
+	set, ok := agg.serializer.groupSets["svc"]
+	agg.serializer.groupMu.Unlock()
 	if !ok {
 		t.Fatal("expected svc group to be re-merged after ctx cancel")
 	}
@@ -401,11 +425,10 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 }
 
 func TestAggregateShutdownHonorsContextWhileSerializationOwnsPermit(t *testing.T) {
-	ensureTestServerConfig(t)
 
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time),$time group by $time interval 3600`,
-		config.Server.MapreduceLogFormat, logging.NopLogger{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -413,13 +436,13 @@ func TestAggregateShutdownHonorsContextWhileSerializationOwnsPermit(t *testing.T
 	messages := make(chan string)
 	aggregate.PrepareOutput(context.Background(), messages)
 
-	aggregate.groupMu.Lock()
-	aggregate.groupSets["held"] = &mapr.AggregateSet{
+	aggregate.serializer.groupMu.Lock()
+	aggregate.serializer.groupSets["held"] = &mapr.AggregateSet{
 		Samples: 1,
 		FValues: map[string]float64{aggregate.query.Select[0].FieldStorage: 1},
 		SValues: map[string]string{aggregate.query.Select[1].FieldStorage: "held"},
 	}
-	aggregate.groupMu.Unlock()
+	aggregate.serializer.groupMu.Unlock()
 
 	firstCtx, cancelFirst := context.WithCancel(context.Background())
 	firstDone := make(chan struct{})
@@ -466,10 +489,9 @@ func TestAggregateShutdownHonorsContextWhileSerializationOwnsPermit(t *testing.T
 }
 
 func TestAggregateShutdownHonorsContextWhileProcessorIsActive(t *testing.T) {
-	ensureTestServerConfig(t)
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time) interval 3600`,
-		config.Server.MapreduceLogFormat, logging.NopLogger{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -494,10 +516,9 @@ func TestAggregateShutdownHonorsContextWhileProcessorIsActive(t *testing.T) {
 }
 
 func TestAggregateShutdownJoiningCallerHonorsItsOwnContext(t *testing.T) {
-	ensureTestServerConfig(t)
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time) interval 3600`,
-		config.Server.MapreduceLogFormat, logging.NopLogger{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -551,21 +572,20 @@ func TestAggregateShutdownJoiningCallerHonorsItsOwnContext(t *testing.T) {
 }
 
 func TestAggregatePrepareOutputNilDisablesSerialization(t *testing.T) {
-	ensureTestServerConfig(t)
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time) interval 3600`,
-		config.Server.MapreduceLogFormat, logging.NopLogger{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	aggregate.groupMu.Lock()
-	aggregate.groupSets[""] = &mapr.AggregateSet{
+	aggregate.serializer.groupMu.Lock()
+	aggregate.serializer.groupSets[""] = &mapr.AggregateSet{
 		Samples: 1,
 		FValues: map[string]float64{aggregate.query.Select[0].FieldStorage: 1},
 		SValues: make(map[string]string),
 	}
-	aggregate.groupMu.Unlock()
+	aggregate.serializer.groupMu.Unlock()
 
 	aggregate.PrepareOutput(context.Background(), make(chan string, 1))
 	aggregate.PrepareOutput(context.Background(), nil)
@@ -587,7 +607,6 @@ func TestAggregatePrepareOutputNilDisablesSerialization(t *testing.T) {
 }
 
 func TestAggregateRejectsNilContexts(t *testing.T) {
-	ensureTestServerConfig(t)
 	var nilContext context.Context
 
 	tests := map[string]func(*Aggregate){
@@ -613,9 +632,9 @@ func TestAggregateRejectsNilContexts(t *testing.T) {
 
 	for name, invoke := range tests {
 		t.Run(name, func(t *testing.T) {
-			aggregate, err := New(
+			aggregate, err := newAggregateFromTextForTest(
 				`from STATS select count($time) interval 3600`,
-				config.Server.MapreduceLogFormat, logging.NopLogger{},
+				logging.NopLogger{},
 			)
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -636,7 +655,6 @@ func TestAggregateRejectsNilContexts(t *testing.T) {
 // server.Aggregate; that regular aggregate was deleted once this aggregate
 // became the only aggregate path (task hv0), so only this subtest remains.
 func TestAggregateProducesResults(t *testing.T) {
-	ensureTestServerConfig(t)
 
 	// Test query
 	queryStr := `from STATS select count($time),$time,avg($goroutines) from - group by $time order by $time`
@@ -652,7 +670,7 @@ func TestAggregateProducesResults(t *testing.T) {
 
 	t.Run("Aggregate", func(t *testing.T) {
 		// Create aggregate
-		agg, aggregateErr := New(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
+		agg, aggregateErr := newAggregateFromTextForTest(queryStr, logging.NopLogger{})
 		if aggregateErr != nil {
 			t.Fatalf("Failed to create aggregate: %v", aggregateErr)
 		}
@@ -740,12 +758,11 @@ func TestAggregateProducesResults(t *testing.T) {
 
 // TestAggregateConcurrency tests aggregate with concurrent file processing
 func TestAggregateConcurrency(t *testing.T) {
-	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),$time from - group by $time`
 
 	// Create aggregate
-	agg, err := New(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
+	agg, err := newAggregateFromTextForTest(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Failed to create aggregate: %v", err)
 	}
@@ -839,8 +856,7 @@ func TestAggregateConcurrency(t *testing.T) {
 }
 
 func TestAggregateAbortReturnsPromptlyWithActiveProcessors(t *testing.T) {
-	aggregate := &Aggregate{}
-	aggregate.done = internal.NewDone()
+	aggregate := &Aggregate{done: internal.NewDone(), serializer: &serializer{}}
 	aggregate.activeProcessors.Store(1)
 
 	done := make(chan struct{})
@@ -961,11 +977,10 @@ func TestAggregateFinalizationWinsConcurrentAbort(t *testing.T) {
 }
 
 func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
-	ensureTestServerConfig(t)
 
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time),$time group by $time interval 3600`,
-		config.Server.MapreduceLogFormat, logging.NopLogger{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
@@ -1035,9 +1050,14 @@ func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
 }
 
 func TestAggregateProcessorCountsFlushOnce(t *testing.T) {
+	lineBatcher, err := newBatcher(16)
+	if err != nil {
+		t.Fatalf("newBatcher: %v", err)
+	}
 	aggregate := &Aggregate{
-		done:      internal.NewDone(),
-		batchSize: 16,
+		done:       internal.NewDone(),
+		batcher:    lineBatcher,
+		serializer: &serializer{},
 	}
 
 	processor := NewProcessor(aggregate, "test")
@@ -1058,10 +1078,13 @@ func TestAggregateProcessorCountsFlushOnce(t *testing.T) {
 
 func TestAggregateProcessorCloseReleasesAccountingWhenFlushPanics(t *testing.T) {
 	aggregate := &Aggregate{
-		done:      internal.NewDone(),
-		batchSize: 1,
+		done:       internal.NewDone(),
+		serializer: &serializer{},
 		// A nil parser makes real batch processing panic inside Flush.
-		batch: []rawLine{{content: bytes.NewBufferString("trigger flush panic")}},
+		batcher: &batcher{
+			maxSize: 1,
+			pending: []rawLine{{content: bytes.NewBufferString("trigger flush panic")}},
+		},
 	}
 	processor := NewProcessor(aggregate, "test")
 
@@ -1096,10 +1119,9 @@ func TestAggregateProcessorCloseReleasesAccountingWhenFlushPanics(t *testing.T) 
 // results were delivered. With FinishInput, Start must emit the final
 // serialization and return on its own.
 func TestAggregateFinishInputTerminatesStart(t *testing.T) {
-	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),$time from - group by $time`
-	agg, err := New(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
+	agg, err := newAggregateFromTextForTest(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
@@ -1168,10 +1190,9 @@ func TestAggregateFinishInputTerminatesStart(t *testing.T) {
 // is live. This guards against over-eager finalization breaking continuous
 // map queries over tailed logs.
 func TestAggregateStreamingContinuesWithoutFinishInput(t *testing.T) {
-	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),$time from - group by $time`
-	agg, err := New(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
+	agg, err := newAggregateFromTextForTest(queryStr, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("New failed: %v", err)
 	}
@@ -1239,7 +1260,7 @@ func TestAggregateStreamingContinuesWithoutFinishInput(t *testing.T) {
 }
 
 // TestAggregateStartDoSerializeFieldRace exercises the concurrent access to
-// the maprMessages field. Start publishes a.maprMessages while a separate
+// the serializer output field. Start publishes the output while a separate
 // goroutine runs doSerialize — the read site (aggregate.go ~355) reached
 // in production via baseHandler.Shutdown -> Aggregate.Shutdown ->
 // doSerialize, which runs on a different goroutine than the one executing Start.
@@ -1248,13 +1269,12 @@ func TestAggregateStreamingContinuesWithoutFinishInput(t *testing.T) {
 // prevented a crash. PrepareOutput now publishes an atomic output holder, so
 // -race must stay clean across many tight iterations.
 func TestAggregateStartDoSerializeFieldRace(t *testing.T) {
-	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),$time from - group by $time`
 	const iterations = 500
 
 	for i := 0; i < iterations; i++ {
-		agg, err := New(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
+		agg, err := newAggregateFromTextForTest(queryStr, logging.NopLogger{})
 		if err != nil {
 			t.Fatalf("New failed: %v", err)
 		}
@@ -1263,7 +1283,7 @@ func TestAggregateStartDoSerializeFieldRace(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 
 		// Release both goroutines as close together as possible so the write to
-		// a.maprMessages at the top of Start overlaps the read inside
+		// the output at the top of Start overlaps the read inside
 		// doSerialize. No lines are fed, so doSerialize takes the empty-snapshot
 		// path and never sends on messages.
 		release := make(chan struct{})
@@ -1293,7 +1313,7 @@ func TestAggregateStartDoSerializeFieldRace(t *testing.T) {
 }
 
 // TestAggregateStartStopTickerFieldRace exercises the concurrent access to
-// the serializeTicker field. Start creates and publishes a.serializeTicker while
+// the serializer ticker field. Start creates and publishes the ticker while
 // a separate goroutine runs Abort -> stopSerializeTicker, which reads the field.
 // In production stopSerializeTicker is reached from baseHandler.Shutdown ->
 // Aggregate.Shutdown/Abort on the teardown goroutine, a different goroutine
@@ -1305,13 +1325,12 @@ func TestAggregateStartDoSerializeFieldRace(t *testing.T) {
 // across many tight iterations. This test deliberately omits
 // waitForAggregateStart so the ticker write and read can actually overlap.
 func TestAggregateStartStopTickerFieldRace(t *testing.T) {
-	ensureTestServerConfig(t)
 
 	queryStr := `from STATS select count($time),$time from - group by $time`
 	const iterations = 500
 
 	for i := 0; i < iterations; i++ {
-		agg, err := New(queryStr, config.Server.MapreduceLogFormat, logging.NopLogger{})
+		agg, err := newAggregateFromTextForTest(queryStr, logging.NopLogger{})
 		if err != nil {
 			t.Fatalf("New failed: %v", err)
 		}
@@ -1366,11 +1385,10 @@ func waitForAggregateStart(t *testing.T, aggregate *Aggregate) {
 
 func newBufferedTestAggregate(t *testing.T) (*Aggregate, chan string, <-chan struct{}, context.CancelFunc) {
 	t.Helper()
-	ensureTestServerConfig(t)
 
-	aggregate, err := New(
+	aggregate, err := newAggregateFromTextForTest(
 		`from STATS select count($time),$time group by $time interval 3600`,
-		config.Server.MapreduceLogFormat, logging.NopLogger{},
+		logging.NopLogger{},
 	)
 	if err != nil {
 		t.Fatalf("New failed: %v", err)

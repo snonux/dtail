@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/lcontext"
-	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
@@ -247,13 +246,13 @@ func (s *aggregateSwapReadServer) readCommandDependencies() readCommandDependenc
 
 func TestReadCommandProcessorUsesAggregateCapturedAtAdmission(t *testing.T) {
 
-	oldAggregate, err := mapaggregate.New(
-		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
+	oldAggregate, err := newHandlerTestAggregate(
+		"from STATS select count($time),$time group by $time interval 3600", "default")
 	if err != nil {
 		t.Fatalf("create old aggregate: %v", err)
 	}
-	replacementAggregate, err := mapaggregate.New(
-		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
+	replacementAggregate, err := newHandlerTestAggregate(
+		"from STATS select count($time),$time group by $time interval 3600", "default")
 	if err != nil {
 		t.Fatalf("create replacement aggregate: %v", err)
 	}
@@ -438,11 +437,11 @@ func TestSessionCommandBatchContextsKeepOverlappingGenerationsSeparate(t *testin
 	handler.sessionState.mu.Unlock()
 
 	query := "from STATS select count($time),$time group by $time interval 3600"
-	firstAggregate, err := mapaggregate.New(query, "default", logging.NopLogger{})
+	firstAggregate, err := newHandlerTestAggregate(query, "default")
 	if err != nil {
 		t.Fatalf("create first aggregate: %v", err)
 	}
-	secondAggregate, err := mapaggregate.New(query, "default", logging.NopLogger{})
+	secondAggregate, err := newHandlerTestAggregate(query, "default")
 	if err != nil {
 		t.Fatalf("create second aggregate: %v", err)
 	}

@@ -13,8 +13,6 @@ import (
 	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
-	"github.com/mimecast/dtail/internal/logging"
-	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/session"
@@ -420,7 +418,7 @@ func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testi
 			queryStr := strings.Join(args[1:], " ")
 			// Output is now the only aggregate (task hv0), so install a
 			// Aggregate as the real handleMapCommand does.
-			aggregate, err := mapaggregate.New(queryStr, "", logging.NopLogger{})
+			aggregate, err := newHandlerTestAggregate(queryStr, "")
 			if err != nil {
 				t.Fatalf("new output aggregate: %v", err)
 			}

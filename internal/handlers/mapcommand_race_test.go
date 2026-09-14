@@ -15,8 +15,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/logging"
-	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	userserver "github.com/mimecast/dtail/internal/sessionuser"
 )
 
@@ -31,7 +29,7 @@ func TestAggregatePointerRaceWithShutdown(t *testing.T) {
 			user:           &userserver.User{Name: "race-test-output-user"},
 		})
 
-		ta, err := mapaggregate.New("select count($0) from .", "", logging.NopLogger{})
+		ta, err := newHandlerTestAggregate("select count($0) from .", "")
 		if err != nil {
 			t.Skipf("could not create output aggregate: %v", err)
 		}

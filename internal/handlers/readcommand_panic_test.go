@@ -139,7 +139,7 @@ func TestExecuteReadLoopEscalatesReaderWorkerPanic(t *testing.T) {
 }
 
 func TestReadViaProcessorClosesAggregateProcessorAfterReaderPanic(t *testing.T) {
-	aggregate, err := mapaggregate.New("select count($0) from .", "", logging.NopLogger{})
+	aggregate, err := newHandlerTestAggregate("select count($0) from .", "")
 	if err != nil {
 		t.Fatalf("create aggregate: %v", err)
 	}

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/lcontext"
-	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	"github.com/mimecast/dtail/internal/omode"
 )
@@ -384,8 +383,8 @@ func (s *markerlessInputTestServer) readCommandDependencies() readCommandDepende
 }
 
 func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
-	aggregate, err := mapaggregate.New(
-		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
+	aggregate, err := newHandlerTestAggregate(
+		"from STATS select count($time),$time group by $time interval 3600", "default")
 	if err != nil {
 		t.Fatalf("create aggregate: %v", err)
 	}
@@ -433,8 +432,8 @@ func TestMarkerlessReadRechecksForDelayedOldClientFrame(t *testing.T) {
 }
 
 func TestMarkerlessReadRecheckStopsOnContextCancellation(t *testing.T) {
-	aggregate, err := mapaggregate.New(
-		"from STATS select count($time),$time group by $time interval 3600", "default", logging.NopLogger{})
+	aggregate, err := newHandlerTestAggregate(
+		"from STATS select count($time),$time group by $time interval 3600", "default")
 	if err != nil {
 		t.Fatalf("create aggregate: %v", err)
 	}

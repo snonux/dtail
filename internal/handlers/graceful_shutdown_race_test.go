@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/lcontext"
-	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/session"
@@ -237,9 +236,9 @@ func TestGracefulShutdownAcceptsCloseAckAfterAdmissionSealed(t *testing.T) {
 func newPopulatedTestAggregate(t *testing.T, groups int) *mapaggregate.Aggregate {
 	t.Helper()
 
-	aggregate, err := mapaggregate.New(
+	aggregate, err := newHandlerTestAggregate(
 		"from STATS select count($time),$time from - group by $time interval 3600",
-		"default", logging.NopLogger{},
+		"default",
 	)
 	if err != nil {
 		t.Fatalf("create aggregate: %v", err)
