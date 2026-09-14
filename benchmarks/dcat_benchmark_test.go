@@ -12,9 +12,9 @@ import (
 func BenchmarkDCatSimple(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	sizes := GetBenchmarkSizes()
-	
+
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("Size=%s", size), func(b *testing.B) {
 			// Generate test file
@@ -24,18 +24,18 @@ func BenchmarkDCatSimple(b *testing.B) {
 				Compression:   NoCompression,
 				LineVariation: 50,
 			}
-			
+
 			testFile := GenerateTestFile(b, config)
-			defer os.Remove(testFile)
-			
-			fileSize, _ := GetFileSize(testFile)
-			lineCount, _ := CountFileLines(testFile)
-			
+			cleanupBenchmarkFile(b, testFile)
+
+			fileSize := mustGetFileSize(b, testFile)
+			lineCount := mustCountFileLines(b, testFile)
+
 			// Warmup
 			WarmupCommand(b, "dcat", "--plain", "--cfg", "none", testFile)
-			
+
 			b.ResetTimer()
-			
+
 			// Run benchmark
 			totalDuration := time.Duration(0)
 			for i := 0; i < b.N; i++ {
@@ -45,15 +45,15 @@ func BenchmarkDCatSimple(b *testing.B) {
 				}
 				totalDuration += result.Duration
 			}
-			
+
 			avgDuration := totalDuration / time.Duration(b.N)
 			throughput := CalculateThroughput(fileSize, avgDuration)
 			linesPerSec := CalculateLinesPerSecond(lineCount, avgDuration)
-			
+
 			// Report metrics
 			b.ReportMetric(throughput, "MB/sec")
 			b.ReportMetric(linesPerSec, "lines/sec")
-			
+
 			// Save result
 			benchResult := BenchmarkResult{
 				Timestamp:   time.Now(),
@@ -64,7 +64,7 @@ func BenchmarkDCatSimple(b *testing.B) {
 				Throughput:  throughput,
 				LinesPerSec: linesPerSec,
 			}
-			SaveResults([]BenchmarkResult{benchResult})
+			saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 		})
 	}
 }
@@ -73,17 +73,17 @@ func BenchmarkDCatSimple(b *testing.B) {
 func BenchmarkDCatMultipleFiles(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	numFiles := []int{10, 50, 100}
 	fileSize := Small / 10 // 1MB each
-	
+
 	for _, num := range numFiles {
 		b.Run(fmt.Sprintf("Files=%d", num), func(b *testing.B) {
 			// Generate test files
 			var testFiles []string
 			totalSize := int64(0)
 			totalLines := 0
-			
+
 			for i := 0; i < num; i++ {
 				config := TestDataConfig{
 					Size:          FileSize(fileSize),
@@ -91,23 +91,23 @@ func BenchmarkDCatMultipleFiles(b *testing.B) {
 					Compression:   NoCompression,
 					LineVariation: 50,
 				}
-				
+
 				testFile := GenerateTestFile(b, config)
 				testFiles = append(testFiles, testFile)
-				defer os.Remove(testFile)
-				
-				size, _ := GetFileSize(testFile)
-				lines, _ := CountFileLines(testFile)
+				cleanupBenchmarkFile(b, testFile)
+
+				size := mustGetFileSize(b, testFile)
+				lines := mustCountFileLines(b, testFile)
 				totalSize += size
 				totalLines += lines
 			}
-			
+
 			// Warmup
 			args := append([]string{"--plain", "--cfg", "none"}, testFiles...)
 			WarmupCommand(b, "dcat", args...)
-			
+
 			b.ResetTimer()
-			
+
 			// Run benchmark
 			totalDuration := time.Duration(0)
 			for i := 0; i < b.N; i++ {
@@ -117,16 +117,16 @@ func BenchmarkDCatMultipleFiles(b *testing.B) {
 				}
 				totalDuration += result.Duration
 			}
-			
+
 			avgDuration := totalDuration / time.Duration(b.N)
 			throughput := CalculateThroughput(totalSize, avgDuration)
 			linesPerSec := CalculateLinesPerSecond(totalLines, avgDuration)
-			
+
 			// Report metrics
 			b.ReportMetric(throughput, "MB/sec")
 			b.ReportMetric(linesPerSec, "lines/sec")
 			b.ReportMetric(float64(num), "files")
-			
+
 			// Save result
 			benchResult := BenchmarkResult{
 				Timestamp:   time.Now(),
@@ -137,7 +137,7 @@ func BenchmarkDCatMultipleFiles(b *testing.B) {
 				Throughput:  throughput,
 				LinesPerSec: linesPerSec,
 			}
-			SaveResults([]BenchmarkResult{benchResult})
+			saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 		})
 	}
 }
@@ -146,7 +146,7 @@ func BenchmarkDCatMultipleFiles(b *testing.B) {
 func BenchmarkDCatCompressed(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	compressions := []struct {
 		name string
 		typ  CompressionType
@@ -155,12 +155,12 @@ func BenchmarkDCatCompressed(b *testing.B) {
 		{"gzip", GzipCompression},
 		{"zstd", ZstdCompression},
 	}
-	
+
 	sizes := GetBenchmarkSizes()
 	if IsQuickMode() {
 		sizes = []FileSize{Small}
 	}
-	
+
 	for _, size := range sizes {
 		for _, comp := range compressions {
 			b.Run(fmt.Sprintf("Size=%s/Compression=%s", size, comp.name), func(b *testing.B) {
@@ -171,23 +171,23 @@ func BenchmarkDCatCompressed(b *testing.B) {
 					Compression:   comp.typ,
 					LineVariation: 50,
 				}
-				
+
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
-				
+				cleanupBenchmarkFile(b, testFile)
+
 				// Get uncompressed size for throughput calculation
 				uncompressedSize := int64(size)
-				compressedSize, _ := GetFileSize(testFile)
+				compressedSize := mustGetFileSize(b, testFile)
 				compressionRatio := float64(uncompressedSize) / float64(compressedSize)
-				
+
 				// Estimate line count (compressed files are harder to count)
 				approxLineCount := int(size) / 150
-				
+
 				// Warmup
 				WarmupCommand(b, "dcat", "--plain", "--cfg", "none", testFile)
-				
+
 				b.ResetTimer()
-				
+
 				// Run benchmark
 				totalDuration := time.Duration(0)
 				for i := 0; i < b.N; i++ {
@@ -197,17 +197,17 @@ func BenchmarkDCatCompressed(b *testing.B) {
 					}
 					totalDuration += result.Duration
 				}
-				
+
 				avgDuration := totalDuration / time.Duration(b.N)
 				// Throughput based on uncompressed size
 				throughput := CalculateThroughput(uncompressedSize, avgDuration)
 				linesPerSec := CalculateLinesPerSecond(approxLineCount, avgDuration)
-				
+
 				// Report metrics
 				b.ReportMetric(throughput, "MB/sec")
 				b.ReportMetric(linesPerSec, "lines/sec")
 				b.ReportMetric(compressionRatio, "compression_ratio")
-				
+
 				// Save result
 				benchResult := BenchmarkResult{
 					Timestamp:   time.Now(),
@@ -218,7 +218,7 @@ func BenchmarkDCatCompressed(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: linesPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -228,13 +228,13 @@ func BenchmarkDCatCompressed(b *testing.B) {
 func BenchmarkDCatServerMode(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	// Skip if dserver binary doesn't exist
 	dserverPath := filepath.Join("..", "dserver")
 	if _, err := os.Stat(dserverPath); err != nil {
 		b.Skip("dserver binary not found, skipping server mode benchmarks")
 	}
-	
+
 	modes := []struct {
 		name   string
 		server bool
@@ -242,12 +242,12 @@ func BenchmarkDCatServerMode(b *testing.B) {
 		{"serverless", false},
 		{"server", true},
 	}
-	
+
 	sizes := GetBenchmarkSizes()
 	if IsQuickMode() {
 		sizes = []FileSize{Small}
 	}
-	
+
 	for _, size := range sizes {
 		for _, mode := range modes {
 			b.Run(fmt.Sprintf("Size=%s/Mode=%s", size, mode.name), func(b *testing.B) {
@@ -258,15 +258,15 @@ func BenchmarkDCatServerMode(b *testing.B) {
 					Compression:   NoCompression,
 					LineVariation: 50,
 				}
-				
+
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
-				
-				fileSize, _ := GetFileSize(testFile)
-				lineCount, _ := CountFileLines(testFile)
-				
+				cleanupBenchmarkFile(b, testFile)
+
+				fileSize := mustGetFileSize(b, testFile)
+				lineCount := mustCountFileLines(b, testFile)
+
 				var args []string
-				
+
 				if mode.server {
 					// Start dserver
 					// Note: In a real implementation, we'd need to:
@@ -279,12 +279,12 @@ func BenchmarkDCatServerMode(b *testing.B) {
 				} else {
 					args = []string{"--plain", "--cfg", "none", testFile}
 				}
-				
+
 				// Warmup
 				WarmupCommand(b, "dcat", args...)
-				
+
 				b.ResetTimer()
-				
+
 				// Run benchmark
 				totalDuration := time.Duration(0)
 				for i := 0; i < b.N; i++ {
@@ -294,15 +294,15 @@ func BenchmarkDCatServerMode(b *testing.B) {
 					}
 					totalDuration += result.Duration
 				}
-				
+
 				avgDuration := totalDuration / time.Duration(b.N)
 				throughput := CalculateThroughput(fileSize, avgDuration)
 				linesPerSec := CalculateLinesPerSecond(lineCount, avgDuration)
-				
+
 				// Report metrics
 				b.ReportMetric(throughput, "MB/sec")
 				b.ReportMetric(linesPerSec, "lines/sec")
-				
+
 				// Save result
 				benchResult := BenchmarkResult{
 					Timestamp:   time.Now(),
@@ -313,7 +313,7 @@ func BenchmarkDCatServerMode(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: linesPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}

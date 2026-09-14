@@ -13,7 +13,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -32,12 +32,16 @@ type interactiveReloadState struct {
 }
 
 func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan string) int {
-	controlTTY, err := os.OpenFile(c.Args.ControlTTYPath, os.O_RDWR, 0)
+	controlTTY, err := os.OpenFile(c.ControlTTYPath, os.O_RDWR, 0)
 	if err != nil {
-		dlog.Client.Error("Unable to open interactive query control TTY", c.Args.ControlTTYPath, err)
+		c.clientLogger().Error("Unable to open interactive query control TTY", c.ControlTTYPath, err)
 		return 1
 	}
-	defer controlTTY.Close()
+	defer func() {
+		if closeErr := controlTTY.Close(); closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			c.clientLogger().Debug("Unable to close interactive query control TTY", closeErr)
+		}
+	}()
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -57,9 +61,9 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 		cancel()
 		<-controlErrCh
 		return status
-	case err := <-controlErrCh:
-		if err != nil {
-			dlog.Client.Warn("Interactive query control stopped", err)
+	case controlErr := <-controlErrCh:
+		if controlErr != nil {
+			c.clientLogger().Warn("Interactive query control stopped", controlErr)
 		}
 		cancel()
 		return <-statusCh
@@ -87,7 +91,7 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 		}
 
 		currentArgs, _ := c.snapshotConnectionState()
-		command, err := parseInteractiveCommand(currentArgs, line)
+		command, err := parseInteractiveCommand(currentArgs, line, c.clientLogger())
 		if err != nil {
 			if writeErr := writeControlLine(tty, "interactive query error: "+err.Error()); writeErr != nil {
 				return writeErr
@@ -97,32 +101,32 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 
 		switch command.kind {
 		case "help":
-			if err := c.writeInteractiveHelp(tty); err != nil {
-				return err
+			if helpErr := c.writeInteractiveHelp(tty); helpErr != nil {
+				return helpErr
 			}
 		case "show":
-			if err := c.writeInteractiveState(tty); err != nil {
-				return err
+			if stateErr := c.writeInteractiveState(tty); stateErr != nil {
+				return stateErr
 			}
 		case "quit":
-			if err := writeControlLine(tty, "quitting interactive session"); err != nil {
-				return err
+			if quitErr := writeControlLine(tty, "quitting interactive session"); quitErr != nil {
+				return quitErr
 			}
 			cancel()
 			return nil
 		case "reload":
-			if err := c.applyInteractiveReload(command.next, command.spec); err != nil {
-				if writeErr := writeControlLine(tty, "reload failed: "+err.Error()); writeErr != nil {
+			if reloadErr := c.applyInteractiveReload(command.next, command.spec); reloadErr != nil {
+				if writeErr := writeControlLine(tty, "reload failed: "+reloadErr.Error()); writeErr != nil {
 					return writeErr
 				}
 				continue
 			}
-			if err := writeControlLine(tty, "reload applied successfully"); err != nil {
-				return err
+			if successWriteErr := writeControlLine(tty, "reload applied successfully"); successWriteErr != nil {
+				return successWriteErr
 			}
 		default:
-			if err := writeControlLine(tty, "unsupported command"); err != nil {
-				return err
+			if unsupportedErr := writeControlLine(tty, "unsupported command"); unsupportedErr != nil {
+				return unsupportedErr
 			}
 		}
 	}
@@ -154,10 +158,10 @@ func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec Sessi
 		return c.rollbackInteractiveReload(applied, prevArgs, prevSpec, err)
 	}
 
-	if committer, ok := c.maker.(sessionCommitter); ok {
-		if err := committer.commitSessionSpec(nextSpec, generation); err != nil {
+	if c.profile.commit != nil {
+		if commitErr := c.profile.commit(nextSpec, generation); commitErr != nil {
 			return c.rollbackInteractiveReload(applied, prevArgs, prevSpec,
-				fmt.Errorf("commit session state: %w", err))
+				fmt.Errorf("commit session state: %w", commitErr))
 		}
 	}
 
@@ -257,7 +261,7 @@ func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 	return writeControlLine(writer, line)
 }
 
-func parseInteractiveCommand(current config.Args, line string) (interactiveCommand, error) {
+func parseInteractiveCommand(current config.Args, line string, logger logging.Logger) (interactiveCommand, error) {
 	line = strings.TrimSpace(line)
 
 	switch {
@@ -280,7 +284,7 @@ func parseInteractiveCommand(current config.Args, line string) (interactiveComma
 		if err != nil {
 			return interactiveCommand{}, err
 		}
-		nextSpec, err := buildInteractiveSessionSpec(nextArgs)
+		nextSpec, err := buildInteractiveSessionSpec(nextArgs, logger)
 		if err != nil {
 			return interactiveCommand{}, err
 		}
@@ -312,9 +316,9 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 		fs.StringVar(&next.RegexStr, "regex", current.RegexStr, "Regular expression")
 		fs.StringVar(&grep, "grep", "", "Alias for -regex")
 		fs.BoolVar(&next.RegexInvert, "invert", current.RegexInvert, "Invert regex")
-		fs.IntVar(&next.LContext.BeforeContext, "before", current.LContext.BeforeContext, "Leading context lines")
-		fs.IntVar(&next.LContext.AfterContext, "after", current.LContext.AfterContext, "Trailing context lines")
-		fs.IntVar(&next.LContext.MaxCount, "max", current.LContext.MaxCount, "Maximum number of matches")
+		fs.IntVar(&next.BeforeContext, "before", current.BeforeContext, "Leading context lines")
+		fs.IntVar(&next.AfterContext, "after", current.AfterContext, "Trailing context lines")
+		fs.IntVar(&next.MaxCount, "max", current.MaxCount, "Maximum number of matches")
 		if err := fs.Parse(tokens); err != nil {
 			return current, err
 		}
@@ -339,25 +343,25 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 	return next, nil
 }
 
-func buildInteractiveSessionSpec(args config.Args) (SessionSpec, error) {
-	normalizedArgs, err := normalizeInteractiveArgs(args)
+func buildInteractiveSessionSpec(args config.Args, logger logging.Logger) (SessionSpec, error) {
+	normalizedArgs, err := normalizeInteractiveArgs(args, logger)
 	if err != nil {
 		return SessionSpec{}, err
 	}
 
 	spec := NewSessionSpec(normalizedArgs)
-	if _, err := spec.Commands(); err != nil {
-		return SessionSpec{}, err
+	if _, commandErr := spec.Commands(); commandErr != nil {
+		return SessionSpec{}, commandErr
 	}
 	return spec, nil
 }
 
-func normalizeInteractiveArgs(args config.Args) (config.Args, error) {
+func normalizeInteractiveArgs(args config.Args, logger logging.Logger) (config.Args, error) {
 	if !isInteractiveQueryMode(args) {
 		return args, nil
 	}
 
-	_, regexValue, err := maprRegexFromQueryString(args.QueryStr)
+	_, regexValue, err := maprRegexFromQueryString(args.QueryStr, logger)
 	if err != nil {
 		return args, err
 	}

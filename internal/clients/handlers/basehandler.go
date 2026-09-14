@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -38,6 +38,7 @@ type baseHandler struct {
 	capabilitiesOk sync.Once
 
 	sessionAcks chan SessionAck
+	logger      clientlog.Logger
 }
 
 // SessionAck is a parsed hidden acknowledgement for SESSION START/UPDATE requests.
@@ -65,6 +66,13 @@ func (h *baseHandler) Status() int {
 	return h.status
 }
 
+func (h *baseHandler) log() clientlog.Logger {
+	if h.logger == nil {
+		return clientlog.NopLogger{}
+	}
+	return h.logger
+}
+
 func (h *baseHandler) Capabilities() []string {
 	h.capabilitiesMu.RLock()
 	defer h.capabilitiesMu.RUnlock()
@@ -86,25 +94,27 @@ func (h *baseHandler) HasCapability(name string) bool {
 }
 
 func (h *baseHandler) ReportServerError(message string) {
-	h.status = 1
+	if h.status <= 0 {
+		h.status = 1
+	}
 	// Route through the DIAGNOSTIC (Log) sink, not Raw: a server-error report is
 	// an audit line, not bulk payload. Via Raw it would be gated out of the
 	// client log file whenever Client.LogPayload is false (the default), silently
 	// dropping the error from the on-disk audit trail. RawLog keeps it in the
 	// file like other diagnostics while still printing it to stdout. The message
 	// carries no trailing newline; the Log sink appends one.
-	dlog.Client.RawLog(formatServerErrorMessage(h.server, message))
+	clientlog.RawDiagnostic(h.log(), formatServerErrorMessage(h.server, message))
 }
 
 // SendMessage to the server.
 func (h *baseHandler) SendMessage(command string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(command))
-	dlog.Client.Debug("Sending command", h.server, command, encoded)
+	h.log().Debug("Sending command", h.server, command, encoded)
 
 	select {
 	case h.commands <- fmt.Sprintf("protocol %s base64 %v;", protocol.ProtocolCompat, encoded):
 	case <-time.After(time.Second * 5):
-		return fmt.Errorf("Timed out sending command '%s' (base64: '%s')", command, encoded)
+		return fmt.Errorf("timed out sending command '%s' (base64: '%s')", command, encoded)
 	case <-h.Done():
 		return nil
 	}
@@ -196,9 +206,9 @@ func (h *baseHandler) handleMessage(message string) {
 
 	// Add newline only if the message doesn't already end with one
 	if len(message) > 0 && message[len(message)-1] == '\n' {
-		dlog.Client.Raw(message)
+		clientlog.Raw(h.log(), message)
 	} else {
-		dlog.Client.Raw(message + "\n")
+		clientlog.Raw(h.log(), message+"\n")
 	}
 }
 
@@ -209,16 +219,16 @@ func (h *baseHandler) handleAuthKeyMessage(message string) bool {
 	}
 
 	if authKeyOK {
-		dlog.Client.Debug(h.server, "AUTHKEY registration accepted by server")
+		h.log().Debug(h.server, "AUTHKEY registration accepted by server")
 		return true
 	}
 
 	if authKeyDetail == "" {
-		dlog.Client.Warn(h.server, "AUTHKEY registration failed")
+		h.log().Warn(h.server, "AUTHKEY registration failed")
 		return true
 	}
 
-	dlog.Client.Warn(h.server, "AUTHKEY registration failed", authKeyDetail)
+	h.log().Warn(h.server, "AUTHKEY registration failed", authKeyDetail)
 	return true
 }
 
@@ -228,9 +238,9 @@ func parseAuthKeyMessage(message string) (isAuthKeyMessage bool, ok bool, detail
 	}
 
 	payload := strings.TrimSpace(message)
-	parts := strings.Split(payload, protocol.FieldDelimiter)
-	if len(parts) > 0 {
-		payload = strings.TrimSpace(parts[len(parts)-1])
+	decoded, err := protocol.DecodeMessage(payload)
+	if err == nil && decoded.Kind != protocol.MessagePlain {
+		payload = strings.TrimSpace(decoded.Content)
 	}
 
 	switch {
@@ -256,7 +266,7 @@ func (h *baseHandler) handleHiddenMessage(message string) {
 		h.handleSessionAckMessage(message)
 	case strings.HasPrefix(message, ".syn close connection"):
 		if err := h.SendMessage(".ack close connection"); err != nil {
-			dlog.Client.Debug(h.server, "Unable to acknowledge close connection", err)
+			h.log().Debug(h.server, "Unable to acknowledge close connection", err)
 		}
 		h.Shutdown()
 	}
@@ -350,7 +360,7 @@ func (h *baseHandler) Shutdown() {
 func (h *baseHandler) handleSessionAckMessage(message string) {
 	ack, ok := parseSessionAckMessage(message)
 	if !ok {
-		dlog.Client.Warn(h.server, "Unable to parse session acknowledgement", message)
+		h.log().Warn(h.server, "Unable to parse session acknowledgement", message)
 		return
 	}
 	if h.sessionAcks == nil {
@@ -361,7 +371,7 @@ func (h *baseHandler) handleSessionAckMessage(message string) {
 	case h.sessionAcks <- ack:
 	case <-h.Done():
 	default:
-		dlog.Client.Warn(h.server, "Dropping session acknowledgement because the queue is full", message)
+		h.log().Warn(h.server, "Dropping session acknowledgement because the queue is full", message)
 	}
 }
 
@@ -408,11 +418,12 @@ func parseSessionOKAck(payload string, action string) (SessionAck, bool) {
 // trailing newline: it is emitted via the diagnostic (Log) sink, which appends
 // the newline itself (adding one here would produce a blank line).
 func formatServerErrorMessage(server string, message string) string {
-	return fmt.Sprintf("SERVER%s%s%sERROR%s%s",
-		protocol.FieldDelimiter,
-		server,
-		protocol.FieldDelimiter,
-		protocol.FieldDelimiter,
-		message,
-	)
+	var encoded bytes.Buffer
+	protocol.EncodeMessage(&encoded, protocol.Message{
+		Kind:     protocol.MessageServer,
+		Hostname: server,
+		Content:  "ERROR" + protocol.FieldDelimiter + message,
+	})
+	frame := encoded.Bytes()
+	return string(frame[:len(frame)-1])
 }

@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/logging"
+
 	"golang.org/x/crypto/ssh/agent"
 )
 
@@ -57,7 +59,7 @@ func TestAgentSignersWithKeyIndexClosesConnOnListError(t *testing.T) {
 
 	withDialAgent(t, func() (net.Conn, error) { return client, nil })
 
-	signers, closer, err := AgentSignersWithKeyIndex(-1)
+	signers, closer, err := AgentSignersWithKeyIndex(-1, logging.NopLogger{})
 	if err == nil {
 		t.Fatalf("expected error from agent.List when server closed, got nil")
 	}
@@ -82,7 +84,7 @@ func TestAgentSignersWithKeyIndexClosesConnOnDialError(t *testing.T) {
 	dialErr := errors.New("dial failed")
 	withDialAgent(t, func() (net.Conn, error) { return nil, dialErr })
 
-	signers, closer, err := AgentSignersWithKeyIndex(-1)
+	signers, closer, err := AgentSignersWithKeyIndex(-1, logging.NopLogger{})
 	if err == nil {
 		t.Fatalf("expected dial error, got nil")
 	}
@@ -106,7 +108,7 @@ func TestAgentSignersWithKeyIndexReturnsOwnerCloserOnSuccess(t *testing.T) {
 
 	withDialAgent(t, func() (net.Conn, error) { return client, nil })
 
-	_, closer, err := AgentSignersWithKeyIndex(-1)
+	_, closer, err := AgentSignersWithKeyIndex(-1, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +137,7 @@ func TestAgentSignersWithKeyIndexOutOfRangeClosesConn(t *testing.T) {
 
 	withDialAgent(t, func() (net.Conn, error) { return client, nil })
 
-	_, closer, err := AgentSignersWithKeyIndex(0)
+	_, closer, err := AgentSignersWithKeyIndex(0, logging.NopLogger{})
 	if err == nil {
 		t.Fatalf("expected out-of-range error on empty keyring, got nil")
 	}

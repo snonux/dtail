@@ -14,12 +14,12 @@ func TestIsLiteralPattern(t *testing.T) {
 		{"hello world", true},
 		{"test123", true},
 		{"user@example.com", false}, // Contains @ which could be confused in some contexts
-		{"192.168.1.1", false}, // Contains dots
+		{"192.168.1.1", false},      // Contains dots
 		{"path/to/file", true},
 		{"key=value", true},
 		{"JSON-data", true},
 		{"_underscore_", true},
-		
+
 		// Non-literal patterns (contain regex metacharacters)
 		{".*", false},
 		{"test.*", false},
@@ -35,7 +35,7 @@ func TestIsLiteralPattern(t *testing.T) {
 		{"test{3}", false},
 		{"test.log", false}, // Contains dot
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.pattern, func(t *testing.T) {
 			got := isLiteralPattern(tt.pattern)
@@ -58,7 +58,7 @@ func TestLiteralMatching(t *testing.T) {
 		{"test", "testing 123", true},
 		{"test", "Test 123", false}, // Case sensitive
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.pattern, func(t *testing.T) {
 			// Test with Default flag
@@ -66,18 +66,18 @@ func TestLiteralMatching(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to create regex: %v", err)
 			}
-			
+
 			// Verify it's detected as literal
 			if !r.isLiteral {
 				t.Errorf("Pattern %q should be detected as literal", tt.pattern)
 			}
-			
+
 			// Test string matching
 			got := r.MatchString(tt.text)
 			if got != tt.match {
 				t.Errorf("MatchString(%q, %q) = %v, want %v", tt.pattern, tt.text, got, tt.match)
 			}
-			
+
 			// Test byte matching
 			gotBytes := r.Match([]byte(tt.text))
 			if gotBytes != tt.match {
@@ -85,23 +85,23 @@ func TestLiteralMatching(t *testing.T) {
 			}
 		})
 	}
-	
+
 	// Test with Invert flag
 	t.Run("InvertFlag", func(t *testing.T) {
 		r, err := New("ERROR", Invert)
 		if err != nil {
 			t.Fatalf("Failed to create regex: %v", err)
 		}
-		
+
 		if !r.isLiteral {
 			t.Error("Pattern should be detected as literal")
 		}
-		
+
 		// Should NOT match when pattern is present
 		if r.MatchString("This is an ERROR message") {
 			t.Error("Inverted match should return false when pattern is present")
 		}
-		
+
 		// Should match when pattern is absent
 		if !r.MatchString("This is a normal message") {
 			t.Error("Inverted match should return true when pattern is absent")
@@ -117,7 +117,7 @@ func TestRegexCompatibility(t *testing.T) {
 		"user123",
 		"test-data",
 	}
-	
+
 	texts := []string{
 		"This is an ERROR message",
 		"WARNING: something happened",
@@ -125,14 +125,14 @@ func TestRegexCompatibility(t *testing.T) {
 		"Processing test-data file",
 		"No match here",
 	}
-	
+
 	for _, pattern := range patterns {
 		// Create literal regex
 		literalRegex, err := New(pattern, Default)
 		if err != nil {
 			t.Fatalf("Failed to create literal regex: %v", err)
 		}
-		
+
 		// Force creation of a non-literal regex for comparison
 		// We'll do this by adding a harmless regex character that doesn't change the meaning
 		regexPattern := "(?:" + pattern + ")"
@@ -140,21 +140,21 @@ func TestRegexCompatibility(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to create regex: %v", err)
 		}
-		
+
 		// The literal version should be optimized
 		if !literalRegex.isLiteral {
 			t.Errorf("Pattern %q should be literal", pattern)
 		}
-		
+
 		// The regex version should not be optimized
 		if regexRegex.isLiteral {
 			t.Errorf("Pattern %q should not be literal", regexPattern)
 		}
-		
+
 		// Both should produce same match results
 		for _, text := range texts {
 			literalMatch := literalRegex.MatchString(text)
-			
+
 			// Test specific expected matches
 			expectedMatch := false
 			switch pattern {
@@ -167,7 +167,7 @@ func TestRegexCompatibility(t *testing.T) {
 			case "test-data":
 				expectedMatch = text == "Processing test-data file"
 			}
-			
+
 			if literalMatch != expectedMatch {
 				t.Errorf("Pattern %q matching text %q: got %v, want %v", pattern, text, literalMatch, expectedMatch)
 			}
@@ -181,33 +181,33 @@ func TestSerializationWithLiteral(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create regex: %v", err)
 	}
-	
+
 	if !r.isLiteral {
 		t.Error("Pattern should be detected as literal")
 	}
-	
+
 	// Serialize
 	serialized, err := r.Serialize()
 	if err != nil {
 		t.Fatalf("Failed to serialize: %v", err)
 	}
-	
+
 	// Should contain literal flag
 	if !contains(serialized, "literal") {
 		t.Errorf("Serialized form should contain 'literal' flag: %s", serialized)
 	}
-	
+
 	// Deserialize
 	deserialized, err := Deserialize(serialized)
 	if err != nil {
 		t.Fatalf("Failed to deserialize: %v", err)
 	}
-	
+
 	// Should still be literal
 	if !deserialized.isLiteral {
 		t.Error("Deserialized regex should maintain literal flag")
 	}
-	
+
 	// Should match the same
 	testStr := "This is an ERROR message"
 	if r.MatchString(testStr) != deserialized.MatchString(testStr) {

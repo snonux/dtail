@@ -2,6 +2,8 @@ package config
 
 // CommonConfig stores configuration keys shared by DTail server and client.
 type CommonConfig struct {
+	// HostnameOverride replaces the system hostname in logs and output when set.
+	HostnameOverride string `json:",omitempty"`
 	// The SSH port number
 	SSHPort int
 	// SSH connection timeout in milliseconds.

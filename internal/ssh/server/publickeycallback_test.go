@@ -2,21 +2,58 @@ package server
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
+	"net"
 	"os"
 	goUser "os/user"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	serveruser "github.com/mimecast/dtail/internal/user/server"
+	"github.com/mimecast/dtail/internal/authkey"
+	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/logging"
+	serveruser "github.com/mimecast/dtail/internal/sessionuser"
 
 	gossh "golang.org/x/crypto/ssh"
 )
 
+type testConnMetadata struct {
+	user string
+}
+
+type testAddr string
+
+func (m testConnMetadata) User() string          { return m.user }
+func (m testConnMetadata) SessionID() []byte     { return nil }
+func (m testConnMetadata) ClientVersion() []byte { return nil }
+func (m testConnMetadata) ServerVersion() []byte { return nil }
+func (m testConnMetadata) RemoteAddr() net.Addr  { return testAddr("remote") }
+func (m testConnMetadata) LocalAddr() net.Addr   { return testAddr("local") }
+
+func (a testAddr) Network() string { return "tcp" }
+func (a testAddr) String() string  { return string(a) }
+
+func testPublicKey(t *testing.T, seedByte byte) gossh.PublicKey {
+	t.Helper()
+
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = seedByte
+	}
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	publicKey, err := gossh.NewPublicKey(privateKey.Public())
+	if err != nil {
+		t.Fatalf("build SSH public key: %v", err)
+	}
+	return publicKey
+}
+
 func TestAuthKeyStorePermissions(t *testing.T) {
 	// Create an isolated store for this test — there is no package-level global.
-	store := NewAuthKeyStore(time.Hour, 5)
+	store := authkey.New(time.Hour, 5)
 
 	key := testPublicKey(t, 21)
 
@@ -44,8 +81,31 @@ func TestAuthKeyStorePermissions(t *testing.T) {
 	}
 }
 
+func TestPublicKeyCallbackRejectsPasswordOnlyUsers(t *testing.T) {
+	store := authkey.New(time.Hour, 5)
+	key := testPublicKey(t, 23)
+
+	for _, userName := range []string{config.HealthUser, config.ScheduleUser, config.ContinuousUser} {
+		t.Run(userName, func(t *testing.T) {
+			store.Add(userName, key)
+
+			permissions, err := publicKeyCallback(testConnMetadata{user: userName}, key, true,
+				t.TempDir(), "", store, logging.NopLogger{})
+			if err == nil {
+				t.Fatal("Expected public key authentication to be rejected")
+			}
+			if permissions != nil {
+				t.Fatalf("Expected nil permissions, got %#v", permissions)
+			}
+			if !strings.Contains(err.Error(), "does not support public key authentication") {
+				t.Fatalf("Unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestVerifyAuthorizedKeysSkipsMalformedLineWithoutParserProgress(t *testing.T) {
-	user := testServerUser(t, "alice")
+	user := testServerUser(t)
 	firstKey := testPublicKey(t, 41)
 	secondKey := testPublicKey(t, 42)
 
@@ -67,7 +127,8 @@ func TestVerifyAuthorizedKeysSkipsMalformedLineWithoutParserProgress(t *testing.
 		}
 	}
 
-	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey, parser)
+	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey,
+		parser, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("verifyAuthorizedKeysWithParser failed: %v", err)
 	}
@@ -80,7 +141,7 @@ func TestVerifyAuthorizedKeysSkipsMalformedLineWithoutParserProgress(t *testing.
 }
 
 func TestVerifyAuthorizedKeysSkipsMalformedLineWithRealParser(t *testing.T) {
-	user := testServerUser(t, "alice")
+	user := testServerUser(t)
 	firstKey := testPublicKey(t, 43)
 	secondKey := testPublicKey(t, 44)
 
@@ -108,7 +169,8 @@ func TestVerifyAuthorizedKeysSkipsMalformedLineWithRealParser(t *testing.T) {
 		return authorizedPubKey, comment, options, rest, nil
 	}
 
-	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey, parseAuthorizedKeyLineByLine)
+	permissions, err := verifyAuthorizedKeysWithParser(user, authorizedKeys, secondKey,
+		parseAuthorizedKeyLineByLine, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("verifyAuthorizedKeysWithParser failed: %v", err)
 	}
@@ -126,7 +188,7 @@ func TestVerifyAuthorizedKeysSkipsMalformedLineWithRealParser(t *testing.T) {
 func TestFindAuthorizedKeysPathUsesCacheDirWhenPresent(t *testing.T) {
 	cwd := t.TempDir()
 	cacheDir := "cache"
-	user := testServerUser(t, "alice")
+	user := testServerUser(t)
 	wantPath := filepath.Join(cwd, cacheDir, "alice.authorized_keys")
 	if err := os.MkdirAll(filepath.Dir(wantPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll failed: %v", err)
@@ -157,13 +219,33 @@ func TestFindAuthorizedKeysPathUsesCacheDirWhenPresent(t *testing.T) {
 	}
 }
 
+func TestAuthorizedKeysPathForUserUsesConfiguredPath(t *testing.T) {
+	t.Setenv("DTAIL_INTEGRATION_TEST_RUN_MODE", "yes")
+	t.Setenv("DTAIL_AUTH_KEY_PATH", "/tmp/ignored-environment-key")
+	configuredPath := filepath.Join(t.TempDir(), "authorized_keys")
+	path, err := authorizedKeysPathForUser(testServerUser(t), "", configuredPath)
+	if err != nil {
+		t.Fatalf("authorizedKeysPathForUser failed: %v", err)
+	}
+	if got, want := path.Path(), configuredPath; got != want {
+		t.Fatalf("authorizedKeysPathForUser returned %q, want %q", got, want)
+	}
+}
+
+func TestAuthorizedKeysPathForUserRejectsConfiguredDirectory(t *testing.T) {
+	_, err := authorizedKeysPathForUser(testServerUser(t), "", string(filepath.Separator))
+	if err == nil {
+		t.Fatal("authorizedKeysPathForUser accepted a directory as the configured file path")
+	}
+}
+
 func TestFindAuthorizedKeysPathIgnoresCwdForAbsoluteCacheDir(t *testing.T) {
 	// An absolute cache dir (e.g. /var/run/dserver/cache on the BSD
 	// packages) must resolve independently of the CWD dserver was
 	// started from.
 	cwd := filepath.Join(t.TempDir(), "unrelated-cwd")
 	cacheDir := t.TempDir()
-	user := testServerUser(t, "alice")
+	user := testServerUser(t)
 	wantPath := filepath.Join(cacheDir, "alice.authorized_keys")
 
 	want := gossh.MarshalAuthorizedKey(testPublicKey(t, 33))
@@ -197,7 +279,7 @@ func TestFindAuthorizedKeysPathAbsoluteCacheDirMissingFileFallsBack(t *testing.T
 	cwd := t.TempDir()
 	cacheDir := t.TempDir() // exists, but holds no alice.authorized_keys
 	homeDir := t.TempDir()
-	user := testServerUser(t, "alice")
+	user := testServerUser(t)
 	wantPath := filepath.Join(homeDir, ".ssh", "authorized_keys")
 	if err := os.MkdirAll(filepath.Dir(wantPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll failed: %v", err)
@@ -230,7 +312,7 @@ func TestFindAuthorizedKeysPathAbsoluteCacheDirMissingFileFallsBack(t *testing.T
 func TestFindAuthorizedKeysPathFallsBackToHomeAuthorizedKeys(t *testing.T) {
 	cwd := t.TempDir()
 	homeDir := t.TempDir()
-	user := testServerUser(t, "alice")
+	user := testServerUser(t)
 	wantPath := filepath.Join(homeDir, ".ssh", "authorized_keys")
 	if err := os.MkdirAll(filepath.Dir(wantPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll failed: %v", err)
@@ -263,7 +345,7 @@ func TestFindAuthorizedKeysPathFallsBackToHomeAuthorizedKeys(t *testing.T) {
 func TestFindAuthorizedKeysPathRejectsEscapingHomeSymlink(t *testing.T) {
 	cwd := t.TempDir()
 	homeDir := t.TempDir()
-	user := testServerUser(t, "alice")
+	user := testServerUser(t)
 	sshDir := filepath.Join(homeDir, ".ssh")
 	if err := os.MkdirAll(sshDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll failed: %v", err)
@@ -286,10 +368,10 @@ func TestFindAuthorizedKeysPathRejectsEscapingHomeSymlink(t *testing.T) {
 	}
 }
 
-func testServerUser(t *testing.T, name string) *serveruser.User {
+func testServerUser(t *testing.T) *serveruser.User {
 	t.Helper()
 
-	user, err := serveruser.New(name, "127.0.0.1:2222", nil)
+	user, err := serveruser.New("alice", "127.0.0.1:2222", nil, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("serveruser.New failed: %v", err)
 	}

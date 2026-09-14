@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
+	"sync"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/mapr/logformat"
@@ -37,46 +39,57 @@ type MaprClient struct {
 	session *maprclient.SessionState
 	// Selected cumulative reporting mode.
 	mode MaprClientMode
+	// Publication state prevents an empty interval from replacing a result
+	// produced earlier in the same query generation.
+	outfileState outfileReportState
+}
+
+type outfileReportState struct {
+	mu         sync.Mutex
+	generation uint64
+	hasRows    bool
 }
 
 // NewMaprClient returns a new mapreduce client.
-func NewMaprClient(args config.Args, maprClientMode MaprClientMode) (*MaprClient, error) {
+func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode MaprClientMode,
+	loggers LoggerDependencies, colorizers ...*brush.Brush) (*MaprClient, error) {
 	if args.QueryStr == "" {
-		return nil, errors.New("No mapreduce query specified, use '-query' flag")
+		return nil, errors.New("no mapreduce query specified, use '-query' flag")
 	}
+	loggers = loggers.normalized()
 
-	query, err := mapr.NewQuery(args.QueryStr)
+	query, err := mapr.NewQuery(args.QueryStr, loggers.Client)
 	if err != nil {
-		dlog.Client.FatalPanic(args.QueryStr, "Can't parse mapr query", err)
+		return nil, fmt.Errorf("parse mapreduce query %q: %w", args.QueryStr, err)
 	}
 
 	// Warn once, at plan time, about $-variables the selected parser cannot
 	// populate. This runs in the user's client process for both server and
 	// serverless mode, so the warning reaches the user's stderr even though the
 	// actual field resolution happens server-side.
-	warnUnknownQueryVariables(os.Stderr, query)
+	warnUnknownQueryVariables(os.Stderr, query, loggers.Client)
 
 	// Don't retry connection if in tail mode and no outfile specified.
 	retry := args.Mode == omode.TailClient && !query.HasOutfile()
 
 	c := MaprClient{
-		baseClient: baseClient{
-			mu:         newBaseClientMu(),
-			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
-			retry:      retry,
-			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
-		},
-		session: maprclient.NewSessionState(query),
+		session: maprclient.NewSessionState(query, loggers.Client),
 		mode:    maprClientMode,
 	}
-	dlog.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
-	c.setRegexForQuery(query)
-	c.baseClient.init()
-	if err := c.baseClient.makeConnections(&c); err != nil {
-		return nil, err
+	args.RegexStr = maprRegexForQuery(query)
+	base, initErr := newBaseClient(args, cfg, loggers, firstColorizer(colorizers), clientProfile{
+		newHandler: func(server string) handlers.Handler {
+			return handlers.NewMaprHandler(server, c.session, loggers.Client)
+		},
+		retry:  retry,
+		commit: c.commitSessionSpec,
+	})
+	if initErr != nil {
+		return nil, fmt.Errorf("initialize mapreduce client: %w", initErr)
 	}
+	c.baseClient = base
+	loggers.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
 	return &c, nil
 }
@@ -89,40 +102,14 @@ func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status i
 
 	// Always write final result for cumulative mode (includes outfile case)
 	if snapshot := c.session.Snapshot(); c.isCumulative(snapshot.Query) {
-		dlog.Client.Debug("Writing final mapreduce result")
+		c.clientLogger().Debug("Writing final mapreduce result")
 		if err := c.reportResults(true); err != nil {
-			dlog.Client.Error("Unable to write final mapreduce result", err)
+			c.clientLogger().Error("Unable to write final mapreduce result", err)
 		}
-		dlog.Client.Debug("Final result written")
+		c.clientLogger().Debug("Final result written")
 	}
 
 	return
-}
-
-// NEXT: Make this a callback function rather trying to use polymorphism to call
-// this. This applies to all clients. It will make the code easier to read.
-func (c *MaprClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewMaprHandler(server, c.session)
-}
-
-func (c *MaprClient) makeSessionSpec() (SessionSpec, error) {
-	sessionSpec := NewSessionSpec(c.Args)
-	if snapshot := c.session.Snapshot(); snapshot.Query != nil {
-		sessionSpec.Query = snapshot.Query.RawQuery
-	}
-	return sessionSpec, nil
-}
-
-func (c *MaprClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build map session spec", err)
-	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build map commands from session spec", err)
-	}
-	return commands
 }
 
 func (c *MaprClient) periodicReportResults(ctx context.Context) {
@@ -138,14 +125,14 @@ func (c *MaprClient) periodicReportResults(ctx context.Context) {
 		seenGeneration = true
 
 		delay := c.reportDelay(snapshot.Query, rampUp)
-		dlog.Client.Debug("Sleeping before processing mapreduce results", "generation", snapshot.Generation, "delay", delay)
+		c.clientLogger().Debug("Sleeping before processing mapreduce results", "generation", snapshot.Generation, "delay", delay)
 
 		timer := time.NewTimer(delay)
 		select {
 		case <-timer.C:
-			dlog.Client.Debug("Gathering interim mapreduce result")
+			c.clientLogger().Debug("Gathering interim mapreduce result")
 			if err := c.reportResults(false); err != nil {
-				dlog.Client.Error("Unable to gather mapreduce result", err)
+				c.clientLogger().Error("Unable to gather mapreduce result", err)
 			}
 		case <-c.session.Changes():
 			if !timer.Stop() {
@@ -154,7 +141,7 @@ func (c *MaprClient) periodicReportResults(ctx context.Context) {
 				default:
 				}
 			}
-			dlog.Client.Debug("Mapreduce query generation changed, recalculating report interval")
+			c.clientLogger().Debug("Mapreduce query generation changed, recalculating report interval")
 		case <-ctx.Done():
 			if !timer.Stop() {
 				select {
@@ -202,44 +189,88 @@ func (c *MaprClient) printResults(snapshot maprclient.SessionSnapshot) error {
 
 	changed, ok := c.session.CommitRenderedResult(snapshot.Generation, result)
 	if !ok {
-		dlog.Client.Debug("Discarding stale mapreduce result", "generation", snapshot.Generation)
+		c.clientLogger().Debug("Discarding stale mapreduce result", "generation", snapshot.Generation)
 		return nil
 	}
 	if !changed {
-		dlog.Client.Debug("Result hasn't changed compared to last time...")
+		c.clientLogger().Debug("Result hasn't changed compared to last time...")
 		return nil
 	}
 
 	if numRows == 0 {
-		dlog.Client.Debug("Empty result set this time...")
+		c.clientLogger().Debug("Empty result set this time...")
 		return nil
 	}
 
 	rawQuery := c.runtime.output.PaintMaprRawQuery(snapshot.Query.RawQuery)
-	dlog.Client.Raw(fmt.Sprintf("%s\n", rawQuery))
+	clientlog.Raw(c.clientLogger(), fmt.Sprintf("%s\n", rawQuery))
 
 	if rowsLimit > 0 && numRows > rowsLimit {
-		dlog.Client.Warn(fmt.Sprintf("Got %d results but limited terminal output "+
+		c.clientLogger().Warn(fmt.Sprintf("Got %d results but limited terminal output "+
 			"to %d rows! Use 'limit' clause to override!", numRows, rowsLimit))
 	}
-	dlog.Client.Raw(fmt.Sprintf("%s\n", result))
+	clientlog.Raw(c.clientLogger(), fmt.Sprintf("%s\n", result))
 	return nil
 }
 
 func (c *MaprClient) writeResultsToOutfile(snapshot maprclient.SessionSnapshot, finalResult bool) error {
+	current, err := c.session.WithCurrentSnapshot(snapshot, func() error {
+		// Lock order inside the callback is SessionState read lock, then
+		// outfileState.mu, then the aggregate/file locks. Do not re-enter
+		// SessionState from this callback.
+		return c.writeCurrentResultsToOutfile(snapshot, finalResult)
+	})
+	if !current {
+		c.clientLogger().Debug("Discarding stale mapreduce outfile result", "generation", snapshot.Generation)
+		return nil
+	}
+	return err
+}
+
+func (c *MaprClient) writeCurrentResultsToOutfile(snapshot maprclient.SessionSnapshot, finalResult bool) error {
 	cumulative := c.isCumulative(snapshot.Query)
-	dlog.Client.Debug("writeResultsToOutfile called", "finalResult", finalResult, "cumulative", cumulative, "generation", snapshot.Generation)
+	c.clientLogger().Debug("writeResultsToOutfile called", "finalResult", finalResult, "cumulative", cumulative, "generation", snapshot.Generation)
 	if cumulative {
 		if err := snapshot.GlobalGroup.WriteResult(snapshot.Query, finalResult); err != nil {
 			return fmt.Errorf("unable to write cumulative mapreduce result: %w", err)
 		}
-		dlog.Client.Debug("WriteResult completed for cumulative mode")
+		c.clientLogger().Debug("WriteResult completed for cumulative mode")
 		return nil
 	}
-	if err := snapshot.GlobalGroup.SwapOut().WriteResult(snapshot.Query, true); err != nil {
+
+	if snapshot.Query.Outfile.AppendMode {
+		group := snapshot.GlobalGroup.SwapOut()
+		if err := group.WriteResult(snapshot.Query, true); err != nil {
+			return fmt.Errorf("unable to write non-cumulative mapreduce result: %w", err)
+		}
+		c.clientLogger().Debug("WriteResult completed for non-cumulative append mode")
+		return nil
+	}
+
+	// Keep detaching and publishing in one critical section so overlapping
+	// reports cannot write older intervals after newer ones.
+	c.outfileState.mu.Lock()
+	defer c.outfileState.mu.Unlock()
+
+	group := snapshot.GlobalGroup.SwapOut()
+	empty := group.IsEmpty()
+	if c.outfileState.generation != snapshot.Generation {
+		// An outfile from an earlier generation is stale. Leave hasRows false
+		// so the first empty interval replaces it with this query's header.
+		c.outfileState.generation = snapshot.Generation
+		c.outfileState.hasRows = false
+	}
+	if empty && c.outfileState.hasRows {
+		c.clientLogger().Debug("Preserving previous non-empty outfile result", "generation", snapshot.Generation)
+		return nil
+	}
+	if err := group.WriteResult(snapshot.Query, true); err != nil {
 		return fmt.Errorf("unable to write non-cumulative mapreduce result: %w", err)
 	}
-	dlog.Client.Debug("WriteResult completed for non-cumulative mode")
+	if !empty {
+		c.outfileState.hasRows = true
+	}
+	c.clientLogger().Debug("WriteResult completed for non-cumulative mode")
 	return nil
 }
 
@@ -253,7 +284,7 @@ func (c *MaprClient) commitSessionSpec(spec SessionSpec, generation uint64) erro
 		return err
 	}
 
-	c.Args.QueryStr = spec.Query
+	c.QueryStr = spec.Query
 	c.setRegexForQuery(query)
 	return nil
 }
@@ -265,7 +296,7 @@ func (c *MaprClient) isCumulative(query *mapr.Query) bool {
 	case NonCumulativeMode:
 		return false
 	default:
-		return c.Args.Mode == omode.MapClient || (query != nil && query.HasOutfile())
+		return c.Mode == omode.MapClient || (query != nil && query.HasOutfile())
 	}
 }
 
@@ -280,10 +311,12 @@ func (c *MaprClient) setRegexForQuery(query *mapr.Query) {
 // the stock server configuration. Unknown/custom server formats therefore do
 // not get this diagnostic (see PlanVariableWarnings, which is a no-op for
 // non-enumerable formats).
-func warnUnknownQueryVariables(w io.Writer, query *mapr.Query) {
+func warnUnknownQueryVariables(w io.Writer, query *mapr.Query, logger logging.Logger) {
 	logFormat := query.EffectiveLogFormat("")
 	for _, warning := range logformat.PlanVariableWarnings(query, logFormat) {
-		fmt.Fprintln(w, warning)
+		if _, err := fmt.Fprintln(w, warning); err != nil {
+			logger.Debug("Unable to write query variable warning", err)
+		}
 	}
 }
 

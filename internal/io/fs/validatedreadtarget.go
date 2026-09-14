@@ -1,6 +1,7 @@
 package fs
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -95,11 +96,11 @@ func (t ValidatedReadTarget) Open() (*os.File, error) {
 		return nil, fmt.Errorf("read target kind %d cannot be opened as a file", t.Kind)
 	}
 
-	root, err := t.rootedPath.OpenRoot()
-	if err != nil {
-		return nil, fmt.Errorf("open root for %s: %w", t.resolvedPath, err)
+	root, rootErr := t.rootedPath.OpenRoot()
+	if rootErr != nil {
+		return nil, fmt.Errorf("open root for %s: %w", t.resolvedPath, rootErr)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	if err := t.validateEntry(root); err != nil {
 		return nil, err
@@ -111,11 +112,15 @@ func (t ValidatedReadTarget) Open() (*os.File, error) {
 	}
 
 	if err := validateOpenedFile(fd, t.resolvedPath); err != nil {
-		fd.Close()
+		if closeErr := fd.Close(); closeErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("close invalid rooted file %s: %w", t.resolvedPath, closeErr))
+		}
 		return nil, err
 	}
 	if err := t.validateEntry(root); err != nil {
-		fd.Close()
+		if closeErr := fd.Close(); closeErr != nil {
+			return nil, errors.Join(err, fmt.Errorf("close changed rooted file %s: %w", t.resolvedPath, closeErr))
+		}
 		return nil, err
 	}
 

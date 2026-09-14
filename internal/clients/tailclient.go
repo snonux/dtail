@@ -1,11 +1,10 @@
 package clients
 
 import (
-	"runtime"
+	"fmt"
 
-	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -15,41 +14,14 @@ type TailClient struct {
 }
 
 // NewTailClient returns a new TailClient.
-func NewTailClient(args config.Args) (*TailClient, error) {
+func NewTailClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*TailClient, error) {
 	args.Mode = omode.TailClient
-	c := TailClient{
-		baseClient: baseClient{
-			mu:         newBaseClientMu(),
-			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
-			retry:      true,
-			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
-		},
-	}
-
-	c.init()
-	if err := c.makeConnections(c); err != nil {
-		return nil, err
-	}
-	return &c, nil
-}
-
-func (c TailClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewClientHandler(server)
-}
-
-func (c TailClient) makeSessionSpec() (SessionSpec, error) {
-	return NewSessionSpec(c.Args), nil
-}
-
-func (c TailClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
+	loggers = loggers.normalized()
+	base, err := newBaseClient(args, cfg, loggers, firstColorizer(colorizers),
+		clientHandlerProfile(loggers.Client, true))
 	if err != nil {
-		dlog.Client.FatalPanic("unable to build tail session spec", err)
+		return nil, fmt.Errorf("initialize tail client: %w", err)
 	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build tail commands from session spec", err)
-	}
-	return commands
+	return &TailClient{baseClient: base}, nil
 }

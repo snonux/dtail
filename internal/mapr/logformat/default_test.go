@@ -1,9 +1,11 @@
 package logformat
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -25,10 +27,10 @@ func TestDefaultLogFormat(t *testing.T) {
 	}
 
 	for _, input := range inputs {
-		fields, err := parser.MakeFields(input, "")
+		fields, parseErr := parser.MakeFields(input, "")
 
-		if err != nil {
-			t.Errorf("Parser unable to make fields: %s", err.Error())
+		if parseErr != nil {
+			t.Errorf("Parser unable to make fields: %s", parseErr.Error())
 		}
 
 		if val, ok := fields["$severity"]; !ok {
@@ -89,7 +91,7 @@ func TestDefaultLogFormat(t *testing.T) {
 	}
 
 	fields, err := parser.MakeFields("foozoo=bar|bazbay", "")
-	if err != nil && err != ErrIgnoreFields {
+	if err != nil && !errors.Is(err, ErrIgnoreFields) {
 		t.Errorf("%s", err.Error())
 	}
 
@@ -99,7 +101,7 @@ func TestDefaultLogFormat(t *testing.T) {
 }
 
 func TestDefaultLogFormatQuerySpecificFields(t *testing.T) {
-	q, err := mapr.NewQuery(`select count(foo) from STATS where $hostname eq "testhost"`)
+	q, err := mapr.NewQuery(`select count(foo) from STATS where $hostname eq "testhost"`, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Unable to create query: %s", err.Error())
 	}

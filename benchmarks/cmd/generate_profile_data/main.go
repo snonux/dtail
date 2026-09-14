@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -32,9 +33,13 @@ func main() {
 	// Generate data
 	switch format {
 	case "log":
-		generateLogFile(output, sizeBytes)
+		if err := generateLogFile(output, sizeBytes); err != nil {
+			log.Fatalf("Generate log data: %v", err)
+		}
 	case "csv":
-		generateCSVFile(output, sizeBytes)
+		if err := generateCSVFile(output, sizeBytes); err != nil {
+			log.Fatalf("Generate CSV data: %v", err)
+		}
 	default:
 		log.Fatalf("Unknown format: %s", format)
 	}
@@ -46,13 +51,14 @@ func parseSize(size string) (int64, error) {
 	size = strings.ToUpper(size)
 	multiplier := int64(1)
 
-	if strings.HasSuffix(size, "GB") {
+	switch {
+	case strings.HasSuffix(size, "GB"):
 		multiplier = 1024 * 1024 * 1024
 		size = strings.TrimSuffix(size, "GB")
-	} else if strings.HasSuffix(size, "MB") {
+	case strings.HasSuffix(size, "MB"):
 		multiplier = 1024 * 1024
 		size = strings.TrimSuffix(size, "MB")
-	} else if strings.HasSuffix(size, "KB") {
+	case strings.HasSuffix(size, "KB"):
 		multiplier = 1024
 		size = strings.TrimSuffix(size, "KB")
 	}
@@ -65,12 +71,16 @@ func parseSize(size string) (int64, error) {
 	return base * multiplier, nil
 }
 
-func generateLogFile(filename string, targetSize int64) {
+func generateLogFile(filename string, targetSize int64) (resultErr error) {
 	f, err := os.Create(filename)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("create output: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close output: %w", err))
+		}
+	}()
 
 	// Sample log lines
 	logLevels := []string{"INFO", "WARN", "ERROR", "DEBUG"}
@@ -103,32 +113,39 @@ func generateLogFile(filename string, targetSize int64) {
 
 		n, err := f.WriteString(line)
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("write log line: %w", err)
 		}
 		bytesWritten += int64(n)
 
 		// Add some variety with stack traces for errors
 		if level == "ERROR" && rand.Float32() < 0.3 {
-			stackTrace := fmt.Sprintf("  Stack trace:\n    at function1() file1.go:123\n    at function2() file2.go:456\n    at main() main.go:789\n")
+			stackTrace := "  Stack trace:\n    at function1() file1.go:123\n    at function2() file2.go:456\n    at main() main.go:789\n"
 			n, err := f.WriteString(stackTrace)
 			if err != nil {
-				log.Fatal(err)
+				return fmt.Errorf("write stack trace: %w", err)
 			}
 			bytesWritten += int64(n)
 		}
 	}
+	return nil
 }
 
-func generateCSVFile(filename string, targetSize int64) {
+func generateCSVFile(filename string, targetSize int64) (resultErr error) {
 	f, err := os.Create(filename)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("create output: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("close output: %w", err))
+		}
+	}()
 
 	// Write header
 	header := "timestamp,user,action,duration,status,category\n"
-	f.WriteString(header)
+	if _, err := f.WriteString(header); err != nil {
+		return fmt.Errorf("write CSV header: %w", err)
+	}
 	bytesWritten := int64(len(header))
 
 	actions := []string{"login", "query", "update", "delete", "logout", "search", "export", "import"}
@@ -152,8 +169,9 @@ func generateCSVFile(filename string, targetSize int64) {
 
 		n, err := f.WriteString(line)
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("write CSV row: %w", err)
 		}
 		bytesWritten += int64(n)
 	}
+	return nil
 }

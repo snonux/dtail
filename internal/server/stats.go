@@ -6,11 +6,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // Used to collect and display various server stats.
 type stats struct {
+	logger              logging.Logger
 	mutex               sync.Mutex
 	currentConnections  int
 	lifetimeConnections uint64
@@ -24,10 +25,22 @@ type stats struct {
 	preAuthConnections int
 }
 
-func newStats(maxConnections int) stats {
+type mapreduceLogger interface {
+	Mapreduce(string, map[string]any) string
+}
+
+func newStats(maxConnections int, logger logging.Logger) stats {
 	return stats{
 		maxConnections: maxConnections,
+		logger:         logging.OrNop(logger),
 	}
+}
+
+func (s *stats) log() logging.Logger {
+	if s.logger == nil {
+		return logging.NopLogger{}
+	}
+	return s.logger
 }
 
 func (s *stats) incrementConnections() {
@@ -79,26 +92,19 @@ func (s *stats) promotePreAuthToConnection() {
 	s.mutex.Unlock()
 }
 
-func (s *stats) hasConnections() bool {
-	s.mutex.Lock()
-	currentConnections := s.currentConnections
-	s.mutex.Unlock()
-
-	has := currentConnections > 0
-	dlog.Server.Info("stats", "Server with open connections?",
-		has, currentConnections)
-	return has
-}
-
 func (s *stats) logServerStats() {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
-	data := make(map[string]interface{})
+	data := make(map[string]any)
 	data["currentConnections"] = s.currentConnections
 	data["lifetimeConnections"] = s.lifetimeConnections
 	data["preAuthConnections"] = s.preAuthConnections
-	dlog.Server.Mapreduce("STATS", data)
+	if logger, ok := s.log().(mapreduceLogger); ok {
+		logger.Mapreduce("STATS", data)
+		return
+	}
+	s.log().Info("STATS", data)
 }
 
 // serverLimitExceeded checks whether accepting another connection would exceed
@@ -113,30 +119,22 @@ func (s *stats) serverLimitExceeded() error {
 	// Count both authenticated connections and pre-auth handshakes in progress.
 	total := s.currentConnections + s.preAuthConnections
 	if total >= s.maxConnections {
-		return fmt.Errorf("Exceeded max allowed concurrent connections of %d (current=%d, pre-auth=%d)",
+		return fmt.Errorf("exceeded max allowed concurrent connections of %d (current=%d, pre-auth=%d)",
 			s.maxConnections, s.currentConnections, s.preAuthConnections)
 	}
 	return nil
 }
 
 func (s *stats) start(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
-		case <-time.NewTimer(time.Second * 10).C:
+		case <-ticker.C:
 			s.logServerStats()
 		case <-ctx.Done():
 			return
-		}
-	}
-}
-
-func (s *stats) waitForConnections() {
-	for {
-		select {
-		case <-time.NewTimer(time.Second).C:
-			if !s.hasConnections() {
-				return
-			}
 		}
 	}
 }

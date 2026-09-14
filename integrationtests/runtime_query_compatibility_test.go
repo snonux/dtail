@@ -4,15 +4,17 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/protocol"
+	dtailssh "github.com/mimecast/dtail/internal/ssh"
 	"github.com/mimecast/dtail/internal/user"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -75,6 +77,57 @@ func TestDServerProtocolVersionMismatchReportsCompatibilityError(t *testing.T) {
 			}
 			if !strings.Contains(output, "please update DTail "+test.expectedUpdate) {
 				t.Fatalf("expected mixed-version compatibility guidance in output:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestLoadTestSignerLoadsConfiguredEncryptedKey(t *testing.T) {
+	const passphrase = "protocol-test-passphrase"
+
+	keyPath := createPassphraseAuthKeyPair(t, "protocol-test-key", passphrase)
+	t.Setenv("DTAIL_AUTH_KEY_PATH", keyPath)
+	t.Setenv("DTAIL_KEY_PASSPHRASE", passphrase)
+
+	signer, err := loadTestSigner()
+	if err != nil {
+		t.Fatalf("load configured encrypted test signer: %v", err)
+	}
+	if signer == nil {
+		t.Fatal("loadTestSigner returned a nil signer")
+	}
+}
+
+func TestLoadTestSignerRejectsMissingOrWrongPassphrase(t *testing.T) {
+	const passphrase = "protocol-test-passphrase"
+
+	keyPath := createPassphraseAuthKeyPair(t, "protocol-test-key", passphrase)
+	t.Setenv("DTAIL_AUTH_KEY_PATH", keyPath)
+
+	tests := []struct {
+		name                 string
+		configuredPassphrase string
+		wantMissingError     bool
+	}{
+		{name: "Missing", wantMissingError: true},
+		{name: "Wrong", configuredPassphrase: "wrong-passphrase"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("DTAIL_KEY_PASSPHRASE", test.configuredPassphrase)
+
+			_, err := loadTestSigner()
+			if err == nil {
+				t.Fatal("loadTestSigner succeeded with an invalid passphrase configuration")
+			}
+			if want := "unable to load test ssh private key " + keyPath; !strings.Contains(err.Error(), want) {
+				t.Fatalf("loadTestSigner error %q does not contain %q", err, want)
+			}
+
+			var missingError *gossh.PassphraseMissingError
+			if got := errors.As(err, &missingError); got != test.wantMissingError {
+				t.Fatalf("errors.As(PassphraseMissingError) = %t, want %t: %v", got, test.wantMissingError, err)
 			}
 		})
 	}
@@ -192,19 +245,12 @@ func openSSHSession(ctx context.Context, t *testing.T, address string) (*gossh.C
 }
 
 func loadTestSigner() (gossh.Signer, error) {
-	for _, path := range []string{"id_rsa", "../id_rsa"} {
-		keyBytes, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-
-		signer, err := gossh.ParsePrivateKey(keyBytes)
-		if err == nil {
-			return signer, nil
-		}
+	path := config.IntegrationSSHPrivateKeyPath()
+	signer, err := dtailssh.PrivateKeySigner(path)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load test ssh private key %s: %w", path, err)
 	}
-
-	return nil, fmt.Errorf("unable to load test ssh private key from id_rsa")
+	return signer, nil
 }
 
 func waitForSSHOutputContains(ctx context.Context, session *gossh.Session, lines <-chan string, needle string) (string, bool) {

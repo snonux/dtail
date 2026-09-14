@@ -14,7 +14,7 @@ import (
 func ParseSize(sizeStr string) (int64, error) {
 	originalStr := sizeStr
 	sizeStr = strings.ToUpper(strings.TrimSpace(sizeStr))
-	
+
 	// Handle single-letter suffixes (K, M, G, T) by adding B
 	if len(sizeStr) > 1 {
 		lastChar := sizeStr[len(sizeStr)-1]
@@ -22,14 +22,14 @@ func ParseSize(sizeStr string) (int64, error) {
 		if len(sizeStr) > 1 {
 			secondLastChar = sizeStr[len(sizeStr)-2]
 		}
-		
+
 		// If ends with K, M, G, or T and the character before it is a digit, add B
-		if (lastChar == 'K' || lastChar == 'M' || lastChar == 'G' || lastChar == 'T') && 
-		   (secondLastChar >= '0' && secondLastChar <= '9') {
-			sizeStr = sizeStr + "B"
+		if (lastChar == 'K' || lastChar == 'M' || lastChar == 'G' || lastChar == 'T') &&
+			(secondLastChar >= '0' && secondLastChar <= '9') {
+			sizeStr += "B"
 		}
 	}
-	
+
 	// Order matters - check longer suffixes first
 	suffixes := []struct {
 		suffix     string
@@ -91,7 +91,7 @@ func BuildCommand(cmd string) error {
 	buildCmd := exec.Command("go", "build", "-o", cmd, fmt.Sprintf("./cmd/%s/main.go", cmdName))
 	buildCmd.Stdout = os.Stdout
 	buildCmd.Stderr = os.Stderr
-	
+
 	fmt.Printf("Building %s...\n", cmdName)
 	return buildCmd.Run()
 }
@@ -187,7 +187,7 @@ const (
 )
 
 // PrintColored prints colored text to stdout
-func PrintColored(color, format string, args ...interface{}) {
+func PrintColored(color, format string, args ...any) {
 	fmt.Printf(color+format+ColorReset, args...)
 }
 
@@ -198,16 +198,16 @@ func PrintSection(title string) {
 }
 
 // PrintInfo prints an info message
-func PrintInfo(format string, args ...interface{}) {
+func PrintInfo(format string, args ...any) {
 	PrintColored(ColorYellow, format, args...)
 }
 
 // PrintError prints an error message
-func PrintError(format string, args ...interface{}) {
+func PrintError(format string, args ...any) {
 	PrintColored(ColorRed, format, args...)
 }
 
-// PrintSuccess prints a success message  
-func PrintSuccess(format string, args ...interface{}) {
+// PrintSuccess prints a success message
+func PrintSuccess(format string, args ...any) {
 	PrintColored(ColorGreen, format, args...)
 }

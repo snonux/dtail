@@ -24,13 +24,8 @@ func NewReader(_ []string, _ string, _ bool, _ chan<- string) (*Reader, error) {
 	return nil, errors.Join(ErrUnsupported, errors.New(runtime.GOOS))
 }
 
-// StartWithProcessor returns an unsupported error on non-Linux systems.
-func (r *Reader) StartWithProcessor(context.Context, lcontext.LContext, line.Processor, regex.Regex) error {
-	return ErrUnsupported
-}
-
-// StartWithProcessorOptimized returns an unsupported error on non-Linux systems.
-func (r *Reader) StartWithProcessorOptimized(context.Context, lcontext.LContext, line.Processor, regex.Regex) error {
+// Start returns an unsupported error on non-Linux systems.
+func (r *Reader) Start(context.Context, lcontext.LContext, line.Processor, regex.Regex) error {
 	return ErrUnsupported
 }
 

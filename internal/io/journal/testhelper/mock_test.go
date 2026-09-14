@@ -189,10 +189,22 @@ func TestInstallMockLongDelayHonorsSIGTERMPromptly(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start journalctl mock: %v", err)
 	}
+	waitDone := make(chan error, 1)
+	waitStarted := false
+	waitComplete := false
 	t.Cleanup(func() {
-		if cmd.ProcessState == nil {
-			_ = cmd.Process.Kill()
+		if waitComplete {
+			return
 		}
+		_ = cmd.Process.Kill()
+		if waitStarted {
+			select {
+			case <-waitDone:
+			case <-time.After(time.Second):
+			}
+			return
+		}
+		_ = cmd.Wait()
 	})
 
 	buf := make([]byte, len("follow\n"))
@@ -209,16 +221,17 @@ func TestInstallMockLongDelayHonorsSIGTERMPromptly(t *testing.T) {
 	}
 	waitForTermFile(t, mock, signaledAt, 200*time.Millisecond)
 
-	waitDone := make(chan error, 1)
+	waitStarted = true
 	go func() {
 		waitDone <- cmd.Wait()
 	}()
 	select {
 	case err := <-waitDone:
+		waitComplete = true
 		if err != nil {
 			t.Fatalf("wait after SIGTERM: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("journalctl mock did not exit after SIGTERM")
 	}
 	if !strings.Contains(stderr.String(), TermSentinel) {

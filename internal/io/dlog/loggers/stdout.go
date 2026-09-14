@@ -24,13 +24,15 @@ const (
 )
 
 type stdout struct {
-	pauseCh  chan struct{}
-	resumeCh chan struct{}
-	writer   *bufio.Writer
-	mutex    sync.Mutex
+	writer     *bufio.Writer
+	mutex      sync.Mutex
+	resumeCond *sync.Cond
+	pauseDepth int
 }
 
 var _ Logger = (*stdout)(nil)
+var _ Starter = (*stdout)(nil)
+var _ Pauser = (*stdout)(nil)
 
 func newStdout() *stdout {
 	return newStdoutWriter(os.Stdout)
@@ -43,11 +45,9 @@ func newStdout() *stdout {
 // isolated unit tests); idle/shutdown flushing is only driven once Start()
 // spawns the flush goroutine.
 func newStdoutWriter(w io.Writer) *stdout {
-	return &stdout{
-		pauseCh:  make(chan struct{}),
-		resumeCh: make(chan struct{}),
-		writer:   bufio.NewWriterSize(w, stdoutWriterBufSize),
-	}
+	s := &stdout{writer: bufio.NewWriterSize(w, stdoutWriterBufSize)}
+	s.resumeCond = sync.NewCond(&s.mutex)
+	return s
 }
 
 func (s *stdout) Start(ctx context.Context, wg *sync.WaitGroup) {
@@ -91,15 +91,11 @@ func (s *stdout) RawWithColors(now time.Time, message, coloredMessage string) {
 
 func (s *stdout) log(message string, nl bool) {
 	s.mutex.Lock()
-	select {
-	case <-s.pauseCh:
-		// Wait for Resume without holding the mutex: the prompt path calls
-		// dlog after the user answers while Pause is still active; holding the
-		// mutex here would deadlock (Info blocks on Lock, Resume never runs).
-		s.mutex.Unlock()
-		<-s.resumeCh
-		s.mutex.Lock()
-	default:
+	for s.pauseDepth > 0 {
+		// Cond.Wait releases the mutex while logging is paused. This lets
+		// Resume acquire it and prevents a waiting log call from blocking the
+		// interactive path that owns the terminal.
+		s.resumeCond.Wait()
 	}
 	defer s.mutex.Unlock()
 
@@ -116,16 +112,25 @@ func (s *stdout) log(message string, nl bool) {
 func (s *stdout) Pause() {
 	// Flush before pausing so all output produced so far is visible before the
 	// caller (interactive prompt / stats interrupt) writes directly to stdout,
-	// preserving the ordering the unbuffered path used to give for free. The
-	// pauseCh handshake below is unchanged so the pause semantics (and the
-	// deadlock guarantees exercised by the unit tests) are preserved.
+	// preserving the ordering the unbuffered path used to give for free.
 	s.mutex.Lock()
+	defer s.mutex.Unlock()
 	_ = s.writer.Flush()
-	s.mutex.Unlock()
-	s.pauseCh <- struct{}{}
+	s.pauseDepth++
 }
 
-func (s *stdout) Resume() { s.resumeCh <- struct{}{} }
+func (s *stdout) Resume() {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.pauseDepth == 0 {
+		return
+	}
+
+	s.pauseDepth--
+	if s.pauseDepth == 0 {
+		s.resumeCond.Broadcast()
+	}
+}
 
 func (s *stdout) Flush() {
 	s.mutex.Lock()
@@ -133,10 +138,6 @@ func (s *stdout) Flush() {
 	// bufio.Flush is a no-op when nothing is buffered, so calling this on every
 	// idle tick is cheap.
 	_ = s.writer.Flush()
-}
-
-func (s *stdout) Rotate() {
-	// This is empty because it isn't doing anything but has to satisfy the interface.
 }
 
 func (*stdout) SupportsColors() bool { return true }

@@ -3,11 +3,10 @@ package clients
 import (
 	"context"
 	"fmt"
-	"runtime"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -19,46 +18,22 @@ type HealthClient struct {
 }
 
 // NewHealthClient returns a new health client.
-func NewHealthClient(args config.Args) (*HealthClient, error) {
+func NewHealthClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*HealthClient, error) {
 	args.Mode = omode.HealthClient
 	args.UserName = config.HealthUser
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(config.HealthUser))
+	loggers = loggers.normalized()
 
-	c := HealthClient{
-		baseClient: baseClient{
-			mu:         newBaseClientMu(),
-			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
-			retry:      false,
-			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
+	base, err := newBaseClient(args, cfg, loggers, firstColorizer(colorizers), clientProfile{
+		newHandler: func(server string) handlers.Handler {
+			return handlers.NewHealthHandler(server, loggers.Client)
 		},
-	}
-
-	c.init()
-	if err := c.makeConnections(c); err != nil {
-		return nil, err
-	}
-	return &c, nil
-}
-
-func (c HealthClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewHealthHandler(server)
-}
-
-func (c HealthClient) makeSessionSpec() (SessionSpec, error) {
-	return NewSessionSpec(c.Args), nil
-}
-
-func (c HealthClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
+	})
 	if err != nil {
-		dlog.Client.FatalPanic("unable to build health session spec", err)
+		return nil, fmt.Errorf("initialize health client: %w", err)
 	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build health commands from session spec", err)
-	}
-	return commands
+	return &HealthClient{baseClient: base}, nil
 }
 
 // Start the health client.

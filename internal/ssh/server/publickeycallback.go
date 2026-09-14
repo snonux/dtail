@@ -9,10 +9,11 @@ import (
 	goUser "os/user"
 	"path/filepath"
 
+	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/fs"
-	user "github.com/mimecast/dtail/internal/user/server"
+	"github.com/mimecast/dtail/internal/logging"
+	user "github.com/mimecast/dtail/internal/sessionuser"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -22,63 +23,68 @@ type authorizedKeyParser func([]byte) (gossh.PublicKey, string, []string, []byte
 // NewPublicKeyCallback creates an instance-scoped SSH public key callback.
 // keyStore must be non-nil; callers are responsible for constructing and
 // wiring the store. There is no shared package-level fallback.
-func NewPublicKeyCallback(authKeyEnabled bool, cacheDir string,
-	keyStore *AuthKeyStore) func(gossh.ConnMetadata, gossh.PublicKey) (*gossh.Permissions, error) {
+func NewPublicKeyCallback(authKeyEnabled bool, cacheDir, authorizedKeysPath string,
+	keyStore *authkey.Store, logger logging.Logger) func(gossh.ConnMetadata, gossh.PublicKey) (*gossh.Permissions, error) {
 
 	if keyStore == nil {
 		panic("NewPublicKeyCallback: keyStore must not be nil")
 	}
+	logger = logging.OrNop(logger)
 	return func(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey) (*gossh.Permissions, error) {
-		return publicKeyCallback(c, offeredPubKey, authKeyEnabled, cacheDir, keyStore)
+		return publicKeyCallback(c, offeredPubKey, authKeyEnabled, cacheDir, authorizedKeysPath, keyStore, logger)
 	}
 }
 
 func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
-	authKeyEnabled bool, cacheDir string, keyStore *AuthKeyStore) (*gossh.Permissions, error) {
+	authKeyEnabled bool, cacheDir, authorizedKeysPath string, keyStore *authkey.Store,
+	logger logging.Logger) (*gossh.Permissions, error) {
 
-	user, err := user.New(c.User(), c.RemoteAddr().String(), nil)
+	if config.IsPasswordOnlyUser(c.User()) {
+		return nil, fmt.Errorf("user %s does not support public key authentication", c.User())
+	}
+
+	user, err := user.New(c.User(), c.RemoteAddr().String(), nil, logger)
 	if err != nil {
 		return nil, err
 	}
-	dlog.Server.Info(user, "Incoming authorization")
+	logger.Info(user, "Incoming authorization")
 
 	if authKeyEnabled {
 		if permissions := authKeyStorePermissions(keyStore, user.Name, offeredPubKey); permissions != nil {
-			dlog.Server.Info(user, "Authorized by in-memory auth key store")
+			logger.Info(user, "Authorized by in-memory auth key store")
 			return permissions, nil
 		}
 	}
 
-	authorizedKeysPath, err := authorizedKeysPathForUser(user, cacheDir)
+	rootedAuthorizedKeysPath, err := authorizedKeysPathForUser(user, cacheDir, authorizedKeysPath)
 	if err != nil {
 		return nil, err
 	}
 
-	dlog.Server.Info(user, "Reading", authorizedKeysPath.Path())
-	authorizedKeysBytes, err := authorizedKeysPath.ReadFile()
+	logger.Info(user, "Reading", rootedAuthorizedKeysPath.Path())
+	authorizedKeysBytes, err := rootedAuthorizedKeysPath.ReadFile()
 	if err != nil {
-		return nil, fmt.Errorf("Unable to read authorized keys file|%s|%s|%s",
-			authorizedKeysPath.Path(), user, err.Error())
+		return nil, fmt.Errorf("unable to read authorized keys file|%s|%s|%s",
+			rootedAuthorizedKeysPath.Path(), user, err.Error())
 	}
 
-	return verifyAuthorizedKeys(user, authorizedKeysBytes, offeredPubKey)
+	return verifyAuthorizedKeys(user, authorizedKeysBytes, offeredPubKey, logger)
 }
 
 func verifyAuthorizedKeys(user *user.User, authorizedKeysBytes []byte,
-	offeredPubKey gossh.PublicKey) (*gossh.Permissions, error) {
-	return verifyAuthorizedKeysWithParser(user, authorizedKeysBytes, offeredPubKey, gossh.ParseAuthorizedKey)
+	offeredPubKey gossh.PublicKey, logger logging.Logger) (*gossh.Permissions, error) {
+	return verifyAuthorizedKeysWithParser(user, authorizedKeysBytes, offeredPubKey, gossh.ParseAuthorizedKey, logger)
 }
 
 func verifyAuthorizedKeysWithParser(user *user.User, authorizedKeysBytes []byte,
-	offeredPubKey gossh.PublicKey, parseAuthorizedKey authorizedKeyParser) (*gossh.Permissions, error) {
+	offeredPubKey gossh.PublicKey, parseAuthorizedKey authorizedKeyParser,
+	logger logging.Logger) (*gossh.Permissions, error) {
 
 	authorizedKeysMap := map[string]bool{}
 	for len(authorizedKeysBytes) > 0 {
 		authorizedPubKey, _, _, restBytes, err := parseAuthorizedKey(authorizedKeysBytes)
 		if err != nil {
-			if dlog.Server != nil {
-				dlog.Server.Warn(user, "Skipping unparseable authorized_keys line", err)
-			}
+			logger.Warn(user, "Skipping unparseable authorized_keys line", err)
 			nextAuthorizedKeysBytes, ok := advanceToNextAuthorizedKeysLine(authorizedKeysBytes)
 			if !ok {
 				break
@@ -88,15 +94,11 @@ func verifyAuthorizedKeysWithParser(user *user.User, authorizedKeysBytes []byte,
 		}
 		authorizedKeysMap[string(authorizedPubKey.Marshal())] = true
 		authorizedKeysBytes = restBytes
-		if dlog.Server != nil {
-			dlog.Server.Debug(user, "Authorized public key fingerprint",
-				gossh.FingerprintSHA256(authorizedPubKey))
-		}
+		logger.Debug(user, "Authorized public key fingerprint",
+			gossh.FingerprintSHA256(authorizedPubKey))
 	}
 
-	if dlog.Server != nil {
-		dlog.Server.Debug(user, "Offered public key fingerprint", gossh.FingerprintSHA256(offeredPubKey))
-	}
+	logger.Debug(user, "Offered public key fingerprint", gossh.FingerprintSHA256(offeredPubKey))
 	if authorizedKeysMap[string(offeredPubKey.Marshal())] {
 		return permissionsFromPublicKey(offeredPubKey), nil
 	}
@@ -114,7 +116,7 @@ func advanceToNextAuthorizedKeysLine(authorizedKeysBytes []byte) ([]byte, bool) 
 	return nextBytes, true
 }
 
-func authKeyStorePermissions(keyStore *AuthKeyStore, userName string,
+func authKeyStorePermissions(keyStore *authkey.Store, userName string,
 	offeredPubKey gossh.PublicKey) *gossh.Permissions {
 
 	if keyStore == nil || !keyStore.Has(userName, offeredPubKey) {
@@ -132,10 +134,9 @@ func permissionsFromPublicKey(offeredPubKey gossh.PublicKey) *gossh.Permissions 
 
 type userLookupFunc func(string) (*goUser.User, error)
 
-func authorizedKeysPathForUser(user *user.User, cacheDir string) (fs.RootedPath, error) {
-	if config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
-		// In this case, we expect a pub key in the current directory.
-		return fs.NewRootedPath("./id_rsa.pub")
+func authorizedKeysPathForUser(user *user.User, cacheDir, configuredPath string) (fs.RootedPath, error) {
+	if configuredPath != "" {
+		return fs.NewRootedPath(configuredPath)
 	}
 
 	cwd, err := os.Getwd()

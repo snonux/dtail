@@ -5,7 +5,7 @@ package logformat
 import "errors"
 
 // ErrMimecastNotAvailable is thrown in the open source version of DTail
-var ErrMimecastNotAvailable error = errors.New("The mimecast logformat is not available in this build of DTail")
+var ErrMimecastNotAvailable error = errors.New("the mimecast logformat is not available in this build of DTail")
 
 type mimecastParser struct{}
 

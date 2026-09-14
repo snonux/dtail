@@ -3,6 +3,8 @@ package mapr
 import (
 	"reflect"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 func TestEffectiveLogFormat(t *testing.T) {
@@ -19,7 +21,7 @@ func TestEffectiveLogFormat(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			query, err := NewQuery(tc.query)
+			query, err := NewQuery(tc.query, logging.NopLogger{})
 			if err != nil {
 				t.Fatalf("NewQuery(%q): %v", tc.query, err)
 			}
@@ -65,7 +67,7 @@ func TestReferencedVariables(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			query, err := NewQuery(tc.query)
+			query, err := NewQuery(tc.query, logging.NopLogger{})
 			if err != nil {
 				t.Fatalf("NewQuery(%q): %v", tc.query, err)
 			}

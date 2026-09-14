@@ -3,15 +3,18 @@ package connectors
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	sessionspec "github.com/mimecast/dtail/internal/session"
@@ -55,12 +58,6 @@ func TestResolveAuthKeyPathFallsBackToHome(t *testing.T) {
 }
 
 func TestExtractAuthKeyBase64(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	t.Run("valid authorized key line", func(t *testing.T) {
 		pubKey := []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA user@host\n")
 
@@ -89,12 +86,6 @@ func TestExtractAuthKeyBase64(t *testing.T) {
 }
 
 func TestSendAuthKeyRegistrationCommand(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	tempDir := t.TempDir()
 	privateKeyPath := filepath.Join(tempDir, "id_rsa")
 	publicKeyPath := privateKeyPath + ".pub"
@@ -122,9 +113,8 @@ func TestSendAuthKeyRegistrationCommand(t *testing.T) {
 }
 
 func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
-	resetClientLogger(t)
 
-	conn := NewServerConnection(
+	conn, err := NewServerConnection(
 		"srv1",
 		"user",
 		nil,
@@ -136,7 +126,11 @@ func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
 		"",
 		false,
 		testSSHSettings{port: 3022, timeout: 5 * time.Second},
+		logging.NopLogger{},
 	)
+	if err != nil {
+		t.Fatalf("NewServerConnection: %v", err)
+	}
 
 	if conn.hostname != "srv1" {
 		t.Fatalf("Expected hostname srv1, got %q", conn.hostname)
@@ -150,9 +144,8 @@ func TestNewServerConnectionUsesInjectedSettings(t *testing.T) {
 }
 
 func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
-	resetClientLogger(t)
 
-	conn := NewServerConnection(
+	conn, err := NewServerConnection(
 		"srv1",
 		"user",
 		nil,
@@ -164,7 +157,11 @@ func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
 		"",
 		false,
 		testSSHSettings{},
+		logging.NopLogger{},
 	)
+	if err != nil {
+		t.Fatalf("NewServerConnection: %v", err)
+	}
 
 	if conn.port != defaultSSHPort {
 		t.Fatalf("Expected default port %d, got %d", defaultSSHPort, conn.port)
@@ -174,8 +171,121 @@ func TestNewServerConnectionFallsBackToDefaults(t *testing.T) {
 	}
 }
 
+func TestNewServerConnectionReturnsInvalidPortError(t *testing.T) {
+
+	tests := []string{
+		"",
+		" ",
+		":2222",
+		"srv1:",
+		"srv1:not-a-port",
+		"srv1:0",
+		"srv1:65536",
+		"[::1",
+		"[]",
+		"[localhost]",
+		"[::1]:not-a-port",
+		"2001:db8::1:2222:invalid",
+	}
+	for _, address := range tests {
+		t.Run(address, func(t *testing.T) {
+			conn, err := NewServerConnection(
+				address,
+				"user",
+				nil,
+				testHostKeyCallback{},
+				&mockHandler{},
+				nil,
+				sessionspec.Spec{},
+				false,
+				"",
+				false,
+				nil,
+				logging.NopLogger{},
+			)
+			if conn != nil {
+				t.Fatalf("connection = %#v, want nil", conn)
+			}
+			if err == nil || !strings.Contains(err.Error(), address) {
+				t.Fatalf("NewServerConnection(%q) error = %v, want address parse error", address, err)
+			}
+		})
+	}
+}
+
+func TestNewServerConnectionParsesAddressForms(t *testing.T) {
+
+	tests := []struct {
+		address      string
+		wantHost     string
+		wantPort     int
+		wantDialAddr string
+	}{
+		{address: "server.example", wantHost: "server.example", wantPort: 3022, wantDialAddr: "server.example:3022"},
+		{address: "server.example:2022", wantHost: "server.example", wantPort: 2022, wantDialAddr: "server.example:2022"},
+		{address: "127.0.0.1", wantHost: "127.0.0.1", wantPort: 3022, wantDialAddr: "127.0.0.1:3022"},
+		{address: "[::1]:2222", wantHost: "::1", wantPort: 2222, wantDialAddr: "[::1]:2222"},
+		{address: "::1", wantHost: "::1", wantPort: 3022, wantDialAddr: "[::1]:3022"},
+		{address: "[::1]", wantHost: "::1", wantPort: 3022, wantDialAddr: "[::1]:3022"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.address, func(t *testing.T) {
+			conn, err := NewServerConnection(
+				tt.address,
+				"user",
+				nil,
+				testHostKeyCallback{},
+				&mockHandler{},
+				nil,
+				sessionspec.Spec{},
+				false,
+				"",
+				false,
+				testSSHSettings{port: 3022},
+				logging.NopLogger{},
+			)
+			if err != nil {
+				t.Fatalf("NewServerConnection(%q): %v", tt.address, err)
+			}
+			if conn.hostname != tt.wantHost || conn.port != tt.wantPort {
+				t.Fatalf("parsed address = %q:%d, want %q:%d", conn.hostname, conn.port, tt.wantHost, tt.wantPort)
+			}
+			if got := net.JoinHostPort(conn.hostname, strconv.Itoa(conn.port)); got != tt.wantDialAddr {
+				t.Fatalf("dial address = %q, want %q", got, tt.wantDialAddr)
+			}
+		})
+	}
+}
+
+func TestNewServerConnectionRejectsInvalidConfiguredDefaultPort(t *testing.T) {
+	for _, port := range []int{-1, 65536} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			conn, err := NewServerConnection(
+				"server.example",
+				"user",
+				nil,
+				testHostKeyCallback{},
+				&mockHandler{},
+				nil,
+				sessionspec.Spec{},
+				false,
+				"",
+				false,
+				testSSHSettings{port: port},
+				logging.NopLogger{},
+			)
+			if conn != nil {
+				t.Fatalf("connection = %#v, want nil", conn)
+			}
+			if err == nil || !strings.Contains(err.Error(), "default port must be between 1 and 65535") {
+				t.Fatalf("NewServerConnection default port %d error = %v, want port range error", port, err)
+			}
+		})
+	}
+}
+
 func TestServerConnectionSupportsQueryUpdates(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		handler: &mockHandler{
@@ -192,7 +302,6 @@ func TestServerConnectionSupportsQueryUpdates(t *testing.T) {
 }
 
 func TestServerConnectionSupportsQueryUpdatesFallsBackForOlderServers(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		handler: &mockHandler{},
@@ -204,7 +313,6 @@ func TestServerConnectionSupportsQueryUpdatesFallsBackForOlderServers(t *testing
 }
 
 func TestServerConnectionSupportsQueryUpdatesRequiresCapabilityFlag(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		handler: &mockHandler{
@@ -218,7 +326,6 @@ func TestServerConnectionSupportsQueryUpdatesRequiresCapabilityFlag(t *testing.T
 }
 
 func TestServerConnectionApplySessionSpecStart(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		server: "srv1",
@@ -253,7 +360,6 @@ func TestServerConnectionApplySessionSpecStart(t *testing.T) {
 }
 
 func TestServerConnectionApplySessionSpecUpdateUsesNextGeneration(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -296,7 +402,6 @@ func TestServerConnectionApplySessionSpecUpdateUsesNextGeneration(t *testing.T) 
 }
 
 func TestServerConnectionApplySessionSpecReappliesPreviousSpecForRollback(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -343,7 +448,6 @@ func TestServerConnectionApplySessionSpecReappliesPreviousSpecForRollback(t *tes
 }
 
 func TestServerConnectionApplySessionSpecFallsBackForUnsupportedServer(t *testing.T) {
-	resetClientLogger(t)
 
 	conn := &ServerConnection{
 		handler: &mockHandler{},
@@ -432,7 +536,6 @@ func TestRequireJournalCapability(t *testing.T) {
 }
 
 func TestDispatchInitialCommandsRejectsJournalWithoutCapability(t *testing.T) {
-	resetClientLogger(t)
 
 	handler := &mockHandler{
 		waitForCapabilities: true,
@@ -445,7 +548,8 @@ func TestDispatchInitialCommandsRejectsJournalWithoutCapability(t *testing.T) {
 		Files: []string{"journal:ssh.service"},
 	}
 
-	err := dispatchInitialCommands("srv1", handler, []string{"cat: journal:ssh.service ."}, false, spec, &committedSessionState{})
+	err := dispatchInitialCommands("srv1", handler, []string{"cat: journal:ssh.service ."}, false,
+		spec, &committedSessionState{}, logging.NopLogger{})
 	if !errors.Is(err, ErrJournalUnsupported) {
 		t.Fatalf("expected ErrJournalUnsupported, got %v", err)
 	}
@@ -458,7 +562,6 @@ func TestDispatchInitialCommandsRejectsJournalWithoutCapability(t *testing.T) {
 }
 
 func TestDispatchInitialCommandsRejectsInteractiveJournalWithoutCapability(t *testing.T) {
-	resetClientLogger(t)
 
 	handler := &mockHandler{
 		waitForCapabilities: true,
@@ -471,7 +574,8 @@ func TestDispatchInitialCommandsRejectsInteractiveJournalWithoutCapability(t *te
 		Files: []string{"journal:ssh.service"},
 	}
 
-	err := dispatchInitialCommands("srv1", handler, []string{"tail: journal:ssh.service ."}, true, spec, &committedSessionState{})
+	err := dispatchInitialCommands("srv1", handler, []string{"tail: journal:ssh.service ."}, true,
+		spec, &committedSessionState{}, logging.NopLogger{})
 	if !errors.Is(err, ErrJournalUnsupported) {
 		t.Fatalf("expected ErrJournalUnsupported, got %v", err)
 	}
@@ -484,7 +588,6 @@ func TestDispatchInitialCommandsRejectsInteractiveJournalWithoutCapability(t *te
 }
 
 func TestServerConnectionApplySessionSpecPreservesCommittedStateOnRejectedUpdate(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -516,7 +619,6 @@ func TestServerConnectionApplySessionSpecPreservesCommittedStateOnRejectedUpdate
 }
 
 func TestServerConnectionApplySessionSpecRejectsUnexpectedAck(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -546,7 +648,6 @@ func TestServerConnectionApplySessionSpecRejectsUnexpectedAck(t *testing.T) {
 }
 
 func TestServerConnectionApplySessionSpecTimesOutWaitingForAck(t *testing.T) {
-	resetClientLogger(t)
 
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -576,7 +677,6 @@ func TestServerConnectionApplySessionSpecTimesOutWaitingForAck(t *testing.T) {
 }
 
 func TestApplySessionSpecSerializesConcurrentBootstrapAndReload(t *testing.T) {
-	resetClientLogger(t)
 
 	handler := newBlockingSessionHandler()
 	state := &committedSessionState{}
@@ -594,7 +694,7 @@ func TestApplySessionSpecSerializesConcurrentBootstrapAndReload(t *testing.T) {
 
 	initialErrCh := make(chan error, 1)
 	go func() {
-		initialErrCh <- dispatchInitialCommands("srv1", handler, nil, true, initialSpec, state)
+		initialErrCh <- dispatchInitialCommands("srv1", handler, nil, true, initialSpec, state, logging.NopLogger{})
 	}()
 
 	firstCommand := <-handler.commandsCh
@@ -604,7 +704,7 @@ func TestApplySessionSpecSerializesConcurrentBootstrapAndReload(t *testing.T) {
 
 	reloadErrCh := make(chan error, 1)
 	go func() {
-		reloadErrCh <- applySessionSpec("srv1", handler, state, reloadSpec, 50*time.Millisecond)
+		reloadErrCh <- applySessionSpec("srv1", handler, state, reloadSpec, 50*time.Millisecond, logging.NopLogger{})
 	}()
 
 	select {
@@ -681,9 +781,557 @@ func TestThrottleReleasedIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestServerConnectionHandleFlushesAfterStdoutCopyAndWaitsForSession(t *testing.T) {
+
+	allowWrite := make(chan struct{})
+	handler := newLifecycleHandler(allowWrite)
+	session := newLifecycleSession([]byte("aggregate payload"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	throttleCh := make(chan struct{}, 1)
+	throttleCh <- struct{}{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		authKeyDisabled: true,
+	}
+	handleDone := make(chan error, 1)
+	go func() {
+		handleDone <- conn.handle(ctx, cancel, session, throttleCh)
+	}()
+
+	waitForSignal(t, handler.writeStarted, "stdout handler Write to start")
+	cancel()
+	waitForSignal(t, session.closed, "session to close after cancellation")
+
+	select {
+	case <-handler.shutdown:
+		t.Fatal("handler shut down while its stdout Write was still in flight")
+	default:
+	}
+
+	close(allowWrite)
+	waitForSignal(t, handler.shutdown, "handler shutdown after stdout copy")
+
+	select {
+	case err := <-handleDone:
+		t.Fatalf("handle returned before Session.Wait completed: %v", err)
+	default:
+	}
+
+	close(session.allowWait)
+	select {
+	case err := <-handleDone:
+		if err != nil {
+			t.Fatalf("handle() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handle did not return after stdout copy and Session.Wait completed")
+	}
+
+	if got := handler.shutdownCalls(); got != 1 {
+		t.Fatalf("Shutdown calls = %d, want 1", got)
+	}
+	if handler.shutdownDuringWrite() {
+		t.Fatal("Shutdown ran before the final stdout Write completed")
+	}
+}
+
+func TestServerConnectionHandleCompletesForNormalEOFAndHandlerDone(t *testing.T) {
+	tests := []struct {
+		name    string
+		trigger func(*lifecycleHandler, *lifecycleSession)
+	}{
+		{
+			name: "normal stdout EOF",
+			trigger: func(_ *lifecycleHandler, session *lifecycleSession) {
+				session.finish()
+			},
+		},
+		{
+			name: "handler done",
+			trigger: func(handler *lifecycleHandler, _ *lifecycleSession) {
+				handler.signalDone()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			allowWrite := make(chan struct{})
+			close(allowWrite)
+			handler := newLifecycleHandler(allowWrite)
+			session := newLifecycleSession([]byte("payload"))
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			throttleCh := make(chan struct{}, 1)
+			throttleCh <- struct{}{}
+			conn := &ServerConnection{
+				server:          "srv1",
+				handler:         handler,
+				authKeyDisabled: true,
+			}
+
+			handleDone := make(chan error, 1)
+			go func() {
+				handleDone <- conn.handle(ctx, cancel, session, throttleCh)
+			}()
+			waitForSignal(t, handler.writeFinished, "stdout handler Write to finish")
+			tt.trigger(handler, session)
+			close(session.allowWait)
+
+			select {
+			case err := <-handleDone:
+				if err != nil {
+					t.Fatalf("handle() error = %v", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("handle did not complete")
+			}
+			if got := handler.shutdownCalls(); got != 1 {
+				t.Fatalf("Shutdown calls = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestServerConnectionHandleCancelsTransportAfterIndependentStdoutEOF(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	allowWrite := make(chan struct{})
+	close(allowWrite)
+	handler := newLifecycleHandler(allowWrite)
+	session := newIndependentEOFSession(ctx.Done())
+	throttleCh := make(chan struct{}, 1)
+	throttleCh <- struct{}{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		authKeyDisabled: true,
+	}
+
+	handleDone := make(chan error, 1)
+	go func() {
+		handleDone <- conn.handle(ctx, cancel, session, throttleCh)
+	}()
+
+	waitForSignal(t, session.stdout.readStarted, "stdout copy to start")
+	close(session.stdout.eof)
+
+	select {
+	case err := <-handleDone:
+		if err != nil {
+			t.Fatalf("handle() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handle did not cancel the transport after stdout EOF")
+	}
+	waitForSignal(t, ctx.Done(), "connection context cancellation")
+	waitForSignal(t, session.closeCalled, "SSH session close")
+
+	if got := handler.shutdownCalls(); got != 1 {
+		t.Fatalf("Shutdown calls = %d, want 1", got)
+	}
+}
+
+func TestServerConnectionStartWaitsForDialCleanup(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         &mockHandler{},
+		hostKeyCallback: testHostKeyCallback{},
+		dialFn: func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
+			close(dialStarted)
+			<-releaseDial
+			return nil
+		},
+	}
+	throttleCh := make(chan struct{}, 1)
+	statsCh := make(chan struct{}, 1)
+	startDone := make(chan struct{})
+	go func() {
+		defer close(startDone)
+		conn.Start(ctx, cancel, throttleCh, statsCh)
+	}()
+
+	waitForSignal(t, dialStarted, "dial worker to start")
+	cancel()
+	select {
+	case <-startDone:
+		t.Fatal("Start returned before the dial worker cleaned up")
+	default:
+	}
+
+	close(releaseDial)
+	waitForSignal(t, startDone, "Start to return after dial cleanup")
+	if got := len(throttleCh); got != 0 {
+		t.Fatalf("throttle channel length = %d, want 0 after cleanup", got)
+	}
+}
+
+func TestServerConnectionStartReportsDialFailure(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := &mockHandler{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+		dialFn: func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
+			return errors.New("dial failed")
+		},
+	}
+
+	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	if handler.status != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.status)
+	}
+	if !strings.Contains(handler.serverError, "dial failed") {
+		t.Fatalf("server error = %q, want dial failure", handler.serverError)
+	}
+}
+
+func TestServerConnectionStartReportsDialTimeoutWhileContextActive(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := &mockHandler{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+		dialFn: func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
+			return context.DeadlineExceeded
+		},
+	}
+
+	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	if handler.status != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.status)
+	}
+	if handler.serverErrorCalls != 1 {
+		t.Fatalf("server error reports = %d, want 1", handler.serverErrorCalls)
+	}
+}
+
+func TestServerConnectionStartDoesNotReportContextCancellation(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	dialStarted := make(chan struct{})
+	handler := &mockHandler{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+		dialFn: func(ctx context.Context, _ context.CancelFunc, _ chan struct{}, _ chan struct{}) error {
+			close(dialStarted)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	}
+	startDone := make(chan struct{})
+	go func() {
+		defer close(startDone)
+		conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	}()
+	waitForSignal(t, dialStarted, "dial worker to start")
+	cancel()
+	waitForSignal(t, startDone, "Start to return after cancellation")
+
+	if handler.status != 0 {
+		t.Fatalf("handler status = %d, want 0 after context cancellation", handler.status)
+	}
+	if handler.serverErrorCalls != 0 {
+		t.Fatalf("server error reports = %d, want 0 after context cancellation", handler.serverErrorCalls)
+	}
+}
+
+func TestServerConnectionStartDoesNotDuplicateJournalCapabilityError(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := &mockHandler{waitForCapabilities: true}
+	spec := sessionspec.Spec{Mode: omode.CatClient, Files: []string{"journal:ssh.service"}}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+	}
+	conn.dialFn = func(context.Context, context.CancelFunc, chan struct{}, chan struct{}) error {
+		return dispatchInitialCommands(conn.server, handler, nil, false, spec,
+			&conn.sessionState, logging.NopLogger{})
+	}
+
+	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	if handler.status != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.status)
+	}
+	if handler.serverErrorCalls != 1 {
+		t.Fatalf("server error reports = %d, want exactly 1", handler.serverErrorCalls)
+	}
+	if !strings.Contains(handler.serverError, protocol.CapabilityJournalV1) {
+		t.Fatalf("server error = %q, want journal capability error", handler.serverError)
+	}
+}
+
+func TestServerConnectionStartReportsShellRejection(t *testing.T) {
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	handler := &mockHandler{}
+	session := &shellRejectSession{}
+	conn := &ServerConnection{
+		server:          "srv1",
+		handler:         handler,
+		hostKeyCallback: testHostKeyCallback{},
+		authKeyDisabled: true,
+	}
+	conn.dialFn = func(ctx context.Context, cancel context.CancelFunc,
+		throttleCh, _ chan struct{}) error {
+		return conn.handle(ctx, cancel, session, throttleCh)
+	}
+
+	conn.Start(ctx, cancel, make(chan struct{}, 1), make(chan struct{}, 1))
+	if handler.status != 1 {
+		t.Fatalf("handler status = %d, want 1", handler.status)
+	}
+	if !strings.Contains(handler.serverError, "failed to start SSH shell") ||
+		!strings.Contains(handler.serverError, "shell rejected") {
+		t.Fatalf("server error = %q, want wrapped shell rejection", handler.serverError)
+	}
+	if session.closeCalls != 1 {
+		t.Fatalf("session Close calls = %d, want 1", session.closeCalls)
+	}
+}
+
 type testSSHSettings struct {
 	port    int
 	timeout time.Duration
+}
+
+type lifecycleHandler struct {
+	done           chan struct{}
+	doneOnce       sync.Once
+	writeStarted   chan struct{}
+	writeStartOne  sync.Once
+	writeFinished  chan struct{}
+	writeFinishOne sync.Once
+	allowWrite     <-chan struct{}
+	shutdown       chan struct{}
+	shutdownOnce   sync.Once
+	mu             sync.Mutex
+	writeActive    bool
+	shutdownCount  int
+	badShutdown    bool
+}
+
+func newLifecycleHandler(allowWrite <-chan struct{}) *lifecycleHandler {
+	return &lifecycleHandler{
+		done:          make(chan struct{}),
+		writeStarted:  make(chan struct{}),
+		writeFinished: make(chan struct{}),
+		allowWrite:    allowWrite,
+		shutdown:      make(chan struct{}),
+	}
+}
+
+var _ handlers.Handler = (*lifecycleHandler)(nil)
+
+func (*lifecycleHandler) Capabilities() []string                 { return nil }
+func (*lifecycleHandler) HasCapability(string) bool              { return false }
+func (*lifecycleHandler) ReportServerError(string)               {}
+func (*lifecycleHandler) SendMessage(string) error               { return nil }
+func (*lifecycleHandler) Server() string                         { return "lifecycle" }
+func (*lifecycleHandler) Status() int                            { return 0 }
+func (h *lifecycleHandler) Done() <-chan struct{}                { return h.done }
+func (*lifecycleHandler) WaitForCapabilities(time.Duration) bool { return false }
+func (*lifecycleHandler) WaitForSessionAck(time.Duration) (handlers.SessionAck, bool) {
+	return handlers.SessionAck{}, false
+}
+
+func (h *lifecycleHandler) Read([]byte) (int, error) {
+	<-h.done
+	return 0, io.EOF
+}
+
+func (h *lifecycleHandler) Write(p []byte) (int, error) {
+	h.mu.Lock()
+	h.writeActive = true
+	h.mu.Unlock()
+	h.writeStartOne.Do(func() { close(h.writeStarted) })
+	<-h.allowWrite
+	h.mu.Lock()
+	h.writeActive = false
+	h.mu.Unlock()
+	h.writeFinishOne.Do(func() { close(h.writeFinished) })
+	return len(p), nil
+}
+
+func (h *lifecycleHandler) Shutdown() {
+	h.mu.Lock()
+	h.shutdownCount++
+	if h.writeActive {
+		h.badShutdown = true
+	}
+	h.mu.Unlock()
+	h.signalDone()
+	h.shutdownOnce.Do(func() { close(h.shutdown) })
+}
+
+func (h *lifecycleHandler) signalDone() {
+	h.doneOnce.Do(func() { close(h.done) })
+}
+
+func (h *lifecycleHandler) shutdownCalls() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.shutdownCount
+}
+
+func (h *lifecycleHandler) shutdownDuringWrite() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.badShutdown
+}
+
+type lifecycleSession struct {
+	stdout    *lifecycleReader
+	closed    chan struct{}
+	closeOnce sync.Once
+	allowWait chan struct{}
+}
+
+type shellRejectSession struct{ closeCalls int }
+
+var _ sshSession = (*shellRejectSession)(nil)
+
+func (*shellRejectSession) StdinPipe() (io.WriteCloser, error) {
+	return lifecycleWriteCloser{Writer: io.Discard}, nil
+}
+
+func (*shellRejectSession) StdoutPipe() (io.Reader, error) { return strings.NewReader(""), nil }
+func (*shellRejectSession) Shell() error                   { return errors.New("shell rejected") }
+func (*shellRejectSession) Wait() error                    { return nil }
+func (s *shellRejectSession) Close() error {
+	s.closeCalls++
+	return nil
+}
+
+func newLifecycleSession(payload []byte) *lifecycleSession {
+	closed := make(chan struct{})
+	return &lifecycleSession{
+		stdout:    &lifecycleReader{payload: payload, closed: closed},
+		closed:    closed,
+		allowWait: make(chan struct{}),
+	}
+}
+
+var _ sshSession = (*lifecycleSession)(nil)
+
+func (*lifecycleSession) StdinPipe() (io.WriteCloser, error) {
+	return lifecycleWriteCloser{Writer: io.Discard}, nil
+}
+
+func (s *lifecycleSession) StdoutPipe() (io.Reader, error) { return s.stdout, nil }
+func (*lifecycleSession) Shell() error                     { return nil }
+
+func (s *lifecycleSession) Wait() error {
+	<-s.closed
+	<-s.allowWait
+	return nil
+}
+
+func (s *lifecycleSession) Close() error {
+	s.finish()
+	return nil
+}
+
+func (s *lifecycleSession) finish() {
+	s.closeOnce.Do(func() { close(s.closed) })
+}
+
+type lifecycleReader struct {
+	payload []byte
+	closed  <-chan struct{}
+}
+
+func (r *lifecycleReader) Read(p []byte) (int, error) {
+	if len(r.payload) > 0 {
+		n := copy(p, r.payload)
+		r.payload = r.payload[n:]
+		return n, nil
+	}
+	<-r.closed
+	return 0, io.EOF
+}
+
+type lifecycleWriteCloser struct{ io.Writer }
+
+func (lifecycleWriteCloser) Close() error { return nil }
+
+type independentEOFSession struct {
+	stdout      *independentEOFReader
+	transport   <-chan struct{}
+	closeCalled chan struct{}
+	closeOnce   sync.Once
+}
+
+func newIndependentEOFSession(transport <-chan struct{}) *independentEOFSession {
+	return &independentEOFSession{
+		stdout: &independentEOFReader{
+			readStarted: make(chan struct{}),
+			eof:         make(chan struct{}),
+		},
+		transport:   transport,
+		closeCalled: make(chan struct{}),
+	}
+}
+
+var _ sshSession = (*independentEOFSession)(nil)
+
+func (*independentEOFSession) StdinPipe() (io.WriteCloser, error) {
+	return lifecycleWriteCloser{Writer: io.Discard}, nil
+}
+
+func (s *independentEOFSession) StdoutPipe() (io.Reader, error) { return s.stdout, nil }
+func (*independentEOFSession) Shell() error                     { return nil }
+
+func (s *independentEOFSession) Wait() error {
+	<-s.transport
+	return nil
+}
+
+func (s *independentEOFSession) Close() error {
+	s.closeOnce.Do(func() { close(s.closeCalled) })
+	return nil
+}
+
+type independentEOFReader struct {
+	readStarted chan struct{}
+	readOnce    sync.Once
+	eof         chan struct{}
+}
+
+func (r *independentEOFReader) Read([]byte) (int, error) {
+	r.readOnce.Do(func() { close(r.readStarted) })
+	<-r.eof
+	return 0, io.EOF
+}
+
+func waitForSignal(t *testing.T, signal <-chan struct{}, description string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", description)
+	}
 }
 
 func (s testSSHSettings) SSHPort() int {
@@ -706,22 +1354,13 @@ func (testHostKeyCallback) Untrusted(string) bool {
 
 func (testHostKeyCallback) PromptAddHosts(context.Context) {}
 
-func resetClientLogger(t *testing.T) {
-	t.Helper()
-
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-}
-
 type mockHandler struct {
 	commands            []string
 	capabilities        map[string]bool
 	waitForCapabilities bool
 	sessionAcks         []handlers.SessionAck
 	serverError         string
+	serverErrorCalls    int
 	status              int
 }
 
@@ -745,6 +1384,7 @@ func (m *mockHandler) HasCapability(name string) bool {
 }
 
 func (m *mockHandler) ReportServerError(message string) {
+	m.serverErrorCalls++
 	m.serverError = message
 	m.status = 1
 }

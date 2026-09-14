@@ -296,7 +296,7 @@ func startDJournalCommand(ctx context.Context, t *testing.T, env map[string]stri
 		errCh <- cmd.Wait()
 	}()
 	t.Cleanup(func() {
-		if cmd.ProcessState == nil {
+		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
 	})

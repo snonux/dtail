@@ -1,16 +1,15 @@
 package discovery
 
 import (
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
-func TestMain(m *testing.M) {
-	dlog.Common = &dlog.DLog{}
-	m.Run()
-}
+var testLogger logging.NopLogger
 
 // TestShuffleListDoesNotMutateInput verifies that shuffleList never writes
 // back into the caller's backing array, and that repeated calls within the
@@ -19,7 +18,7 @@ func TestMain(m *testing.M) {
 func TestShuffleListDoesNotMutateInput(t *testing.T) {
 	t.Parallel()
 
-	d := &Discovery{}
+	d := &Discovery{logger: testLogger}
 
 	// Build a stable reference slice.
 	original := make([]string, 20)
@@ -78,8 +77,8 @@ func TestNewParsesModuleOptionsWithAdditionalColons(t *testing.T) {
 		},
 		{
 			name:    "options with additional colons",
-			method:  "method:host:port:extra",
-			wantMod: "METHOD",
+			method:  "file:host:port:extra",
+			wantMod: "FILE",
 			wantOpt: "host:port:extra",
 		},
 		{
@@ -99,7 +98,7 @@ func TestNewParsesModuleOptionsWithAdditionalColons(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := New(tt.method, "server", Shuffle)
+			got, err := New(tt.method, "server", Shuffle, testLogger)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("New(%q) error = nil, want error", tt.method)
@@ -151,7 +150,7 @@ func TestServerListIgnoresEmptyServerEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := New(tt.method, tt.server, ServerOrder(99))
+			got, err := New(tt.method, tt.server, ServerOrder(99), testLogger)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("New(%q, %q) error = nil, want error", tt.method, tt.server)
@@ -162,7 +161,10 @@ func TestServerListIgnoresEmptyServerEntries(t *testing.T) {
 				t.Fatalf("New(%q, %q) error = %v, want nil", tt.method, tt.server, err)
 			}
 
-			servers := got.ServerList()
+			servers, err := got.ServerList()
+			if err != nil {
+				t.Fatalf("ServerList() error = %v", err)
+			}
 			if len(servers) != len(tt.want) {
 				t.Fatalf("ServerList() len = %d, want %d (%v)", len(servers), len(tt.want), servers)
 			}
@@ -172,5 +174,39 @@ func TestServerListIgnoresEmptyServerEntries(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestNewReturnsDiscoveryInputErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		server string
+		want   string
+	}{
+		{name: "invalid regex", server: "/[/", want: "compile server discovery regex"},
+		{name: "unknown module", method: "bogus", server: "host", want: "unknown server discovery module"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(tt.method, tt.server, Shuffle, testLogger)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("New(%q, %q) error = %v, want %q", tt.method, tt.server, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerListReturnsFileReadError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	discovery, err := New("file", missing, Shuffle, testLogger)
+	if err != nil {
+		t.Fatalf("New file discovery: %v", err)
+	}
+
+	_, err = discovery.ServerList()
+	if err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("ServerList error = %v, want missing file path", err)
 	}
 }

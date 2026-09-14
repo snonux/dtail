@@ -3,6 +3,7 @@ package benchmarks
 import (
 	"bufio"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -80,9 +81,13 @@ func GenerateTestFile(tb testing.TB, config TestDataConfig) string {
 	if err != nil {
 		tb.Fatalf("Failed to create temp file: %v", err)
 	}
-	tmpFile.Close()
-
 	filename := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		if removeErr := os.Remove(filename); removeErr != nil && !os.IsNotExist(removeErr) {
+			err = errors.Join(err, fmt.Errorf("remove unclosed temporary file: %w", removeErr))
+		}
+		tb.Fatalf("Failed to close temp file: %v", err)
+	}
 
 	// Apply compression if needed
 	var finalFilename string
@@ -90,19 +95,38 @@ func GenerateTestFile(tb testing.TB, config TestDataConfig) string {
 	case GzipCompression:
 		finalFilename = filename + ".gz"
 		if err := generateCompressedFile(filename, finalFilename, config, gzipWriter); err != nil {
+			if removeErr := os.Remove(filename); removeErr != nil && !os.IsNotExist(removeErr) {
+				err = errors.Join(err, fmt.Errorf("remove uncompressed temporary file: %w", removeErr))
+			}
 			tb.Fatalf("Failed to generate gzip file: %v", err)
 		}
-		os.Remove(filename)
+		if err := os.Remove(filename); err != nil {
+			if removeErr := os.Remove(finalFilename); removeErr != nil && !os.IsNotExist(removeErr) {
+				err = errors.Join(err, fmt.Errorf("remove generated gzip file: %w", removeErr))
+			}
+			tb.Fatalf("Failed to remove uncompressed temporary file: %v", err)
+		}
 		return finalFilename
 	case ZstdCompression:
 		finalFilename = filename + ".zst"
 		if err := generateCompressedFile(filename, finalFilename, config, zstdWriter); err != nil {
+			if removeErr := os.Remove(filename); removeErr != nil && !os.IsNotExist(removeErr) {
+				err = errors.Join(err, fmt.Errorf("remove uncompressed temporary file: %w", removeErr))
+			}
 			tb.Fatalf("Failed to generate zstd file: %v", err)
 		}
-		os.Remove(filename)
+		if err := os.Remove(filename); err != nil {
+			if removeErr := os.Remove(finalFilename); removeErr != nil && !os.IsNotExist(removeErr) {
+				err = errors.Join(err, fmt.Errorf("remove generated zstd file: %w", removeErr))
+			}
+			tb.Fatalf("Failed to remove uncompressed temporary file: %v", err)
+		}
 		return finalFilename
 	default:
 		if err := generateUncompressedFile(filename, config); err != nil {
+			if removeErr := os.Remove(filename); removeErr != nil && !os.IsNotExist(removeErr) {
+				err = errors.Join(err, fmt.Errorf("remove incomplete output: %w", removeErr))
+			}
 			tb.Fatalf("Failed to generate file: %v", err)
 		}
 		return filename
@@ -113,14 +137,18 @@ func GenerateTestFile(tb testing.TB, config TestDataConfig) string {
 func generateUncompressedFile(filename string, config TestDataConfig) error {
 	file, err := os.Create(filename)
 	if err != nil {
-		return err
+		return fmt.Errorf("create output file: %w", err)
 	}
-	defer file.Close()
 
 	writer := bufio.NewWriter(file)
-	defer writer.Flush()
-
-	return writeLogLines(writer, config)
+	writeErr := writeLogLines(writer, config)
+	flushErr := writer.Flush()
+	closeErr := file.Close()
+	return errors.Join(
+		wrapError("write log data", writeErr),
+		wrapError("flush log data", flushErr),
+		wrapError("close output file", closeErr),
+	)
 }
 
 // compressionWriter is a function that creates a compression writer
@@ -146,24 +174,50 @@ func generateCompressedFile(tmpFile, finalFile string, config TestDataConfig, cr
 	// Read and compress
 	input, err := os.Open(tmpFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("open uncompressed data: %w", err)
 	}
-	defer input.Close()
 
 	output, err := os.Create(finalFile)
 	if err != nil {
-		return err
+		return errors.Join(
+			fmt.Errorf("create compressed output: %w", err),
+			wrapError("close uncompressed input", input.Close()),
+		)
 	}
-	defer output.Close()
 
 	compressor, err := createWriter(output)
 	if err != nil {
-		return err
+		resultErr := errors.Join(
+			fmt.Errorf("create compression writer: %w", err),
+			wrapError("close compressed output", output.Close()),
+			wrapError("close uncompressed input", input.Close()),
+		)
+		if removeErr := os.Remove(finalFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove incomplete compressed output: %w", removeErr))
+		}
+		return resultErr
 	}
-	defer compressor.Close()
 
-	_, err = io.Copy(compressor, input)
-	return err
+	_, copyErr := io.Copy(compressor, input)
+	resultErr := errors.Join(
+		wrapError("compress data", copyErr),
+		wrapError("finish compressed data", compressor.Close()),
+		wrapError("close compressed output", output.Close()),
+		wrapError("close uncompressed input", input.Close()),
+	)
+	if resultErr != nil {
+		if removeErr := os.Remove(finalFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			resultErr = errors.Join(resultErr, fmt.Errorf("remove incomplete compressed output: %w", removeErr))
+		}
+	}
+	return resultErr
+}
+
+func wrapError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 // writeLogLines generates log content based on config
@@ -208,12 +262,12 @@ func generateTemplateLines(format LogFormat, variation int, pattern string, patt
 		case SimpleLogFormat:
 			templates = append(templates, generateSimpleLogLine(i, includePattern, pattern, rng))
 		case MapReduceLogFormat:
-			templates = append(templates, generateMapReduceLogLine(i, includePattern, pattern, rng))
+			templates = append(templates, generateMapReduceLogLine(includePattern, pattern, rng))
 		case MixedLogFormat:
 			if rng.Intn(2) == 0 {
 				templates = append(templates, generateSimpleLogLine(i, includePattern, pattern, rng))
 			} else {
-				templates = append(templates, generateMapReduceLogLine(i, includePattern, pattern, rng))
+				templates = append(templates, generateMapReduceLogLine(includePattern, pattern, rng))
 			}
 		}
 	}
@@ -237,7 +291,7 @@ func generateSimpleLogLine(id int, includePattern bool, pattern string, rng *ran
 }
 
 // generateMapReduceLogLine creates a MapReduce format log line template
-func generateMapReduceLogLine(id int, includePattern bool, pattern string, rng *rand.Rand) string {
+func generateMapReduceLogLine(includePattern bool, pattern string, rng *rand.Rand) string {
 	goroutines := rng.Intn(50) + 10
 	connections := rng.Intn(100)
 	lifetime := rng.Intn(1000) + 100
@@ -280,12 +334,4 @@ func CleanupBenchmarkFiles(pattern string) error {
 	}
 
 	return nil
-}
-
-// max returns the maximum of two integers
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

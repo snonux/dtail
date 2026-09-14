@@ -573,17 +573,12 @@ func currentUsername(t *testing.T) string {
 func readIntegrationPublicKey(t *testing.T) []byte {
 	t.Helper()
 
-	for _, path := range []string{"id_rsa.pub", "../id_rsa.pub"} {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			return data
-		}
-		if !os.IsNotExist(err) {
-			t.Fatalf("read integration public key %s: %v", path, err)
-		}
+	path := config.IntegrationSSHPrivateKeyPath() + ".pub"
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read integration public key %s: %v", path, err)
 	}
-	t.Fatal("integration public key id_rsa.pub not found")
-	return nil
+	return data
 }
 
 type dJournalExtendedServer struct {
@@ -877,13 +872,24 @@ func drainCommandOutput(t *testing.T, stdoutCh, stderrCh <-chan string) {
 	t.Helper()
 
 	for {
+		if stdoutCh == nil && stderrCh == nil {
+			return
+		}
 		select {
 		case line, ok := <-stdoutCh:
-			if ok && line != "" {
+			if !ok {
+				stdoutCh = nil
+				continue
+			}
+			if line != "" {
 				t.Log("client stdout:", line)
 			}
 		case line, ok := <-stderrCh:
-			if ok && line != "" {
+			if !ok {
+				stderrCh = nil
+				continue
+			}
+			if line != "" {
 				t.Log("client stderr:", line)
 			}
 		default:
@@ -965,10 +971,17 @@ func sourceSwitchCount(lines []string) int {
 func stopProcessAndWait(t *testing.T, cmd *exec.Cmd, cmdErrCh <-chan error, name string) {
 	t.Helper()
 
-	if cmd.ProcessState == nil {
-		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			t.Fatalf("signal %s: %v", name, err)
+	select {
+	case err := <-cmdErrCh:
+		if err != nil {
+			t.Fatalf("%s did not terminate cleanly: %v", name, err)
 		}
+		return
+	default:
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("signal %s: %v", name, err)
 	}
 	select {
 	case err := <-cmdErrCh:

@@ -1,6 +1,26 @@
 package profile
 
-import "testing"
+import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestFilesByNewestModTimeReturnsStatError(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing")
+	brokenLink := filepath.Join(dir, "dcat_cpu_broken.prof")
+	if err := os.Symlink(missing, brokenLink); err != nil {
+		t.Fatalf("create broken profile symlink: %v", err)
+	}
+
+	_, err := filesByNewestModTime(filepath.Join(dir, "dcat_cpu_*.prof"))
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("filesByNewestModTime error = %v, want not-exist error", err)
+	}
+}
 
 func TestProfileDirFromArgs(t *testing.T) {
 	tests := []struct {

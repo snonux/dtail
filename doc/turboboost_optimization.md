@@ -14,7 +14,7 @@ channel-less path is now unconditional.
 
 The original dgrep implementation used multiple channels in a pipeline:
 - `rawLines chan *bytes.Buffer` (buffer: 100) - Raw lines read from file
-- `lines chan *line.Line` (buffer: 100) - Filtered lines to send to client
+- `lines` channel (buffer: 100) - Allocated line objects to send to client
 
 This created several performance issues:
 1. Fixed channel buffer sizes causing blocking under high throughput
@@ -24,30 +24,27 @@ This created several performance issues:
 
 ## Solution
 
-The channel-less implementation replaces the channel pipeline with direct function calls using a `LineProcessor` interface.
+The channel-less implementation replaces the channel pipeline with direct function calls using the `line.Processor` interface.
 
 ### Key Components
 
-1. **LineProcessor Interface** (`internal/io/line/processor.go`)
+1. **line.Processor Interface** (`internal/io/line/processor.go`)
    - Defines methods for processing lines without channels
    - `ProcessLine()` - Handle a single line
    - `Flush()` - Ensure buffered data is written
    - `Close()` - Clean up resources
 
-2. **GrepLineProcessor** (`internal/server/handlers/lineprocessor.go`)
-   - Implements LineProcessor for grep operations
-   - Writes directly to the network connection
-   - Uses internal buffering for efficiency (64KB buffer)
-   - Thread-safe with mutex protection
+2. **DirectLineProcessor** (`internal/server/handlers/line_writer.go`)
+   - Implements `line.Processor` for direct read operations
+   - Delegates formatted output to the active direct or network writer
+   - Flushes the writer at read boundaries
 
-3. **Modified File Reading** (`internal/io/fs/readfile_processor.go`)
-   - `StartWithProcessor()` - Channel-less file reading
+3. **File Reading** (`internal/io/fs/readfile_processor_optimized.go`)
+   - `Start()` - Channel-less file reading
    - Direct callbacks instead of channel sends
    - Inline regex filtering without goroutines
-
-4. **Optimized File Reading** (`internal/io/fs/readfile_processor_optimized.go`)
    - Uses buffered line reading instead of byte-by-byte
-   - Custom scanner with 256KB buffer
+   - Custom scanner with a pooled buffer and 1 MiB token limit
    - Efficient handling of long lines
    - Special optimization for tail mode
 
@@ -75,16 +72,15 @@ channel-less, optimized read path is always on and cannot be toggled.
 
 ### Performance Testing
 
-Use the provided script to compare performance:
+Use the maintained benchmark targets to measure the current read/output path:
 
 ```bash
-./test_channelless_performance.sh
+make benchmark-quick
+make benchmark
 ```
 
-This will test:
-1. Original channel-based implementation
-2. Channel-less implementation
-3. Optimized channel-less implementation
+The historical channel-based and byte-at-a-time implementations have been
+removed, so there is no runtime toggle or legacy implementation to compare.
 
 ### Usage
 
@@ -97,11 +93,9 @@ dgrep -regex "pattern" file.log
 
 ### Future Improvements
 
-1. Extend channel-less approach to other commands (dcat, dtail)
-2. Add configurable buffer sizes
-3. Implement zero-copy optimizations
-4. Add performance metrics collection
-5. Consider using io_uring on Linux for async I/O
+1. Evaluate configurable reader buffer sizes with representative workloads
+2. Add performance metrics collection
+3. Consider using io_uring on Linux for async I/O
 
 ## Summary
 
@@ -112,6 +106,7 @@ former `DTAIL_TURBOBOOST_DISABLE` environment variable and the
 `TurboBoostDisable` key is silently ignored.
 
 The path provides:
-- Channel-less processing for grep and cat operations
-- Optimized buffered I/O reader (256KB buffer)
+- Channel-less processing for read operations
+- A 1 MiB scanner token limit for non-follow reads
+- A pooled 64 KiB buffer for follow reads
 - Buffer pooling to reduce memory allocations

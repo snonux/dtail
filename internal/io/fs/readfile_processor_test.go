@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -23,6 +25,14 @@ type captureProcessor struct {
 	errAtLine  int
 	processErr error
 	flushErr   error
+}
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) {
+	return 0, r.err
 }
 
 func (p *captureProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uint64, _ string) error {
@@ -44,20 +54,20 @@ func (p *captureProcessor) Close() error {
 	return nil
 }
 
-func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
+func TestStartReadsAllLines(t *testing.T) {
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 
-	if err := cat.readFile.StartWithProcessorOptimized(
+	if err := cat.Start(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
 		re,
 	); err != nil {
-		t.Fatalf("optimized reader start failed: %v", err)
+		t.Fatalf("reader start failed: %v", err)
 	}
 
 	want := []string{"alpha\n", "beta\n"}
@@ -65,6 +75,123 @@ func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
 		t.Fatalf("unexpected processed lines: got=%v want=%v", processor.lines, want)
 	}
 }
+
+func TestStartPropagatesTruncateChildPanic(t *testing.T) {
+	filePath := writeProcessorTestFile(t, "alpha\n")
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
+	cat.truncateCheck = func(context.Context, chan<- struct{}) {
+		panic("truncate child failed")
+	}
+	err := cat.Start(context.Background(), lcontext.LContext{}, &captureProcessor{}, regex.NewNoop())
+	if !errors.Is(err, ErrReaderWorkerPanic) || !strings.Contains(err.Error(), "truncate child failed") {
+		t.Fatalf("reader error = %v, want propagated truncate child panic", err)
+	}
+}
+
+func TestStartTruncateChildPanicUnblocksPipeRead(t *testing.T) {
+	input, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create input pipe: %v", err)
+	}
+	defer func() { _ = input.Close() }()
+	defer func() { _ = writer.Close() }()
+
+	reader := newSnapshotReadFile("", "-", make(chan string, 1), defaultMaxLineLength, testLogger)
+	reader.pipeInput = input
+	reader.truncateCheck = func(context.Context, chan<- struct{}) {
+		panic("truncate child failed while pipe blocked")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.Start(context.Background(), lcontext.LContext{},
+			&captureProcessor{}, regex.NewNoop())
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrReaderWorkerPanic) {
+			t.Fatalf("reader error = %v, want worker panic", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker panic did not unblock pipe read")
+	}
+}
+
+func TestServerlessPipeReadReturnsOnCancellationWithoutClosingInput(t *testing.T) {
+	input, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create input pipe: %v", err)
+	}
+	defer func() { _ = input.Close() }()
+	defer func() { _ = writer.Close() }()
+
+	processed := make(chan string, 1)
+	flushed := make(chan struct{}, 1)
+	processor := &signalingPipeProcessor{processed: processed, flushed: flushed}
+	reader := newSnapshotReadFile("", "-", make(chan string, 1), defaultMaxLineLength, testLogger)
+	reader.pipeInput = input
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- reader.Start(ctx, lcontext.LContext{}, processor, regex.NewNoop())
+	}()
+
+	if _, err := writer.WriteString("complete line\n"); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	select {
+	case got := <-processed:
+		if got != "complete line\n" {
+			t.Fatalf("processed line = %q, want complete input line", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pipe input was not processed")
+	}
+
+	// Keep the write side open and idle. Cancellation must wake the
+	// platform-specific reader rather than waiting for writer EOF.
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("canceled pipe read returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("canceled pipe read stayed blocked on held-open input")
+	}
+	select {
+	case <-flushed:
+	default:
+		t.Fatal("processor was not flushed before canceled pipe read returned")
+	}
+
+	// The reader borrows stdin; teardown must not close the caller-owned file.
+	if _, err := writer.WriteString("input remains open\n"); err != nil {
+		t.Fatalf("pipe input was closed by canceled read: %v", err)
+	}
+}
+
+type signalingPipeProcessor struct {
+	processed chan<- string
+	flushed   chan<- struct{}
+}
+
+func (p *signalingPipeProcessor) ProcessLine(content *bytes.Buffer, _ uint64, _ string) error {
+	p.processed <- content.String()
+	pool.RecycleBytesBuffer(content)
+	return nil
+}
+
+func (p *signalingPipeProcessor) Flush() error {
+	select {
+	case p.flushed <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (*signalingPipeProcessor) Close() error { return nil }
 
 // TestReadWithProcessorOptimizedDetectsTruncation proves that after the
 // per-line time.Since truncate gate was removed (task 2t0), the non-follow
@@ -76,17 +203,19 @@ func TestStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
 // state truncated() flags. A signal is pre-loaded on the truncate channel so
 // the very first loop iteration performs the check.
 func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
-	resetCommonLogger(t)
-
 	// The on-disk file is intentionally tiny; the fd is then seeked well past
 	// its end to emulate having read a file that shrank underneath us.
 	filePath := writeProcessorTestFile(t, "short")
 
-	fd, err := os.Open(filePath)
-	if err != nil {
-		t.Fatalf("open file: %v", err)
+	fd, openErr := os.Open(filePath)
+	if openErr != nil {
+		t.Fatalf("open file: %v", openErr)
 	}
-	defer fd.Close()
+	t.Cleanup(func() {
+		if closeErr := fd.Close(); closeErr != nil {
+			t.Errorf("close test file: %v", closeErr)
+		}
+	})
 	if _, err := fd.Seek(4096, 0); err != nil {
 		t.Fatalf("seek fd past end: %v", err)
 	}
@@ -99,13 +228,14 @@ func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
 	truncate := make(chan struct{}, 1)
 	truncate <- struct{}{}
 
-	rf := readFile{
+	rf := ReadFile{
+		logger:        testLogger,
 		filePath:      filePath,
 		globID:        "glob-id",
 		maxLineLength: defaultMaxLineLength,
 	}
 
-	err = rf.readWithProcessorOptimized(
+	readErr := rf.readWithProcessorOptimized(
 		context.Background(),
 		fd,
 		reader,
@@ -114,59 +244,36 @@ func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
 		&captureProcessor{},
 		regex.NewNoop(),
 	)
-	if err == nil {
+	if readErr == nil {
 		t.Fatal("expected truncation to be detected, got nil error")
 	}
-	if !strings.Contains(err.Error(), "truncated") {
-		t.Fatalf("expected truncation error, got: %v", err)
+	if !strings.Contains(readErr.Error(), "truncated") {
+		t.Fatalf("expected truncation error, got: %v", readErr)
 	}
 }
 
-func TestProcessorVariantsReturnOpenError(t *testing.T) {
+func TestStartReturnsOpenError(t *testing.T) {
 	re := regex.NewNoop()
 	missingFile := filepath.Join(t.TempDir(), "missing.log")
 
-	tests := []struct {
-		name  string
-		start func(*readFile, context.Context, lcontext.LContext, *captureProcessor, regex.Regex) error
-	}{
-		{
-			name: "standard",
-			start: func(rf *readFile, ctx context.Context, ltx lcontext.LContext, p *captureProcessor, re regex.Regex) error {
-				return rf.StartWithProcessor(ctx, ltx, p, re)
-			},
-		},
-		{
-			name: "optimized",
-			start: func(rf *readFile, ctx context.Context, ltx lcontext.LContext, p *captureProcessor, re regex.Regex) error {
-				return rf.StartWithProcessorOptimized(ctx, ltx, p, re)
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cat := NewCatFile(missingFile, "glob-id", make(chan string, 1), defaultMaxLineLength)
-			err := tt.start(&cat.readFile, context.Background(), lcontext.LContext{}, &captureProcessor{}, re)
-			if err == nil {
-				t.Fatalf("expected error for missing file")
-			}
-		})
+	cat := newSnapshotReadFile(missingFile, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
+	if err := cat.Start(context.Background(), lcontext.LContext{}, &captureProcessor{}, re); err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }
 
-func TestStartWithProcessorOptimizedPropagatesProcessError(t *testing.T) {
+func TestStartPropagatesProcessError(t *testing.T) {
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	re := regex.NewNoop()
 	expectedErr := errors.New("processor failure")
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{
 		errAtLine:  1,
 		processErr: expectedErr,
 	}
 
-	err := cat.readFile.StartWithProcessorOptimized(
+	err := cat.Start(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
@@ -177,22 +284,20 @@ func TestStartWithProcessorOptimizedPropagatesProcessError(t *testing.T) {
 	}
 }
 
-func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
-	resetCommonLogger(t)
-
+func TestStartUsesInjectedMaxLineLength(t *testing.T) {
 	filePath := writeProcessorTestFile(t, "abcdef\n")
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), 3)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), 3, testLogger)
 	processor := &captureProcessor{}
 
-	if err := cat.readFile.StartWithProcessorOptimized(
+	if err := cat.Start(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
 		re,
 	); err != nil {
-		t.Fatalf("optimized reader start failed: %v", err)
+		t.Fatalf("reader start failed: %v", err)
 	}
 
 	want := []string{"abc", "def\n"}
@@ -201,19 +306,17 @@ func TestStartWithProcessorOptimizedUsesInjectedMaxLineLength(t *testing.T) {
 	}
 }
 
-func TestStartWithProcessorOptimizedWaitsOnLiveLongLineWarningUntilCanceled(t *testing.T) {
-	resetCommonLogger(t)
-
+func TestStartWaitsOnLiveLongLineWarningUntilCanceled(t *testing.T) {
 	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string), 1)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string), 1, testLogger)
 	processor := &captureProcessor{}
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- cat.readFile.StartWithProcessorOptimized(
+		done <- cat.Start(
 			ctx,
 			lcontext.LContext{},
 			processor,
@@ -223,7 +326,7 @@ func TestStartWithProcessorOptimizedWaitsOnLiveLongLineWarningUntilCanceled(t *t
 
 	select {
 	case err := <-done:
-		t.Fatalf("optimized reader returned before cancellation: %v", err)
+		t.Fatalf("reader returned before cancellation: %v", err)
 	case <-time.After(100 * time.Millisecond):
 	}
 
@@ -232,33 +335,28 @@ func TestStartWithProcessorOptimizedWaitsOnLiveLongLineWarningUntilCanceled(t *t
 	select {
 	case err := <-done:
 		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("expected canceled optimized reader to stop with nil or context.Canceled, got %v", err)
+			t.Fatalf("expected canceled reader to stop with nil or context.Canceled, got %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("optimized reader did not return after cancellation")
+		t.Fatal("reader did not return after cancellation")
 	}
 }
 
-// TestStartWithProcessorExitsWhenContextCanceledDuringLongLineWarning proves the
-// byte-by-byte processor reader (StartWithProcessor) returns cleanly when the
-// context is canceled while a long-line warning would otherwise block. The
-// optimized reader has equivalent coverage in
-// TestStartWithProcessorOptimizedWaitsOnLiveLongLineWarningUntilCanceled. The
-// historic channel-based Start reader was removed in task iv0, so only the
-// processor variant remains here.
-func TestStartWithProcessorExitsWhenContextCanceledDuringLongLineWarning(t *testing.T) {
-	resetCommonLogger(t)
-
+// TestStartExitsWhenContextCanceledDuringLongLineWarning proves Start returns
+// cleanly when its context is already canceled while a long-line warning would
+// otherwise block. TestStartWaitsOnLiveLongLineWarningUntilCanceled covers
+// cancellation after reading begins.
+func TestStartExitsWhenContextCanceledDuringLongLineWarning(t *testing.T) {
 	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string), 1)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string), 1, testLogger)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- cat.readFile.StartWithProcessor(ctx, lcontext.LContext{}, &captureProcessor{}, re)
+		errCh <- cat.Start(ctx, lcontext.LContext{}, &captureProcessor{}, re)
 	}()
 
 	select {
@@ -272,24 +370,27 @@ func TestStartWithProcessorExitsWhenContextCanceledDuringLongLineWarning(t *test
 }
 
 func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning(t *testing.T) {
-	resetCommonLogger(t)
-
 	filePath := writeProcessorTestFile(t, strings.Repeat("a", 8))
 	re := regex.NewNoop()
 
-	rf := readFile{
+	rf := ReadFile{
+		logger:         testLogger,
 		filePath:       filePath,
 		globID:         "glob-id",
 		serverMessages: make(chan string),
 		retry:          true,
 		canSkipLines:   true,
-		seekEOF:        false,
+		follow:         true,
 		maxLineLength:  1,
 	}
 
-	reader, fd, decompressor, err := rf.makeReader()
+	reader, fd, decompressor, err := rf.makeReader(context.Background())
 	if fd != nil {
-		defer fd.Close()
+		t.Cleanup(func() {
+			if closeErr := fd.Close(); closeErr != nil {
+				t.Errorf("close test file: %v", closeErr)
+			}
+		})
 	}
 	if decompressor != nil {
 		defer func() {
@@ -328,25 +429,75 @@ func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning
 	}
 }
 
-// TestReadWithProcessorNoDoubleRecycle verifies that readWithProcessor does not
-// Put the same *bytes.Buffer back into the pool twice. The bug: a stale
-// `defer pool.RecycleBytesBuffer(message)` captured the initial buffer pointer
-// at defer-registration time; after that buffer was handed off downstream (and
-// recycled there) and `message` was reassigned on continueReading, the deferred
-// call recycled the already-recycled original buffer. A trailing partial line
-// (no final newline) makes the bug deterministic because handleReadErrorProcessor
-// also hands the current buffer to ProcessFilteredLine (which recycles it).
-func TestReadWithProcessorNoDoubleRecycle(t *testing.T) {
-	resetCommonLogger(t)
+func TestTailWithProcessorOptimizedRecognizesWrappedEOF(t *testing.T) {
+	rf := ReadFile{
+		logger:        testLogger,
+		filePath:      "test.log",
+		globID:        "glob-id",
+		maxLineLength: defaultMaxLineLength,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := rf.tailWithProcessorOptimized(
+		ctx,
+		nil,
+		bufio.NewReader(errorReader{err: fmt.Errorf("read tail: %w", io.EOF)}),
+		make(chan struct{}),
+		lcontext.LContext{},
+		&captureProcessor{},
+		regex.NewNoop(),
+	)
+	if err != nil {
+		t.Fatalf("tailWithProcessorOptimized returned wrapped EOF: %v", err)
+	}
+}
+
+func TestTailWithProcessorOptimizedPropagatesNonEOFReadError(t *testing.T) {
+	wantErr := errors.New("read failed")
+	rf := ReadFile{
+		logger:        testLogger,
+		filePath:      "test.log",
+		globID:        "glob-id",
+		maxLineLength: defaultMaxLineLength,
+	}
+
+	err := rf.tailWithProcessorOptimized(
+		context.Background(),
+		nil,
+		bufio.NewReader(errorReader{err: wantErr}),
+		make(chan struct{}),
+		lcontext.LContext{},
+		&captureProcessor{},
+		regex.NewNoop(),
+	)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("tailWithProcessorOptimized error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestIsEarlyStopRequiresExactEOFSentinel(t *testing.T) {
+	if !isEarlyStop(io.EOF) {
+		t.Fatal("isEarlyStop did not recognize bare io.EOF")
+	}
+	if isEarlyStop(fmt.Errorf("downstream write: %w", io.EOF)) {
+		t.Fatal("isEarlyStop treated wrapped io.EOF as the private early-stop sentinel")
+	}
+}
+
+// TestStartDoesNotDoubleRecycle verifies that ownership transfer from the read
+// path to the processor does not put the same *bytes.Buffer into the pool twice.
+// The trailing partial line covers the final, non-newline-terminated token.
+func TestStartDoesNotDoubleRecycle(t *testing.T) {
 	drainBytesBufferPool()
 
 	filePath := writeProcessorTestFile(t, "alpha\nbeta")
 	re := regex.NewNoop()
 
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 
-	if err := cat.readFile.StartWithProcessor(
+	if err := cat.Start(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
@@ -440,16 +591,16 @@ func TestReadWithProcessorOptimizedFastPathByteIdentical(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			filePath := writeProcessorTestFile(t, content)
-			cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+			cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 			processor := &captureProcessor{}
 
-			if err := cat.readFile.StartWithProcessorOptimized(
+			if err := cat.Start(
 				context.Background(),
 				lcontext.LContext{},
 				processor,
 				tt.re,
 			); err != nil {
-				t.Fatalf("optimized reader start failed: %v", err)
+				t.Fatalf("reader start failed: %v", err)
 			}
 
 			if !reflect.DeepEqual(processor.lines, tt.want) {
@@ -473,18 +624,18 @@ func TestReadWithProcessorOptimizedContextPathUnchanged(t *testing.T) {
 	}
 
 	filePath := writeProcessorTestFile(t, content)
-	cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
 	processor := &captureProcessor{}
 
 	// One line of before context and one line of after context around the match.
 	ltx := lcontext.LContext{BeforeContext: 1, AfterContext: 1}
-	if err := cat.readFile.StartWithProcessorOptimized(
+	if err := cat.Start(
 		context.Background(),
 		ltx,
 		processor,
 		re,
 	); err != nil {
-		t.Fatalf("optimized reader start failed: %v", err)
+		t.Fatalf("reader start failed: %v", err)
 	}
 
 	want := []string{"b\n", "HIT\n", "d\n"}
@@ -522,16 +673,12 @@ func TestProcessFilteredRawZeroAllocOnNonMatch(t *testing.T) {
 	}
 }
 
-// TestProcessorMaxCountEarlyStopNoErrorLeak is a regression test for the
-// optimized read path leaking the io.EOF early-stop sentinel that
+// TestStartMaxCountEarlyStopNoErrorLeak is a regression test for the read path
+// leaking the io.EOF early-stop sentinel that
 // filteringProcessor.processWithContext returns once a -m/-max (MaxCount) limit
-// is reached. The byte-by-byte path (StartWithProcessor) already swallowed that
-// sentinel and returned nil; the optimized path (StartWithProcessorOptimized)
-// used to surface it as an error, which the server then logged as a spurious
-// SERVER|...|ERROR|...|EOF line. Both paths must now return nil AND emit
-// byte-identical lines for the same MaxCount, proving the sentinel is handled as
-// a clean early stop, not a genuine I/O error.
-func TestProcessorMaxCountEarlyStopNoErrorLeak(t *testing.T) {
+// is reached. Start must return nil and emit the expected lines, proving the
+// sentinel is handled as a clean early stop instead of a genuine I/O error.
+func TestStartMaxCountEarlyStopNoErrorLeak(t *testing.T) {
 	const content = "match 1\nother\nmatch 2\nother\nmatch 3\nother\nmatch 4\n"
 	re, err := regex.New("match", regex.Default)
 	if err != nil {
@@ -541,78 +688,48 @@ func TestProcessorMaxCountEarlyStopNoErrorLeak(t *testing.T) {
 	// as the second match is emitted (the -max 2 early stop).
 	ltx := lcontext.LContext{MaxCount: 2}
 
-	run := func(start func(*readFile, context.Context, lcontext.LContext, *captureProcessor, regex.Regex) error) *captureProcessor {
-		filePath := writeProcessorTestFile(t, content)
-		cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
-		processor := &captureProcessor{}
-		if err := start(&cat.readFile, context.Background(), ltx, processor, re); err != nil {
-			// A non-nil return here is exactly the leaked sentinel the server
-			// would log as ERROR|...|EOF.
-			t.Fatalf("reader returned error; max-count early-stop sentinel must be swallowed: %v", err)
-		}
-		return processor
+	filePath := writeProcessorTestFile(t, content)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
+	processor := &captureProcessor{}
+	if err := cat.Start(context.Background(), ltx, processor, re); err != nil {
+		// A non-nil return here is exactly the leaked sentinel the server
+		// would log as ERROR|...|EOF.
+		t.Fatalf("reader returned error; max-count early-stop sentinel must be swallowed: %v", err)
 	}
-
-	byteByByte := run(func(rf *readFile, ctx context.Context, l lcontext.LContext, p *captureProcessor, r regex.Regex) error {
-		return rf.StartWithProcessor(ctx, l, p, r)
-	})
-	optimized := run(func(rf *readFile, ctx context.Context, l lcontext.LContext, p *captureProcessor, r regex.Regex) error {
-		return rf.StartWithProcessorOptimized(ctx, l, p, r)
-	})
 
 	want := []string{"match 1\n", "match 2\n"}
-	if !reflect.DeepEqual(optimized.lines, want) {
-		t.Fatalf("optimized -max lines: got=%v want=%v", optimized.lines, want)
-	}
-	// Byte-identical -max output between the byte-by-byte and optimized paths.
-	if !reflect.DeepEqual(byteByByte.lines, optimized.lines) {
-		t.Fatalf("-max output differs between byte-by-byte and optimized: byteByByte=%v optimized=%v",
-			byteByByte.lines, optimized.lines)
+	if !reflect.DeepEqual(processor.lines, want) {
+		t.Fatalf("-max lines: got=%v want=%v", processor.lines, want)
 	}
 }
 
-// TestReadWithProcessorOptimizedMaxCountWithContextEarlyStop covers -m combined
+// TestStartMaxCountWithContextEarlyStop covers -m combined
 // with after-context (-A). Here processWithContext returns the io.EOF sentinel
 // from its maxReached branch (a distinct return site from plain -m: it fires on
 // the NEXT match after the after-context window drains, not on the match that
-// reaches the count). The optimized path must still swallow the sentinel
-// (return nil), emit the after-context line, and stay byte-identical to the
-// byte-by-byte path. Pre-fix the optimized run returns io.EOF and goes red.
-func TestReadWithProcessorOptimizedMaxCountWithContextEarlyStop(t *testing.T) {
+// reaches the count). Start must swallow the sentinel (return nil) and emit the
+// after-context line.
+func TestStartMaxCountWithContextEarlyStop(t *testing.T) {
 	const content = "x\nHIT one\ny\nHIT two\nz\nHIT three\n"
 	// MaxCount 1 with AfterContext 1: emit the first match plus its single
 	// trailing context line, then stop at the next match via the maxReached
 	// sentinel.
 	ltx := lcontext.LContext{MaxCount: 1, AfterContext: 1}
 
-	run := func(start func(*readFile, context.Context, lcontext.LContext, *captureProcessor, regex.Regex) error) *captureProcessor {
-		re, err := regex.New("HIT", regex.Default)
-		if err != nil {
-			t.Fatalf("build regex: %v", err)
-		}
-		filePath := writeProcessorTestFile(t, content)
-		cat := NewCatFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength)
-		processor := &captureProcessor{}
-		if err := start(&cat.readFile, context.Background(), ltx, processor, re); err != nil {
-			t.Fatalf("reader returned error; max-count+context sentinel must be swallowed: %v", err)
-		}
-		return processor
+	re, err := regex.New("HIT", regex.Default)
+	if err != nil {
+		t.Fatalf("build regex: %v", err)
 	}
-
-	byteByByte := run(func(rf *readFile, ctx context.Context, l lcontext.LContext, p *captureProcessor, r regex.Regex) error {
-		return rf.StartWithProcessor(ctx, l, p, r)
-	})
-	optimized := run(func(rf *readFile, ctx context.Context, l lcontext.LContext, p *captureProcessor, r regex.Regex) error {
-		return rf.StartWithProcessorOptimized(ctx, l, p, r)
-	})
+	filePath := writeProcessorTestFile(t, content)
+	cat := newSnapshotReadFile(filePath, "glob-id", make(chan string, 1), defaultMaxLineLength, testLogger)
+	processor := &captureProcessor{}
+	if err := cat.Start(context.Background(), ltx, processor, re); err != nil {
+		t.Fatalf("reader returned error; max-count+context sentinel must be swallowed: %v", err)
+	}
 
 	want := []string{"HIT one\n", "y\n"}
-	if !reflect.DeepEqual(optimized.lines, want) {
-		t.Fatalf("optimized -m+context lines: got=%v want=%v", optimized.lines, want)
-	}
-	if !reflect.DeepEqual(byteByByte.lines, optimized.lines) {
-		t.Fatalf("-m+context output differs between byte-by-byte and optimized: byteByByte=%v optimized=%v",
-			byteByByte.lines, optimized.lines)
+	if !reflect.DeepEqual(processor.lines, want) {
+		t.Fatalf("-m+context lines: got=%v want=%v", processor.lines, want)
 	}
 }
 
@@ -626,10 +743,9 @@ func TestReadWithProcessorOptimizedMaxCountWithContextEarlyStop(t *testing.T) {
 // follow loop is deterministic; serverMessages is nil so warnAboutLongLine never
 // blocks (it returns true immediately).
 func TestTailWithProcessorOptimizedMaxCountEarlyStop(t *testing.T) {
-	resetCommonLogger(t)
-
-	newReadFile := func(maxLineLength int) readFile {
-		return readFile{
+	newReadFile := func(maxLineLength int) ReadFile {
+		return ReadFile{
+			logger:        testLogger,
 			filePath:      "test.log",
 			globID:        "glob-id",
 			maxLineLength: maxLineLength,
@@ -646,7 +762,7 @@ func TestTailWithProcessorOptimizedMaxCountEarlyStop(t *testing.T) {
 
 	// runTail drives tailWithProcessorOptimized directly. fd is nil because the
 	// truncate channel is never signaled, so f.truncated(fd) is never reached.
-	runTail := func(t *testing.T, ctx context.Context, rf *readFile, input string,
+	runTail := func(t *testing.T, ctx context.Context, rf *ReadFile, input string,
 		ltx lcontext.LContext, re regex.Regex) *captureProcessor {
 
 		processor := &captureProcessor{}
@@ -735,6 +851,170 @@ func (p recyclingErrorProcessor) ProcessLine(b *bytes.Buffer, _ uint64, _ string
 func (p recyclingErrorProcessor) Flush() error { return nil }
 
 func (p recyclingErrorProcessor) Close() error { return nil }
+
+type panickingContextProcessor struct {
+	transferred *bytes.Buffer
+}
+
+func (p *panickingContextProcessor) ProcessLine(buf *bytes.Buffer, _ uint64, _ string) error {
+	p.transferred = buf
+	panic("before-context processor panic")
+}
+
+func (p *panickingContextProcessor) Flush() error { return nil }
+
+func (p *panickingContextProcessor) Close() error { return nil }
+
+type recyclingPanickingProcessor struct {
+	recycle     func(*bytes.Buffer)
+	transferred *bytes.Buffer
+}
+
+func (p *recyclingPanickingProcessor) ProcessLine(buf *bytes.Buffer, _ uint64, _ string) error {
+	p.transferred = buf
+	p.recycle(buf)
+	panic("reader processor panic")
+}
+
+func (p *recyclingPanickingProcessor) Flush() error { return nil }
+
+func (p *recyclingPanickingProcessor) Close() error { return nil }
+
+func TestReadWithProcessorOptimizedTransfersCurrentBufferBeforeContextPanic(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		maxLineLength int
+		pattern       string
+	}{
+		{
+			name:          "newline",
+			input:         "old before\nMATCH\n",
+			maxLineLength: defaultMaxLineLength,
+			pattern:       "MATCH",
+		},
+		{
+			name:          "forced long line",
+			input:         "x\nMATC",
+			maxLineLength: 4,
+			pattern:       "MATC",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			re, err := regex.New(test.pattern, regex.Default)
+			if err != nil {
+				t.Fatalf("compile regex: %v", err)
+			}
+
+			rf := ReadFile{
+				logger:        testLogger,
+				filePath:      "memory.log",
+				globID:        "glob-id",
+				maxLineLength: test.maxLineLength,
+			}
+			recycleCount := make(map[*bytes.Buffer]int)
+			rf.bufferRecycleObserver = func(buf *bytes.Buffer) {
+				recycleCount[buf]++
+			}
+			processor := &recyclingPanickingProcessor{recycle: rf.recycleBytesBuffer}
+
+			var recovered any
+			func() {
+				defer func() {
+					recovered = recover()
+				}()
+				_ = rf.readWithProcessorOptimized(
+					context.Background(),
+					nil,
+					bufio.NewReader(strings.NewReader(test.input)),
+					nil,
+					lcontext.LContext{BeforeContext: 1},
+					processor,
+					re,
+				)
+			}()
+
+			if recovered != "reader processor panic" {
+				t.Fatalf("recovered panic = %v, want reader processor panic", recovered)
+			}
+			if processor.transferred == nil {
+				t.Fatal("processor did not receive buffered before-context")
+			}
+			if got := recycleCount[processor.transferred]; got != 1 {
+				t.Fatalf("transferred before-context recycle count = %d, want 1", got)
+			}
+			if len(recycleCount) != 2 {
+				t.Fatalf("distinct recycled buffers = %d, want before-context and current line", len(recycleCount))
+			}
+			for buf, count := range recycleCount {
+				if count != 1 {
+					t.Fatalf("buffer %p recycle count = %d, want exactly 1", buf, count)
+				}
+			}
+		})
+	}
+}
+
+func TestFilteringProcessorRecyclesOwnedBuffersOnBeforeContextPanic(t *testing.T) {
+	transferredBefore := pool.BytesBuffer.Get().(*bytes.Buffer)
+	transferredBefore.Reset()
+	transferredBefore.WriteString("first before")
+	// Ownership transfers to the panicking processor, which deliberately does
+	// not recycle its input so the test can verify the filtering processor did
+	// not reclaim a transferred buffer.
+	defer pool.RecycleBytesBuffer(transferredBefore)
+
+	remainingBefore := pool.BytesBuffer.Get().(*bytes.Buffer)
+	remainingBefore.Reset()
+	remainingBefore.WriteString("second before")
+	matchingRaw := pool.BytesBuffer.Get().(*bytes.Buffer)
+	matchingRaw.Reset()
+	matchingRaw.WriteString("matching line")
+
+	processor := &panickingContextProcessor{}
+	var st stats
+	fp := &filteringProcessor{
+		processor: processor,
+		re:        regex.NewNoop(),
+		ltx:       lcontext.LContext{BeforeContext: 2},
+		stats:     &st,
+		globID:    "glob-id",
+		beforeBuf: []*bytes.Buffer{transferredBefore, remainingBefore},
+	}
+
+	var recovered any
+	func() {
+		// Reader entry points own generation cleanup. Mimic that scope here so
+		// the panic test covers both the current raw line and queued context.
+		defer fp.resetGeneration()
+		defer func() {
+			recovered = recover()
+		}()
+		_ = fp.processWithContext(matchingRaw, 3)
+	}()
+
+	if recovered != "before-context processor panic" {
+		t.Fatalf("recovered panic = %v, want before-context processor panic", recovered)
+	}
+	if processor.transferred != transferredBefore {
+		t.Fatalf("processor received buffer %p, want first before-context buffer %p",
+			processor.transferred, transferredBefore)
+	}
+	if got := transferredBefore.String(); got != "first before" {
+		t.Fatalf("transferred buffer was recycled: got %q", got)
+	}
+	if matchingRaw.Len() != 0 {
+		t.Fatalf("locally owned matching buffer length = %d, want 0 after recycle", matchingRaw.Len())
+	}
+	if remainingBefore.Len() != 0 {
+		t.Fatalf("locally owned before-context buffer length = %d, want 0 after cleanup", remainingBefore.Len())
+	}
+	if len(fp.beforeBuf) != 0 {
+		t.Fatalf("before-context buffers = %d, want 0 after cleanup", len(fp.beforeBuf))
+	}
+}
 
 // TestFilteringProcessorDoesNotDoubleRecycleOnError is the regression guard for
 // the yu0 production data race on the FILE read path (dcat/dgrep/dtail), the same

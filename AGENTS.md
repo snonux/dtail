@@ -183,6 +183,14 @@ make profile-help
   DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
   ```
 - Integration tests are run by setting DTAIL_INTEGRATION_TEST_RUN_MODE to yes, and by running 'make test'
+- `DTAIL_INTEGRATION_TEST_RUN_MODE=yes` is a compatibility shortcut for the
+  unchanged test harness. During config initialization it supplies
+  `HostnameOverride=integrationtest`, `KnownHostsPath=./known_hosts`,
+  `AuthorizedKeysPath=<DTAIL_AUTH_KEY_PATH>.pub` (or `./id_rsa.pub` when that
+  key variable is unset), and
+  `HostKeyPath=./ssh_host_key` only when those values were not set explicitly.
+  Runtime handlers and SSH packages consume these fields and do not inspect the
+  integration-mode environment variable themselves.
 - Integration tests verify: DCat, DGrep, DMap (MapReduce), DServer, DTail, DTailHealth, and auth-key fast reconnect functionality
 - All tests run with race detection enabled (`--race` flag)
 
@@ -280,16 +288,22 @@ and a leftover `TurboBoostDisable` key in an old config file is silently ignored
 - Memory pooling reduces garbage collection pressure
 - Same output format and accuracy regardless of workload
 
-**Tuning knobs (server config):**
-The output path timing and buffer knobs live in the `Output*` / `Shutdown*` config
-namespace (formerly `Turbo*Ms` / `TurboChannelBufferSize` /
-`ShutdownTurboSerializeWaitMs`). See `internal/config/server.go` for the current
-fields: `OutputTransmissionDelayMs`, `OutputEOFWaitBaseMs`,
-`OutputEOFWaitPerFileMs`, `OutputEOFWaitMaxMs`, `OutputChannelBufferSize`,
-`OutputFlushTimeoutMs`, `OutputFlushPollIntervalMs`, `OutputReadRetryIntervalMs`,
-`OutputEOFAckTimeoutMs`, and `ShutdownOutputSerializeWaitMs`. All are optional
-(`omitempty`) internal tuning knobs with sensible defaults; the old `Turbo*` keys
-are gone, so a config that still sets them reverts silently to the defaults.
+**Output limits and deadlines (server config):**
+The output path exposes four optional settings: `OutputBufferMaxBytes`,
+`OutputFlushTimeoutMs`, `OutputReadRetryIntervalMs`, and
+`OutputEOFAckTimeoutMs`. The buffer setting bounds retained payload memory; the
+two timeout settings bound flush and EOF-ack waits. `OutputReadRetryIntervalMs`
+is a compatibility fallback for stale-generation writers that do not provide a
+cancellation signal, and values below the implementation safety minimum are
+clamped. Removed `Turbo*`, output-delay, EOF-wait-sizing, flush-poll, and
+shutdown-wait keys in older config files are ignored by the lenient decoder.
+
+Authenticated connections use the rolling `IdleSessionTimeoutS` timeout (default
+900 seconds). Successful network reads or writes refresh the deadline, so active
+follow sessions stay connected while clients with no SSH activity are closed.
+Per-session payload backing memory waiting on a slow client is capped by
+`OutputBufferMaxBytes` (default 2 MiB); producers apply backpressure when the cap is reached. The
+configured cap must leave room for one maximum-length formatted line.
 
 **Best Practices for High-Concurrency MapReduce:**
 1. Increase MaxConcurrentCats in the server configuration to match workload
@@ -365,7 +379,11 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 ### Core Implementation
 - `/internal/clients/` - Client implementations for each tool
 - `/internal/server/` - Server daemon logic
+- `/internal/handlers/` - Transport-neutral session handlers and read engine
+- `/internal/jobs/` - Scheduled and continuous MapReduce client workloads
 - `/internal/mapr/` - MapReduce engine and query parsing
+- `/internal/authkey/` - Shared in-memory cache for registered public keys
+- `/internal/sessionuser/` - Session identity and read authorization
 - `/internal/ssh/` - SSH client/server components
 - `/internal/config/` - Configuration management
 - `/internal/io/` - File operations, logging, compression handling
@@ -391,8 +409,8 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 - **MapReduce Parser**: `/internal/mapr/parse/` - SQL-like query language parser
 - **Log Format Parsers**: `/internal/mapr/logformat/` - Extensible log parsing system
 - **SSH Authorization Callback**: `/internal/ssh/server/publickeycallback.go` - auth-key fast-path + `authorized_keys` fallback
-- **Auth-Key Cache**: `/internal/ssh/server/authkeystore.go` - in-memory per-user key cache (TTL/max-keys)
-- **AUTHKEY Handler**: `/internal/server/handlers/serverhandler.go` - session command handling for auth-key registration
+- **AUTHKEY Handler**: `/internal/handlers/serverhandler.go` - session command handling for auth-key registration
+- **Auth-Key Cache**: `/internal/authkey/authkeystore.go` - in-memory per-user key cache (TTL/max-keys)
 
 ## Configuration Files
 
@@ -417,10 +435,10 @@ When modifying client behavior:
 
 When modifying server behavior:
 1. Core server logic is in `/internal/server/server.go`
-2. User authentication in `/internal/server/user/`
-3. Handler implementations in `/internal/server/handlers/`
+2. Session identity and read authorization in `/internal/sessionuser/`
+3. Handler implementations in `/internal/handlers/`
 
 When working with MapReduce:
 1. Query parsing in `/internal/mapr/parse/`
-2. Aggregation logic in `/internal/mapr/reducer/`
+2. In-process aggregation in `/internal/mapr/aggregate/`
 3. Log format parsing in `/internal/mapr/logformat/`

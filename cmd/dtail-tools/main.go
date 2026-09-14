@@ -16,7 +16,7 @@ func main() {
 	}
 
 	command := os.Args[1]
-	
+
 	// Remove command from args for subcommand parsing
 	os.Args = append([]string{os.Args[0]}, os.Args[2:]...)
 

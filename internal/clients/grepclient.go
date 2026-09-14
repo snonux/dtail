@@ -2,11 +2,10 @@ package clients
 
 import (
 	"errors"
-	"runtime"
+	"fmt"
 
-	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -17,45 +16,18 @@ type GrepClient struct {
 }
 
 // NewGrepClient creates a new grep client.
-func NewGrepClient(args config.Args) (*GrepClient, error) {
+func NewGrepClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*GrepClient, error) {
 	if args.RegexStr == "" {
-		return nil, errors.New("No regex specified, use '-regex' flag")
+		return nil, errors.New("no regex specified, use '-regex' flag")
 	}
 	args.Mode = omode.GrepClient
+	loggers = loggers.normalized()
 
-	c := GrepClient{
-		baseClient: baseClient{
-			mu:         newBaseClientMu(),
-			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
-			retry:      false,
-			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
-		},
-	}
-
-	c.init()
-	if err := c.makeConnections(c); err != nil {
-		return nil, err
-	}
-	return &c, nil
-}
-
-func (c GrepClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewClientHandler(server)
-}
-
-func (c GrepClient) makeSessionSpec() (SessionSpec, error) {
-	return NewSessionSpec(c.Args), nil
-}
-
-func (c GrepClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
+	base, err := newBaseClient(args, cfg, loggers, firstColorizer(colorizers),
+		clientHandlerProfile(loggers.Client, false))
 	if err != nil {
-		dlog.Client.FatalPanic("unable to build grep session spec", err)
+		return nil, fmt.Errorf("initialize grep client: %w", err)
 	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build grep commands from session spec", err)
-	}
-	return commands
+	return &GrepClient{baseClient: base}, nil
 }

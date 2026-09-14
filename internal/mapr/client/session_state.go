@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -24,14 +25,17 @@ type SessionState struct {
 	global     *mapr.GlobalGroupSet
 	lastResult string
 	changedCh  chan struct{}
+	logger     logging.Logger
 }
 
 // NewSessionState returns a new shared mapreduce session state.
-func NewSessionState(query *mapr.Query) *SessionState {
+func NewSessionState(query *mapr.Query, logger logging.Logger) *SessionState {
+	logger = logging.OrNop(logger)
 	return &SessionState{
 		query:     query,
-		global:    mapr.NewGlobalGroupSet(),
+		global:    mapr.NewGlobalGroupSet(logger),
 		changedCh: make(chan struct{}, 1),
+		logger:    logger,
 	}
 }
 
@@ -48,6 +52,19 @@ func (s *SessionState) Snapshot() SessionSnapshot {
 	}
 }
 
+// WithCurrentSnapshot calls fn only while snapshot still identifies the active
+// query generation. The read lock prevents CommitQuery from completing during
+// fn. The callback must not call another SessionState method.
+func (s *SessionState) WithCurrentSnapshot(snapshot SessionSnapshot, fn func() error) (bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.generation != snapshot.Generation || s.query != snapshot.Query || s.global != snapshot.GlobalGroup {
+		return false, nil
+	}
+	return true, fn()
+}
+
 // Changes returns a channel that is signaled whenever a new generation is committed.
 func (s *SessionState) Changes() <-chan struct{} {
 	return s.changedCh
@@ -55,7 +72,7 @@ func (s *SessionState) Changes() <-chan struct{} {
 
 // CommitQuery resets the shared aggregation state for a newly accepted query generation.
 func (s *SessionState) CommitQuery(rawQuery string, generation uint64) (*mapr.Query, error) {
-	query, err := mapr.NewQuery(rawQuery)
+	query, err := mapr.NewQuery(rawQuery, s.logger)
 	if err != nil {
 		return nil, fmt.Errorf("parse session query: %w", err)
 	}
@@ -63,7 +80,7 @@ func (s *SessionState) CommitQuery(rawQuery string, generation uint64) (*mapr.Qu
 	s.mu.Lock()
 	s.generation = generation
 	s.query = query
-	s.global = mapr.NewGlobalGroupSet()
+	s.global = mapr.NewGlobalGroupSet(s.logger)
 	s.lastResult = ""
 	s.mu.Unlock()
 

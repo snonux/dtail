@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // GroupSet represents a map of aggregate sets. The group sets
@@ -13,7 +15,8 @@ import (
 // E.g. "group by $cid" would create one aggregate set and one map
 // entry per customer id.
 type GroupSet struct {
-	sets map[string]*AggregateSet
+	sets   map[string]*AggregateSet
+	logger logging.Logger
 }
 
 // Internal helper type
@@ -30,8 +33,8 @@ type resultStats struct {
 }
 
 // NewGroupSet returns a new empty group set.
-func NewGroupSet() *GroupSet {
-	g := GroupSet{}
+func NewGroupSet(logger logging.Logger) *GroupSet {
+	g := GroupSet{logger: logging.OrNop(logger)}
 	g.InitSet()
 	return &g
 }
@@ -39,6 +42,11 @@ func NewGroupSet() *GroupSet {
 // String representation of the group set.
 func (g *GroupSet) String() string {
 	return fmt.Sprintf("GroupSet(%v)", g.sets)
+}
+
+// IsEmpty reports whether the group set contains any aggregate rows.
+func (g *GroupSet) IsEmpty() bool {
+	return len(g.sets) == 0
 }
 
 // InitSet makes the group set empty (initialize).
@@ -71,7 +79,7 @@ func (g *GroupSet) Serialize(ctx context.Context, ch chan<- string) map[string]*
 			remaining[groupKey] = set
 			continue
 		}
-		if !set.Serialize(ctx, groupKey, ch) {
+		if !set.Serialize(ctx, groupKey, ch, g.logger) {
 			aborted = true
 			if remaining == nil {
 				remaining = make(map[string]*AggregateSet, len(g.sets))
@@ -120,10 +128,10 @@ func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []in
 
 	for _, groupKey := range keys {
 		set := g.sets[groupKey]
-		result := result{groupKey: groupKey}
+		row := result{groupKey: groupKey}
 
 		for i, sc := range query.Select {
-			if valueStrLen, err = g.resultSelect(query, &sc, set, &result, &stats); err != nil {
+			if valueStrLen, err = g.resultSelect(query, &sc, set, &row, &stats); err != nil {
 				return rows, columnWidths, err
 			}
 
@@ -139,7 +147,7 @@ func (g *GroupSet) result(query *Query, gathercolumnWidths bool) ([]result, []in
 				columnWidths[i] = valueStrLen
 			}
 		}
-		rows = append(rows, result)
+		rows = append(rows, row)
 	}
 
 	g.resultOrderBy(query, rows)
@@ -204,7 +212,7 @@ func (*GroupSet) resultSelect(query *Query, sc *selectCondition, set *AggregateS
 		value = percentileRank(set.FValues[sc.FieldStorage], stats.percentileValues[sc.FieldStorage])
 		valueStr = fmt.Sprintf("%f", value)
 	default:
-		return 0, fmt.Errorf("Unknown aggregation method '%v'", sc.Operation)
+		return 0, fmt.Errorf("unknown aggregation method '%v'", sc.Operation)
 	}
 
 	if sc.FieldStorage == query.OrderBy {

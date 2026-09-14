@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // TestGroupSetAvgZeroSamplesDoesNotProduceNaN is a negative test that reproduces
@@ -16,16 +18,17 @@ import (
 func TestGroupSetAvgZeroSamplesDoesNotProduceNaN(t *testing.T) {
 	t.Parallel()
 
-	query, err := NewQuery("select avg(latency) from stats group by host")
+	query, err := NewQuery("select avg(latency) from stats group by host", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Unable to parse query: %v", err)
 	}
 
-	groupSet := NewGroupSet()
+	groupSet := NewGroupSet(logging.NopLogger{})
 
 	// Simulate what the server does when no log line fields match the select
 	// clause: GetSet creates the entry, but Samples stays 0 and FValues is
 	// never populated. This is the bug trigger — previously 0/0 = NaN.
+
 	_ = groupSet.GetSet("host-a")
 
 	rows, _, err := groupSet.result(query, false)
@@ -59,13 +62,14 @@ func TestGroupSetAvgZeroSamplesDoesNotProduceNaN(t *testing.T) {
 func TestGroupSetAvgZeroSamplesResultOutputContainsNoNaN(t *testing.T) {
 	t.Parallel()
 
-	query, err := NewQuery("select avg(latency) from stats group by host")
+	query, err := NewQuery("select avg(latency) from stats group by host", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Unable to parse query: %v", err)
 	}
 
-	groupSet := NewGroupSet()
+	groupSet := NewGroupSet(logging.NopLogger{})
 	// Empty set — Samples==0, no FValues populated.
+
 	_ = groupSet.GetSet("host-a")
 
 	output, _, err := groupSet.Result(query, 100, nil)

@@ -4,8 +4,6 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"github.com/mimecast/dtail/internal/config"
 )
 
 // fout logs to both a file and stdout. It is the default client logger.
@@ -25,26 +23,22 @@ type fout struct {
 	logPayload bool
 }
 
-// newFout builds the default client logger. Whether retrieved payload is teed
-// to the file is decided once at construction from the client config.
-func newFout(strategy Strategy) *fout {
-	return newFoutWithSinks(newFile(strategy), newStdout(), clientLogPayloadEnabled())
+var _ Logger = (*fout)(nil)
+var _ Starter = (*fout)(nil)
+var _ Pauser = (*fout)(nil)
+var _ Rotator = (*fout)(nil)
+
+// newFout builds the default client logger from injected process options.
+func newFout(strategy Strategy, options Options) *fout {
+	return newFoutWithSinks(newFile(strategy, options.LogDir), newStdout(), options.LogPayload)
 }
 
 // newFoutWithSinks builds a fout over injectable sinks and an explicit payload
-// switch. Production uses newFout (concrete file+stdout, config-driven switch);
+// switch. Production uses newFout (concrete file+stdout, injected switch);
 // tests inject fakes to assert that diagnostics always reach the file while
 // payload reaches it only when opted in.
 func newFoutWithSinks(file, stdout Logger, logPayload bool) *fout {
 	return &fout{file: file, stdout: stdout, logPayload: logPayload}
-}
-
-// clientLogPayloadEnabled reports whether the client has opted in to teeing the
-// full retrieved payload into the daily log file. Default (false) keeps only
-// diagnostics in the file. config.Client is nil-guarded because a logger can be
-// constructed in early/unit contexts before config.Setup has populated it.
-func clientLogPayloadEnabled() bool {
-	return config.Client != nil && config.Client.LogPayload
 }
 
 func (f *fout) Start(ctx context.Context, wg *sync.WaitGroup) {
@@ -52,11 +46,19 @@ func (f *fout) Start(ctx context.Context, wg *sync.WaitGroup) {
 		defer wg.Done()
 
 		var wg2 sync.WaitGroup
-		wg2.Add(2)
-		f.file.Start(ctx, &wg2)
-		f.stdout.Start(ctx, &wg2)
+		startLogger(ctx, &wg2, f.file)
+		startLogger(ctx, &wg2, f.stdout)
 		wg2.Wait()
 	}()
+}
+
+func startLogger(ctx context.Context, wg *sync.WaitGroup, logger Logger) {
+	starter, ok := logger.(Starter)
+	if !ok {
+		return
+	}
+	wg.Add(1)
+	starter.Start(ctx, wg)
 }
 
 func (f *fout) Log(now time.Time, message string) {
@@ -66,9 +68,7 @@ func (f *fout) Log(now time.Time, message string) {
 
 func (f *fout) LogWithColors(now time.Time, message, coloredMessage string) {
 	f.stdout.LogWithColors(now, "", coloredMessage)
-	// The file logger does not support colors, so write the plain message via
-	// Log (its LogWithColors would route to RawWithColors, which panics).
-	f.file.Log(now, message)
+	f.file.LogWithColors(now, message, coloredMessage)
 }
 
 // Raw writes retrieved payload. It always reaches stdout/terminal; it is teed
@@ -85,7 +85,7 @@ func (f *fout) RawWithColors(now time.Time, message, coloredMessage string) {
 	f.stdout.RawWithColors(now, "", coloredMessage)
 	// Same opt-in gate as Raw; the file gets the plain (uncolored) payload.
 	if f.logPayload {
-		f.file.Raw(now, message)
+		f.file.RawWithColors(now, message, coloredMessage)
 	}
 }
 
@@ -104,9 +104,28 @@ func (f *fout) RawFileOnly(now time.Time, message string) {
 	}
 }
 
-func (f *fout) Flush()  { f.stdout.Flush(); f.file.Flush() }
-func (f *fout) Pause()  { f.stdout.Pause(); f.file.Pause() }
-func (f *fout) Resume() { f.stdout.Resume(); f.file.Resume() }
-func (f *fout) Rotate() { f.file.Rotate() }
+func (f *fout) Flush() { f.stdout.Flush(); f.file.Flush() }
 
-func (fout) SupportsColors() bool { return true }
+func (f *fout) Pause() {
+	for _, logger := range []Logger{f.stdout, f.file} {
+		if pauser, ok := logger.(Pauser); ok {
+			pauser.Pause()
+		}
+	}
+}
+
+func (f *fout) Resume() {
+	for _, logger := range []Logger{f.stdout, f.file} {
+		if pauser, ok := logger.(Pauser); ok {
+			pauser.Resume()
+		}
+	}
+}
+
+func (f *fout) Rotate() {
+	if rotator, ok := f.file.(Rotator); ok {
+		rotator.Rotate()
+	}
+}
+
+func (*fout) SupportsColors() bool { return true }

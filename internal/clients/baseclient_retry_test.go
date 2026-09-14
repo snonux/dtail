@@ -10,7 +10,6 @@ import (
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 	sshclient "github.com/mimecast/dtail/internal/ssh/client"
 
@@ -42,13 +41,13 @@ func TestJitterRetryDelayWithinBounds(t *testing.T) {
 	base := 10 * time.Second
 	random := rand.New(rand.NewSource(1))
 
-	min := 8 * time.Second
-	max := 12 * time.Second
+	minDelay := 8 * time.Second
+	maxDelay := 12 * time.Second
 
 	for i := 0; i < 100; i++ {
 		got := jitterRetryDelay(base, random)
-		if got < min || got > max {
-			t.Fatalf("jitterRetryDelay() = %v, expected between %v and %v", got, min, max)
+		if got < minDelay || got > maxDelay {
+			t.Fatalf("jitterRetryDelay() = %v, expected between %v and %v", got, minDelay, maxDelay)
 		}
 	}
 }
@@ -68,12 +67,6 @@ func TestSleepWithContextCancellation(t *testing.T) {
 }
 
 func TestStartConnectionReconnectsWithLatestSessionSpec(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	first := &retryTestConnector{
 		server:  "srv1",
 		handler: &retryTestHandler{},
@@ -98,7 +91,7 @@ func TestStartConnectionReconnectsWithLatestSessionSpec(t *testing.T) {
 	var capturedSpec SessionSpec
 	client := &baseClient{
 		mu:          newBaseClientMu(),
-		retry:       true,
+		profile:     clientProfile{retry: true},
 		sessionSpec: originalSpec,
 		stats: &stats{
 			connectionsEstCh: make(chan struct{}, 1),
@@ -135,8 +128,6 @@ func TestStartConnectionReconnectsWithLatestSessionSpec(t *testing.T) {
 }
 
 func TestApplyInteractiveReloadConcurrentWithReconnect(t *testing.T) {
-	resetClientLogger(t)
-
 	originalSpec := SessionSpec{
 		Mode:  omode.GrepClient,
 		Files: []string{"/var/log/app.log"},
@@ -162,7 +153,7 @@ func TestApplyInteractiveReloadConcurrentWithReconnect(t *testing.T) {
 	client := &baseClient{
 		mu:          newBaseClientMu(),
 		Args:        originalArgs,
-		retry:       true,
+		profile:     clientProfile{retry: true},
 		sessionSpec: originalSpec,
 		stats: &stats{
 			connectionsEstCh: make(chan struct{}, 1),
@@ -170,7 +161,6 @@ func TestApplyInteractiveReloadConcurrentWithReconnect(t *testing.T) {
 		connections: []connectors.Connector{
 			newReloadRetryConnector("srv1", originalSpec),
 		},
-		maker: &interactiveReloadMaker{},
 		connectionFactory: func(server string, _ []gossh.AuthMethod,
 			_ sshclient.HostKeyCallback, sessionSpec SessionSpec, _ bool) connectors.Connector {
 			reconnects.Add(1)

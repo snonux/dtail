@@ -2,6 +2,8 @@ package mapr
 
 import (
 	"fmt"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // GlobalGroupSet is used on the dtail client to merge multiple group sets
@@ -12,11 +14,11 @@ type GlobalGroupSet struct {
 }
 
 // NewGlobalGroupSet creates a new empty global group set.
-func NewGlobalGroupSet() *GlobalGroupSet {
+func NewGlobalGroupSet(logger logging.Logger) *GlobalGroupSet {
 	g := GlobalGroupSet{
+		GroupSet:  *NewGroupSet(logger),
 		semaphore: make(chan struct{}, 1),
 	}
-	g.InitSet()
 	return &g
 }
 
@@ -74,7 +76,7 @@ func (g *GlobalGroupSet) SwapOut() *GroupSet {
 	g.semaphore <- struct{}{}
 	defer func() { <-g.semaphore }()
 
-	set := &GroupSet{sets: g.sets}
+	set := &GroupSet{sets: g.sets, logger: g.logger}
 	g.InitSet()
 	return set
 }

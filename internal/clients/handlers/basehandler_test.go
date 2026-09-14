@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -186,12 +185,6 @@ func TestHandleSessionAckMessage(t *testing.T) {
 }
 
 func TestHandleCloseConnectionAcknowledgesBeforeShutdown(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	handler := baseHandler{
 		done:     internal.NewDone(),
 		server:   "server-under-test",
@@ -221,12 +214,6 @@ func TestHandleCloseConnectionAcknowledgesBeforeShutdown(t *testing.T) {
 // concurrently. Without the priority-select fix, Go's non-deterministic select
 // would randomly pick the Done() case and drop the queued ack ~50% of the time.
 func TestReadDrainsAckBeforeEOF(t *testing.T) {
-	originalLogger := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Client = originalLogger
-	})
-
 	// Run many iterations to catch the race reliably even with -race.
 	const iterations = 500
 	for i := 0; i < iterations; i++ {

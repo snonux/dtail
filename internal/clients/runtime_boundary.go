@@ -1,16 +1,22 @@
 package clients
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"time"
 
+	"github.com/mimecast/dtail/internal/authkey"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/color"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
+	sessionHandlers "github.com/mimecast/dtail/internal/handlers"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
-	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
-	sshserver "github.com/mimecast/dtail/internal/ssh/server"
-	user "github.com/mimecast/dtail/internal/user/server"
+	user "github.com/mimecast/dtail/internal/sessionuser"
 )
 
 type clientRuntimeBoundary struct {
@@ -18,10 +24,18 @@ type clientRuntimeBoundary struct {
 	sshConnectTimeout time.Duration
 	interruptPause    time.Duration
 	serverCfg         *config.ServerConfig
+	clientCfg         *config.ClientConfig
 	output            *clientOutputFormatter
+	loggers           LoggerDependencies
+	stdout            func() io.Writer
+	colorizer         *brush.Brush
+	hostname          string
+	hostnameErr       error
 }
 
-func newClientRuntimeBoundary(cfg config.RuntimeConfig) *clientRuntimeBoundary {
+func newClientRuntimeBoundary(cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) *clientRuntimeBoundary {
+	colorizer := firstColorizer(colorizers)
 	sshPort := 2222
 	sshConnectTimeout := 2 * time.Second
 	if cfg.Common != nil {
@@ -33,12 +47,20 @@ func newClientRuntimeBoundary(cfg config.RuntimeConfig) *clientRuntimeBoundary {
 		}
 	}
 
+	loggers = loggers.normalized()
+	hostname, hostnameErr := cfg.Hostname()
 	return &clientRuntimeBoundary{
 		sshPort:           sshPort,
 		sshConnectTimeout: sshConnectTimeout,
 		interruptPause:    time.Second * time.Duration(config.InterruptTimeoutS),
 		serverCfg:         cfg.Server,
+		clientCfg:         cfg.Client,
 		output:            newClientOutputFormatter(cfg.Client),
+		loggers:           loggers,
+		stdout:            func() io.Writer { return os.Stdout },
+		colorizer:         colorizer,
+		hostname:          hostname,
+		hostnameErr:       hostnameErr,
 	}
 }
 
@@ -57,39 +79,62 @@ func (r *clientRuntimeBoundary) InterruptPause() time.Duration {
 	return r.interruptPause
 }
 
-func (r *clientRuntimeBoundary) NewServerlessHandler(userName string) (serverHandlers.Handler, error) {
+func (r *clientRuntimeBoundary) NewServerlessHandler(ctx context.Context, userName string) (sessionHandlers.Handler, error) {
+	if r.hostnameErr != nil {
+		return nil, fmt.Errorf("create serverless handler: resolve hostname: %w", r.hostnameErr)
+	}
 	var permissionLookup user.PermissionLookup
 	if r.serverCfg != nil {
 		permissionLookup = r.serverCfg.UserPermissions
 	}
 
-	serverUser, err := user.New(userName, "local(serverless)", permissionLookup)
+	serverUser, err := user.New(userName, "local(serverless)", permissionLookup, r.loggers.Server)
 	if err != nil {
 		return nil, err
 	}
 
-	switch userName {
-	case config.HealthUser:
-		return serverHandlers.NewHealthHandler(serverUser), nil
-	default:
-		if r.serverCfg == nil {
-			return nil, fmt.Errorf("missing serverless server config")
-		}
-		// Serverless mode does not share an SSH server's auth-key store, so
-		// create a dedicated store using the server config's TTL and max-key
-		// limits. This avoids any package-level mutable state.
-		keyStore := sshserver.NewAuthKeyStore(
+	dependencies := sessionHandlers.Dependencies{
+		ServerConfig: r.serverCfg,
+		Loggers: sessionHandlers.HandlerLoggers{
+			Diagnostics: r.loggers.Server,
+			Reader:      r.loggers.Common,
+		},
+		Capabilities: sessionHandlers.DetectCapabilities(),
+		Colorizer:    r.colorizer,
+		Hostname:     r.hostname,
+	}
+	if r.serverCfg != nil {
+		dependencies.CatLimiter = make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentCats, 2))
+		dependencies.TailLimiter = make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentTails, 50))
+		dependencies.AuthKeyStore = authkey.New(
 			time.Duration(r.serverCfg.AuthKeyTTLSeconds)*time.Second,
 			r.serverCfg.AuthKeyMaxPerUser,
 		)
-		return serverHandlers.NewServerHandler(
-			serverUser,
-			make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentCats, 2)),
-			make(chan struct{}, positiveOrDefault(r.serverCfg.MaxConcurrentTails, 50)),
-			r.serverCfg,
-			keyStore,
-		), nil
+		dependencies.ServerlessOutput = r.serverlessOutputWriter()
 	}
+	return sessionHandlers.NewForUser(ctx, serverUser, dependencies)
+}
+
+func (r *clientRuntimeBoundary) serverlessOutputWriter() io.Writer {
+	var output io.Writer = os.Stdout
+	if r.stdout != nil {
+		if configured := r.stdout(); configured != nil {
+			output = configured
+		}
+	}
+	if r.clientCfg == nil || !r.clientCfg.LogPayload {
+		return output
+	}
+	return io.MultiWriter(output, payloadFileTeeWriter{logger: r.loggers.Client})
+}
+
+type payloadFileTeeWriter struct {
+	logger logging.Logger
+}
+
+func (w payloadFileTeeWriter) Write(p []byte) (int, error) {
+	clientlog.TeePayloadToFile(w.logger, string(p))
+	return len(p), nil
 }
 
 func positiveOrDefault(value, fallback int) int {

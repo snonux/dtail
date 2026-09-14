@@ -1,6 +1,7 @@
 package benchmarks
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -62,10 +63,10 @@ func RunProfiledCommand(b *testing.B, config ProfileConfig, tool string, args ..
 	}
 
 	// Combine all arguments
-	allArgs := append(profileArgs, args...)
+	profileArgs = append(profileArgs, args...)
 
 	// Create command
-	cmd := exec.Command(cmdPath, allArgs...)
+	cmd := exec.Command(cmdPath, profileArgs...)
 
 	// Set up output capture
 	outputFile := filepath.Join(config.ProfileDir, fmt.Sprintf("%s_output_%s.log",
@@ -74,8 +75,6 @@ func RunProfiledCommand(b *testing.B, config ProfileConfig, tool string, args ..
 	if err != nil {
 		return nil, fmt.Errorf("creating output file: %w", err)
 	}
-	defer output.Close()
-
 	cmd.Stdout = output
 	cmd.Stderr = output
 
@@ -83,30 +82,45 @@ func RunProfiledCommand(b *testing.B, config ProfileConfig, tool string, args ..
 	start := time.Now()
 
 	// Run command
-	err = cmd.Run()
+	runErr := cmd.Run()
 
 	// Record duration
 	duration := time.Since(start)
 
+	resultErr := errors.Join(
+		wrapError("run profiled command", runErr),
+		wrapError("close profiled command output", output.Close()),
+	)
+	exitCode := -1
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
 	result := &ProfileResult{
 		Tool:      tool,
 		Operation: strings.Join(args, "_"),
 		Duration:  duration,
-		ExitCode:  cmd.ProcessState.ExitCode(),
-		Error:     err,
+		ExitCode:  exitCode,
+		Error:     resultErr,
+	}
+	if resultErr != nil {
+		return result, resultErr
 	}
 
 	// Find generated profile files
 	timestamp := time.Now().Format("20060102_1504")
-	profiles, _ := filepath.Glob(filepath.Join(config.ProfileDir,
+	profiles, err := filepath.Glob(filepath.Join(config.ProfileDir,
 		fmt.Sprintf("%s_*_%s*.prof", tool, timestamp)))
+	if err != nil {
+		return result, fmt.Errorf("find generated profiles: %w", err)
+	}
 
 	for _, profile := range profiles {
-		if strings.Contains(profile, "_cpu_") {
+		switch {
+		case strings.Contains(profile, "_cpu_"):
 			result.CPUProfile = profile
-		} else if strings.Contains(profile, "_mem_") {
+		case strings.Contains(profile, "_mem_"):
 			result.MemProfile = profile
-		} else if strings.Contains(profile, "_alloc_") {
+		case strings.Contains(profile, "_alloc_"):
 			result.AllocProfile = profile
 		}
 	}
@@ -129,7 +143,7 @@ func ProfileBenchmark(b *testing.B, name string, tool string, args ...string) {
 				LineVariation: 50,
 			}
 			testFile = GenerateTestFile(b, testConfig)
-			defer os.Remove(testFile)
+			cleanupBenchmarkFile(b, testFile)
 
 			// Replace placeholder in args
 			for i, arg := range args {
@@ -141,7 +155,7 @@ func ProfileBenchmark(b *testing.B, name string, tool string, args ...string) {
 
 		// Run profiled command
 		result, err := RunProfiledCommand(b, config, tool, args...)
-		if err != nil && result.ExitCode != 0 {
+		if err != nil {
 			b.Fatalf("Command failed: %v", err)
 		}
 
@@ -207,7 +221,7 @@ func BenchmarkDMapWithProfiling(b *testing.B) {
 	// First generate a CSV file for dmap
 	csvFile := filepath.Join(os.TempDir(), "dmap_test.csv")
 	generateCSVTestData(b, csvFile, 10000)
-	defer os.Remove(csvFile)
+	cleanupBenchmarkFile(b, csvFile)
 
 	ProfileBenchmark(b, "Count", "dmap", "--plain", "--cfg", "none",
 		"-query", fmt.Sprintf("select count(*) from %s", csvFile))
@@ -219,10 +233,11 @@ func generateCSVTestData(b *testing.B, filename string, rows int) {
 	if err != nil {
 		b.Fatalf("Failed to create CSV file: %v", err)
 	}
-	defer f.Close()
-
 	// Write header
-	fmt.Fprintln(f, "timestamp,user,action,duration")
+	if _, err := fmt.Fprintln(f, "timestamp,user,action,duration"); err != nil {
+		b.Fatalf("Failed to write CSV header: %v", errors.Join(err,
+			wrapError("close incomplete CSV file", f.Close())))
+	}
 
 	// Write data
 	for i := 0; i < rows; i++ {
@@ -231,6 +246,12 @@ func generateCSVTestData(b *testing.B, filename string, rows int) {
 		action := []string{"login", "query", "logout"}[i%3]
 		duration := 100 + i%500
 
-		fmt.Fprintf(f, "%s,%s,%s,%d\n", timestamp, user, action, duration)
+		if _, err := fmt.Fprintf(f, "%s,%s,%s,%d\n", timestamp, user, action, duration); err != nil {
+			b.Fatalf("Failed to write CSV row: %v", errors.Join(err,
+				wrapError("close incomplete CSV file", f.Close())))
+		}
+	}
+	if err := f.Close(); err != nil {
+		b.Fatalf("Failed to close CSV file: %v", err)
 	}
 }

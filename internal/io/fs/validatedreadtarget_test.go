@@ -9,22 +9,28 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/regex"
 )
 
-func TestValidatedCatFileStartWithProcessorOptimizedReadsAllLines(t *testing.T) {
-	resetCommonLogger(t)
-
+func TestValidatedCatFileStartReadsAllLines(t *testing.T) {
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	target := mustValidatedReadTarget(t, filePath)
 	re := regex.NewNoop()
 
-	cat := NewValidatedCatFile(filePath, target, "glob-id", make(chan string, 1), defaultMaxLineLength)
+	cat := mustNewReadFile(ReadOptions{
+		Mode:           omode.CatClient,
+		Target:         &target,
+		FilePath:       filePath,
+		GlobID:         "glob-id",
+		ServerMessages: make(chan string, 1),
+		MaxLineLength:  defaultMaxLineLength,
+		Logger:         testLogger,
+	})
 	processor := &captureProcessor{}
 
-	if err := cat.readFile.StartWithProcessorOptimized(
+	if err := cat.Start(
 		context.Background(),
 		lcontext.LContext{},
 		processor,
@@ -40,8 +46,6 @@ func TestValidatedCatFileStartWithProcessorOptimizedReadsAllLines(t *testing.T) 
 }
 
 func TestValidatedReadTargetOpenRejectsEscapingSymlinkSwap(t *testing.T) {
-	resetCommonLogger(t)
-
 	baseDir := t.TempDir()
 	rootDir := filepath.Join(baseDir, "root")
 	outsideDir := filepath.Join(baseDir, "outside")
@@ -80,8 +84,6 @@ func TestValidatedReadTargetOpenRejectsEscapingSymlinkSwap(t *testing.T) {
 }
 
 func TestValidatedReadTargetOpenRejectsSameRootSymlinkSwap(t *testing.T) {
-	resetCommonLogger(t)
-
 	baseDir := t.TempDir()
 	filePath := filepath.Join(baseDir, "app.log")
 	if err := os.WriteFile(filePath, []byte("alpha\n"), 0600); err != nil {
@@ -163,17 +165,28 @@ func TestNewValidatedJournalTargetAcceptsLiteralShellMetacharacters(t *testing.T
 }
 
 func TestValidatedTailFileTruncatedReopenDetectsTruncation(t *testing.T) {
-	resetCommonLogger(t)
-
 	filePath := writeProcessorTestFile(t, "alpha\nbeta\n")
 	target := mustValidatedReadTarget(t, filePath)
 
-	tail := NewValidatedTailFile(filePath, target, "glob-id", make(chan string, 1), defaultMaxLineLength)
-	fd, err := target.Open()
-	if err != nil {
-		t.Fatalf("open validated target: %v", err)
+	tail := mustNewReadFile(ReadOptions{
+		Mode:           omode.TailClient,
+		Target:         &target,
+		FilePath:       filePath,
+		GlobID:         "glob-id",
+		ServerMessages: make(chan string, 1),
+		SeekEOF:        true,
+		MaxLineLength:  defaultMaxLineLength,
+		Logger:         testLogger,
+	})
+	fd, openErr := target.Open()
+	if openErr != nil {
+		t.Fatalf("open validated target: %v", openErr)
 	}
-	defer fd.Close()
+	t.Cleanup(func() {
+		if closeErr := fd.Close(); closeErr != nil {
+			t.Errorf("close validated target: %v", closeErr)
+		}
+	})
 
 	if _, err := fd.Seek(0, io.SeekEnd); err != nil {
 		t.Fatalf("seek end: %v", err)
@@ -182,7 +195,7 @@ func TestValidatedTailFileTruncatedReopenDetectsTruncation(t *testing.T) {
 		t.Fatalf("truncate file: %v", err)
 	}
 
-	isTruncated, err := tail.readFile.truncated(fd)
+	isTruncated, err := tail.truncated(fd)
 	if !isTruncated {
 		t.Fatal("expected truncation to be detected")
 	}
@@ -205,14 +218,4 @@ func mustValidatedReadTarget(t *testing.T, path string) ValidatedReadTarget {
 	}
 
 	return target
-}
-
-func resetCommonLogger(t *testing.T) {
-	t.Helper()
-
-	originalLogger := dlog.Common
-	dlog.Common = &dlog.DLog{}
-	t.Cleanup(func() {
-		dlog.Common = originalLogger
-	})
 }

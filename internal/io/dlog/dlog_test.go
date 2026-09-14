@@ -1,6 +1,16 @@
 package dlog
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestNewLevelReturnsErrorForUnknownLevel(t *testing.T) {
+	_, err := newLevel("chatty")
+	if err == nil || !strings.Contains(err.Error(), "chatty") {
+		t.Fatalf("newLevel error = %v, want unknown level", err)
+	}
+}
 
 // TestTraceEnabled verifies that TraceEnabled mirrors Trace's internal
 // maxLevel < Trace early-return: it must report true exactly when the

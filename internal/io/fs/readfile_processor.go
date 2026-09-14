@@ -1,187 +1,14 @@
 package fs
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"io"
-	"os"
-	"time"
 
-	"github.com/mimecast/dtail/internal/ctxutil"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
 )
-
-// StartWithProcessor starts reading a log file using a LineProcessor for handling lines.
-// This is a channel-less implementation for better performance.
-func (f *readFile) StartWithProcessor(ctx context.Context, ltx lcontext.LContext,
-	processor line.Processor, re regex.Regex) error {
-
-	reader, fd, decompressor, err := f.makeReader()
-	if fd != nil {
-		defer fd.Close()
-	}
-	if decompressor != nil {
-		defer func() {
-			if closeErr := decompressor.Close(); closeErr != nil {
-				dlog.Common.Warn(f.filePath, "Unable to close compressed reader", closeErr)
-			}
-		}()
-	}
-	if err != nil {
-		return err
-	}
-
-	truncateCtx, cancelTruncate := context.WithCancel(ctx)
-	defer cancelTruncate()
-
-	truncate := make(chan struct{})
-
-	go f.periodicTruncateCheck(truncateCtx, truncate)
-
-	// Process file with direct callbacks instead of channels
-	err = f.readWithProcessor(ctx, fd, reader, truncate, ltx, processor, re)
-
-	// Ensure any buffered data is flushed
-	if flushErr := processor.Flush(); flushErr != nil && err == nil {
-		err = flushErr
-	}
-
-	return err
-}
-
-// readWithProcessor reads from the file and processes lines directly without channels
-func (f *readFile) readWithProcessor(ctx context.Context, fd *os.File, reader *bufio.Reader,
-	truncate <-chan struct{}, ltx lcontext.LContext, processor line.Processor, re regex.Regex) error {
-
-	var offset uint64
-	message := pool.BytesBuffer.Get().(*bytes.Buffer)
-	// Use a closure so that the CURRENT value of `message` is recycled on
-	// return, not the pointer captured at defer-registration time. Downstream
-	// code paths that take ownership of the buffer set `message = nil` before
-	// reassigning or returning, preventing a double-recycle.
-	defer func() {
-		if message != nil {
-			pool.RecycleBytesBuffer(message)
-		}
-	}()
-
-	// Create a line filter processor that wraps the given processor
-	filterProcessor := &filteringProcessor{
-		processor: processor,
-		re:        re,
-		ltx:       ltx,
-		stats:     &f.stats,
-		globID:    f.globID,
-	}
-
-	for {
-		b, err := reader.ReadByte()
-		if err != nil {
-			// handleReadErrorProcessor may hand `message` to ProcessFilteredLine
-			// (which takes ownership); in that case it sets *messagePtr = nil so
-			// the caller's defer does not recycle an already-recycled buffer.
-			status, err := f.handleReadErrorProcessor(ctx, err, fd, truncate, &message, filterProcessor)
-			if abortReading == status {
-				return err
-			}
-			if !ctxutil.Sleep(ctx, 100*time.Millisecond) {
-				return nil
-			}
-			continue
-		}
-
-		offset++
-		message.WriteByte(b)
-
-		status := f.handleReadByteProcessor(ctx, b, message, filterProcessor)
-		if status == abortReading {
-			// ProcessFilteredLine took ownership; avoid defer double-recycle.
-			message = nil
-			return nil
-		}
-		if status == continueReading {
-			// Previous buffer was consumed by ProcessFilteredLine; acquire a fresh one.
-			message = pool.BytesBuffer.Get().(*bytes.Buffer)
-		}
-	}
-}
-
-// handleReadByteProcessor processes a byte read from the file
-func (f *readFile) handleReadByteProcessor(ctx context.Context, b byte,
-	message *bytes.Buffer, processor *filteringProcessor) readStatus {
-
-	switch b {
-	case '\n':
-		// Process the complete line
-		f.updatePosition()
-		if err := processor.ProcessFilteredLine(message); err != nil {
-			return abortReading
-		}
-
-		f.warnedAboutLongLine = false
-		return continueReading
-
-	default:
-		if message.Len() >= f.lineLimit() {
-			if !f.warnAboutLongLine(ctx) {
-				return abortReading
-			}
-			// Force a line break
-			message.WriteByte('\n')
-
-			// Process the line
-			f.updatePosition()
-			if err := processor.ProcessFilteredLine(message); err != nil {
-				return abortReading
-			}
-			return continueReading
-		}
-	}
-
-	return nothing
-}
-
-// handleReadErrorProcessor handles read errors in processor mode. When it hands
-// the buffer to ProcessFilteredLine it nils out *messagePtr, signalling to the
-// caller that ownership has been transferred downstream.
-func (f *readFile) handleReadErrorProcessor(ctx context.Context, err error, fd *os.File,
-	truncate <-chan struct{}, messagePtr **bytes.Buffer, processor *filteringProcessor) (readStatus, error) {
-
-	if err != io.EOF {
-		return abortReading, err
-	}
-
-	select {
-	case <-truncate:
-		if isTruncated, err := f.truncated(fd); isTruncated {
-			return abortReading, err
-		}
-	case <-ctx.Done():
-		return abortReading, nil
-	default:
-	}
-
-	if !f.seekEOF {
-		dlog.Common.Info(f.FilePath(), "End of file reached")
-		message := *messagePtr
-		if len(message.Bytes()) > 0 {
-			// Process the last line if it doesn't end with newline.
-			f.updatePosition()
-			*messagePtr = nil
-			if processErr := processor.ProcessFilteredLine(message); processErr != nil {
-				return abortReading, processErr
-			}
-		}
-		return abortReading, nil
-	}
-
-	return nothing, nil
-}
 
 // filteringProcessor wraps a LineProcessor to add regex filtering
 type filteringProcessor struct {
@@ -190,6 +17,7 @@ type filteringProcessor struct {
 	ltx       lcontext.LContext
 	stats     *stats
 	globID    string
+	recycle   func(*bytes.Buffer)
 
 	// For local context handling
 	beforeBuf  []*bytes.Buffer
@@ -198,8 +26,44 @@ type filteringProcessor struct {
 	maxReached bool
 }
 
+func (f *ReadFile) recycleBytesBuffer(buf *bytes.Buffer) {
+	pool.RecycleBytesBuffer(buf)
+	if f.bufferRecycleObserver != nil {
+		f.bufferRecycleObserver(buf)
+	}
+}
+
+func (fp *filteringProcessor) recycleBytesBuffer(buf *bytes.Buffer) {
+	if fp.recycle != nil {
+		fp.recycle(buf)
+		return
+	}
+	pool.RecycleBytesBuffer(buf)
+}
+
+// resetGeneration discards local context that belongs to the file generation
+// that just ended. Match-count state remains query-wide across an in-place
+// truncation boundary.
+func (fp *filteringProcessor) resetGeneration() {
+	for i, lineBuf := range fp.beforeBuf {
+		if lineBuf != nil {
+			fp.recycleBytesBuffer(lineBuf)
+			fp.beforeBuf[i] = nil
+		}
+	}
+	fp.beforeBuf = fp.beforeBuf[:0]
+	fp.afterCount = 0
+}
+
 // ProcessFilteredLine applies regex filtering before passing to the underlying processor
 func (fp *filteringProcessor) ProcessFilteredLine(rawLine *bytes.Buffer) error {
+	ownedRawLine := rawLine
+	defer func() {
+		if ownedRawLine != nil {
+			fp.recycleBytesBuffer(ownedRawLine)
+		}
+	}()
+
 	// Update stats
 	lineNum := fp.stats.totalLineCount()
 
@@ -208,7 +72,8 @@ func (fp *filteringProcessor) ProcessFilteredLine(rawLine *bytes.Buffer) error {
 		if !fp.re.Match(rawLine.Bytes()) {
 			fp.stats.updateLineNotMatched()
 			fp.stats.updateLineNotTransmitted()
-			pool.RecycleBytesBuffer(rawLine)
+			ownedRawLine = nil
+			fp.recycleBytesBuffer(rawLine)
 			return nil
 		}
 
@@ -224,10 +89,12 @@ func (fp *filteringProcessor) ProcessFilteredLine(rawLine *bytes.Buffer) error {
 		// shared pool.BytesBuffer a second time; the pool would then hand one object
 		// to two Get callers whose concurrent writes race and corrupt data. So do
 		// not recycle rawLine here.
+		ownedRawLine = nil
 		return fp.processor.ProcessLine(rawLine, lineNum, fp.globID)
 	}
 
 	// Complex case: handle local context (before/after/max)
+	ownedRawLine = nil
 	return fp.processWithContext(rawLine, lineNum)
 }
 
@@ -274,6 +141,16 @@ func (fp *filteringProcessor) ProcessFilteredRaw(raw []byte) error {
 
 // processWithContext handles lines when local context is enabled
 func (fp *filteringProcessor) processWithContext(rawLine *bytes.Buffer, lineNum uint64) error {
+	// rawLine remains ours until it is buffered, recycled, or handed to the
+	// underlying processor. Keep that ownership explicit so a panic while
+	// emitting before-context cannot strand the still-pending matching line.
+	ownedRawLine := rawLine
+	defer func() {
+		if ownedRawLine != nil {
+			fp.recycleBytesBuffer(ownedRawLine)
+		}
+	}()
+
 	matched := fp.re.Match(rawLine.Bytes())
 
 	if !matched {
@@ -286,6 +163,7 @@ func (fp *filteringProcessor) processWithContext(rawLine *bytes.Buffer, lineNum 
 			// Ownership transfers to the processor, which recycles rawLine on every
 			// return path; recycling here on error would double Put into the shared
 			// pool and race (see ProcessFilteredLine).
+			ownedRawLine = nil
 			return fp.processor.ProcessLine(rawLine, lineNum, fp.globID)
 		}
 
@@ -294,12 +172,14 @@ func (fp *filteringProcessor) processWithContext(rawLine *bytes.Buffer, lineNum 
 			// Add to before buffer
 			if len(fp.beforeBuf) >= fp.ltx.BeforeContext {
 				// Recycle oldest buffer
-				pool.RecycleBytesBuffer(fp.beforeBuf[0])
+				fp.recycleBytesBuffer(fp.beforeBuf[0])
 				fp.beforeBuf = fp.beforeBuf[1:]
 			}
+			ownedRawLine = nil
 			fp.beforeBuf = append(fp.beforeBuf, rawLine)
 		} else {
-			pool.RecycleBytesBuffer(rawLine)
+			ownedRawLine = nil
+			fp.recycleBytesBuffer(rawLine)
 		}
 
 		fp.stats.updateLineNotTransmitted()
@@ -311,30 +191,33 @@ func (fp *filteringProcessor) processWithContext(rawLine *bytes.Buffer, lineNum 
 
 	// Check if we've reached max count
 	if fp.maxReached {
-		pool.RecycleBytesBuffer(rawLine)
+		ownedRawLine = nil
+		fp.recycleBytesBuffer(rawLine)
 		return io.EOF // Stop processing
 	}
 
 	// Process before context
 	if fp.ltx.BeforeContext > 0 && len(fp.beforeBuf) > 0 {
+		beforeCount := len(fp.beforeBuf)
 		for i, buf := range fp.beforeBuf {
+			// Ownership transfers to the processor before the call. Clearing the
+			// slot lets resetGeneration recycle only buffers still owned here if
+			// the processor returns an error or panics.
+			fp.beforeBuf[i] = nil
 			fp.stats.updateLineTransmitted()
-			if err := fp.processor.ProcessLine(buf, lineNum-uint64(len(fp.beforeBuf)-i), fp.globID); err != nil {
-				// Clean up remaining buffers
-				for j := i + 1; j < len(fp.beforeBuf); j++ {
-					pool.RecycleBytesBuffer(fp.beforeBuf[j])
-				}
-				pool.RecycleBytesBuffer(rawLine)
+			if err := fp.processor.ProcessLine(buf, lineNum-uint64(beforeCount-i), fp.globID); err != nil {
+				fp.resetGeneration()
 				return err
 			}
 		}
-		fp.beforeBuf = fp.beforeBuf[:0] // Clear the buffer
+		fp.beforeBuf = fp.beforeBuf[:0]
 	}
 
 	// Process the matched line. Ownership transfers to the processor, which
 	// recycles rawLine on every return path; recycling here on error would double
 	// Put into the shared pool and race (see ProcessFilteredLine).
 	fp.stats.updateLineTransmitted()
+	ownedRawLine = nil
 	if err := fp.processor.ProcessLine(rawLine, lineNum, fp.globID); err != nil {
 		return err
 	}

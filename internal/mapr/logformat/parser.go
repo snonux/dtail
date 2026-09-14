@@ -3,16 +3,17 @@ package logformat
 import (
 	"errors"
 	"fmt"
+	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
 // ErrIgnoreFields indicates that the fields should be ignored.
-var ErrIgnoreFields error = errors.New("Ignore this field set")
+var ErrIgnoreFields error = errors.New("ignore this field set")
 
 // Parser is used to parse the mapreduce information from the server log files.
 type Parser interface {
@@ -86,35 +87,37 @@ func wrapParserFactory[T Parser](factory func(string, string, int) (T, error)) P
 
 // NewParser returns a new log parser.
 func NewParser(logFormatName string, query *mapr.Query) (Parser, error) {
-	hostname, err := config.Hostname()
+	hostname, err := os.Hostname()
 	if err != nil {
 		return nil, err
 	}
+	return NewParserWithHostname(logFormatName, query, hostname)
+}
+
+// NewParserWithHostname returns a log parser using the supplied process hostname.
+func NewParserWithHostname(logFormatName string, query *mapr.Query, hostname string) (Parser, error) {
 	now := time.Now()
 	timeZoneName, timeZoneOffset := now.Zone()
 
-	if parserFactory, found := getParserFactory(logFormatName); found {
-		parser, err := parserFactory(hostname, timeZoneName, timeZoneOffset)
-		configureParserQuery(parser, query)
-		return parser, err
-	}
-
-	defaultFactory, found := getParserFactory("default")
+	parserFactory, found := getParserFactory(logFormatName)
 	if !found {
-		return nil, fmt.Errorf("No '%s' mapr log format and no default parser registered", logFormatName)
+		return nil, fmt.Errorf("no '%s' mapr log format", logFormatName)
 	}
 
-	p, err := defaultFactory(hostname, timeZoneName, timeZoneOffset)
-	if err != nil {
-		return p, fmt.Errorf("No '%s' mapr log format and problem creating default one: %v",
-			logFormatName, err)
+	selectedParser, parserErr := parserFactory(hostname, timeZoneName, timeZoneOffset)
+	if parserErr != nil {
+		return nil, fmt.Errorf("create %q mapr log format parser: %w", logFormatName, parserErr)
 	}
-	configureParserQuery(p, query)
-	return p, fmt.Errorf("No '%s' mapr log format", logFormatName)
+	if isNilParser(selectedParser) {
+		return nil, fmt.Errorf("create %q mapr log format parser: factory returned nil parser",
+			logFormatName)
+	}
+	configureParserQuery(selectedParser, query)
+	return selectedParser, nil
 }
 
 func configureParserQuery(parser Parser, query *mapr.Query) {
-	if parser == nil {
+	if isNilParser(parser) {
 		return
 	}
 	queryAware, ok := parser.(queryAwareParser)
@@ -122,4 +125,20 @@ func configureParserQuery(parser Parser, query *mapr.Query) {
 		return
 	}
 	queryAware.setQuery(query)
+}
+
+func isNilParser(parser Parser) bool {
+	if parser == nil {
+		return true
+	}
+
+	value := reflect.ValueOf(parser)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	case reflect.UnsafePointer:
+		return value.IsZero()
+	default:
+		return false
+	}
 }

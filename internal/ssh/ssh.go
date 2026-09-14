@@ -13,7 +13,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 
 	gossh "golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -75,8 +75,8 @@ func EncodePrivateKeyToPEM(privateKey *rsa.PrivateKey) []byte {
 // ssh-agent connection and MUST be closed by the caller once the returned
 // AuthMethod is no longer needed (i.e. after the final SSH handshake that
 // uses it has completed).
-func Agent() (gossh.AuthMethod, io.Closer, error) {
-	return AgentWithKeyIndex(-1)
+func Agent(logger logging.Logger) (gossh.AuthMethod, io.Closer, error) {
+	return AgentWithKeyIndex(-1, logger)
 }
 
 // AgentSignersWithKeyIndex returns SSH agent signers together with an
@@ -93,7 +93,8 @@ func Agent() (gossh.AuthMethod, io.Closer, error) {
 //
 // If keyIndex is -1, all keys are used. Otherwise, only the specified key is
 // used.
-func AgentSignersWithKeyIndex(keyIndex int) ([]gossh.Signer, io.Closer, error) {
+func AgentSignersWithKeyIndex(keyIndex int, logger logging.Logger) ([]gossh.Signer, io.Closer, error) {
+	logger = logging.OrNop(logger)
 	sshAgent, err := dialAgent(os.Getenv("SSH_AUTH_SOCK"))
 	if err != nil {
 		return nil, noopCloser, fmt.Errorf("failed to connect to SSH agent: %w", err)
@@ -115,7 +116,7 @@ func AgentSignersWithKeyIndex(keyIndex int) ([]gossh.Signer, io.Closer, error) {
 		return nil, noopCloser, fmt.Errorf("failed to list SSH agent keys: %w", err)
 	}
 	for i, key := range keys {
-		dlog.Common.Debug("Public key", i, key)
+		logger.Debug("Public key", i, key)
 	}
 
 	signers, err := agentClient.Signers()
@@ -134,7 +135,7 @@ func AgentSignersWithKeyIndex(keyIndex int) ([]gossh.Signer, io.Closer, error) {
 		return nil, noopCloser, fmt.Errorf("key index %d out of range (agent has %d signers)", keyIndex, len(signers))
 	}
 
-	dlog.Common.Debug("Using SSH agent key at index", keyIndex)
+	logger.Debug("Using SSH agent key at index", keyIndex)
 	owned = nil
 	return []gossh.Signer{signers[keyIndex]}, sshAgent, nil
 }
@@ -143,8 +144,8 @@ func AgentSignersWithKeyIndex(keyIndex int) ([]gossh.Signer, io.Closer, error) {
 // The caller owns the returned io.Closer; see AgentSignersWithKeyIndex for
 // lifetime semantics.
 // If keyIndex is -1, all keys are used. Otherwise, only the specified key is used.
-func AgentWithKeyIndex(keyIndex int) (gossh.AuthMethod, io.Closer, error) {
-	signers, closer, err := AgentSignersWithKeyIndex(keyIndex)
+func AgentWithKeyIndex(keyIndex int, logger logging.Logger) (gossh.AuthMethod, io.Closer, error) {
+	signers, closer, err := AgentSignersWithKeyIndex(keyIndex, logger)
 	if err != nil {
 		return nil, closer, err
 	}
@@ -204,7 +205,6 @@ func KeyFile(keyFile string) (gossh.AuthMethod, error) {
 func PrivateKey(keyFile string) (gossh.AuthMethod, error) {
 	signer, err := KeyFile(keyFile)
 	if err != nil {
-		dlog.Common.Debug(keyFile, err)
 		return nil, err
 	}
 	return gossh.AuthMethod(signer), nil

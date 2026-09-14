@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -70,7 +71,7 @@ func TestPlanVariableWarnings(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			query, err := mapr.NewQuery(tc.query)
+			query, err := mapr.NewQuery(tc.query, logging.NopLogger{})
 			if err != nil {
 				t.Fatalf("NewQuery(%q) failed: %v", tc.query, err)
 			}
@@ -97,7 +98,7 @@ func TestPlanVariableWarnings(t *testing.T) {
 // TestPlanVariableWarningsText locks the exact warning wording so downstream
 // tooling and users can rely on it.
 func TestPlanVariableWarningsText(t *testing.T) {
-	query, err := mapr.NewQuery("from STATS select $service group by $service")
+	query, err := mapr.NewQuery("from STATS select $service group by $service", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewQuery failed: %v", err)
 	}
@@ -115,7 +116,7 @@ func TestPlanVariableWarningsText(t *testing.T) {
 // set cannot be determined statically produce no warnings, avoiding false
 // positives that would train users to ignore the diagnostic.
 func TestPlanVariableWarningsNonEnumerable(t *testing.T) {
-	query, err := mapr.NewQuery("from STATS select $whatever group by $whatever")
+	query, err := mapr.NewQuery("from STATS select $whatever group by $whatever", logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("NewQuery failed: %v", err)
 	}

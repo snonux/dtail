@@ -16,10 +16,15 @@ type Flags struct {
 
 // AddFlags adds profiling flags to the flag set
 func AddFlags(f *Flags) {
-	flag.BoolVar(&f.CPUProfile, "cpuprofile", false, "Enable CPU profiling")
-	flag.BoolVar(&f.MemProfile, "memprofile", false, "Enable memory profiling")
-	flag.BoolVar(&f.Profile, "profile", false, "Enable all profiling (CPU + memory)")
-	flag.StringVar(&f.ProfileDir, "profiledir", "profiles", "Directory to store profiles")
+	BindFlags(flag.CommandLine, f)
+}
+
+// BindFlags adds profiling flags to fs.
+func BindFlags(fs *flag.FlagSet, f *Flags) {
+	fs.BoolVar(&f.CPUProfile, "cpuprofile", false, "Enable CPU profiling")
+	fs.BoolVar(&f.MemProfile, "memprofile", false, "Enable memory profiling")
+	fs.BoolVar(&f.Profile, "profile", false, "Enable all profiling (CPU + memory)")
+	fs.StringVar(&f.ProfileDir, "profiledir", "profiles", "Directory to store profiles")
 }
 
 // ToConfig converts flags to profiler config

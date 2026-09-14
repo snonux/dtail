@@ -14,10 +14,10 @@ func BindAuthKeyFlags(fs *flag.FlagSet, legacyKey *string, args *config.Args) {
 	fs.StringVar(&args.SSHPrivateKeyFilePath, "auth-key-path", "", authKeyPathHelpText)
 }
 
-// FlagWasSet reports whether the named flag was explicitly set on the command line.
-func FlagWasSet(name string) bool {
+// FlagWasSet reports whether the named flag was explicitly set in fs.
+func FlagWasSet(fs *flag.FlagSet, name string) bool {
 	var wasSet bool
-	flag.Visit(func(f *flag.Flag) {
+	fs.Visit(func(f *flag.Flag) {
 		if f.Name == name {
 			wasSet = true
 		}

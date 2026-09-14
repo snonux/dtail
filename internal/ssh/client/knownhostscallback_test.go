@@ -7,13 +7,183 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/logging"
 
 	"golang.org/x/crypto/ssh/knownhosts"
 )
+
+type recordingLogger struct {
+	logging.NopLogger
+	debugCount     atomic.Int32
+	infoCount      atomic.Int32
+	errorCount     atomic.Int32
+	paused         atomic.Bool
+	logWhilePaused atomic.Bool
+	debugCh        chan struct{}
+	mutex          sync.Mutex
+	lastError      error
+}
+
+func (l *recordingLogger) Debug(...any) string {
+	l.debugCount.Add(1)
+	if l.debugCh != nil {
+		select {
+		case l.debugCh <- struct{}{}:
+		default:
+		}
+	}
+	if l.paused.Load() {
+		l.logWhilePaused.Store(true)
+	}
+	return ""
+}
+
+func (l *recordingLogger) Info(...any) string {
+	l.infoCount.Add(1)
+	if l.paused.Load() {
+		l.logWhilePaused.Store(true)
+	}
+	return ""
+}
+
+func (l *recordingLogger) Error(args ...any) string {
+	l.errorCount.Add(1)
+	if l.paused.Load() {
+		l.logWhilePaused.Store(true)
+	}
+	for _, arg := range args {
+		if err, ok := arg.(error); ok {
+			l.mutex.Lock()
+			l.lastError = err
+			l.mutex.Unlock()
+		}
+	}
+	return ""
+}
+
+func (l *recordingLogger) Pause() {
+	l.paused.Store(true)
+}
+
+func (l *recordingLogger) Resume() {
+	l.paused.Store(false)
+}
+
+func (l *recordingLogger) lastErrorValue() error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	return l.lastError
+}
+
+func TestPromptAddHostsLogsAfterResume(t *testing.T) {
+	tests := []struct {
+		name         string
+		answer       string
+		wantTrustAll bool
+	}{
+		{name: "trust batch", answer: "yes\n"},
+		{name: "trust all", answer: "all\n", wantTrustAll: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
+			if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
+				t.Fatalf("WriteFile failed: %v", err)
+			}
+
+			logger := &recordingLogger{}
+			callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+			withPromptInput(t, test.answer, func() {
+				callback.promptAddHosts([]unknownHost{testUnknownHost("new.example:2222", "new")})
+			})
+
+			if got := logger.infoCount.Load(); got != 1 {
+				t.Fatalf("Info calls = %d, want 1", got)
+			}
+			if logger.logWhilePaused.Load() {
+				t.Fatal("known-host callback logged before the prompt resumed logging")
+			}
+			if logger.paused.Load() {
+				t.Fatal("prompt left logging paused")
+			}
+			select {
+			case <-callback.trustAllHostsCh:
+				if !test.wantTrustAll {
+					t.Fatal("trust-all state set for a single-batch answer")
+				}
+			default:
+				if test.wantTrustAll {
+					t.Fatal("trust-all state not set for an all answer")
+				}
+			}
+		})
+	}
+}
+
+func TestPromptAddHostsFailureLogsAfterResume(t *testing.T) {
+	tmp := t.TempDir()
+	knownHostsPath := filepath.Join(tmp, "known_hosts")
+	if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	logger := &recordingLogger{}
+	callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+	if err := os.RemoveAll(tmp); err != nil {
+		t.Fatalf("remove known-hosts directory: %v", err)
+	}
+	withPromptInput(t, "yes\n", func() {
+		callback.promptAddHosts([]unknownHost{testUnknownHost("new.example:2222", "new")})
+	})
+
+	if got := logger.errorCount.Load(); got != 1 {
+		t.Fatalf("Error calls = %d, want 1", got)
+	}
+	if logger.logWhilePaused.Load() {
+		t.Fatal("known-host failure logged before the prompt resumed logging")
+	}
+	if logger.paused.Load() {
+		t.Fatal("prompt left logging paused after trust failure")
+	}
+}
+
+func TestPromptAddHostsCleanupFailureIsReportedAfterResume(t *testing.T) {
+	tmp := t.TempDir()
+	knownHostsPath := filepath.Join(tmp, "known_hosts")
+	if err := os.Mkdir(knownHostsPath, 0o700); err != nil {
+		t.Fatalf("create invalid known-hosts directory: %v", err)
+	}
+
+	logger := &recordingLogger{}
+	callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+	cleanupErr := errors.New("forced cleanup failure")
+	callback.removeTempFile = func(*os.Root, string) error { return cleanupErr }
+	withPromptInput(t, "yes\n", func() {
+		callback.promptAddHosts([]unknownHost{testUnknownHost("new.example:2222", "new")})
+	})
+
+	if got := logger.debugCount.Load(); got != 0 {
+		t.Fatalf("Debug calls = %d, want 0 from the paused callback", got)
+	}
+	if got := logger.errorCount.Load(); got != 1 {
+		t.Fatalf("Error calls = %d, want 1 after Resume", got)
+	}
+	if logger.logWhilePaused.Load() {
+		t.Fatal("temporary-file cleanup logged before the prompt resumed logging")
+	}
+	loggedErr := logger.lastErrorValue()
+	if !errors.Is(loggedErr, cleanupErr) {
+		t.Fatalf("logged error %v does not retain cleanup error %v", loggedErr, cleanupErr)
+	}
+	if !strings.Contains(loggedErr.Error(), "open known hosts file") {
+		t.Fatalf("logged error does not retain primary open failure: %v", loggedErr)
+	}
+}
 
 func TestTrustHostsAppendsDistinctExistingEntries(t *testing.T) {
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
@@ -23,7 +193,7 @@ func TestTrustHostsAppendsDistinctExistingEntries(t *testing.T) {
 	}
 
 	callback := testKnownHostsCallback(t, knownHostsPath)
-	unknown := testUnknownHost("new.example:2222", "127.0.0.1:2222", "new")
+	unknown := testUnknownHost("new.example:2222", "new")
 
 	if err := callback.trustHosts([]unknownHost{unknown}); err != nil {
 		t.Fatalf("trustHosts failed: %v", err)
@@ -44,14 +214,14 @@ func TestTrustHostsAppendsDistinctExistingEntries(t *testing.T) {
 		t.Fatalf("trustHosts wrote:\n%s\nwant:\n%s", got, want)
 	}
 
-	if response := <-unknown.responseCh; response != trustHost {
-		t.Fatalf("unexpected trust response: %v", response)
+	if trustResponse := <-unknown.responseCh; trustResponse != trustHost {
+		t.Fatalf("unexpected trust response: %v", trustResponse)
 	}
 }
 
 func TestTrustHostsReplacesExistingEntriesForSameHostAndIP(t *testing.T) {
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
-	oldUnknown := testUnknownHost("replace.example:2222", "127.0.0.1:2222", "old")
+	oldUnknown := testUnknownHost("replace.example:2222", "old")
 	keepLine := knownhosts.Line([]string{"keep.example:2222"}, &mockPublicKey{id: "keep"})
 	initialContents := strings.Join([]string{
 		oldUnknown.hostLine,
@@ -64,7 +234,7 @@ func TestTrustHostsReplacesExistingEntriesForSameHostAndIP(t *testing.T) {
 	}
 
 	callback := testKnownHostsCallback(t, knownHostsPath)
-	newUnknown := testUnknownHost("replace.example:2222", "127.0.0.1:2222", "new")
+	newUnknown := testUnknownHost("replace.example:2222", "new")
 
 	if err := callback.trustHosts([]unknownHost{newUnknown}); err != nil {
 		t.Fatalf("trustHosts failed: %v", err)
@@ -85,8 +255,8 @@ func TestTrustHostsReplacesExistingEntriesForSameHostAndIP(t *testing.T) {
 		t.Fatalf("trustHosts wrote:\n%s\nwant:\n%s", got, want)
 	}
 
-	if response := <-newUnknown.responseCh; response != trustHost {
-		t.Fatalf("unexpected trust response: %v", response)
+	if trustResponse := <-newUnknown.responseCh; trustResponse != trustHost {
+		t.Fatalf("unexpected trust response: %v", trustResponse)
 	}
 }
 
@@ -107,20 +277,11 @@ func TestTrustHostsRejectsEscapingKnownHostsSymlink(t *testing.T) {
 	}
 
 	callback := testKnownHostsCallback(t, knownHostsPath)
-	unknown := testUnknownHost("escape.example:2222", "127.0.0.1:2222", "new")
+	unknown := testUnknownHost("escape.example:2222", "new")
 
 	if err := callback.trustHosts([]unknownHost{unknown}); err == nil {
 		t.Fatalf("trustHosts succeeded for escaping known_hosts symlink")
 	}
-}
-
-// stubClientLogger installs a no-op dlog.Client for tests that exercise the
-// host-key callback (which emits a Debug log on the unknown-host path).
-func stubClientLogger(t *testing.T) {
-	t.Helper()
-	original := dlog.Client
-	dlog.Client = &dlog.DLog{}
-	t.Cleanup(func() { dlog.Client = original })
 }
 
 // TestWrapReturnsWhenCtxCancelledBeforeUnknownChSend verifies that when
@@ -129,13 +290,13 @@ func stubClientLogger(t *testing.T) {
 // handshake and leaking a goroutine. Pre-fix this test times out because
 // `c.unknownCh <- unknown` blocks forever.
 func TestWrapReturnsWhenCtxCancelledBeforeUnknownChSend(t *testing.T) {
-	stubClientLogger(t)
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
 	if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	callback := testKnownHostsCallback(t, knownHostsPath)
+	logger := &recordingLogger{debugCh: make(chan struct{}, 1)}
+	callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	wrapped := callback.Wrap(ctx)
@@ -145,8 +306,11 @@ func TestWrapReturnsWhenCtxCancelledBeforeUnknownChSend(t *testing.T) {
 			&mockPublicKey{id: "new"})
 	}()
 
-	// Give the goroutine a moment to park on the unknownCh send, then cancel.
-	time.Sleep(10 * time.Millisecond)
+	select {
+	case <-logger.debugCh:
+	case <-time.After(time.Second):
+		t.Fatal("host key callback did not reach unknown-host notification")
+	}
 	cancel()
 
 	select {
@@ -160,6 +324,9 @@ func TestWrapReturnsWhenCtxCancelledBeforeUnknownChSend(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatalf("host key callback did not return within 100ms after ctx cancel")
 	}
+	if logger.debugCount.Load() == 0 {
+		t.Fatal("injected logger did not receive unknown-host diagnostic")
+	}
 }
 
 // TestWrapReturnsWhenCtxCancelledBeforeResponse verifies that when a consumer
@@ -167,7 +334,6 @@ func TestWrapReturnsWhenCtxCancelledBeforeUnknownChSend(t *testing.T) {
 // (e.g. PromptAddHosts was cancelled mid-batch), the callback still unblocks
 // on ctx cancel rather than blocking on responseCh forever.
 func TestWrapReturnsWhenCtxCancelledBeforeResponse(t *testing.T) {
-	stubClientLogger(t)
 	knownHostsPath := filepath.Join(t.TempDir(), "known_hosts")
 	if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -262,8 +428,14 @@ func TestCloseTrustAllHostsChConcurrentNoPanic(t *testing.T) {
 
 func testKnownHostsCallback(t *testing.T, knownHostsPath string) *KnownHostsCallback {
 	t.Helper()
+	return testKnownHostsCallbackWithLogger(t, knownHostsPath, sshClientTestLogger)
+}
 
-	callback, err := NewKnownHostsCallback(knownHostsPath, false)
+func testKnownHostsCallbackWithLogger(t *testing.T, knownHostsPath string,
+	logger logging.Logger) *KnownHostsCallback {
+	t.Helper()
+
+	callback, err := NewKnownHostsCallback(knownHostsPath, false, logger, logger)
 	if err != nil {
 		t.Fatalf("NewKnownHostsCallback failed: %v", err)
 	}
@@ -276,9 +448,9 @@ func testKnownHostsCallback(t *testing.T, knownHostsPath string) *KnownHostsCall
 	return knownHostsCallback
 }
 
-func testUnknownHost(server, remoteAddr, keyID string) unknownHost {
+func testUnknownHost(server, keyID string) unknownHost {
 	key := &mockPublicKey{id: keyID}
-	remote := testTCPAddr(remoteAddr)
+	remote := testTCPAddr("127.0.0.1:2222")
 
 	return unknownHost{
 		server:     server,
@@ -302,4 +474,27 @@ func testTCPAddr(address string) *net.TCPAddr {
 	}
 
 	return &net.TCPAddr{IP: net.ParseIP(host), Port: port}
+}
+
+func withPromptInput(t *testing.T, contents string, run func()) {
+	t.Helper()
+	input, inputWriter, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create prompt input: %v", err)
+	}
+	previousStdin := os.Stdin
+	os.Stdin = input
+	defer func() {
+		os.Stdin = previousStdin
+		_ = input.Close()
+		_ = inputWriter.Close()
+	}()
+
+	if _, err := inputWriter.WriteString(contents); err != nil {
+		t.Fatalf("write prompt input: %v", err)
+	}
+	if err := inputWriter.Close(); err != nil {
+		t.Fatalf("close prompt input: %v", err)
+	}
+	run()
 }

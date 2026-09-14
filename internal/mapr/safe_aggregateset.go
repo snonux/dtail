@@ -3,6 +3,8 @@ package mapr
 import (
 	"context"
 	"sync"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 // SafeAggregateSet is a thread-safe wrapper around AggregateSet for concurrent aggregation.
@@ -58,10 +60,11 @@ func (s *SafeAggregateSet) Clone() *AggregateSet {
 
 // Serialize the aggregate set safely. Returns whether the message was sent
 // before the context was cancelled; mirrors AggregateSet.Serialize.
-func (s *SafeAggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<- string) bool {
+func (s *SafeAggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<- string,
+	logger logging.Logger) bool {
 	// Clone the set to avoid holding the lock during serialization
 	clone := s.Clone()
-	return clone.Serialize(ctx, groupKey, ch)
+	return clone.Serialize(ctx, groupKey, ch, logger)
 }
 
 // GetSamples returns the current sample count safely.

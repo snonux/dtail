@@ -19,14 +19,14 @@ func BenchmarkLiteralVsRegex(b *testing.B) {
 		[]byte("2024-01-01 10:00:08 ERROR Invalid input parameters"),
 		[]byte("2024-01-01 10:00:09 WARN High memory usage detected"),
 	}
-	
+
 	// Benchmark literal pattern matching (our optimization)
 	b.Run("Literal_ERROR", func(b *testing.B) {
 		r, _ := New("ERROR", Default)
 		if !r.isLiteral {
 			b.Fatal("Pattern should be detected as literal")
 		}
-		
+
 		b.ResetTimer()
 		matches := 0
 		for i := 0; i < b.N; i++ {
@@ -38,7 +38,7 @@ func BenchmarkLiteralVsRegex(b *testing.B) {
 		}
 		_ = matches
 	})
-	
+
 	// Force regex pattern matching for comparison
 	b.Run("Regex_ERROR", func(b *testing.B) {
 		// Add a harmless regex operator to force regex compilation
@@ -46,7 +46,7 @@ func BenchmarkLiteralVsRegex(b *testing.B) {
 		if r.isLiteral {
 			b.Fatal("Pattern should not be detected as literal")
 		}
-		
+
 		b.ResetTimer()
 		matches := 0
 		for i := 0; i < b.N; i++ {
@@ -58,11 +58,11 @@ func BenchmarkLiteralVsRegex(b *testing.B) {
 		}
 		_ = matches
 	})
-	
+
 	// Direct bytes.Contains for reference
 	b.Run("BytesContains_ERROR", func(b *testing.B) {
 		pattern := []byte("ERROR")
-		
+
 		b.ResetTimer()
 		matches := 0
 		for i := 0; i < b.N; i++ {
@@ -78,7 +78,7 @@ func BenchmarkLiteralVsRegex(b *testing.B) {
 
 func BenchmarkComplexPatterns(b *testing.B) {
 	testLine := []byte("2024-01-01 10:00:00 ERROR Failed to connect to database server at 192.168.1.100:5432")
-	
+
 	patterns := []struct {
 		name    string
 		pattern string
@@ -90,14 +90,14 @@ func BenchmarkComplexPatterns(b *testing.B) {
 		{"Regex_^2024", "^2024"},
 		{"Regex_5432$", "5432$"},
 	}
-	
+
 	for _, p := range patterns {
 		b.Run(p.name, func(b *testing.B) {
 			r, err := New(p.pattern, Default)
 			if err != nil {
 				b.Fatal(err)
 			}
-			
+
 			b.ResetTimer()
 			matches := 0
 			for i := 0; i < b.N; i++ {

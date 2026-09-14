@@ -24,9 +24,9 @@ func (p *genericKVParser) MakeFields(maprLine, _ string) (map[string]string, err
 
 	for {
 		token, next, done := scanDelimitedField(maprLine, start, delimiter)
-		if err := p.addKeyValueField(fields, token); err != nil {
-			continue
-		}
+		// Generic key-value logs may mix structured and unstructured fields.
+		// Ignore malformed fields while continuing to parse later tokens.
+		_ = p.addKeyValueField(fields, token)
 		if done {
 			break
 		}

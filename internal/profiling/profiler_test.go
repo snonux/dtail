@@ -3,9 +3,9 @@ package profiling
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestProfiler(t *testing.T) {
@@ -150,7 +150,7 @@ func TestProfiler(t *testing.T) {
 		}
 
 		p := NewProfiler(cfg)
-		
+
 		// Take snapshots
 		p.Snapshot("before")
 		allocateMemory()
@@ -163,7 +163,7 @@ func TestProfiler(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Failed to list snapshots: %v", err)
 		}
-		
+
 		foundBefore := false
 		foundAfter := false
 		for _, snapshot := range snapshots {
@@ -201,7 +201,7 @@ func TestGetMetrics(t *testing.T) {
 
 func TestFlags(t *testing.T) {
 	f := Flags{}
-	
+
 	// Test default state
 	if f.Enabled() {
 		t.Error("Flags should not be enabled by default")
@@ -248,7 +248,7 @@ func doWork(iterations int) {
 	_ = result
 }
 
-func allocateMemory() [][]byte {
+func allocateMemory() {
 	// Allocate some memory
 	const numAllocs = 100
 	const allocSize = 1024 * 1024 // 1MB
@@ -262,8 +262,5 @@ func allocateMemory() [][]byte {
 		}
 	}
 
-	// Sleep briefly to allow profiler to capture state
-	time.Sleep(10 * time.Millisecond)
-	
-	return allocations
+	runtime.KeepAlive(allocations)
 }

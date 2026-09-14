@@ -2,15 +2,19 @@ package clients
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"math/rand"
+	"runtime"
 	"sync"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/connectors"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/discovery"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/regex"
 	"github.com/mimecast/dtail/internal/ssh/client"
 
@@ -27,7 +31,10 @@ const (
 type baseClient struct {
 	mu *sync.RWMutex
 	config.Args
-	runtime *clientRuntimeBoundary
+	cfg       config.RuntimeConfig
+	runtime   *clientRuntimeBoundary
+	colorizer *brush.Brush
+	loggers   LoggerDependencies
 	// To display client side stats
 	stats *stats
 	// We have one connection per remote server.
@@ -42,12 +49,10 @@ type baseClient struct {
 	hostKeyCallback client.HostKeyCallback
 	// Throttle how fast we initiate SSH connections concurrently
 	throttleCh chan struct{}
-	// Retry connection upon failure?
-	retry bool
 	// The current connection-wide session specification.
 	sessionSpec SessionSpec
-	// Connection maker helper.
-	maker maker
+	// Client-specific connection behavior.
+	profile clientProfile
 	// Optional factory override for retry/reconnect tests.
 	connectionFactory func(server string, authMethods []gossh.AuthMethod,
 		hostKeyCallback client.HostKeyCallback, sessionSpec SessionSpec,
@@ -58,68 +63,140 @@ type baseClient struct {
 	Regex regex.Regex
 }
 
-func (c *baseClient) init() {
-	dlog.Client.Debug("Initiating base client", c.Args.String())
+func newBaseClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizer *brush.Brush, profile clientProfile) (baseClient, error) {
+	c := baseClient{
+		mu:          newBaseClientMu(),
+		Args:        args,
+		cfg:         cfg,
+		colorizer:   colorizer,
+		loggers:     loggers.normalized(),
+		throttleCh:  make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
+		sessionSpec: NewSessionSpec(args),
+		profile:     profile,
+	}
+	if err := c.initialize(); err != nil {
+		return baseClient{}, err
+	}
+	return c, nil
+}
+
+func (c *baseClient) clientLogger() clientlog.Logger {
+	if c.loggers.Client == nil {
+		return clientlog.NopLogger{}
+	}
+	return c.loggers.Client
+}
+
+func firstColorizer(colorizers []*brush.Brush) *brush.Brush {
+	if len(colorizers) == 0 {
+		return nil
+	}
+	return colorizers[0]
+}
+
+func (c *baseClient) init() error {
+	c.loggers = c.loggers.normalized()
+	c.clientLogger().Debug("Initiating base client", c.String())
 	if c.runtime == nil {
-		c.runtime = newClientRuntimeBoundary(config.CurrentRuntime())
+		c.runtime = newClientRuntimeBoundary(c.cfg, c.loggers, c.colorizer)
 	}
 
 	flag := regex.Default
-	if c.Args.RegexInvert {
+	if c.RegexInvert {
 		flag = regex.Invert
 	}
-	regex, err := regex.New(c.Args.RegexStr, flag)
+	compiledRegex, err := regex.New(c.RegexStr, flag)
 	if err != nil {
-		dlog.Client.FatalPanic(c.Regex, "Invalid regex!", err, regex)
+		return fmt.Errorf("compile regular expression %q: %w", c.RegexStr, err)
 	}
-	c.Regex = regex
+	c.Regex = compiledRegex
 
-	if c.Args.Serverless {
-		return
+	if c.Serverless {
+		return nil
 	}
-	c.sshAuthMethods, c.hostKeyCallback, c.authCloser = client.InitSSHAuthMethods(
-		c.Args.SSHAuthMethods, c.Args.SSHHostKeyCallback, c.Args.TrustAllHosts,
-		c.Args.SSHPrivateKeyFilePath, c.Args.SSHAgentKeyIndex)
+	sshAuthMethods, hostKeyCallback, authCloser, err := client.InitSSHAuthMethods(
+		c.SSHAuthMethods, c.SSHHostKeyCallback, client.AuthMethodConfig{
+			TrustAllHosts:             c.TrustAllHosts,
+			KnownHostsPath:            c.KnownHostsPath,
+			PrivateKeyPath:            c.SSHPrivateKeyFilePath,
+			AdditionalPrivateKeyPaths: c.SSHPrivateKeyFallbackPaths,
+			AgentKeyIndex:             c.SSHAgentKeyIndex,
+		}, c.clientLogger(), c.loggers.Common)
+	if err != nil {
+		return fmt.Errorf("initialize SSH authentication: %w", err)
+	}
+	c.sshAuthMethods = sshAuthMethods
+	c.hostKeyCallback = hostKeyCallback
+	c.authCloser = authCloser
+	return nil
 }
 
-func (c *baseClient) makeConnections(maker maker) error {
-	c.maker = maker
-	if builder, ok := maker.(sessionSpecMaker); ok {
-		sessionSpec, err := builder.makeSessionSpec()
-		if err != nil {
-			dlog.Client.FatalPanic("unable to build session specification", err)
-		}
-		c.sessionSpec = sessionSpec
-	}
-
-	discoveryService, err := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle)
-	if err != nil {
+func (c *baseClient) initialize() error {
+	if err := c.init(); err != nil {
 		return err
 	}
-	for _, server := range discoveryService.ServerList() {
-		c.connections = append(c.connections, c.makeConnection(server,
-			c.sshAuthMethods, c.hostKeyCallback))
+	if err := c.makeConnections(); err != nil {
+		if closeErr := c.closeAuth(); closeErr != nil {
+			return errors.Join(err, fmt.Errorf("close SSH authentication resources: %w", closeErr))
+		}
+		return err
+	}
+	return nil
+}
+
+func (c *baseClient) closeAuth() error {
+	if c.authCloser == nil {
+		return nil
+	}
+	closer := c.authCloser
+	c.authCloser = nil
+	return closer.Close()
+}
+
+func (c *baseClient) makeConnections() error {
+	if c.profile.newHandler == nil {
+		return errors.New("client handler factory is required")
+	}
+	if _, err := c.sessionSpec.Commands(); err != nil {
+		return fmt.Errorf("build session commands: %w", err)
 	}
 
-	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause())
+	discoveryService, err := discovery.New(c.Discovery, c.ServersStr, discovery.Shuffle, c.clientLogger())
+	if err != nil {
+		return fmt.Errorf("configure server discovery: %w", err)
+	}
+	servers, err := discoveryService.ServerList()
+	if err != nil {
+		return fmt.Errorf("discover servers: %w", err)
+	}
+	for _, server := range servers {
+		connection, connectionErr := c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
+		if connectionErr != nil {
+			return fmt.Errorf("create connection for %q: %w", server, connectionErr)
+		}
+		c.connections = append(c.connections, connection)
+	}
+
+	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause(), c.clientLogger())
 	return nil
 }
 
 func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
-	if c.Args.InteractiveQuery {
+	if c.InteractiveQuery {
 		return c.startInteractiveControl(ctx, statsCh)
 	}
 	return c.runConnections(ctx, statsCh)
 }
 
 func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) (status int) {
-	dlog.Client.Trace("Starting base client")
+	c.clientLogger().Trace("Starting base client")
 	// Release the ssh-agent connection (if any) once all handshakes and
 	// reconnect attempts that consume c.sshAuthMethods have finished.
 	if c.authCloser != nil {
 		defer func() {
-			if err := c.authCloser.Close(); err != nil {
-				dlog.Client.Debug("baseClient", "failed to close ssh-agent connection", err)
+			if err := c.closeAuth(); err != nil {
+				c.clientLogger().Debug("baseClient", "failed to close ssh-agent connection", err)
 			}
 		}()
 	}
@@ -129,7 +206,7 @@ func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) 
 		go c.hostKeyCallback.PromptAddHosts(ctx)
 	}
 	// Print client stats every time something on statsCh is received.
-	go c.stats.Start(ctx, c.throttleCh, statsCh, c.Args.Quiet)
+	go c.stats.Start(ctx, c.throttleCh, statsCh, c.Quiet)
 
 	var wg sync.WaitGroup
 	connections := c.snapshotConnections()
@@ -167,7 +244,7 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 		status = conn.Handler().Status()
 
 		// Do we want to retry?
-		if !c.retry {
+		if !c.profile.retry {
 			// No, we don't.
 			return
 		}
@@ -180,13 +257,22 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 
 		// Yes, we want to retry with exponential backoff and jitter.
 		sleepDuration := jitterRetryDelay(retryDelay, retryRandom)
-		dlog.Client.Debug(conn.Server(), "Reconnecting", "backoff", sleepDuration)
+		c.clientLogger().Debug(conn.Server(), "Reconnecting", "backoff", sleepDuration)
 		if !c.sleepRetry(ctx, sleepDuration) {
 			return
 		}
 
 		retryDelay = nextRetryDelay(retryDelay)
-		conn = c.makeConnection(conn.Server(), c.sshAuthMethods, c.hostKeyCallback)
+		server := conn.Server()
+		var err error
+		conn, err = c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
+		if err != nil {
+			c.clientLogger().Error(server, "Unable to recreate connection", err)
+			if status == 0 {
+				status = 1
+			}
+			return
+		}
 		c.replaceConnection(i, conn)
 	}
 }
@@ -243,25 +329,29 @@ func newRetryRandom(seedOffset int) *rand.Rand {
 }
 
 func (c *baseClient) makeConnection(server string, sshAuthMethods []gossh.AuthMethod,
-	hostKeyCallback client.HostKeyCallback) connectors.Connector {
+	hostKeyCallback client.HostKeyCallback) (connectors.Connector, error) {
 	args, sessionSpec := c.snapshotConnectionState()
 	return c.makeConnectionWithState(server, sshAuthMethods, hostKeyCallback, args, sessionSpec)
 }
 
 func (c *baseClient) makeConnectionWithState(server string, sshAuthMethods []gossh.AuthMethod,
-	hostKeyCallback client.HostKeyCallback, args config.Args, sessionSpec SessionSpec) connectors.Connector {
+	hostKeyCallback client.HostKeyCallback, args config.Args, sessionSpec SessionSpec) (connectors.Connector, error) {
 	if c.connectionFactory != nil {
 		return c.connectionFactory(server, sshAuthMethods, hostKeyCallback,
-			sessionSpec, args.InteractiveQuery)
+			sessionSpec, args.InteractiveQuery), nil
+	}
+	commands, err := sessionSpec.Commands()
+	if err != nil {
+		return nil, fmt.Errorf("build commands for %q: %w", server, err)
 	}
 	if args.Serverless {
-		return connectors.NewServerless(c.UserName, c.maker.makeHandler(server),
-			c.maker.makeCommands(), sessionSpec, args.InteractiveQuery, c.runtime)
+		return connectors.NewServerless(c.UserName, c.profile.newHandler(server),
+			commands, sessionSpec, args.InteractiveQuery, c.runtime, c.clientLogger()), nil
 	}
 	return connectors.NewServerConnection(server, c.UserName, sshAuthMethods,
-		hostKeyCallback, c.maker.makeHandler(server), c.maker.makeCommands(),
+		hostKeyCallback, c.profile.newHandler(server), commands,
 		sessionSpec, args.InteractiveQuery, args.SSHPrivateKeyFilePath,
-		args.NoAuthKey, c.runtime)
+		args.NoAuthKey, c.runtime, c.clientLogger())
 }
 
 func (c *baseClient) sleepRetry(ctx context.Context, delay time.Duration) bool {

@@ -6,12 +6,17 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 const (
-	invalidQuery  string = "Invalid query: "
-	unexpectedEnd string = "Unexpected end of query"
+	invalidQuery  string = "invalid query: "
+	unexpectedEnd string = "unexpected end of query"
 )
+
+// ErrEmptyQuery indicates that no mapreduce query was provided.
+var ErrEmptyQuery = errors.New("query cannot be empty")
 
 // Outfile represents the output file of a mapreduce query.
 type Outfile struct {
@@ -40,6 +45,7 @@ type Query struct {
 	RawQuery     string
 	tokens       []token
 	LogFormat    string
+	logger       logging.Logger
 }
 
 // String returns the string representation of Query.
@@ -64,9 +70,9 @@ func (q *Query) String() string {
 }
 
 // NewQuery returns a new mapreduce query.
-func NewQuery(queryStr string) (*Query, error) {
+func NewQuery(queryStr string, logger logging.Logger) (*Query, error) {
 	if queryStr == "" {
-		return nil, nil
+		return nil, ErrEmptyQuery
 	}
 	tokens := tokenize(queryStr)
 	q := Query{
@@ -74,6 +80,7 @@ func NewQuery(queryStr string) (*Query, error) {
 		tokens:   tokens,
 		Interval: time.Second * 5,
 		Limit:    -1,
+		logger:   logging.OrNop(logger),
 	}
 
 	// Parse the query tokens to populate all fields including LogFormat and Table.
@@ -108,7 +115,7 @@ func (q *Query) parse(tokens []token) error {
 	}
 
 	if len(q.Select) < 1 {
-		return errors.New(invalidQuery + "Expected at least one field in 'select' " +
+		return errors.New(invalidQuery + "expected at least one field in 'select' " +
 			"clause but got none")
 	}
 
@@ -126,7 +133,7 @@ func (q *Query) parse(tokens []token) error {
 			}
 		}
 		if !orderFieldIsValid {
-			return errors.New(invalidQuery + fmt.Sprintf("Can not '(r)order by' '%s',"+
+			return errors.New(invalidQuery + fmt.Sprintf("cannot '(r)order by' '%s',"+
 				"must be present in 'select' clause", q.OrderBy))
 		}
 	}
@@ -237,7 +244,7 @@ func (q *Query) parseTokens(tokens []token) ([]token, error) {
 			}
 			q.LogFormat = found[0].str
 		default:
-			return tokens, errors.New(invalidQuery + "Unexpected keyword " + tokens[0].str)
+			return tokens, errors.New(invalidQuery + "unexpected keyword " + tokens[0].str)
 		}
 	}
 

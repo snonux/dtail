@@ -9,10 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
-	"github.com/mimecast/dtail/internal/source"
-	"sync"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 func setupBenchmarkData(b *testing.B, lines int) string {
@@ -25,13 +24,18 @@ func setupBenchmarkData(b *testing.B, lines int) string {
 	if err != nil {
 		b.Fatalf("Failed to create test file: %v", err)
 	}
-	defer f.Close()
 
 	// Create test data
 	for i := 0; i < lines; i++ {
 		line := fmt.Sprintf("INFO|1002-071143|1|test.go:%d|8|%d|7|0.21|471h0m21s|MAPREDUCE:STATS|currentConnections=%d|lifetimeConnections=%d|pattern=test-%d|data=%s\n",
 			i%100, i%50, i%10, i, i%5, "some-test-data-that-makes-the-line-longer")
-		f.WriteString(line)
+		if _, err := f.WriteString(line); err != nil {
+			_ = f.Close()
+			b.Fatalf("write test data: %v", err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		b.Fatalf("close test data: %v", err)
 	}
 
 	return testFile
@@ -56,27 +60,23 @@ func BenchmarkDGrepLargeFile(b *testing.B) {
 
 func benchmarkDGrepWithSize(b *testing.B, lines int) {
 	// Setup config. The direct-output read path is the only runtime path.
-	config.Server = &config.ServerConfig{
-		MaxConcurrentCats:  10,
-		MaxConcurrentTails: 50,
-		MaxLineLength:      1024 * 1024,
+	runtimeCfg := config.RuntimeConfig{
+		Server: &config.ServerConfig{
+			MaxConcurrentCats:  10,
+			MaxConcurrentTails: 50,
+			MaxLineLength:      1024 * 1024,
+		},
+		Common: &config.CommonConfig{
+			HostnameOverride: "benchmark-host",
+			Logger:           "none",
+			LogLevel:         "error",
+		},
+		Client: &config.ClientConfig{TermColorsEnable: false},
 	}
 
-	config.Common = &config.CommonConfig{
-		Logger:   "none",
-		LogLevel: "error",
-	}
-
-	config.Client = &config.ClientConfig{
-		TermColorsEnable: false,
-	}
-
-	// Initialize logging
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-	dlog.Start(ctx, wg, source.Client)
+	loggers := NewLoggerDependencies(clientlog.NopLogger{}, logging.NopLogger{}, logging.NopLogger{})
 
 	// Create test data
 	testFile := setupBenchmarkData(b, lines)
@@ -94,14 +94,17 @@ func benchmarkDGrepWithSize(b *testing.B, lines int) {
 			Plain:      true,
 		}
 
-		client, err := NewGrepClient(args)
+		client, err := NewGrepClient(args, runtimeCfg, loggers)
 		if err != nil {
 			b.Fatalf("Failed to create grep client: %v", err)
 		}
 
 		// Capture output
 		oldStdout := os.Stdout
-		r, w, _ := os.Pipe()
+		r, w, err := os.Pipe()
+		if err != nil {
+			b.Fatalf("create stdout pipe: %v", err)
+		}
 		os.Stdout = w
 
 		// Run grep
@@ -122,12 +125,21 @@ func benchmarkDGrepWithSize(b *testing.B, lines int) {
 		}
 
 		// Restore stdout
-		w.Close()
 		os.Stdout = oldStdout
+		if err := w.Close(); err != nil {
+			_ = r.Close()
+			b.Fatalf("close stdout writer: %v", err)
+		}
 
 		// Read captured output
 		var buf bytes.Buffer
-		buf.ReadFrom(r)
+		if _, err := buf.ReadFrom(r); err != nil {
+			_ = r.Close()
+			b.Fatalf("read captured output: %v", err)
+		}
+		if err := r.Close(); err != nil {
+			b.Fatalf("close stdout reader: %v", err)
+		}
 	}
 
 	// Report custom metrics

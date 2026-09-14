@@ -2,7 +2,6 @@ package benchmarks
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +11,10 @@ import (
 func BenchmarkDGrepSimplePattern(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	sizes := GetBenchmarkSizes()
 	hitRates := []int{1, 10, 50, 90} // Percentage of lines matching
-	
+
 	for _, size := range sizes {
 		for _, hitRate := range hitRates {
 			b.Run(fmt.Sprintf("Size=%s/HitRate=%d%%", size, hitRate), func(b *testing.B) {
@@ -29,29 +28,29 @@ func BenchmarkDGrepSimplePattern(b *testing.B) {
 					Pattern:       pattern,
 					PatternRate:   hitRate,
 				}
-				
+
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
-				
-				fileSize, _ := GetFileSize(testFile)
-				totalLines, _ := CountFileLines(testFile)
-				
+				cleanupBenchmarkFile(b, testFile)
+
+				fileSize := mustGetFileSize(b, testFile)
+				totalLines := mustCountFileLines(b, testFile)
+
 				// Warmup
 				WarmupCommand(b, "dgrep", "--plain", "--cfg", "none", "--grep", pattern, testFile)
-				
+
 				b.ResetTimer()
-				
+
 				// Run benchmark
 				totalDuration := time.Duration(0)
 				matchedLines := 0
-				
+
 				for i := 0; i < b.N; i++ {
 					result, err := RunBenchmarkCommand(b, "dgrep", "--plain", "--cfg", "none", "--grep", pattern, testFile)
 					if err != nil {
 						b.Fatalf("Command failed: %v", err)
 					}
 					totalDuration += result.Duration
-					
+
 					// Count matched lines (only once)
 					if i == 0 {
 						matchedLines = len(strings.Split(strings.TrimSpace(result.Stdout), "\n"))
@@ -60,17 +59,17 @@ func BenchmarkDGrepSimplePattern(b *testing.B) {
 						}
 					}
 				}
-				
+
 				avgDuration := totalDuration / time.Duration(b.N)
 				throughput := CalculateThroughput(fileSize, avgDuration)
 				linesPerSec := CalculateLinesPerSecond(totalLines, avgDuration)
-				
+
 				// Report metrics
 				b.ReportMetric(throughput, "MB/sec")
 				b.ReportMetric(linesPerSec, "lines/sec")
 				b.ReportMetric(float64(matchedLines), "matched_lines")
 				b.ReportMetric(float64(hitRate), "hit_rate_%")
-				
+
 				// Save result
 				benchResult := BenchmarkResult{
 					Timestamp:   time.Now(),
@@ -81,7 +80,7 @@ func BenchmarkDGrepSimplePattern(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: linesPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -91,12 +90,12 @@ func BenchmarkDGrepSimplePattern(b *testing.B) {
 func BenchmarkDGrepRegexPattern(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	sizes := GetBenchmarkSizes()
 	if IsQuickMode() {
 		sizes = []FileSize{Small}
 	}
-	
+
 	patterns := []struct {
 		name    string
 		pattern string
@@ -106,7 +105,7 @@ func BenchmarkDGrepRegexPattern(b *testing.B) {
 		{"alternation", "(ERROR|WARN|FATAL)"},
 		{"capture", "thread-(\\d+).*line:(\\d+)"},
 	}
-	
+
 	for _, size := range sizes {
 		for _, pat := range patterns {
 			b.Run(fmt.Sprintf("Size=%s/Pattern=%s", size, pat.name), func(b *testing.B) {
@@ -117,21 +116,21 @@ func BenchmarkDGrepRegexPattern(b *testing.B) {
 					Compression:   NoCompression,
 					LineVariation: 50,
 				}
-				
+
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
-				
-				fileSize, _ := GetFileSize(testFile)
-				totalLines, _ := CountFileLines(testFile)
-				
+				cleanupBenchmarkFile(b, testFile)
+
+				fileSize := mustGetFileSize(b, testFile)
+				totalLines := mustCountFileLines(b, testFile)
+
 				// Warmup
 				WarmupCommand(b, "dgrep", "--plain", "--cfg", "none", "--grep", pat.pattern, testFile)
-				
+
 				b.ResetTimer()
-				
+
 				// Run benchmark
 				totalDuration := time.Duration(0)
-				
+
 				for i := 0; i < b.N; i++ {
 					result, err := RunBenchmarkCommand(b, "dgrep", "--plain", "--cfg", "none", "--grep", pat.pattern, testFile)
 					if err != nil {
@@ -139,15 +138,15 @@ func BenchmarkDGrepRegexPattern(b *testing.B) {
 					}
 					totalDuration += result.Duration
 				}
-				
+
 				avgDuration := totalDuration / time.Duration(b.N)
 				throughput := CalculateThroughput(fileSize, avgDuration)
 				linesPerSec := CalculateLinesPerSecond(totalLines, avgDuration)
-				
+
 				// Report metrics
 				b.ReportMetric(throughput, "MB/sec")
 				b.ReportMetric(linesPerSec, "lines/sec")
-				
+
 				// Save result
 				benchResult := BenchmarkResult{
 					Timestamp:   time.Now(),
@@ -158,7 +157,7 @@ func BenchmarkDGrepRegexPattern(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: linesPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -168,12 +167,12 @@ func BenchmarkDGrepRegexPattern(b *testing.B) {
 func BenchmarkDGrepContext(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	sizes := GetBenchmarkSizes()
 	if IsQuickMode() {
 		sizes = []FileSize{Small}
 	}
-	
+
 	contexts := []struct {
 		name   string
 		before int
@@ -184,7 +183,7 @@ func BenchmarkDGrepContext(b *testing.B) {
 		{"medium", 5, 5},
 		{"large", 10, 10},
 	}
-	
+
 	for _, size := range sizes {
 		for _, ctx := range contexts {
 			b.Run(fmt.Sprintf("Size=%s/Context=%s", size, ctx.name), func(b *testing.B) {
@@ -198,13 +197,13 @@ func BenchmarkDGrepContext(b *testing.B) {
 					Pattern:       pattern,
 					PatternRate:   10, // 10% hit rate
 				}
-				
+
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
-				
-				fileSize, _ := GetFileSize(testFile)
-				totalLines, _ := CountFileLines(testFile)
-				
+				cleanupBenchmarkFile(b, testFile)
+
+				fileSize := mustGetFileSize(b, testFile)
+				totalLines := mustCountFileLines(b, testFile)
+
 				// Build command args
 				args := []string{"--plain", "--cfg", "none", "--grep", pattern}
 				if ctx.before > 0 {
@@ -214,15 +213,15 @@ func BenchmarkDGrepContext(b *testing.B) {
 					args = append(args, "--after", fmt.Sprintf("%d", ctx.after))
 				}
 				args = append(args, testFile)
-				
+
 				// Warmup
 				WarmupCommand(b, "dgrep", args...)
-				
+
 				b.ResetTimer()
-				
+
 				// Run benchmark
 				totalDuration := time.Duration(0)
-				
+
 				for i := 0; i < b.N; i++ {
 					result, err := RunBenchmarkCommand(b, "dgrep", args...)
 					if err != nil {
@@ -230,16 +229,16 @@ func BenchmarkDGrepContext(b *testing.B) {
 					}
 					totalDuration += result.Duration
 				}
-				
+
 				avgDuration := totalDuration / time.Duration(b.N)
 				throughput := CalculateThroughput(fileSize, avgDuration)
 				linesPerSec := CalculateLinesPerSecond(totalLines, avgDuration)
-				
+
 				// Report metrics
 				b.ReportMetric(throughput, "MB/sec")
 				b.ReportMetric(linesPerSec, "lines/sec")
 				b.ReportMetric(float64(ctx.before+ctx.after), "context_lines")
-				
+
 				// Save result
 				benchResult := BenchmarkResult{
 					Timestamp:   time.Now(),
@@ -250,7 +249,7 @@ func BenchmarkDGrepContext(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: linesPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -260,12 +259,12 @@ func BenchmarkDGrepContext(b *testing.B) {
 func BenchmarkDGrepInvert(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	sizes := GetBenchmarkSizes()
-	
+
 	// Test with different exclusion rates
 	exclusionRates := []int{10, 50, 90} // Percentage of lines to exclude
-	
+
 	for _, size := range sizes {
 		for _, excludeRate := range exclusionRates {
 			b.Run(fmt.Sprintf("Size=%s/ExcludeRate=%d%%", size, excludeRate), func(b *testing.B) {
@@ -279,21 +278,21 @@ func BenchmarkDGrepInvert(b *testing.B) {
 					Pattern:       pattern,
 					PatternRate:   excludeRate,
 				}
-				
+
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
-				
-				fileSize, _ := GetFileSize(testFile)
-				totalLines, _ := CountFileLines(testFile)
-				
+				cleanupBenchmarkFile(b, testFile)
+
+				fileSize := mustGetFileSize(b, testFile)
+				totalLines := mustCountFileLines(b, testFile)
+
 				// Warmup
 				WarmupCommand(b, "dgrep", "--plain", "--cfg", "none", "--grep", pattern, "--invert", testFile)
-				
+
 				b.ResetTimer()
-				
+
 				// Run benchmark
 				totalDuration := time.Duration(0)
-				
+
 				for i := 0; i < b.N; i++ {
 					result, err := RunBenchmarkCommand(b, "dgrep", "--plain", "--cfg", "none", "--grep", pattern, "--invert", testFile)
 					if err != nil {
@@ -301,16 +300,16 @@ func BenchmarkDGrepInvert(b *testing.B) {
 					}
 					totalDuration += result.Duration
 				}
-				
+
 				avgDuration := totalDuration / time.Duration(b.N)
 				throughput := CalculateThroughput(fileSize, avgDuration)
 				linesPerSec := CalculateLinesPerSecond(totalLines, avgDuration)
-				
+
 				// Report metrics
 				b.ReportMetric(throughput, "MB/sec")
 				b.ReportMetric(linesPerSec, "lines/sec")
 				b.ReportMetric(float64(100-excludeRate), "output_rate_%")
-				
+
 				// Save result
 				benchResult := BenchmarkResult{
 					Timestamp:   time.Now(),
@@ -321,7 +320,7 @@ func BenchmarkDGrepInvert(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: linesPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}
@@ -331,7 +330,7 @@ func BenchmarkDGrepInvert(b *testing.B) {
 func BenchmarkDGrepCompressed(b *testing.B) {
 	cleanup := SetupBenchmark(b)
 	defer cleanup()
-	
+
 	compressions := []struct {
 		name string
 		typ  CompressionType
@@ -340,12 +339,12 @@ func BenchmarkDGrepCompressed(b *testing.B) {
 		{"gzip", GzipCompression},
 		{"zstd", ZstdCompression},
 	}
-	
+
 	sizes := GetBenchmarkSizes()
 	if IsQuickMode() {
 		sizes = []FileSize{Small}
 	}
-	
+
 	for _, size := range sizes {
 		for _, comp := range compressions {
 			b.Run(fmt.Sprintf("Size=%s/Compression=%s", size, comp.name), func(b *testing.B) {
@@ -359,26 +358,26 @@ func BenchmarkDGrepCompressed(b *testing.B) {
 					Pattern:       pattern,
 					PatternRate:   10,
 				}
-				
+
 				testFile := GenerateTestFile(b, config)
-				defer os.Remove(testFile)
-				
+				cleanupBenchmarkFile(b, testFile)
+
 				// Get uncompressed size for throughput calculation
 				uncompressedSize := int64(size)
-				compressedSize, _ := GetFileSize(testFile)
+				compressedSize := mustGetFileSize(b, testFile)
 				compressionRatio := float64(uncompressedSize) / float64(compressedSize)
-				
+
 				// Estimate line count
 				approxLineCount := int(size) / 150
-				
+
 				// Warmup
 				WarmupCommand(b, "dgrep", "--plain", "--cfg", "none", "--grep", pattern, testFile)
-				
+
 				b.ResetTimer()
-				
+
 				// Run benchmark
 				totalDuration := time.Duration(0)
-				
+
 				for i := 0; i < b.N; i++ {
 					result, err := RunBenchmarkCommand(b, "dgrep", "--plain", "--cfg", "none", "--grep", pattern, testFile)
 					if err != nil {
@@ -386,16 +385,16 @@ func BenchmarkDGrepCompressed(b *testing.B) {
 					}
 					totalDuration += result.Duration
 				}
-				
+
 				avgDuration := totalDuration / time.Duration(b.N)
 				throughput := CalculateThroughput(uncompressedSize, avgDuration)
 				linesPerSec := CalculateLinesPerSecond(approxLineCount, avgDuration)
-				
+
 				// Report metrics
 				b.ReportMetric(throughput, "MB/sec")
 				b.ReportMetric(linesPerSec, "lines/sec")
 				b.ReportMetric(compressionRatio, "compression_ratio")
-				
+
 				// Save result
 				benchResult := BenchmarkResult{
 					Timestamp:   time.Now(),
@@ -406,7 +405,7 @@ func BenchmarkDGrepCompressed(b *testing.B) {
 					Throughput:  throughput,
 					LinesPerSec: linesPerSec,
 				}
-				SaveResults([]BenchmarkResult{benchResult})
+				saveBenchmarkResults(b, []BenchmarkResult{benchResult})
 			})
 		}
 	}

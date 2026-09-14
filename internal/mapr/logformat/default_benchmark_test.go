@@ -3,6 +3,7 @@ package logformat
 import (
 	"testing"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -25,7 +26,7 @@ func BenchmarkDefaultParserMakeFields(b *testing.B) {
 	})
 
 	b.Run("query_specific", func(b *testing.B) {
-		q, err := mapr.NewQuery(`select count(foo) from STATS where bar eq "baz"`)
+		q, err := mapr.NewQuery(`select count(foo) from STATS where bar eq "baz"`, logging.NopLogger{})
 		if err != nil {
 			b.Fatalf("Unable to create query: %s", err.Error())
 		}

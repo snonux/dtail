@@ -1,6 +1,7 @@
 package benchmarks
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -32,28 +33,23 @@ func (rl *ResultLogger) AddResult(result BenchmarkResult) {
 
 // WriteJSON writes results to a JSON file
 func (rl *ResultLogger) WriteJSON(filename string) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	
-	encoder := json.NewEncoder(file)
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
 	encoder.SetIndent("", "  ")
-	return encoder.Encode(rl.results)
+	if err := encoder.Encode(rl.results); err != nil {
+		return fmt.Errorf("encode benchmark results: %w", err)
+	}
+	if err := os.WriteFile(filename, output.Bytes(), 0644); err != nil {
+		return fmt.Errorf("write JSON benchmark results: %w", err)
+	}
+	return nil
 }
 
 // WriteCSV writes results to a CSV file
 func (rl *ResultLogger) WriteCSV(filename string) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	
-	writer := csv.NewWriter(file)
-	defer writer.Flush()
-	
+	var output bytes.Buffer
+	writer := csv.NewWriter(&output)
+
 	// Write header
 	header := []string{
 		"Timestamp",
@@ -72,7 +68,7 @@ func (rl *ResultLogger) WriteCSV(filename string) error {
 	if err := writer.Write(header); err != nil {
 		return err
 	}
-	
+
 	// Write data
 	for _, result := range rl.results {
 		record := []string{
@@ -90,55 +86,56 @@ func (rl *ResultLogger) WriteCSV(filename string) error {
 			fmt.Sprintf("%v", result.Error),
 		}
 		if err := writer.Write(record); err != nil {
-			return err
+			return fmt.Errorf("encode CSV benchmark result: %w", err)
 		}
 	}
-	
+
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return fmt.Errorf("flush CSV benchmark results: %w", err)
+	}
+	if err := os.WriteFile(filename, output.Bytes(), 0644); err != nil {
+		return fmt.Errorf("write CSV benchmark results: %w", err)
+	}
 	return nil
 }
 
 // WriteMarkdown writes a human-readable markdown report
 func (rl *ResultLogger) WriteMarkdown(filename string) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	
-	fmt.Fprintf(file, "# DTail Benchmark Results\n\n")
-	fmt.Fprintf(file, "**Date**: %s\n", time.Now().Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(file, "**Git Commit**: %s\n", GetGitCommit())
-	fmt.Fprintf(file, "**Go Version**: %s\n\n", GetGoVersion())
-	
+	output := "# DTail Benchmark Results\n\n"
+	output += fmt.Sprintf("**Date**: %s\n", time.Now().Format("2006-01-02 15:04:05"))
+	output += fmt.Sprintf("**Git Commit**: %s\n", GetGitCommit())
+	output += fmt.Sprintf("**Go Version**: %s\n\n", GetGoVersion())
+
 	// Group results by tool
 	byTool := make(map[string][]BenchmarkResult)
 	for _, result := range rl.results {
 		byTool[result.Tool] = append(byTool[result.Tool], result)
 	}
-	
+
 	// Sort tools for consistent output
 	var tools []string
 	for tool := range byTool {
 		tools = append(tools, tool)
 	}
 	sort.Strings(tools)
-	
+
 	// Write results for each tool
 	for _, tool := range tools {
-		fmt.Fprintf(file, "## %s\n\n", strings.ToUpper(tool))
-		
+		output += fmt.Sprintf("## %s\n\n", strings.ToUpper(tool))
+
 		// Create table
-		fmt.Fprintln(file, "| Operation | File Size | Duration | Throughput (MB/s) | Lines/sec |")
-		fmt.Fprintln(file, "|-----------|-----------|----------|-------------------|-----------|")
-		
+		output += "| Operation | File Size | Duration | Throughput (MB/s) | Lines/sec |\n"
+		output += "|-----------|-----------|----------|-------------------|-----------|\n"
+
 		// Sort results by operation name
 		results := byTool[tool]
 		sort.Slice(results, func(i, j int) bool {
 			return results[i].Operation < results[j].Operation
 		})
-		
+
 		for _, result := range results {
-			fmt.Fprintf(file, "| %s | %s | %v | %.2f | %.0f |\n",
+			output += fmt.Sprintf("| %s | %s | %v | %.2f | %.0f |\n",
 				result.Operation,
 				formatFileSize(result.FileSize),
 				result.Duration.Round(time.Millisecond),
@@ -146,10 +143,13 @@ func (rl *ResultLogger) WriteMarkdown(filename string) error {
 				result.LinesPerSec,
 			)
 		}
-		
-		fmt.Fprintln(file, "")
+
+		output += "\n"
 	}
-	
+
+	if err := os.WriteFile(filename, []byte(output), 0644); err != nil {
+		return fmt.Errorf("write Markdown benchmark results: %w", err)
+	}
 	return nil
 }
 
@@ -160,7 +160,7 @@ func formatFileSize(bytes int64) string {
 		MB = KB * 1024
 		GB = MB * 1024
 	)
-	
+
 	switch {
 	case bytes >= GB:
 		return fmt.Sprintf("%.1f GB", float64(bytes)/GB)
@@ -182,10 +182,10 @@ type ComparisonReport struct {
 
 // ComparisonEntry represents a single comparison result
 type ComparisonEntry struct {
-	Tool         string
-	Operation    string
-	BaselineDur  time.Duration
-	CurrentDur   time.Duration
+	Tool          string
+	Operation     string
+	BaselineDur   time.Duration
+	CurrentDur    time.Duration
 	ChangePercent float64
 }
 
@@ -197,29 +197,29 @@ func CompareResults(baseline, current []BenchmarkResult) ComparisonReport {
 		key := fmt.Sprintf("%s:%s", result.Tool, result.Operation)
 		baselineMap[key] = result
 	}
-	
+
 	currentMap := make(map[string]BenchmarkResult)
 	for _, result := range current {
 		key := fmt.Sprintf("%s:%s", result.Tool, result.Operation)
 		currentMap[key] = result
 	}
-	
+
 	report := ComparisonReport{
 		Improvements: []ComparisonEntry{},
 		Regressions:  []ComparisonEntry{},
 		Unchanged:    []ComparisonEntry{},
 	}
-	
+
 	// Compare each current result with baseline
 	for key, currentResult := range currentMap {
 		baselineResult, exists := baselineMap[key]
 		if !exists {
 			continue // Skip new benchmarks
 		}
-		
+
 		// Calculate percentage change
 		changePercent := ((float64(currentResult.Duration) - float64(baselineResult.Duration)) / float64(baselineResult.Duration)) * 100
-		
+
 		entry := ComparisonEntry{
 			Tool:          currentResult.Tool,
 			Operation:     currentResult.Operation,
@@ -227,7 +227,7 @@ func CompareResults(baseline, current []BenchmarkResult) ComparisonReport {
 			CurrentDur:    currentResult.Duration,
 			ChangePercent: changePercent,
 		}
-		
+
 		// Categorize based on change threshold (10%)
 		switch {
 		case changePercent < -10:
@@ -238,7 +238,7 @@ func CompareResults(baseline, current []BenchmarkResult) ComparisonReport {
 			report.Unchanged = append(report.Unchanged, entry)
 		}
 	}
-	
+
 	// Sort by change percentage
 	sort.Slice(report.Improvements, func(i, j int) bool {
 		return report.Improvements[i].ChangePercent < report.Improvements[j].ChangePercent
@@ -246,30 +246,22 @@ func CompareResults(baseline, current []BenchmarkResult) ComparisonReport {
 	sort.Slice(report.Regressions, func(i, j int) bool {
 		return report.Regressions[i].ChangePercent > report.Regressions[j].ChangePercent
 	})
-	
+
 	return report
 }
 
 // WriteComparisonReport writes a comparison report to a file
 func WriteComparisonReport(report ComparisonReport, filename string) error {
-	file, err := os.Create(filename)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	
-	fmt.Fprintln(file, "# Performance Comparison Report")
-	fmt.Fprintln(file, "")
-	
+	output := "# Performance Comparison Report\n\n"
+
 	// Write regressions
 	if len(report.Regressions) > 0 {
-		fmt.Fprintln(file, "## ⚠️ Performance Regressions")
-		fmt.Fprintln(file, "")
-		fmt.Fprintln(file, "| Tool | Operation | Baseline | Current | Change |")
-		fmt.Fprintln(file, "|------|-----------|----------|---------|--------|")
-		
+		output += "## ⚠️ Performance Regressions\n\n"
+		output += "| Tool | Operation | Baseline | Current | Change |\n"
+		output += "|------|-----------|----------|---------|--------|\n"
+
 		for _, entry := range report.Regressions {
-			fmt.Fprintf(file, "| %s | %s | %v | %v | +%.1f%% |\n",
+			output += fmt.Sprintf("| %s | %s | %v | %v | +%.1f%% |\n",
 				entry.Tool,
 				entry.Operation,
 				entry.BaselineDur.Round(time.Millisecond),
@@ -277,18 +269,17 @@ func WriteComparisonReport(report ComparisonReport, filename string) error {
 				entry.ChangePercent,
 			)
 		}
-		fmt.Fprintln(file, "")
+		output += "\n"
 	}
-	
+
 	// Write improvements
 	if len(report.Improvements) > 0 {
-		fmt.Fprintln(file, "## ✅ Performance Improvements")
-		fmt.Fprintln(file, "")
-		fmt.Fprintln(file, "| Tool | Operation | Baseline | Current | Change |")
-		fmt.Fprintln(file, "|------|-----------|----------|---------|--------|")
-		
+		output += "## ✅ Performance Improvements\n\n"
+		output += "| Tool | Operation | Baseline | Current | Change |\n"
+		output += "|------|-----------|----------|---------|--------|\n"
+
 		for _, entry := range report.Improvements {
-			fmt.Fprintf(file, "| %s | %s | %v | %v | %.1f%% |\n",
+			output += fmt.Sprintf("| %s | %s | %v | %v | %.1f%% |\n",
 				entry.Tool,
 				entry.Operation,
 				entry.BaselineDur.Round(time.Millisecond),
@@ -296,16 +287,18 @@ func WriteComparisonReport(report ComparisonReport, filename string) error {
 				entry.ChangePercent,
 			)
 		}
-		fmt.Fprintln(file, "")
+		output += "\n"
 	}
-	
+
 	// Summary
-	fmt.Fprintln(file, "## Summary")
-	fmt.Fprintln(file, "")
-	fmt.Fprintf(file, "- Regressions: %d\n", len(report.Regressions))
-	fmt.Fprintf(file, "- Improvements: %d\n", len(report.Improvements))
-	fmt.Fprintf(file, "- Unchanged: %d\n", len(report.Unchanged))
-	
+	output += "## Summary\n\n"
+	output += fmt.Sprintf("- Regressions: %d\n", len(report.Regressions))
+	output += fmt.Sprintf("- Improvements: %d\n", len(report.Improvements))
+	output += fmt.Sprintf("- Unchanged: %d\n", len(report.Unchanged))
+
+	if err := os.WriteFile(filename, []byte(output), 0644); err != nil {
+		return fmt.Errorf("write benchmark comparison report: %w", err)
+	}
 	return nil
 }
 
@@ -315,36 +308,36 @@ func SaveResults(results []BenchmarkResult) error {
 	for _, result := range results {
 		logger.AddResult(result)
 	}
-	
+
 	timestamp := time.Now().Format("20060102_150405")
 	baseDir := "benchmark_results"
-	
+
 	// Create results directory
 	if err := os.MkdirAll(baseDir, 0755); err != nil {
 		return err
 	}
-	
+
 	// Save in different formats
 	jsonFile := filepath.Join(baseDir, fmt.Sprintf("results_%s.json", timestamp))
 	if err := logger.WriteJSON(jsonFile); err != nil {
 		return err
 	}
-	
+
 	csvFile := filepath.Join(baseDir, fmt.Sprintf("results_%s.csv", timestamp))
 	if err := logger.WriteCSV(csvFile); err != nil {
 		return err
 	}
-	
+
 	mdFile := filepath.Join(baseDir, fmt.Sprintf("results_%s.md", timestamp))
 	if err := logger.WriteMarkdown(mdFile); err != nil {
 		return err
 	}
-	
+
 	// Also save as latest for easy access
 	latestJSON := filepath.Join(baseDir, "latest.json")
 	if err := logger.WriteJSON(latestJSON); err != nil {
 		return err
 	}
-	
+
 	return nil
 }

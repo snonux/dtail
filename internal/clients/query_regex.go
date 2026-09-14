@@ -3,6 +3,7 @@ package clients
 import (
 	"fmt"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
@@ -21,8 +22,8 @@ func maprRegexForQuery(query *mapr.Query) string {
 	}
 }
 
-func maprRegexFromQueryString(queryStr string) (*mapr.Query, string, error) {
-	query, err := mapr.NewQuery(queryStr)
+func maprRegexFromQueryString(queryStr string, logger logging.Logger) (*mapr.Query, string, error) {
+	query, err := mapr.NewQuery(queryStr, logging.OrNop(logger))
 	if err != nil {
 		return nil, "", err
 	}

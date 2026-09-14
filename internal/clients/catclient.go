@@ -2,11 +2,10 @@ package clients
 
 import (
 	"errors"
-	"runtime"
+	"fmt"
 
-	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/color/brush"
 	"github.com/mimecast/dtail/internal/config"
-	"github.com/mimecast/dtail/internal/io/dlog"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -16,45 +15,18 @@ type CatClient struct {
 }
 
 // NewCatClient returns a new cat client.
-func NewCatClient(args config.Args) (*CatClient, error) {
+func NewCatClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
+	colorizers ...*brush.Brush) (*CatClient, error) {
 	if args.RegexStr != "" {
-		return nil, errors.New("Can't use regex with 'cat' operating mode")
+		return nil, errors.New("can't use regex with 'cat' operating mode")
 	}
 	args.Mode = omode.CatClient
+	loggers = loggers.normalized()
 
-	c := CatClient{
-		baseClient: baseClient{
-			mu:         newBaseClientMu(),
-			Args:       args,
-			throttleCh: make(chan struct{}, args.ConnectionsPerCPU*runtime.NumCPU()),
-			retry:      false,
-			runtime:    newClientRuntimeBoundary(config.CurrentRuntime()),
-		},
-	}
-
-	c.init()
-	if err := c.makeConnections(c); err != nil {
-		return nil, err
-	}
-	return &c, nil
-}
-
-func (c CatClient) makeHandler(server string) handlers.Handler {
-	return handlers.NewClientHandler(server)
-}
-
-func (c CatClient) makeSessionSpec() (SessionSpec, error) {
-	return NewSessionSpec(c.Args), nil
-}
-
-func (c CatClient) makeCommands() (commands []string) {
-	sessionSpec, err := c.makeSessionSpec()
+	base, err := newBaseClient(args, cfg, loggers, firstColorizer(colorizers),
+		clientHandlerProfile(loggers.Client, false))
 	if err != nil {
-		dlog.Client.FatalPanic("unable to build cat session spec", err)
+		return nil, fmt.Errorf("initialize cat client: %w", err)
 	}
-	commands, err = sessionSpec.Commands()
-	if err != nil {
-		dlog.Client.FatalPanic("unable to build cat commands from session spec", err)
-	}
-	return commands
+	return &CatClient{baseClient: base}, nil
 }

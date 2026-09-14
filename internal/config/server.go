@@ -4,6 +4,8 @@ import (
 	"errors"
 )
 
+const defaultServerHostKeyPath = "./cache/ssh_host_key"
+
 // Permissions map. Each SSH user has a list of permissions which log files it
 // is allowed to follow and which ones not.
 type Permissions struct {
@@ -43,6 +45,8 @@ type ServerConfig struct {
 	SSHBindAddress string
 	// The max amount of concurrent user connection allowed to connect to the server.
 	MaxConnections int
+	// Rolling inactivity timeout for authenticated SSH sessions, in seconds.
+	IdleSessionTimeoutS int `json:",omitempty"`
 	// The max amount of concurrent cats per server.
 	MaxConcurrentCats int
 	// The max amount of concurrent tails per server.
@@ -53,8 +57,16 @@ type ServerConfig struct {
 	Permissions Permissions `json:",omitempty"`
 	// The mapr log format
 	MapreduceLogFormat string `json:",omitempty"`
-	// The default path of the server host key
+	// HostKeyFile is the legacy private SSH host-key path.
+	//
+	// Deprecated: use HostKeyPath. Existing configuration files remain supported.
 	HostKeyFile string
+	// HostKeyPath selects the private SSH host key. When empty, HostKeyFile is
+	// used for compatibility; when both are empty, the built-in path is used.
+	HostKeyPath string `json:",omitempty"`
+	// AuthorizedKeysPath selects one authorized_keys file for all users. When
+	// empty, the per-user cache and ~/.ssh/authorized_keys lookup is used.
+	AuthorizedKeysPath string `json:",omitempty"`
 	// The host key size in bits
 	HostKeyBits int
 	// Scheduled mapreduce jobs.
@@ -77,28 +89,16 @@ type ServerConfig struct {
 	ReadGlobRetryIntervalMs int `json:",omitempty"`
 	// Retry interval for re-reading in tail/cat loops in milliseconds.
 	ReadRetryIntervalMs int `json:",omitempty"`
-	// Delay after output processor flush/close to allow data transmission, in milliseconds.
-	OutputTransmissionDelayMs int `json:",omitempty"`
-	// Output EOF wait base duration in milliseconds.
-	OutputEOFWaitBaseMs int `json:",omitempty"`
-	// Output EOF wait per-file duration in milliseconds.
-	OutputEOFWaitPerFileMs int `json:",omitempty"`
-	// Maximum output EOF wait duration in milliseconds.
-	OutputEOFWaitMaxMs int `json:",omitempty"`
-	// Output channel buffer size.
-	OutputChannelBufferSize int `json:",omitempty"`
-	// Output channel flush timeout in milliseconds.
+	// Maximum payload backing memory retained by the output buffer per SSH session.
+	OutputBufferMaxBytes int `json:",omitempty"`
+	// Maximum time to wait for the session reader to drain output, in milliseconds.
 	OutputFlushTimeoutMs int `json:",omitempty"`
-	// Output channel flush poll interval in milliseconds.
-	OutputFlushPollIntervalMs int `json:",omitempty"`
-	// Output read retry interval in milliseconds when data is expected but not yet available.
+	// Compatibility fallback interval for detecting a stale generation when an
+	// older output writer provides no cancellation signal. Values below the
+	// implementation safety minimum are clamped.
 	OutputReadRetryIntervalMs int `json:",omitempty"`
 	// Maximum time to wait for output EOF acknowledgement after signaling EOF, in milliseconds.
 	OutputEOFAckTimeoutMs int `json:",omitempty"`
-	// Wait for aggregate serialization during shutdown in milliseconds.
-	ShutdownOutputSerializeWaitMs int `json:",omitempty"`
-	// Final idle recheck wait before shutdown in milliseconds.
-	ShutdownIdleRecheckWaitMs int `json:",omitempty"`
 	// Maximum size in bytes of a single command frame (bytes accumulated between
 	// ';' delimiters). Frames that grow beyond this limit are rejected and the
 	// session is closed to prevent unbounded memory exhaustion by a malicious or
@@ -118,35 +118,28 @@ func newDefaultServerConfig() *ServerConfig {
 	defaultPermissions := []string{"^/.*"}
 	defaultBindAddress := "0.0.0.0"
 	return &ServerConfig{
-		HostKeyBits:        4096,
-		HostKeyFile:        "./cache/ssh_host_key",
-		MapreduceLogFormat: "default",
-		MaxConcurrentCats:  2,
-		MaxConcurrentTails: 50,
-		MaxConnections:     10,
-		MaxLineLength:      1024 * 1024,
-		SSHBindAddress:     defaultBindAddress,
+		HostKeyBits:         4096,
+		MapreduceLogFormat:  "default",
+		MaxConcurrentCats:   2,
+		MaxConcurrentTails:  50,
+		MaxConnections:      10,
+		IdleSessionTimeoutS: DefaultIdleSessionTimeoutS,
+		MaxLineLength:       1024 * 1024,
+		SSHBindAddress:      defaultBindAddress,
 		Permissions: Permissions{
 			Default: defaultPermissions,
 		},
-		AuthKeyEnabled:                true,
-		AuthKeyTTLSeconds:             86400,
-		AuthKeyMaxPerUser:             5,
-		ReadGlobRetryIntervalMs:       5000,
-		ReadRetryIntervalMs:           2000,
-		OutputTransmissionDelayMs:     50,
-		OutputEOFWaitBaseMs:           500,
-		OutputEOFWaitPerFileMs:        10,
-		OutputEOFWaitMaxMs:            2000,
-		OutputChannelBufferSize:       1000,
-		OutputFlushTimeoutMs:          2000,
-		OutputFlushPollIntervalMs:     10,
-		OutputReadRetryIntervalMs:     1,
-		OutputEOFAckTimeoutMs:         2000,
-		ShutdownOutputSerializeWaitMs: 500,
-		ShutdownIdleRecheckWaitMs:     10,
-		MaxCommandFrameSize:           DefaultMaxCommandFrameSize,
-		MaxGlobTargets:                1000,
+		AuthKeyEnabled:            true,
+		AuthKeyTTLSeconds:         86400,
+		AuthKeyMaxPerUser:         5,
+		ReadGlobRetryIntervalMs:   5000,
+		ReadRetryIntervalMs:       2000,
+		OutputBufferMaxBytes:      DefaultOutputBufferMaxBytes,
+		OutputFlushTimeoutMs:      2000,
+		OutputReadRetryIntervalMs: 1,
+		OutputEOFAckTimeoutMs:     2000,
+		MaxCommandFrameSize:       DefaultMaxCommandFrameSize,
+		MaxGlobTargets:            1000,
 	}
 }
 
@@ -155,6 +148,21 @@ func newDefaultServerConfig() *ServerConfig {
 // compare default configuration without running the full config initializer.
 func NewDefaultServerConfigForTest() *ServerConfig {
 	return newDefaultServerConfig()
+}
+
+// EffectiveHostKeyPath returns the configured SSH host-key path, including
+// compatibility with the legacy HostKeyFile setting.
+func (c *ServerConfig) EffectiveHostKeyPath() string {
+	if c == nil {
+		return ""
+	}
+	if c.HostKeyPath != "" {
+		return c.HostKeyPath
+	}
+	if c.HostKeyFile != "" {
+		return c.HostKeyFile
+	}
+	return defaultServerHostKeyPath
 }
 
 // UserPermissions retrieves the permission set of a given user.
@@ -168,7 +176,7 @@ func (c *ServerConfig) UserPermissions(userName string) (permissions []string, e
 		permissions = p
 	}
 	if len(permissions) == 0 {
-		err = errors.New("Empty set of permission, user won't be able to open any files")
+		err = errors.New("empty set of permission, user won't be able to open any files")
 	}
 	return
 }

@@ -2,19 +2,28 @@ package connectors
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
-	"github.com/mimecast/dtail/internal/io/dlog"
-	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
+	sessionHandlers "github.com/mimecast/dtail/internal/handlers"
+	"github.com/mimecast/dtail/internal/logging"
 	sessionspec "github.com/mimecast/dtail/internal/session"
 )
 
 // ServerlessHandlerFactory creates the in-process server-side handler used by serverless mode.
 type ServerlessHandlerFactory interface {
-	NewServerlessHandler(userName string) (serverHandlers.Handler, error)
+	NewServerlessHandler(context.Context, string) (sessionHandlers.Handler, error)
+}
+
+type contextGracefulServerlessHandler interface {
+	GracefulShutdownContext(context.Context)
+}
+
+type outputReaderAttacher interface {
+	AttachOutputReader()
 }
 
 // Serverless creates a server object directly without TCP.
@@ -26,6 +35,7 @@ type Serverless struct {
 	interactive    bool
 	userName       string
 	handlerFactory ServerlessHandlerFactory
+	logger         logging.Logger
 }
 
 var _ Connector = (*Serverless)(nil)
@@ -33,9 +43,10 @@ var _ Connector = (*Serverless)(nil)
 // NewServerless starts a new serverless session.
 func NewServerless(userName string, handler handlers.Handler,
 	commands []string, sessionSpec sessionspec.Spec, interactive bool,
-	handlerFactory ServerlessHandlerFactory) *Serverless {
+	handlerFactory ServerlessHandlerFactory, logger logging.Logger) *Serverless {
 
-	dlog.Client.Debug("Creating new serverless connector", handler, commands)
+	logger = logging.OrNop(logger)
+	logger.Debug("Creating new serverless connector", handler, commands)
 	return &Serverless{
 		userName:       userName,
 		handler:        handler,
@@ -43,6 +54,7 @@ func NewServerless(userName string, handler handlers.Handler,
 		sessionSpec:    sessionSpec,
 		interactive:    interactive,
 		handlerFactory: handlerFactory,
+		logger:         logger,
 	}
 }
 
@@ -64,13 +76,13 @@ func (s *Serverless) SupportsQueryUpdates(timeout time.Duration) bool {
 
 // ApplySessionSpec starts or updates the in-process interactive session state.
 func (s *Serverless) ApplySessionSpec(spec sessionspec.Spec, timeout time.Duration) error {
-	return applySessionSpec(s.Server(), s.handler, &s.sessionState, spec, timeout)
+	return applySessionSpec(s.Server(), s.handler, &s.sessionState, spec, timeout, s.logger)
 }
 
 // ApplySessionSpecWithGeneration starts or updates the in-process interactive
 // session state using an explicit committed generation as the update base.
 func (s *Serverless) ApplySessionSpecWithGeneration(spec sessionspec.Spec, generation uint64, timeout time.Duration) error {
-	return applySessionSpecWithGeneration(s.Server(), s.handler, &s.sessionState, spec, generation, false, timeout)
+	return applySessionSpecWithGeneration(s.Server(), s.handler, &s.sessionState, spec, generation, false, timeout, s.logger)
 }
 
 // CommittedSession returns the last server-acknowledged session state.
@@ -88,13 +100,15 @@ func (s *Serverless) RestoreCommittedSession(spec sessionspec.Spec, generation u
 func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 	throttleCh, statsCh chan struct{}) {
 
-	dlog.Client.Debug("Starting serverless connector")
+	s.logger.Debug("Starting serverless connector")
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		defer cancel()
 		if err := s.handle(ctx, cancel); err != nil {
-			dlog.Client.Warn(err)
+			if shouldReportConnectionError(ctx, err) {
+				s.handler.ReportServerError("serverless session failed: " + err.Error())
+			}
 		}
 	}()
 	<-ctx.Done()
@@ -102,22 +116,28 @@ func (s *Serverless) Start(ctx context.Context, cancel context.CancelFunc,
 }
 
 func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) error {
-	dlog.Client.Debug("Creating server handler for a serverless session")
+	s.logger.Debug("Creating server handler for a serverless session")
 
 	if s.handlerFactory == nil {
 		return io.ErrClosedPipe
 	}
-	serverHandler, err := s.handlerFactory.NewServerlessHandler(s.userName)
+	// Keep the in-process server lifetime independent from client work
+	// cancellation until GracefulShutdownContext has claimed final aggregate
+	// output. Output failure cancels this context immediately and selects abrupt
+	// shutdown below.
+	outputDrainCtx, cancelOutputDrain := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelOutputDrain()
+	serverHandler, err := s.handlerFactory.NewServerlessHandler(outputDrainCtx, s.userName)
 	if err != nil {
 		return err
 	}
-
-	terminate := func() {
-		dlog.Client.Debug("Terminating serverless connection")
-		serverHandler.Shutdown()
-		cancel()
+	// Publish reader ownership before any I/O goroutine or command dispatch can
+	// run. A fast serverless command may otherwise reach shutdown before the
+	// server reader's first Read and skip its delivery barrier as though a raw
+	// channel consumer owned the output.
+	if outputReader, ok := serverHandler.(outputReaderAttacher); ok {
+		outputReader.AttachOutputReader()
 	}
-
 	// Use buffered channels to prevent deadlock
 	// This approach avoids the circular dependency of direct io.Copy
 
@@ -127,6 +147,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 
 	// Error tracking
 	errChan := make(chan error, 4)
+	clientOutputErr := make(chan error, 1)
 	var ioWg sync.WaitGroup
 
 	// Read from client handler
@@ -136,7 +157,7 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 		defer close(toServer)
 		buf := make([]byte, 32*1024)
 		for {
-			n, err := s.handler.Read(buf)
+			n, readErr := s.handler.Read(buf)
 			if n > 0 {
 				data := make([]byte, n)
 				copy(data, buf[:n])
@@ -146,9 +167,9 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 					return
 				}
 			}
-			if err != nil {
-				if err != io.EOF {
-					errChan <- err
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					errChan <- readErr
 				}
 				return
 			}
@@ -160,33 +181,37 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	go func() {
 		defer ioWg.Done()
 		for data := range toServer {
-			if _, err := serverHandler.Write(data); err != nil {
-				errChan <- err
+			if _, writeErr := serverHandler.Write(data); writeErr != nil {
+				errChan <- writeErr
 				return
 			}
 		}
 	}()
 
 	// Read from server handler
+	// Cancellation stops new work but must not discard output that the server
+	// produces while shutting down. Only abort this reader if the client output
+	// writer itself has stopped accepting data.
+	clientOutputStopped := make(chan struct{})
 	ioWg.Add(1)
 	go func() {
 		defer ioWg.Done()
 		defer close(fromServer)
 		buf := make([]byte, 64*1024) // Larger buffer for server responses
 		for {
-			n, err := serverHandler.Read(buf)
+			n, readErr := serverHandler.Read(buf)
 			if n > 0 {
 				data := make([]byte, n)
 				copy(data, buf[:n])
 				select {
 				case fromServer <- data:
-				case <-ctx.Done():
+				case <-clientOutputStopped:
 					return
 				}
 			}
-			if err != nil {
-				if err != io.EOF {
-					errChan <- err
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					errChan <- readErr
 				}
 				return
 			}
@@ -194,61 +219,88 @@ func (s *Serverless) handle(ctx context.Context, cancel context.CancelFunc) erro
 	}()
 
 	// Write to client handler
-	serverDone := make(chan struct{})
+	serverOutputDone := make(chan struct{})
 	ioWg.Add(1)
 	go func() {
 		defer ioWg.Done()
-		defer close(serverDone)
+		defer close(serverOutputDone)
+		defer close(clientOutputStopped)
 		for data := range fromServer {
-			if _, err := s.handler.Write(data); err != nil {
-				errChan <- err
+			n, writeErr := s.handler.Write(data)
+			if writeErr == nil && n != len(data) {
+				writeErr = io.ErrShortWrite
+			}
+			if writeErr != nil {
+				cancelOutputDrain()
+				clientOutputErr <- writeErr
 				return
 			}
 		}
 	}()
 
-	if err := dispatchInitialCommands(s.Server(), s.handler, s.commands, s.interactive, s.sessionSpec, &s.sessionState); err != nil {
-		s.handler.Shutdown()
-		serverHandler.Shutdown()
-		return err
-	}
-
-	// Monitor for completion
-	go func() {
-		defer terminate()
+	dispatchErr := dispatchInitialCommands(s.Server(), s.handler, s.commands, s.interactive,
+		s.sessionSpec, &s.sessionState, s.logger)
+	var transferErr error
+	if dispatchErr == nil {
 		select {
 		case <-s.handler.Done():
-			dlog.Client.Trace("<-s.handler.Done()")
+			s.logger.Trace("<-s.handler.Done()")
 			// The client handler marks itself done as soon as it receives the
 			// hidden close message. Keep the in-process server alive long enough
 			// for the remaining output and close ACK to drain instead of canceling
 			// the whole session immediately.
 			select {
-			case <-serverDone:
-				dlog.Client.Trace("Server transfer done after client close")
+			case <-serverOutputDone:
+				s.logger.Trace("Server transfer done after client close")
 			case <-ctx.Done():
-				dlog.Client.Trace("<-ctx.Done() while waiting for server transfer")
+				s.logger.Trace("<-ctx.Done() while waiting for server transfer")
 			case <-time.After(6 * time.Second):
-				dlog.Client.Debug("Timed out waiting for server transfer after client close")
+				s.logger.Debug("Timed out waiting for server transfer after client close")
 			}
-		case <-serverDone:
-			dlog.Client.Trace("Server transfer done")
+		case <-serverOutputDone:
+			s.logger.Trace("Server transfer done")
 		case <-ctx.Done():
-			dlog.Client.Trace("<-ctx.Done()")
+			s.logger.Trace("<-ctx.Done()")
+		case transferErr = <-errChan:
+			s.logger.Trace("Serverless transfer failed", transferErr)
+		case transferErr = <-clientOutputErr:
+			s.logger.Trace("Serverless client output failed", transferErr)
 		}
-	}()
+	}
 
-	// Wait for completion
-	<-ctx.Done()
+	// Stop the server first so its output reader reaches EOF, then drain all
+	// output already produced during shutdown before finalizing the client
+	// handler. In particular, MaprHandler.Shutdown performs its final aggregate
+	// flush, so it must run after the last server-to-client Write has completed.
+	s.logger.Debug("Terminating serverless connection")
+	if outputDrainCtx.Err() != nil {
+		serverHandler.Shutdown()
+	} else if gracefulHandler, ok := serverHandler.(contextGracefulServerlessHandler); ok {
+		gracefulHandler.GracefulShutdownContext(outputDrainCtx)
+	} else {
+		serverHandler.Shutdown()
+	}
+	cancel()
+	<-serverOutputDone
+	s.handler.Shutdown()
 	ioWg.Wait()
 
-	// Check for errors
+	if dispatchErr != nil {
+		return dispatchErr
+	}
+	if transferErr != nil {
+		return transferErr
+	}
 	select {
-	case err := <-errChan:
-		return err
+	case outputErr := <-clientOutputErr:
+		return outputErr
+	default:
+	}
+	select {
+	case pendingErr := <-errChan:
+		return pendingErr
 	default:
 	}
 
-	s.handler.Shutdown()
 	return nil
 }
