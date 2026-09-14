@@ -59,6 +59,10 @@ benchmark-quick: build dtail-tools
 	./dtail-tools benchmark -mode run -quick
 benchmark-full: build dtail-tools
 	./dtail-tools benchmark -mode run -iterations 3x
+benchmark-upstream-smoke:
+	./benchmarks/upstream_vs_local_bench.sh smoke
+benchmark-upstream:
+	./benchmarks/upstream_vs_local_bench.sh run
 benchmark-baseline: build dtail-tools
 	@read -p "Enter a descriptive name for this baseline (e.g. 'before-optimization', 'v1.0-release'): " tag; \
 	if [ -z "$$tag" ]; then \
@@ -134,7 +138,7 @@ profile-help:
 	@echo "  make profile-analyze PROFILE=profiles/dcat_cpu_*.prof"
 	@echo ""
 
-.PHONY: lint vet test test-integration todos profile-all profile-quick profile-dmap profile-list profile-analyze profile-web profile-clean profile-help
+.PHONY: lint vet test test-integration todos benchmark-upstream-smoke benchmark-upstream profile-all profile-quick profile-dmap profile-list profile-analyze profile-web profile-clean profile-help
 
 ## Profile-Guided Optimization targets
 pgo: build dtail-tools
