@@ -9,10 +9,11 @@ import (
 	goUser "os/user"
 	"path/filepath"
 
+	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/logging"
-	user "github.com/mimecast/dtail/internal/user/server"
+	user "github.com/mimecast/dtail/internal/sessionuser"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -23,7 +24,7 @@ type authorizedKeyParser func([]byte) (gossh.PublicKey, string, []string, []byte
 // keyStore must be non-nil; callers are responsible for constructing and
 // wiring the store. There is no shared package-level fallback.
 func NewPublicKeyCallback(authKeyEnabled bool, cacheDir, authorizedKeysPath string,
-	keyStore *AuthKeyStore, logger logging.Logger) func(gossh.ConnMetadata, gossh.PublicKey) (*gossh.Permissions, error) {
+	keyStore *authkey.Store, logger logging.Logger) func(gossh.ConnMetadata, gossh.PublicKey) (*gossh.Permissions, error) {
 
 	if keyStore == nil {
 		panic("NewPublicKeyCallback: keyStore must not be nil")
@@ -35,7 +36,7 @@ func NewPublicKeyCallback(authKeyEnabled bool, cacheDir, authorizedKeysPath stri
 }
 
 func publicKeyCallback(c gossh.ConnMetadata, offeredPubKey gossh.PublicKey,
-	authKeyEnabled bool, cacheDir, authorizedKeysPath string, keyStore *AuthKeyStore,
+	authKeyEnabled bool, cacheDir, authorizedKeysPath string, keyStore *authkey.Store,
 	logger logging.Logger) (*gossh.Permissions, error) {
 
 	if config.IsPasswordOnlyUser(c.User()) {
@@ -115,7 +116,7 @@ func advanceToNextAuthorizedKeysLine(authorizedKeysBytes []byte) ([]byte, bool) 
 	return nextBytes, true
 }
 
-func authKeyStorePermissions(keyStore *AuthKeyStore, userName string,
+func authKeyStorePermissions(keyStore *authkey.Store, userName string,
 	offeredPubKey gossh.PublicKey) *gossh.Permissions {
 
 	if keyStore == nil || !keyStore.Has(userName, offeredPubKey) {

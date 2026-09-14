@@ -8,14 +8,14 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	sessionHandlers "github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/logging"
-	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
 	sessionspec "github.com/mimecast/dtail/internal/session"
 )
 
 // ServerlessHandlerFactory creates the in-process server-side handler used by serverless mode.
 type ServerlessHandlerFactory interface {
-	NewServerlessHandler(userName string) (serverHandlers.Handler, error)
+	NewServerlessHandler(userName string) (sessionHandlers.Handler, error)
 }
 
 type gracefulServerlessHandler interface {

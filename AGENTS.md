@@ -379,7 +379,11 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 ### Core Implementation
 - `/internal/clients/` - Client implementations for each tool
 - `/internal/server/` - Server daemon logic
+- `/internal/handlers/` - Transport-neutral session handlers and read engine
+- `/internal/jobs/` - Scheduled and continuous MapReduce client workloads
 - `/internal/mapr/` - MapReduce engine and query parsing
+- `/internal/authkey/` - Shared in-memory cache for registered public keys
+- `/internal/sessionuser/` - Session identity and read authorization
 - `/internal/ssh/` - SSH client/server components
 - `/internal/config/` - Configuration management
 - `/internal/io/` - File operations, logging, compression handling
@@ -405,8 +409,8 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 - **MapReduce Parser**: `/internal/mapr/parse/` - SQL-like query language parser
 - **Log Format Parsers**: `/internal/mapr/logformat/` - Extensible log parsing system
 - **SSH Authorization Callback**: `/internal/ssh/server/publickeycallback.go` - auth-key fast-path + `authorized_keys` fallback
-- **Auth-Key Cache**: `/internal/ssh/server/authkeystore.go` - in-memory per-user key cache (TTL/max-keys)
-- **AUTHKEY Handler**: `/internal/server/handlers/serverhandler.go` - session command handling for auth-key registration
+- **AUTHKEY Handler**: `/internal/handlers/serverhandler.go` - session command handling for auth-key registration
+- **Auth-Key Cache**: `/internal/authkey/authkeystore.go` - in-memory per-user key cache (TTL/max-keys)
 
 ## Configuration Files
 
@@ -431,10 +435,10 @@ When modifying client behavior:
 
 When modifying server behavior:
 1. Core server logic is in `/internal/server/server.go`
-2. User authentication in `/internal/server/user/`
-3. Handler implementations in `/internal/server/handlers/`
+2. Session identity and read authorization in `/internal/sessionuser/`
+3. Handler implementations in `/internal/handlers/`
 
 When working with MapReduce:
 1. Query parsing in `/internal/mapr/parse/`
-2. Aggregation logic in `/internal/mapr/reducer/`
+2. In-process aggregation in `/internal/mapr/aggregate/`
 3. Log format parsing in `/internal/mapr/logformat/`

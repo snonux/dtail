@@ -15,7 +15,9 @@ import (
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/server"
 )
 
 type eventRecorder struct {
@@ -34,6 +36,10 @@ type dserverServiceStub struct {
 	start func(context.Context) (int, error)
 }
 
+type backgroundJobsStub struct{}
+
+func (*backgroundJobsStub) Start(context.Context) {}
+
 func TestRunDServerLifecycleCleansUpConstructionFailureInOrder(t *testing.T) {
 	ctx, baseCancel := context.WithCancel(context.Background())
 	t.Cleanup(baseCancel)
@@ -43,6 +49,7 @@ func TestRunDServerLifecycleCleansUpConstructionFailureInOrder(t *testing.T) {
 	go recordLoggerStop(ctx, &wg, recorder)
 
 	profile := &lifecyclePProfServer{recorder: recorder}
+	backgroundJobs := &backgroundJobsStub{}
 	constructionErr := errors.New("server construction failed")
 	var stderr bytes.Buffer
 	var notifiedSignals []os.Signal
@@ -59,7 +66,19 @@ func TestRunDServerLifecycleCleansUpConstructionFailureInOrder(t *testing.T) {
 			recorder.add("pprof created: " + address)
 			return profile, nil
 		},
-		newServer: func(config.RuntimeConfig, clients.LoggerDependencies) (dserverService, error) {
+		newBackgroundJobs: func(config.RuntimeConfig, clients.LoggerDependencies) server.BackgroundJobs {
+			recorder.add("background jobs construction")
+			return backgroundJobs
+		},
+		newServer: func(_ config.RuntimeConfig, loggers handlers.HandlerLoggers,
+			gotBackgroundJobs server.BackgroundJobs) (dserverService, error) {
+			if gotBackgroundJobs != backgroundJobs {
+				t.Fatalf("background jobs = %T(%p), want %T(%p)",
+					gotBackgroundJobs, gotBackgroundJobs, backgroundJobs, backgroundJobs)
+			}
+			if loggers.Diagnostics == nil || loggers.Reader == nil {
+				t.Fatal("server handler logger roles were not injected")
+			}
 			recorder.add("server construction")
 			return nil, constructionErr
 		},
@@ -95,6 +114,7 @@ func TestRunDServerLifecycleCleansUpConstructionFailureInOrder(t *testing.T) {
 		"pprof created: test-profile",
 		"pprof started",
 		"signals registered",
+		"background jobs construction",
 		"server construction",
 		"signals stopped",
 		"pprof shutdown",
@@ -117,7 +137,7 @@ func TestRunDServerLifecycleBuildsAndStopsTimeoutContext(t *testing.T) {
 		dserverLifecycleDependencies{
 			stderr:  &bytes.Buffer{},
 			loggers: nopLoggerDependencies(),
-			newServer: func(config.RuntimeConfig, clients.LoggerDependencies) (dserverService, error) {
+			newServer: func(config.RuntimeConfig, handlers.HandlerLoggers, server.BackgroundJobs) (dserverService, error) {
 				return dserverServiceStub{start: func(ctx context.Context) (int, error) {
 					serverCtx = ctx
 					return 7, nil

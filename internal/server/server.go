@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/logging"
-	"github.com/mimecast/dtail/internal/server/handlers"
+	user "github.com/mimecast/dtail/internal/sessionuser"
 	"github.com/mimecast/dtail/internal/ssh/server"
-	user "github.com/mimecast/dtail/internal/user/server"
 	"github.com/mimecast/dtail/internal/version"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -36,17 +36,22 @@ type Server struct {
 	catLimiter chan struct{}
 	// To control the max amount of concurrent tails.
 	tailLimiter chan struct{}
-	// To run scheduled tasks (if configured)
-	sched *scheduler
-	// Mointor log files for pattern (if configured)
-	cont *continuous
+	// Background jobs are composed by cmd/dserver so this package does not depend on clients.
+	backgroundJobs BackgroundJobs
+	// Capabilities are detected once during construction and passed to every session handler.
+	capabilities []string
 	// Authentication strategies keyed by SSH username.
 	authStrategies map[string]authStrategy
 	// In-memory auth key cache for fast reconnect.
-	authKeyStore *server.AuthKeyStore
+	authKeyStore *authkey.Store
 }
 
 type authStrategy func(*user.User, string, string) bool
+
+// BackgroundJobs runs configured scheduled and continuous client workloads.
+type BackgroundJobs interface {
+	Start(context.Context)
+}
 
 func (s *Server) log() logging.Logger {
 	if s.logger == nil {
@@ -71,8 +76,8 @@ func secretsEqual(a, b string) bool {
 }
 
 // New returns a new server.
-func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) (*Server, error) {
-	logger := logging.OrNop(loggers.Server)
+func New(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers, backgroundJobs BackgroundJobs) (*Server, error) {
+	logger := logging.OrNop(loggers.Diagnostics)
 	if cfg.Server == nil || cfg.Common == nil {
 		if fatalLogger, ok := logger.(interface{ FatalPanic(...any) }); ok {
 			fatalLogger.FatalPanic("Missing runtime server/common configuration")
@@ -85,7 +90,7 @@ func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) (*Server,
 	s := Server{
 		cfg:          cfg,
 		logger:       logger,
-		readerLogger: logging.OrNop(loggers.Common),
+		readerLogger: logging.OrNop(loggers.Reader),
 		sshServerConfig: &gossh.ServerConfig{
 			Config: gossh.Config{
 				KeyExchanges: cfg.Server.KeyExchanges,
@@ -93,12 +98,12 @@ func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) (*Server,
 				MACs:         cfg.Server.MACs,
 			},
 		},
-		stats:       newStats(cfg.Server.MaxConnections, logger),
-		catLimiter:  make(chan struct{}, cfg.Server.MaxConcurrentCats),
-		tailLimiter: make(chan struct{}, cfg.Server.MaxConcurrentTails),
-		sched:       newScheduler(cfg, loggers),
-		cont:        newContinuous(cfg, loggers),
-		authKeyStore: server.NewAuthKeyStore(
+		stats:          newStats(cfg.Server.MaxConnections, logger),
+		catLimiter:     make(chan struct{}, cfg.Server.MaxConcurrentCats),
+		tailLimiter:    make(chan struct{}, cfg.Server.MaxConcurrentTails),
+		backgroundJobs: backgroundJobs,
+		capabilities:   handlers.DetectCapabilities(),
+		authKeyStore: authkey.New(
 			time.Duration(cfg.Server.AuthKeyTTLSeconds)*time.Second,
 			cfg.Server.AuthKeyMaxPerUser,
 		),
@@ -139,8 +144,9 @@ func (s *Server) Start(ctx context.Context) (int, error) {
 	}
 
 	go s.stats.start(ctx)
-	go s.sched.start(ctx)
-	go s.cont.start(ctx)
+	if s.backgroundJobs != nil {
+		go s.backgroundJobs.Start(ctx)
+	}
 	go s.listenerLoop(ctx, listener)
 
 	<-ctx.Done()
@@ -304,23 +310,17 @@ func (s *Server) handleRequests(ctx context.Context, sshConn gossh.Conn,
 func (s *Server) handleShellRequest(ctx context.Context, sshConn gossh.Conn,
 	channel gossh.Channel, user *user.User, req *gossh.Request) {
 
-	// Create the appropriate handler based on user type
-	var handler handlers.Handler
-	var err error
-	switch user.Name {
-	case config.HealthUser:
-		handler, err = handlers.NewHealthHandler(user, s.log())
-	default:
-		handler, err = handlers.NewServerHandler(
-			user,
-			s.catLimiter,
-			s.tailLimiter,
-			s.cfg.Server,
-			s.authKeyStore,
-			nil,
-			handlers.HandlerLoggers{Diagnostics: s.log(), Reader: s.readerLog()},
-		)
-	}
+	handler, err := handlers.NewForUser(user, handlers.Dependencies{
+		ServerConfig: s.cfg.Server,
+		CatLimiter:   s.catLimiter,
+		TailLimiter:  s.tailLimiter,
+		AuthKeyStore: s.authKeyStore,
+		Loggers: handlers.HandlerLoggers{
+			Diagnostics: s.log(),
+			Reader:      s.readerLog(),
+		},
+		Capabilities: s.capabilities,
+	})
 	if err != nil {
 		s.log().Error(user, "Unable to create session handler", err)
 		if replyErr := req.Reply(false, nil); replyErr != nil {

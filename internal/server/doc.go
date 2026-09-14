@@ -1,3 +1,3 @@
 // Package server runs the authenticated SSH service behind dserver and coordinates
-// connections, sessions, scheduled queries, continuous reads, and shutdown.
+// connections, sessions, injected background work, and shutdown.
 package server

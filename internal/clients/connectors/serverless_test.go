@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	sessionHandlers "github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/logging"
-	serverHandlers "github.com/mimecast/dtail/internal/server/handlers"
 	sessionspec "github.com/mimecast/dtail/internal/session"
 )
 
@@ -157,16 +157,16 @@ func TestServerlessAttachesOutputReaderBeforeCommandDispatch(t *testing.T) {
 }
 
 type serverlessLifecycleFactory struct {
-	handler serverHandlers.Handler
+	handler sessionHandlers.Handler
 }
 
 type serverlessErrorFactory struct{ err error }
 
-func (f serverlessErrorFactory) NewServerlessHandler(string) (serverHandlers.Handler, error) {
+func (f serverlessErrorFactory) NewServerlessHandler(string) (sessionHandlers.Handler, error) {
 	return nil, f.err
 }
 
-func (f serverlessLifecycleFactory) NewServerlessHandler(string) (serverHandlers.Handler, error) {
+func (f serverlessLifecycleFactory) NewServerlessHandler(string) (sessionHandlers.Handler, error) {
 	return f.handler, nil
 }
 
@@ -285,7 +285,7 @@ func newEagerServerlessLifecycleServer(payload []byte) *serverlessLifecycleServe
 	return h
 }
 
-var _ serverHandlers.Handler = (*serverlessLifecycleServer)(nil)
+var _ sessionHandlers.Handler = (*serverlessLifecycleServer)(nil)
 
 func (h *serverlessLifecycleServer) Read(p []byte) (int, error) {
 	h.readStartedOnce.Do(func() { close(h.readStarted) })

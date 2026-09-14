@@ -14,7 +14,9 @@ import (
 	"github.com/mimecast/dtail/internal/cli"
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/handlers"
 	"github.com/mimecast/dtail/internal/io/dlog"
+	"github.com/mimecast/dtail/internal/jobs"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/server"
 	"github.com/mimecast/dtail/internal/source"
@@ -43,7 +45,8 @@ type dserverLifecycleDependencies struct {
 	loggers              clients.LoggerDependencies
 	enableProfilingRates func()
 	newPProfServer       func(string) (profileServer, error)
-	newServer            func(config.RuntimeConfig, clients.LoggerDependencies) (dserverService, error)
+	newBackgroundJobs    func(config.RuntimeConfig, clients.LoggerDependencies) server.BackgroundJobs
+	newServer            func(config.RuntimeConfig, handlers.HandlerLoggers, server.BackgroundJobs) (dserverService, error)
 	notifyContext        notifyContextFunc
 }
 
@@ -110,8 +113,12 @@ func run() int {
 			newPProfServer: func(address string) (profileServer, error) {
 				return cli.NewPProfServer(address)
 			},
-			newServer: func(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) (dserverService, error) {
-				return server.New(cfg, loggers)
+			newBackgroundJobs: func(cfg config.RuntimeConfig, loggers clients.LoggerDependencies) server.BackgroundJobs {
+				return jobs.New(cfg, loggers)
+			},
+			newServer: func(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers,
+				backgroundJobs server.BackgroundJobs) (dserverService, error) {
+				return server.New(cfg, loggers, backgroundJobs)
 			},
 			notifyContext: signal.NotifyContext,
 		})
@@ -155,7 +162,14 @@ func runDServerLifecycle(parent context.Context, cancel context.CancelFunc, wg *
 		timeoutCancel()
 	}()
 
-	serv, err := deps.newServer(cfg, deps.loggers)
+	var backgroundJobs server.BackgroundJobs
+	if deps.newBackgroundJobs != nil {
+		backgroundJobs = deps.newBackgroundJobs(cfg, deps.loggers)
+	}
+	serv, err := deps.newServer(cfg, handlers.HandlerLoggers{
+		Diagnostics: deps.loggers.Server,
+		Reader:      deps.loggers.Common,
+	}, backgroundJobs)
 	if err != nil {
 		deps.loggers.Server.Error("Unable to initialize dserver", err)
 		_, _ = fmt.Fprintf(deps.stderr, "unable to initialize dserver: %v\n", err)

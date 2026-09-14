@@ -22,7 +22,7 @@ func TestNewReturnsMalformedHostKeyError(t *testing.T) {
 	_, err := New(config.RuntimeConfig{
 		Server: serverConfig,
 		Common: &config.CommonConfig{SSHPort: 2222, CacheDir: t.TempDir()},
-	}, serverTestLoggers)
+	}, serverTestLoggers, nil)
 	if err == nil || !strings.Contains(err.Error(), "parse SSH host key") {
 		t.Fatalf("New error = %v, want malformed host-key error", err)
 	}
@@ -32,7 +32,7 @@ func TestStartReturnsListenError(t *testing.T) {
 	server := &Server{cfg: config.RuntimeConfig{
 		Server: &config.ServerConfig{SSHBindAddress: "127.0.0.1"},
 		Common: &config.CommonConfig{SSHPort: 65536},
-	}, logger: serverTestLoggers.Server}
+	}, logger: serverTestLoggers.Diagnostics}
 
 	status, err := server.Start(context.Background())
 	if err == nil || status != 1 {

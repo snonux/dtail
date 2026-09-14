@@ -17,7 +17,7 @@ import (
 // The fix pairs both calls inside handleConnection via a defer, removing the
 // decrement from handleShellRequest entirely.
 func TestStatsConnectionCounterBalance(t *testing.T) {
-	s := newStats(100, serverTestLoggers.Server)
+	s := newStats(100, serverTestLoggers.Diagnostics)
 
 	// Simulate a single TCP connection that opens 3 shell channels (requests).
 	// Before the fix, incrementConnections was called once but
@@ -43,7 +43,7 @@ func TestStatsConnectionCounterBalance(t *testing.T) {
 // TestStatsMultipleConnectionsBalance verifies counters stay non-negative across
 // multiple independent connections each with their own lifecycle.
 func TestStatsMultipleConnectionsBalance(t *testing.T) {
-	s := newStats(100, serverTestLoggers.Server)
+	s := newStats(100, serverTestLoggers.Diagnostics)
 	const n = 5
 
 	for i := 0; i < n; i++ {
@@ -74,7 +74,7 @@ func TestStatsMultipleConnectionsBalance(t *testing.T) {
 // must always be >= 0. With the fix in place (decrement once per connection),
 // the counter stays at 0 after one increment + one decrement.
 func TestStatsCounterInvariant(t *testing.T) {
-	s := newStats(100, serverTestLoggers.Server)
+	s := newStats(100, serverTestLoggers.Diagnostics)
 
 	s.incrementConnections() // one connection
 
@@ -92,7 +92,7 @@ func TestStatsCounterInvariant(t *testing.T) {
 // handshakes bypassed the limit and could create unbounded goroutines.
 func TestPreAuthSlotsCountAgainstLimit(t *testing.T) {
 	const maxConns = 3
-	s := newStats(maxConns, serverTestLoggers.Server)
+	s := newStats(maxConns, serverTestLoggers.Diagnostics)
 
 	// Reserve pre-auth slots up to the limit; each must succeed.
 	for i := 0; i < maxConns; i++ {
@@ -122,7 +122,7 @@ func TestPreAuthSlotsCountAgainstLimit(t *testing.T) {
 // promotePreAuthToConnection correctly transitions a pre-auth reservation into
 // a full authenticated connection without losing or double-counting the slot.
 func TestPromotePreAuthToConnectionIsAtomic(t *testing.T) {
-	s := newStats(10, serverTestLoggers.Server)
+	s := newStats(10, serverTestLoggers.Diagnostics)
 
 	// Reserve a pre-auth slot then promote it; the totals must balance.
 	s.reservePreAuth()
@@ -158,7 +158,7 @@ func TestPromotePreAuthToConnectionIsAtomic(t *testing.T) {
 // scenario where some handshakes are still in flight while others have completed.
 func TestPreAuthLimitMixedWithAuthenticated(t *testing.T) {
 	const maxConns = 4
-	s := newStats(maxConns, serverTestLoggers.Server)
+	s := newStats(maxConns, serverTestLoggers.Diagnostics)
 
 	// Two connections complete their handshake successfully.
 	s.reservePreAuth()
@@ -186,7 +186,7 @@ func TestPreAuthLimitMixedWithAuthenticated(t *testing.T) {
 // TestPreAuthConcurrentReserveRelease exercises reservePreAuth and releasePreAuth
 // under concurrent access to verify there are no data races. Run with -race.
 func TestPreAuthConcurrentReserveRelease(t *testing.T) {
-	s := newStats(1000, serverTestLoggers.Server)
+	s := newStats(1000, serverTestLoggers.Diagnostics)
 	const goroutines = 50
 
 	var wg sync.WaitGroup

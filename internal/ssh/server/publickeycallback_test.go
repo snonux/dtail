@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
 	"net"
 	"os"
@@ -11,9 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
-	serveruser "github.com/mimecast/dtail/internal/user/server"
+	serveruser "github.com/mimecast/dtail/internal/sessionuser"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -34,9 +36,24 @@ func (m testConnMetadata) LocalAddr() net.Addr   { return testAddr("local") }
 func (a testAddr) Network() string { return "tcp" }
 func (a testAddr) String() string  { return string(a) }
 
+func testPublicKey(t *testing.T, seedByte byte) gossh.PublicKey {
+	t.Helper()
+
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = seedByte
+	}
+	privateKey := ed25519.NewKeyFromSeed(seed)
+	publicKey, err := gossh.NewPublicKey(privateKey.Public())
+	if err != nil {
+		t.Fatalf("build SSH public key: %v", err)
+	}
+	return publicKey
+}
+
 func TestAuthKeyStorePermissions(t *testing.T) {
 	// Create an isolated store for this test — there is no package-level global.
-	store := NewAuthKeyStore(time.Hour, 5)
+	store := authkey.New(time.Hour, 5)
 
 	key := testPublicKey(t, 21)
 
@@ -65,7 +82,7 @@ func TestAuthKeyStorePermissions(t *testing.T) {
 }
 
 func TestPublicKeyCallbackRejectsPasswordOnlyUsers(t *testing.T) {
-	store := NewAuthKeyStore(time.Hour, 5)
+	store := authkey.New(time.Hour, 5)
 	key := testPublicKey(t, 23)
 
 	for _, userName := range []string{config.HealthUser, config.ScheduleUser, config.ContinuousUser} {
