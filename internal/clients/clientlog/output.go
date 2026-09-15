@@ -58,6 +58,11 @@ func Raw(logger Logger, message string) {
 // RawBytes writes client payload from a byte slice. Loggers with a byte-slice
 // raw capability receive the slice directly; all others receive the same bytes
 // as a string through Raw. message is not retained.
+//
+// This mirrors loggers.WriteRawBytes but cannot share it: that helper takes a
+// loggers.Logger (whose Raw returns nothing), while client handlers hold a
+// clientlog.Logger (whose Raw returns the message), and clientlog depends only
+// on the logging contract rather than on the concrete dlog sink package.
 func RawBytes(logger Logger, message []byte) {
 	if output, ok := logger.(rawBytesWriter); ok {
 		output.RawBytes(message)

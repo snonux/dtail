@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,6 +21,7 @@ type payloadRecorder struct {
 	writes     []string
 	stringRaws int
 	warnings   []string
+	debugs     []string
 }
 
 func (r *payloadRecorder) RawBytes(message []byte) {
@@ -40,20 +42,107 @@ func (r *payloadRecorder) Warn(args ...any) string {
 	return message
 }
 
-// legacyPayload is the output the previous byte-by-byte receive loop produced
-// for a stream of payload-only messages: every complete message is printed
-// with exactly one trailing newline, an unterminated tail is not printed.
-func legacyPayload(stream []byte) (payload string, messages int) {
-	var out strings.Builder
-	parts := bytes.Split(stream, []byte{protocol.MessageDelimiter})
-	for _, message := range parts[:len(parts)-1] {
-		out.Write(message)
-		if len(message) == 0 || message[len(message)-1] != '\n' {
-			out.WriteByte('\n')
+func (r *payloadRecorder) Debug(args ...any) string {
+	message := fmt.Sprint(args...)
+	r.debugs = append(r.debugs, message)
+	return message
+}
+
+// legacyReceiver runs the receive loop baseHandler used before commit
+// 35a3bc4, copied from that revision with only the receiver type changed: a
+// byte-by-byte Write into receiveBuf and a string-based handleMessage. It
+// calls the same hidden-message and AUTHKEY handlers as the current code, so
+// comparing the two exercises exactly the part that was rewritten: framing,
+// routing and newline handling.
+type legacyReceiver struct {
+	*baseHandler
+}
+
+func (h legacyReceiver) Write(p []byte) (n int, err error) {
+	for _, b := range p {
+		switch b {
+		case '\n':
+			// Just add the newline to the buffer, don't treat as message delimiter
+			h.receiveBuf.WriteByte(b)
+		case protocol.MessageDelimiter:
+			message := h.receiveBuf.String()
+			h.handleMessage(message)
+			h.receiveBuf.Reset()
+		default:
+			h.receiveBuf.WriteByte(b)
 		}
-		messages++
 	}
-	return out.String(), messages
+	return len(p), nil
+}
+
+func (h legacyReceiver) handleMessage(message string) {
+	if len(message) > 0 && message[0] == '.' {
+		h.handleHiddenMessage(message)
+		return
+	}
+	if h.handleAuthKeyMessage(message) {
+		return
+	}
+
+	// Add newline only if the message doesn't already end with one
+	if len(message) > 0 && message[len(message)-1] == '\n' {
+		clientlog.Raw(h.log(), message)
+	} else {
+		clientlog.Raw(h.log(), message+"\n")
+	}
+}
+
+// receiveObservation is everything a receive loop can do in response to a
+// stream: payload sink calls (one entry per call, so a line split from its
+// newline is visible), AUTHKEY warnings and debug messages, capabilities and
+// session acknowledgements.
+type receiveObservation struct {
+	writes       []string
+	warnings     []string
+	debugs       []string
+	capabilities []string
+	acks         []SessionAck
+}
+
+func observe(handler *baseHandler, recorder *payloadRecorder) receiveObservation {
+	var acks []SessionAck
+	for {
+		ack, ok := handler.WaitForSessionAck(0)
+		if !ok {
+			break
+		}
+		acks = append(acks, ack)
+	}
+	return receiveObservation{
+		writes:       recorder.writes,
+		warnings:     recorder.warnings,
+		debugs:       recorder.debugs,
+		capabilities: handler.Capabilities(),
+		acks:         acks,
+	}
+}
+
+func (o receiveObservation) diff(want receiveObservation) string {
+	switch {
+	case len(o.writes) != len(want.writes):
+		return fmt.Sprintf("payload sink calls = %d, want %d", len(o.writes), len(want.writes))
+	case !slices.Equal(o.writes, want.writes):
+		for i := range o.writes {
+			if o.writes[i] != want.writes[i] {
+				return fmt.Sprintf("payload sink call %d differs: got %d bytes %.60q, want %d bytes %.60q",
+					i, len(o.writes[i]), o.writes[i], len(want.writes[i]), want.writes[i])
+			}
+		}
+	case !slices.Equal(o.warnings, want.warnings):
+		return fmt.Sprintf("warnings = %q, want %q", o.warnings, want.warnings)
+	case !slices.Equal(o.debugs, want.debugs):
+		return fmt.Sprintf("debugs = %q, want %q", o.debugs, want.debugs)
+	case !slices.Equal(o.capabilities, want.capabilities):
+		return fmt.Sprintf("capabilities = %q, want %q", o.capabilities, want.capabilities)
+	case !slices.Equal(o.acks, want.acks):
+		return fmt.Sprintf("session acks = %+v, want %+v", o.acks, want.acks)
+	}
+	return ""
 }
 
 func frame(messages ...string) []byte {
@@ -76,26 +165,54 @@ func writeInChunks(t *testing.T, handler *ClientHandler, stream []byte, size int
 	}
 }
 
-// TestBaseHandlerWriteIsIndependentOfChunking feeds the same stream in chunks
-// of many sizes, so delimiters land at every buffer position: first byte, last
-// byte, and split between chunks. Output must match the legacy loop byte for
-// byte, and each message must reach the sink in exactly one call so a line
-// cannot be separated from its own newline by output from another server.
-func TestBaseHandlerWriteIsIndependentOfChunking(t *testing.T) {
-	longLine := strings.Repeat("0123456789abcdef", 12*1024) // 192 KiB, above bufio and io.Copy sizes
+// TestBaseHandlerWriteMatchesLegacyLoop feeds a mixed stream to the current
+// receive loop in chunks of many sizes, so delimiters land at every buffer
+// position (first byte, last byte, split between chunks), and to the copy of
+// the legacy byte-by-byte loop. Both must produce the same payload sink calls
+// byte for byte, the same AUTHKEY warnings and debug output, and the same
+// capability and session state. The stream mixes payload with and without a
+// trailing newline, empty and newline-only messages, lines larger than bufio,
+// io.Copy and maxRetainedLineBufBytes, hidden control messages, AUTHKEY
+// acknowledgements (bare, padded and SERVER-wrapped), their look-alikes, and an
+// unterminated tail that neither loop may print.
+func TestBaseHandlerWriteMatchesLegacyLoop(t *testing.T) {
+	longLine := strings.Repeat("0123456789abcdef", 12*1024) // 192 KiB
 	stream := frame(
 		"first line\n",
 		"no trailing newline",
 		"",
 		"\n",
 		"\n\n",
+		".syn capabilities query-update-v1 journal-v1",
 		"multi\nline\nmessage",
+		"AUTHKEY OK",
 		longLine,
+		"SERVER|srv1|AUTHKEY ERR invalid base64\n",
 		longLine+"\n",
+		protocol.HiddenSessionStartOKPrefix+" 7",
+		"  AUTHKEY OK \n",
 		"REMOTE|host|100|1|src|content with | pipes\n",
+		protocol.HiddenSessionErrorPrefix+" not supported",
+		"AUTHKEY ERR",
+		"AUTHKEYS are not acknowledgements",
+		" .not hidden because of the leading space",
+		"REMOTE|host|100|1|src|AUTHKEY OK\n",
+		"SERVER|srv1|some server info\n",
+		".unknown hidden message",
 		"last\n",
 	)
-	want, wantMessages := legacyPayload(stream)
+	stream = append(stream, "unterminated tail"...)
+
+	legacyRecorder := &payloadRecorder{}
+	legacy := NewClientHandler("srv1", legacyRecorder)
+	if _, err := (legacyReceiver{&legacy.baseHandler}).Write(stream); err != nil {
+		t.Fatalf("legacy Write() error = %v", err)
+	}
+	want := observe(&legacy.baseHandler, legacyRecorder)
+	if len(want.writes) == 0 || len(want.debugs) == 0 || len(want.warnings) == 0 ||
+		len(want.capabilities) == 0 || len(want.acks) != 2 {
+		t.Fatalf("stream does not exercise every route of the legacy loop: %+v", want)
+	}
 
 	for _, size := range []int{1, 2, 3, 7, 13, 31, 4096, 32 * 1024, len(stream)} {
 		t.Run(fmt.Sprintf("chunk%d", size), func(t *testing.T) {
@@ -104,11 +221,8 @@ func TestBaseHandlerWriteIsIndependentOfChunking(t *testing.T) {
 
 			writeInChunks(t, handler, stream, size)
 
-			if got := recorder.payload.String(); got != want {
-				t.Fatalf("payload differs from legacy output: got %d bytes, want %d bytes", len(got), len(want))
-			}
-			if len(recorder.writes) != wantMessages {
-				t.Fatalf("sink calls = %d, want one per message (%d)", len(recorder.writes), wantMessages)
+			if diff := observe(&handler.baseHandler, recorder).diff(want); diff != "" {
+				t.Fatalf("current loop differs from legacy loop: %s", diff)
 			}
 			if recorder.stringRaws != 0 {
 				t.Fatalf("payload used the string Raw path %d times, want the byte path", recorder.stringRaws)
@@ -214,6 +328,36 @@ func TestBaseHandlerWritePayloadDoesNotAllocate(t *testing.T) {
 
 	if allocs := testing.AllocsPerRun(100, write); allocs != 0 {
 		t.Fatalf("Write allocated %.1f times per run, want 0", allocs)
+	}
+}
+
+// TestBaseHandlerWriteReleasesLargeLineBuffer checks that a huge message
+// without a trailing newline does not leave its scratch buffer pinned to the
+// connection, while ordinary lines keep reusing lineBuf without allocating.
+func TestBaseHandlerWriteReleasesLargeLineBuffer(t *testing.T) {
+	handler := NewClientHandler("srv1", clientlog.NopLogger{})
+	small := frame("an ordinary log line without newline")
+
+	_, _ = handler.Write(small)
+	smallBuf := handler.lineBuf
+	if cap(smallBuf) == 0 || cap(smallBuf) > maxRetainedLineBufBytes {
+		t.Fatalf("lineBuf cap after a small message = %d, want 1..%d", cap(smallBuf), maxRetainedLineBufBytes)
+	}
+
+	_, _ = handler.Write(frame(strings.Repeat("x", 4*maxRetainedLineBufBytes)))
+	if cap(handler.lineBuf) > maxRetainedLineBufBytes {
+		t.Fatalf("lineBuf cap after a large message = %d, want at most %d", cap(handler.lineBuf), maxRetainedLineBufBytes)
+	}
+
+	// A message just below the limit still fits into a retained buffer.
+	_, _ = handler.Write(frame(strings.Repeat("y", maxRetainedLineBufBytes/2)))
+	if cap(handler.lineBuf) == 0 {
+		t.Fatalf("lineBuf was released after a message below the limit")
+	}
+
+	_, _ = handler.Write(small)
+	if allocs := testing.AllocsPerRun(100, func() { _, _ = handler.Write(small) }); allocs != 0 {
+		t.Fatalf("small messages after a released buffer allocated %.1f times per run, want 0", allocs)
 	}
 }
 

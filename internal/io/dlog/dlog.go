@@ -241,13 +241,11 @@ func (d *DLog) Raw(message string) string {
 // sinks and the colorizer receive a string copy. The output is identical to
 // Raw(string(message)). message is not retained.
 func (d *DLog) RawBytes(message []byte) {
-	if !d.shouldColorize() {
-		if writer, ok := d.logger.(loggers.RawBytesWriter); ok {
-			writer.RawBytes(message)
-			return
-		}
+	if d.shouldColorize() {
+		d.Raw(string(message))
+		return
 	}
-	d.Raw(string(message))
+	loggers.WriteRawBytes(d.logger, message)
 }
 
 // payloadFileTeer is the optional capability of a logger that can tee retrieved

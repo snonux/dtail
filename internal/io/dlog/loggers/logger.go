@@ -29,6 +29,18 @@ type RawBytesWriter interface {
 	RawBytes(message []byte)
 }
 
+// WriteRawBytes writes payload through logger's RawBytesWriter capability when
+// it has one and through its string Raw method otherwise, so both paths produce
+// identical output. It is the single dispatch point for sinks in this package
+// and for DLog. message is not retained.
+func WriteRawBytes(logger Logger, message []byte) {
+	if writer, ok := logger.(RawBytesWriter); ok {
+		writer.RawBytes(message)
+		return
+	}
+	logger.Raw(string(message))
+}
+
 // Starter is implemented by loggers that own background work.
 type Starter interface {
 	Start(ctx context.Context, wg *sync.WaitGroup)

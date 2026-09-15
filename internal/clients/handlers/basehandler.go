@@ -16,6 +16,13 @@ import (
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
+// maxRetainedLineBufBytes is the largest lineBuf capacity kept for reuse after
+// a message. Ordinary log lines stay far below it and reuse the buffer without
+// allocating; a rare huge message without a trailing newline (for example a
+// piece of a line longer than MaxLineLength, split by the server) must not pin
+// its backing array for the lifetime of every server connection.
+const maxRetainedLineBufBytes = 64 * 1024
+
 type baseHandler struct {
 	done         *internal.Done
 	server       string
@@ -31,7 +38,9 @@ type baseHandler struct {
 	// (single output-copy goroutine).
 	pendingCommand []byte
 	// lineBuf is scratch space for appending the newline to a payload message
-	// that lacks one. Only touched by Write (single input-copy goroutine).
+	// that lacks one. It is released after a message that grew it beyond
+	// maxRetainedLineBufBytes. Only touched by Write (single input-copy
+	// goroutine).
 	lineBuf []byte
 	status  int
 
@@ -232,6 +241,11 @@ func (h *baseHandler) handleMessage(message []byte) {
 	// assembled in a scratch buffer reused across messages.
 	h.lineBuf = append(append(h.lineBuf[:0], message...), '\n')
 	clientlog.RawBytes(h.log(), h.lineBuf)
+	if cap(h.lineBuf) > maxRetainedLineBufBytes {
+		// Same policy as pendingCommand in Read: drop an oversized backing
+		// array and let the next message allocate a normal-sized one.
+		h.lineBuf = nil
+	}
 }
 
 func (h *baseHandler) handleAuthKeyMessage(message string) bool {
