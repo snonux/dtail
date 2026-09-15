@@ -21,6 +21,9 @@ type NopLogger struct {
 func (NopLogger) Raw(string) string    { return "" }
 func (NopLogger) RawLog(string) string { return "" }
 
+// RawBytes discards client payload without converting it to a string.
+func (NopLogger) RawBytes([]byte) {}
+
 // OrNop replaces nil and typed-nil client loggers with a no-op logger.
 func OrNop(logger Logger) Logger {
 	normalized := logging.OrNop(logger)
@@ -39,6 +42,10 @@ type pauser interface {
 	Resume()
 }
 
+type rawBytesWriter interface {
+	RawBytes([]byte)
+}
+
 type payloadFileTeer interface {
 	RawPayloadFileTee(string)
 }
@@ -46,6 +53,17 @@ type payloadFileTeer interface {
 // Raw writes client payload through the logger's raw-output capability.
 func Raw(logger Logger, message string) {
 	logger.Raw(message)
+}
+
+// RawBytes writes client payload from a byte slice. Loggers with a byte-slice
+// raw capability receive the slice directly; all others receive the same bytes
+// as a string through Raw. message is not retained.
+func RawBytes(logger Logger, message []byte) {
+	if output, ok := logger.(rawBytesWriter); ok {
+		output.RawBytes(message)
+		return
+	}
+	logger.Raw(string(message))
 }
 
 // RawDiagnostic writes a preformatted diagnostic through the logger's required

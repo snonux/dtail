@@ -111,6 +111,7 @@ func TestStdoutBlocksEveryLogPathWhilePaused(t *testing.T) {
 		{name: "LogWithColors", write: func() { s.LogWithColors("[plain-log]", "[colored-log]") }},
 		{name: "Raw", write: func() { s.Raw("[raw]") }},
 		{name: "RawWithColors", write: func() { s.RawWithColors("[plain-raw]", "[colored-raw]") }},
+		{name: "RawBytes", write: func() { s.RawBytes([]byte("[raw-bytes]")) }},
 	}
 
 	done := make([]chan struct{}, len(writes))
@@ -136,7 +137,7 @@ func TestStdoutBlocksEveryLogPathWhilePaused(t *testing.T) {
 	s.Flush()
 
 	got := cw.String()
-	for _, message := range []string{"[log]\n", "[colored-log]\n", "[raw]", "[colored-raw]"} {
+	for _, message := range []string{"[log]\n", "[colored-log]\n", "[raw]", "[colored-raw]", "[raw-bytes]"} {
 		if count := strings.Count(got, message); count != 1 {
 			t.Errorf("resumed output contains %d copies of %q in %q, want 1", count, message, got)
 		}
@@ -361,5 +362,49 @@ func assertNoSignal(t *testing.T, ch <-chan struct{}, failure string) {
 	case <-ch:
 		t.Fatal(failure)
 	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+// TestStdoutRawBytesMatchesRaw checks that the byte-slice payload path writes
+// exactly what Raw writes, including empty messages and messages larger than
+// the bufio buffer, and that the sink does not keep the caller's slice.
+func TestStdoutRawBytesMatchesRaw(t *testing.T) {
+	messages := []string{"", "line\n", "no newline", "\n", strings.Repeat("x", 3*stdoutWriterBufSize) + "\n", "tail"}
+
+	viaRaw := &countingWriter{}
+	rawSink := newStdoutWriter(viaRaw)
+	viaBytes := &countingWriter{}
+	bytesSink := newStdoutWriter(viaBytes)
+	for _, message := range messages {
+		rawSink.Raw(message)
+		buf := []byte(message)
+		bytesSink.RawBytes(buf)
+		for i := range buf {
+			buf[i] = '!' // the caller reuses its buffer after the call returns
+		}
+	}
+	rawSink.Flush()
+	bytesSink.Flush()
+
+	if viaBytes.String() != viaRaw.String() {
+		t.Fatalf("RawBytes output differs from Raw: got %d bytes, want %d bytes",
+			len(viaBytes.String()), len(viaRaw.String()))
+	}
+}
+
+// TestStdoutLogAlwaysAppendsNewline pins the diagnostic newline behavior after
+// fmt.Fprintln was replaced by direct buffer writes: Log appends a newline even
+// when the message already ends with one, and Raw appends none.
+func TestStdoutLogAlwaysAppendsNewline(t *testing.T) {
+	cw := &countingWriter{}
+	s := newStdoutWriter(cw)
+	s.Log("diag")
+	s.Log("")
+	s.Log("already\n")
+	s.Raw("raw")
+	s.Flush()
+
+	if got, want := cw.String(), "diag\n\nalready\n\nraw"; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
 	}
 }

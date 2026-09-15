@@ -236,6 +236,20 @@ func (d *DLog) Raw(message string) string {
 	return message
 }
 
+// RawBytes writes retrieved payload from a byte slice. Without colors it reaches
+// a sink implementing loggers.RawBytesWriter with no string conversion; other
+// sinks and the colorizer receive a string copy. The output is identical to
+// Raw(string(message)). message is not retained.
+func (d *DLog) RawBytes(message []byte) {
+	if !d.shouldColorize() {
+		if writer, ok := d.logger.(loggers.RawBytesWriter); ok {
+			writer.RawBytes(message)
+			return
+		}
+	}
+	d.Raw(string(message))
+}
+
 // payloadFileTeer is the optional capability of a logger that can tee retrieved
 // payload into its FILE sink without also writing it to stdout. Only the default
 // fout logger implements it; stdout/none loggers have no file sink and are

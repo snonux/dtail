@@ -21,6 +21,14 @@ type Logger interface {
 	SupportsColors() bool
 }
 
+// RawBytesWriter is implemented by sinks that can write payload from a byte
+// slice without first converting it to a string. RawBytes writes message
+// verbatim, exactly like Raw. The slice is only valid during the call and must
+// not be retained. Sinks without this capability receive a string via Raw.
+type RawBytesWriter interface {
+	RawBytes(message []byte)
+}
+
 // Starter is implemented by loggers that own background work.
 type Starter interface {
 	Start(ctx context.Context, wg *sync.WaitGroup)

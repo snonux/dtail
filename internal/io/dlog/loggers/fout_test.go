@@ -2,6 +2,7 @@ package loggers
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -226,6 +227,49 @@ func TestFoutRawFileOnlyHonorsPayloadOptIn(t *testing.T) {
 			}
 			if got := file.logCount(); got != 0 {
 				t.Fatalf("RawFileOnly wrote %d diagnostics to file, want 0", got)
+			}
+		})
+	}
+}
+
+// bytesRecordingSink is a recordingSink that also has the byte-slice payload
+// capability, recording those writes separately from string Raw calls.
+type bytesRecordingSink struct {
+	recordingSink
+	rawBytes []string
+}
+
+func (r *bytesRecordingSink) RawBytes(message []byte) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+	r.rawBytes = append(r.rawBytes, string(message))
+}
+
+var _ RawBytesWriter = (*bytesRecordingSink)(nil)
+
+// TestFoutRawBytesHonorsPayloadGate checks that RawBytes follows the same
+// --log-payload gate as Raw, uses the byte path of a sink that has one, and
+// falls back to Raw for a sink that does not.
+func TestFoutRawBytesHonorsPayloadGate(t *testing.T) {
+	for _, logPayload := range []bool{false, true} {
+		t.Run(fmt.Sprintf("logPayload=%v", logPayload), func(t *testing.T) {
+			file := &recordingSink{}
+			stdout := &bytesRecordingSink{}
+			f := newFoutWithSinks(file, stdout, logPayload)
+
+			f.RawBytes([]byte("payload\n"))
+
+			if len(stdout.rawBytes) != 1 || stdout.rawBytes[0] != "payload\n" || stdout.rawCount() != 0 {
+				t.Fatalf("stdout got rawBytes=%q raws=%q, want one byte-path write", stdout.rawBytes, stdout.raws)
+			}
+			if !logPayload {
+				if file.rawCount() != 0 {
+					t.Fatalf("file received payload without --log-payload: %q", file.raws)
+				}
+				return
+			}
+			if file.rawCount() != 1 || file.raws[0] != "payload\n" {
+				t.Fatalf("file raws = %q, want the payload through the Raw fallback", file.raws)
 			}
 		})
 	}

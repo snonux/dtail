@@ -130,9 +130,24 @@ baseline, and note the commit.
 | `y4` | parent `c472f83` | dcat server mode, `--logger stdout` (3 runs, elapsed / user / sys) | 8.54-10.59 s / 2.32-2.40 s / 7.09-7.34 s | 1.24-1.42 s / 1.10-1.14 s / 0.62-0.71 s | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `y4` | parent `c472f83` | dcat server mode, default `fout` logger | 8.90 s / 2.43 s / 7.36 s | 1.42 s / 1.21 s / 0.70 s | yes, `cmp`; daily log file gets no payload | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `y4` | parent `c472f83` | dcat server mode, `fout --log-payload` | not measured | 3.91 s / 3.47 s / 3.61 s | yes, stdout and file tee both identical to input | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `z4` | parent `85475b5` | dcat server mode, `--logger stdout` (5 interleaved runs, elapsed / user / sys) | 1.26-1.31 s / 1.09-1.19 s / 0.58-0.64 s | 0.82-0.97 s / 0.33-0.37 s / 0.43-0.51 s | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `z4` | parent `85475b5` | dcat server mode, default `fout` logger (5 interleaved runs) | 1.30-1.36 s / 1.09-1.18 s / 0.58-0.67 s | 0.82-0.99 s / 0.36-0.41 s / 0.44-0.49 s | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `z4` | parent `85475b5` | client profile, dcat server mode, `--logger stdout` | 1.57 s CPU samples, 273 MB total_alloc, 76 GCs | 0.71 s CPU samples, 128 MB total_alloc, 60 GCs | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `z4` | parent `85475b5` | `BenchmarkBaseHandlerWrite`, 32 KiB chunk of 136-byte lines | 201 µs/op, 163 MB/s, 510 allocs/op | 10 µs/op, 3.28 GB/s, 0 allocs/op | n/a (unit tests compare against the legacy loop) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
 of the 3-run range) confirmed no machine drift.
 The remaining `--log-payload` cost is the file sink's per-line channel send and
 allocation, which this task did not change.
+
+`z4` notes: the before binaries were built from `85475b5` and both clients
+ran against that commit's dserver on port 2299, alternating before and after
+in each of the 5 rounds. Three earlier after-runs made right after `make
+test` measured 1.42-1.46 s / 0.66-0.71 s / 0.93-0.97 s; the interleaved
+rounds did not reproduce that, so it is treated as disturbance from the
+finishing test run. The client-side `baseHandler.Write` share of client CPU
+fell from 46% to about 15% (cumulative); what remains is
+mostly network read syscalls and runtime clock and scheduler work. dgrep
+(`--regex ERROR`), non-plain dcat and dmap output were also compared against
+the before client and are identical.

@@ -26,6 +26,7 @@ var _ Logger = (*fout)(nil)
 var _ Starter = (*fout)(nil)
 var _ Pauser = (*fout)(nil)
 var _ Rotator = (*fout)(nil)
+var _ RawBytesWriter = (*fout)(nil)
 
 // newFout builds the default client logger from injected process options.
 func newFout(strategy Strategy, options Options) *fout {
@@ -80,6 +81,15 @@ func (f *fout) Raw(message string) {
 	}
 }
 
+// RawBytes is the byte-slice form of Raw with the same --log-payload gate. Only
+// the file tee converts to a string, and only when payload teeing is enabled.
+func (f *fout) RawBytes(message []byte) {
+	writeRawBytes(f.stdout, message)
+	if f.logPayload {
+		writeRawBytes(f.file, message)
+	}
+}
+
 func (f *fout) RawWithColors(message, coloredMessage string) {
 	f.stdout.RawWithColors("", coloredMessage)
 	// Same opt-in gate as Raw; the file gets the plain (uncolored) payload.
@@ -101,6 +111,16 @@ func (f *fout) RawFileOnly(message string) {
 	if f.logPayload {
 		f.file.Raw(message)
 	}
+}
+
+// writeRawBytes uses the sink's byte-slice capability when present and falls
+// back to its string Raw method otherwise.
+func writeRawBytes(logger Logger, message []byte) {
+	if writer, ok := logger.(RawBytesWriter); ok {
+		writer.RawBytes(message)
+		return
+	}
+	logger.Raw(string(message))
 }
 
 func (f *fout) Flush() { f.stdout.Flush(); f.file.Flush() }
