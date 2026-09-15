@@ -1,8 +1,10 @@
 package dlog
 
 import (
+	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/clients/clientlog"
@@ -36,6 +38,29 @@ func newDiscardingSink(t *testing.T, loggerName string) loggers.Logger {
 	return sink
 }
 
+// startSink starts the sink the way dlog.Start does in production, so its
+// Flush talks to a running logger goroutine instead of waiting out the file
+// sink's deadlock-guard timeout. Cleanup flushes, cancels the sink context and
+// waits for every sink goroutine to exit, so nothing outlives the test. It is
+// registered after newDiscardingSink's cleanup and therefore runs before the
+// null device is closed.
+func startSink(t *testing.T, sink loggers.Logger) {
+	t.Helper()
+	starter, ok := sink.(loggers.Starter)
+	if !ok {
+		t.Fatalf("sink %T does not implement loggers.Starter", sink)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	starter.Start(ctx, &wg)
+	t.Cleanup(func() {
+		sink.Flush()
+		cancel()
+		wg.Wait()
+	})
+}
+
 // TestClientPayloadRawBytesChainDoesNotAllocate guards the production payload
 // chain used by client handlers, clientlog.RawBytes -> DLog.RawBytes -> sink,
 // for the stdout sink and the default fout sink without --log-payload. A
@@ -56,8 +81,8 @@ func TestClientPayloadRawBytesChainDoesNotAllocate(t *testing.T) {
 			if _, ok := sink.(loggers.RawBytesWriter); !ok {
 				t.Fatalf("%s sink lost the RawBytes capability", loggerName)
 			}
+			startSink(t, sink)
 			d := &DLog{logger: sink}
-			t.Cleanup(d.Flush)
 
 			write := func() {
 				for _, message := range messages {
