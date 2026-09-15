@@ -45,6 +45,16 @@ _positive_integer() {
     [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
+_drop_caches() {
+    # Prefer the root-owned, sudoers-whitelisted helper; fall back to the
+    # in-repo script for hosts where the invoking user may sudo it directly.
+    if [[ -x /usr/local/sbin/drop-caches ]]; then
+        sudo -n /usr/local/sbin/drop-caches > /dev/null 2>&1 || true
+    else
+        sudo "$_DEFAULT_LOCAL_ROOT/benchmarks/drop_caches.sh" > /dev/null 2>&1 || true
+    fi
+}
+
 [[ $# -gt 0 ]] || {
     _usage
     exit 2
@@ -108,6 +118,9 @@ _positive_integer "$_BUILD_PARALLELISM" || _die "build parallelism must be posit
 if [[ -n "$_ITERATIONS" ]]; then
     _positive_integer "$_ITERATIONS" || _die "iterations must be positive"
 fi
+
+# Cache sudo credentials to avoid repeated password prompts during cache dropping
+sudo -v
 
 for required in awk cat cmp cp date diff env getconf git go grep hostname id mkdir mktemp mv python3 sed sha256sum sleep sort ssh-keygen stat timeout tr uname wc; do
     _require_command "$required"
@@ -613,6 +626,9 @@ _run_follow_once() {
     local before_client_user before_client_system after_client_user after_client_system
     local client_user client_system started finished elapsed input_bytes attempt
 
+    # Drop caches before every observation to ensure cold-start performance
+    _drop_caches
+
     mkdir -p "$(dirname "$follow_file")"
     : > "$follow_file"
     : > "$output_file"
@@ -725,6 +741,9 @@ _measure_one() {
     local server_pid= before_server_ticks= after_server_ticks= server_cpu= server_rss=
     local error_file="$_OUTPUT_DIR/measured-${transport}-${scenario}-${implementation}.err"
     local status=ok scenario_prefix
+
+    # Drop caches before every observation to ensure cold-start performance
+    _drop_caches
 
     _set_command "$implementation" "$transport" "$scenario" \
         "$_FULL_NORMAL" "$_FULL_LARGE" "$_FULL_STATS"
