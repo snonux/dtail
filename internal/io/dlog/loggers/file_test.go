@@ -353,7 +353,9 @@ func closeFileLogger(t *testing.T, f *file) {
 // contract: write() never reads the clock per message, so a message written
 // after midnight still lands in the previous day's file until refreshDay (the
 // idle-flush tick) runs, and every message after the refresh lands in the new
-// day's file.
+// day's file. It also documents the accepted dlog trade-off: a server
+// diagnostic stamped after midnight (dlog.log reads time.Now for the stamp)
+// but written before the next refresh goes to the previous day's file.
 func TestFileLoggerDailyRotationUsesCachedDayUntilRefresh(t *testing.T) {
 	dir := withTempLogDir(t)
 	before, after, beforeDay, afterDay := midnightTimes()
@@ -361,9 +363,13 @@ func TestFileLoggerDailyRotationUsesCachedDayUntilRefresh(t *testing.T) {
 	f := newFile(Strategy{Rotation: DailyRotation}, dir)
 	f.clock = clock.now
 
+	// Timestamps as dlog.log formats them for server diagnostics.
+	const diagnosticStampLayout = "0102-150405"
+	stampedAfter := "diagnostic stamped " + after.Format(diagnosticStampLayout)
+
 	writeFileMessage(t, f, "day-one")
 	clock.set(after)
-	writeFileMessage(t, f, "day-one-cached")
+	writeFileMessage(t, f, stampedAfter)
 	if got := clock.reads.Load(); got != 1 {
 		t.Fatalf("clock reads before refresh = %d, want 1 (first write only)", got)
 	}
@@ -372,8 +378,9 @@ func TestFileLoggerDailyRotationUsesCachedDayUntilRefresh(t *testing.T) {
 	writeFileMessage(t, f, "day-two")
 	closeFileLogger(t, f)
 
-	if got := readLogFile(t, dir, beforeDay); got != "day-one\nday-one-cached\n" {
-		t.Fatalf("%s.log = %q, want messages written before the refresh", beforeDay, got)
+	if got, want := readLogFile(t, dir, beforeDay), "day-one\n"+stampedAfter+"\n"; got != want {
+		t.Fatalf("%s.log = %q, want %q: a line stamped %s but written before the refresh stays in the previous day's file",
+			beforeDay, got, want, after.Format(diagnosticStampLayout))
 	}
 	if got := readLogFile(t, dir, afterDay); got != "day-two\n" {
 		t.Fatalf("%s.log = %q, want only the message written after the refresh", afterDay, got)

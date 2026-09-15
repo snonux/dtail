@@ -354,6 +354,11 @@ func (d *DLog) log(level level, args []any) string {
 			Details:  args,
 		})
 	default:
+		// The timestamp is read here, but a daily file sink picks its file
+		// from a day name cached on its idle-flush tick, not from this time.
+		// Around midnight a line stamped on one day can therefore land in the
+		// other day's file. Accepted trade-off: the Logger contract carries no
+		// per-line time so payload lines never read the clock.
 		protocol.AppendTimedDiagnostic(encoded, protocol.TimedDiagnostic{
 			Level:     level.String(),
 			Timestamp: time.Now().Format("0102-150405"),

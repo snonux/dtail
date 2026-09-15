@@ -24,18 +24,24 @@ bhyve guest, Intel N100, 4 vCPUs, Linux 5.14, clocksource `hpet`.
 
 | Scenario | Lines | Elapsed | User | Sys | Notes |
 |---|---:|---:|---:|---:|---|
-| dcat server mode | 818,561 | 8.15 s | 2.24 s | 6.93 s | client is syscall bound |
+| dcat server mode | 818,561 | 8.15 s | 2.24 s | 6.93 s | client is syscall bound; single run, re-measured as 8.54-10.59 s before `y4` (see Results) |
 | dcat serverless | 818,561 | 0.30 s | 0.14 s | 0.05 s | 55% in write syscalls |
 | dmap aggregate serverless | 820,044 | 1.64 s | 1.68 s | 0.23 s | 398 MB allocated, 133 GCs |
 | dgrep ERROR serverless | 818,561 | 0.20 s | 0.11 s | 0.09 s | |
 
 Client CPU profile of the server-mode dcat run: 73% of samples in `time.Now`,
-called once per received line from `internal/io/dlog/dlog.go` `Raw`. strace
-counted about 1.8M `clock_gettime` calls for one run, two per line. The host
-has no vDSO clock, so one `time.Now` costs about 8.3 µs here. The production
-r0 to r2 dserver hosts are bhyve guests as well, so this matters in
-production and not only in benchmarks. On hosts with a vDSO clock the same
-change still removes about 50 ns per line.
+called once per received line from `internal/io/dlog/dlog.go` `Raw`. The host
+has no vDSO clock, so each `time.Now` is two `clock_gettime` syscalls
+(`CLOCK_REALTIME` and `CLOCK_MONOTONIC`, see the Go runtime's
+`time_linux_amd64.s`). strace counted about 1.8M `clock_gettime` calls for one
+run: 2 x 818,561 = 1.64M from `Raw`; the remaining ~0.16M were not
+attributed (runtime `nanotime` reads and timers are the likely source). One
+`time.Now` (both syscalls) costs about 8.3 µs here, measured separately on
+2026-09-15. That is consistent with the run's sys time: 818,561 x 8.3 µs is
+about 6.8 s of the 6.93 s sys, or about 4 µs per `clock_gettime` syscall.
+The production r0 to r2 dserver hosts are bhyve guests as well, so this
+matters in production and not only in benchmarks. On hosts with a vDSO clock
+the same change still removes about 50 ns per line.
 
 Server CPU profile of the same run: 16% in `activityConn.refreshDeadline`
 (one `time.Now` plus `SetDeadline` per TCP write), the rest in SSH packet

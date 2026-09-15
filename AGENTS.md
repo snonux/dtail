@@ -264,6 +264,10 @@ the full payload size. Payload always still goes to STDOUT/terminal, unchanged.
   directly to stdout; that path never wrote payload to the file and is unaffected.
   The disk-fill footgun lives on the `fout` file path (the server-mode receive
   path), which is what this setting gates.
+- Daily file rotation uses a day name cached by the file sink and refreshed on its
+  100 ms idle-flush tick, so no clock is read per line. The file is chosen at
+  write time: around midnight a line (including a timestamped dserver diagnostic)
+  can land in the neighbouring day's file. This is intended.
 
 ### Output Path and MapReduce Operations
 DTail uses a single, channel-less read/output path for both direct output

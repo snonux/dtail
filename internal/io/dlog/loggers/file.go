@@ -65,8 +65,14 @@ type file struct {
 	// per message (a clock read costs ~8 µs on hosts without a vDSO clock and
 	// used to dominate client CPU on bulk payload). It is owned by the logger
 	// goroutine: filled on the first daily write and refreshed on every
-	// idle-flush tick, so rotation at midnight lags by at most
-	// fileIdleFlushInterval.
+	// idle-flush tick. Midnight rotation typically follows within one or two
+	// idle-flush intervals, but that is not a bound: select picks randomly
+	// among ready cases and the ticker drops ticks while the goroutine is
+	// busy. The target file is decided at write time, not at log time, so
+	// messages still queued in bufferCh go to the day cached when they are
+	// written, and a server diagnostic stamped just after midnight can land
+	// in the previous day's file (or vice versa). This is an accepted
+	// trade-off for not reading the clock per message.
 	day string
 }
 
@@ -118,8 +124,10 @@ func (f *file) Start(ctx context.Context, wg *sync.WaitGroup) {
 			case m := <-f.bufferCh:
 				f.reportError("write log message", f.write(m))
 			case <-ticker.C:
-				// Refresh the cached day first so a pending flush after
-				// midnight already lands in the new daily file.
+				// Refresh the cached day before flushing. Only messages
+				// written after this refresh go to the new daily file;
+				// already buffered bytes were bound to the old file at write
+				// time, and ticks can be delayed or dropped while busy.
 				f.refreshDay()
 				f.reportError("flush idle log output", f.flush())
 			case done := <-f.flushCh:
