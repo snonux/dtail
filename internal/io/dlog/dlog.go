@@ -229,10 +229,10 @@ func (d *DLog) Devel(args ...any) string {
 // Raw message logging.
 func (d *DLog) Raw(message string) string {
 	if !d.shouldColorize() {
-		d.logger.Raw(time.Now(), message)
+		d.logger.Raw(message)
 		return message
 	}
-	d.logger.RawWithColors(time.Now(), message, d.colorizer.Colorfy(message))
+	d.logger.RawWithColors(message, d.colorizer.Colorfy(message))
 	return message
 }
 
@@ -241,7 +241,7 @@ func (d *DLog) Raw(message string) string {
 // fout logger implements it; stdout/none loggers have no file sink and are
 // skipped via the type assertion in RawPayloadFileTee.
 type payloadFileTeer interface {
-	RawFileOnly(now time.Time, message string)
+	RawFileOnly(message string)
 }
 
 // RawPayloadFileTee writes retrieved payload to the logger's FILE sink only
@@ -253,7 +253,7 @@ type payloadFileTeer interface {
 // same payload bytes to stdout itself, and this method only adds the file tee.
 func (d *DLog) RawPayloadFileTee(message string) {
 	if teer, ok := d.logger.(payloadFileTeer); ok {
-		teer.RawFileOnly(time.Now(), message)
+		teer.RawFileOnly(message)
 	}
 }
 
@@ -269,10 +269,10 @@ func (d *DLog) RawPayloadFileTee(message string) {
 // NOT append a trailing newline, since the Log sink appends one.
 func (d *DLog) RawLog(message string) string {
 	if !d.shouldColorize() {
-		d.logger.Log(time.Now(), message)
+		d.logger.Log(message)
 		return message
 	}
-	d.logger.LogWithColors(time.Now(), message, d.colorizer.Colorfy(message))
+	d.logger.LogWithColors(message, d.colorizer.Colorfy(message))
 	return message
 }
 
@@ -344,7 +344,6 @@ func (d *DLog) log(level level, args []any) string {
 	}
 	encoded := pool.BuilderBuffer.Get().(*strings.Builder)
 	defer pool.RecycleBuilderBuffer(encoded)
-	now := time.Now()
 
 	switch d.sourceProcess {
 	case source.Client:
@@ -357,18 +356,18 @@ func (d *DLog) log(level level, args []any) string {
 	default:
 		protocol.AppendTimedDiagnostic(encoded, protocol.TimedDiagnostic{
 			Level:     level.String(),
-			Timestamp: now.Format("0102-150405"),
+			Timestamp: time.Now().Format("0102-150405"),
 			Details:   args,
 		})
 	}
 	message := encoded.String()
 
 	if !d.shouldColorize() {
-		d.logger.Log(now, message)
+		d.logger.Log(message)
 		return message
 	}
 
-	d.logger.LogWithColors(now, message, d.colorizer.Colorfy(message))
+	d.logger.LogWithColors(message, d.colorizer.Colorfy(message))
 	return message
 }
 

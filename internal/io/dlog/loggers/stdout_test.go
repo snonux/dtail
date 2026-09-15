@@ -51,7 +51,7 @@ func TestStdoutBuffersAndPreservesOrder(t *testing.T) {
 	var want strings.Builder
 	for i := 0; i < n; i++ {
 		line := "line-" + strconv.Itoa(i)
-		s.Raw(time.Now(), line+"\n")
+		s.Raw(line + "\n")
 		want.WriteString(line + "\n")
 	}
 
@@ -79,7 +79,7 @@ func TestStdoutPauseReturnsAndFlushesWithoutLogCall(t *testing.T) {
 	cw := &countingWriter{}
 	s := newStdoutWriter(cw)
 
-	s.Raw(time.Now(), "before-pause\n")
+	s.Raw("before-pause\n")
 
 	paused := make(chan struct{})
 	go func() {
@@ -107,10 +107,10 @@ func TestStdoutBlocksEveryLogPathWhilePaused(t *testing.T) {
 		name  string
 		write func()
 	}{
-		{name: "Log", write: func() { s.Log(time.Now(), "[log]") }},
-		{name: "LogWithColors", write: func() { s.LogWithColors(time.Now(), "[plain-log]", "[colored-log]") }},
-		{name: "Raw", write: func() { s.Raw(time.Now(), "[raw]") }},
-		{name: "RawWithColors", write: func() { s.RawWithColors(time.Now(), "[plain-raw]", "[colored-raw]") }},
+		{name: "Log", write: func() { s.Log("[log]") }},
+		{name: "LogWithColors", write: func() { s.LogWithColors("[plain-log]", "[colored-log]") }},
+		{name: "Raw", write: func() { s.Raw("[raw]") }},
+		{name: "RawWithColors", write: func() { s.RawWithColors("[plain-raw]", "[colored-raw]") }},
 	}
 
 	done := make([]chan struct{}, len(writes))
@@ -153,12 +153,12 @@ func TestStdoutBlocksEveryLogPathWhilePaused(t *testing.T) {
 func TestStdoutPausePreservesPromptOrdering(t *testing.T) {
 	cw := &countingWriter{}
 	s := newStdoutWriter(cw)
-	s.Raw(time.Now(), "before\n")
+	s.Raw("before\n")
 	s.Pause()
 
 	logged := make(chan struct{})
 	go func() {
-		s.Raw(time.Now(), "after\n")
+		s.Raw("after\n")
 		close(logged)
 	}()
 	assertNoSignal(t, logged, "log returned while direct prompt output owned the sink")
@@ -184,7 +184,7 @@ func TestStdoutNestedPauseRequiresMatchingResumes(t *testing.T) {
 
 	logged := make(chan struct{})
 	go func() {
-		s.Log(time.Now(), "blocked")
+		s.Log("blocked")
 		close(logged)
 	}()
 	assertNoSignal(t, logged, "log returned during nested pause")
@@ -216,7 +216,7 @@ func TestStdoutIdleFlush(t *testing.T) {
 	wg.Add(1)
 	s.Start(ctx, &wg)
 
-	s.Raw(time.Now(), "follow-line\n")
+	s.Raw("follow-line\n")
 	waitForLoggerCondition(t, 2*time.Second, func() bool {
 		return strings.Contains(cw.String(), "follow-line")
 	}, func() string {
@@ -256,7 +256,7 @@ func TestStdoutFinalFlushOnClose(t *testing.T) {
 	wg.Add(1)
 	s.Start(ctx, &wg)
 
-	s.Raw(time.Now(), "last-line-before-exit\n")
+	s.Raw("last-line-before-exit\n")
 	cancel()
 	wg.Wait()
 
@@ -275,11 +275,11 @@ func TestStdoutShutdownWhilePaused(t *testing.T) {
 	flushers.Add(1)
 	s.Start(ctx, &flushers)
 
-	s.Raw(time.Now(), "before-shutdown\n")
+	s.Raw("before-shutdown\n")
 	s.Pause()
 	logged := make(chan struct{})
 	go func() {
-		s.Raw(time.Now(), "after-resume\n")
+		s.Raw("after-resume\n")
 		close(logged)
 	}()
 	assertNoSignal(t, logged, "log returned while stdout was paused")
@@ -318,7 +318,7 @@ func TestStdoutConcurrentPauseResume(t *testing.T) {
 			defer workers.Done()
 			<-start
 			for i := 0; i < writesPerLoop; i++ {
-				s.Raw(time.Now(), "line\n")
+				s.Raw("line\n")
 			}
 		}()
 	}

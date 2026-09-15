@@ -20,20 +20,20 @@ type recordingLogger struct {
 	raws  []string
 }
 
-func (r *recordingLogger) Log(now time.Time, message string) {
+func (r *recordingLogger) Log(message string) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.logs = append(r.logs, message)
 }
-func (r *recordingLogger) LogWithColors(now time.Time, message, colored string) { r.Log(now, message) }
-func (r *recordingLogger) Raw(now time.Time, message string) {
+func (r *recordingLogger) LogWithColors(message, colored string) { r.Log(message) }
+func (r *recordingLogger) Raw(message string) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.raws = append(r.raws, message)
 }
-func (r *recordingLogger) RawWithColors(now time.Time, message, colored string) { r.Raw(now, message) }
-func (r *recordingLogger) Flush()                                               {}
-func (r *recordingLogger) SupportsColors() bool                                 { return false }
+func (r *recordingLogger) RawWithColors(message, colored string) { r.Raw(message) }
+func (r *recordingLogger) Flush()                                {}
+func (r *recordingLogger) SupportsColors() bool                  { return false }
 
 var _ loggers.Logger = (*recordingLogger)(nil)
 

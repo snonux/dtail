@@ -3,15 +3,19 @@ package loggers
 import (
 	"context"
 	"sync"
-	"time"
 )
 
 // Logger is there to plug in your own log implementation.
+//
+// The contract deliberately carries no timestamp: Raw and RawWithColors run once
+// per retrieved payload line, and reading the clock there dominated client CPU
+// on hosts without a vDSO clock. Sinks that need wall time (the daily file
+// sink) read and cache it themselves at a coarse granularity.
 type Logger interface {
-	Log(now time.Time, message string)
-	LogWithColors(now time.Time, message, messageWithColors string)
-	Raw(now time.Time, message string)
-	RawWithColors(now time.Time, message, messageWithColors string)
+	Log(message string)
+	LogWithColors(message, messageWithColors string)
+	Raw(message string)
+	RawWithColors(message, messageWithColors string)
 	Flush()
 	SupportsColors() bool
 }
