@@ -305,11 +305,12 @@ shutdown-wait keys in older config files are ignored by the lenient decoder.
 Authenticated connections use the rolling `IdleSessionTimeoutS` timeout (default
 900 seconds). Successful network reads or writes mark the connection active, and a
 per-connection ticker (timeout/4, clamped to 1-30 seconds) pushes the deadline to
-now + timeout + one interval when activity was seen, so the hot I/O path does no
-clock reads or `SetDeadline` calls. Active follow sessions stay connected (any idle
-gap up to the timeout is still refreshed in time), while clients with no SSH
-activity are closed between the timeout and the timeout plus two ticker intervals
-after their last activity.
+now + timeout + two intervals when activity was seen, so the hot I/O path does no
+clock reads or `SetDeadline` calls. Active follow sessions stay connected: any idle
+gap up to the timeout is still refreshed in time even when the refresh tick runs up
+to one interval late. Clients with no SSH activity are closed between the timeout
+plus two intervals and the timeout plus three intervals after their last activity
+(about 960-990 seconds with the defaults; late ticks can only extend this).
 Per-session payload backing memory waiting on a slow client is capped by
 `OutputBufferMaxBytes` (default 2 MiB); producers apply backpressure when the cap is reached. The
 configured cap must leave room for one maximum-length formatted line.

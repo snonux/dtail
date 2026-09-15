@@ -16,8 +16,11 @@ const (
 	// minIdleRefreshInterval keeps short timeouts from causing busy ticking.
 	minIdleRefreshInterval = time.Second
 	// maxIdleRefreshInterval bounds how long past the idle timeout an idle
-	// connection may stay open (at most two refresh intervals).
+	// connection may stay open (at most three refresh intervals).
 	maxIdleRefreshInterval = 30 * time.Second
+	// idleDeadlineSlackIntervals is how many refresh intervals every deadline
+	// adds on top of the idle timeout; see activityConn for why it is two.
+	idleDeadlineSlackIntervals = 2
 )
 
 // errIdleDeadlineEnabled reports a second enable call on the same connection.
@@ -42,17 +45,29 @@ type timeTicker struct {
 // deadline forward when activity was recorded since the previous tick. This
 // keeps clock reads and SetDeadline calls off the per-packet I/O path.
 //
-// Every deadline is set to now + timeout + interval. The extra interval
-// guarantees that activity after an idle gap of up to timeout is picked up by
-// the next tick before the previous deadline expires, so active sessions are
-// never closed early. An idle connection closes between timeout and
-// timeout + 2*interval after its last activity.
+// Every deadline is set to now + timeout + 2*interval. Why this never closes an
+// active session (every idle gap <= timeout): let a tick handled at h set the
+// deadline D = h + timeout + 2*interval (enable counts as such a tick). The
+// last activity it saw happened at or before h, so the next activity a is at
+// most h + timeout. The first tick due after a is scheduled no later than
+// a + interval; if it is handled less than one interval late (GC, CPU
+// starvation, or ticks dropped by time.Ticker), it refreshes before
+// a + 2*interval <= D. One interval covers tick granularity and the other is
+// scheduling slack, independent of timeout mod interval.
+//
+// With ticks on schedule, an idle connection closes between timeout +
+// 2*interval and timeout + 3*interval after its last activity (960-990 s for
+// the default 900 s timeout); late ticks can only extend that.
 type activityConn struct {
 	net.Conn
 
-	active    atomic.Bool
-	now       func() time.Time
-	newTicker func(time.Duration) activityTicker
+	active      atomic.Bool
+	now         func() time.Time
+	newTicker   func(time.Duration) activityTicker
+	minInterval time.Duration
+	// tickHandled, when set before enable, runs after each tick is processed.
+	// Tests use it to synchronize; it is nil in production.
+	tickHandled func()
 
 	mu      sync.Mutex
 	enabled bool
@@ -63,10 +78,11 @@ type activityConn struct {
 
 func newActivityConn(conn net.Conn) *activityConn {
 	return &activityConn{
-		Conn:      conn,
-		now:       time.Now,
-		newTicker: newTimeTicker,
-		stop:      make(chan struct{}),
+		Conn:        conn,
+		now:         time.Now,
+		newTicker:   newTimeTicker,
+		minInterval: minIdleRefreshInterval,
+		stop:        make(chan struct{}),
 	}
 }
 
@@ -142,8 +158,8 @@ func (c *activityConn) enable(ctx context.Context, timeout time.Duration) error 
 		return nil
 	}
 
-	interval := idleRefreshInterval(timeout)
-	extension := timeout + interval
+	interval := idleRefreshInterval(timeout, c.minInterval)
+	extension := idleDeadlineExtension(timeout, interval)
 	// Activity before enable is covered by the fresh deadline set here.
 	c.active.Store(false)
 	if err := c.SetDeadline(c.now().Add(extension)); err != nil {
@@ -175,7 +191,11 @@ func (c *activityConn) refreshLoop(ctx context.Context, ticker activityTicker,
 		case <-c.stop:
 			return
 		case <-ticker.Chan():
-			if !c.refreshIfActive(ctx, extension) {
+			keepRunning := c.refreshIfActive(ctx, extension)
+			if c.tickHandled != nil {
+				c.tickHandled()
+			}
+			if !keepRunning {
 				return
 			}
 		}
@@ -202,7 +222,12 @@ func (c *activityConn) refreshIfActive(ctx context.Context, extension time.Durat
 }
 
 // idleRefreshInterval returns the refresh tick for an idle timeout: a quarter
-// of the timeout, clamped to [minIdleRefreshInterval, maxIdleRefreshInterval].
-func idleRefreshInterval(timeout time.Duration) time.Duration {
-	return min(max(timeout/idleRefreshDivisor, minIdleRefreshInterval), maxIdleRefreshInterval)
+// of the timeout, clamped to [minInterval, maxIdleRefreshInterval].
+func idleRefreshInterval(timeout, minInterval time.Duration) time.Duration {
+	return min(max(timeout/idleRefreshDivisor, minInterval), maxIdleRefreshInterval)
+}
+
+// idleDeadlineExtension returns how far past a refresh the deadline is set.
+func idleDeadlineExtension(timeout, interval time.Duration) time.Duration {
+	return timeout + idleDeadlineSlackIntervals*interval
 }

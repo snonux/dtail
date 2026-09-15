@@ -163,8 +163,14 @@ after client against the after server. Server CPU was read from
 server CPU, 0.87 s elapsed) was not reproduced in the other rounds or in a
 sixth profiled round (1.02 s); it is treated as noise. Read and Write now only
 set an atomic flag; a per-connection ticker (timeout/4, clamped to 1-30 s)
-extends the deadline to now + timeout + interval when activity was seen, so
-an idle session closes between the timeout and the timeout plus two
-intervals after its last activity, and no idle gap up to the timeout closes
-an active session. The remaining `activityConn.Write` cumulative share (28%)
+extends the deadline when activity was seen, so no idle gap up to the
+timeout closes an active session. The original commit (`95234cc`) used
+now + timeout + interval and described the idle close as "between the
+timeout and the timeout plus two intervals"; the real window was timeout +
+interval to timeout + 2 intervals, and a tick more than
+min(interval, timeout mod interval) late could close an active session. The
+review follow-up extends to now + timeout + 2 intervals, which tolerates a
+tick up to one interval late for any timeout; an idle session now closes
+between timeout + 2 intervals and timeout + 3 intervals after its last
+activity (about 960-990 s for the default 900 s timeout). The remaining `activityConn.Write` cumulative share (28%)
 is the underlying TCP write syscall.

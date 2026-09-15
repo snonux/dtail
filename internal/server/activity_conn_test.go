@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -10,8 +11,18 @@ import (
 	"time"
 )
 
-// testWaitLimit only guards against hangs; no assertion depends on it.
-const testWaitLimit = 5 * time.Second
+const (
+	// testWaitLimit only guards against hangs; no assertion depends on it.
+	testWaitLimit = 5 * time.Second
+	// realTimeout and realMinInterval keep real-clock tests short: the refresh
+	// interval is realTimeout/4 = 50ms, so an idle close is due 300-350ms after
+	// the last activity.
+	realTimeout     = 200 * time.Millisecond
+	realMinInterval = 10 * time.Millisecond
+	// idleCloseSlack is the scheduling slack allowed past the documented idle
+	// close window in real-clock tests (race detector, loaded CI hosts).
+	idleCloseSlack = 500 * time.Millisecond
+)
 
 type fakeTicker struct {
 	ch       chan time.Time
@@ -42,6 +53,12 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+}
+
+func (c *fakeClock) set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = t
 }
 
 // deadlineRecorder records deadlines instead of applying them, so fake clock
@@ -82,6 +99,7 @@ type activityHarness struct {
 	rec         *deadlineRecorder
 	ticker      *fakeTicker
 	clock       *fakeClock
+	handled     chan struct{}
 	tickerCalls int
 	interval    time.Duration
 }
@@ -90,10 +108,11 @@ func newActivityHarness(t *testing.T) *activityHarness {
 	t.Helper()
 	local, peer := net.Pipe()
 	h := &activityHarness{
-		peer:   peer,
-		rec:    &deadlineRecorder{Conn: local},
-		ticker: newFakeTicker(),
-		clock:  &fakeClock{now: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)},
+		peer:    peer,
+		rec:     &deadlineRecorder{Conn: local},
+		ticker:  newFakeTicker(),
+		clock:   &fakeClock{now: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)},
+		handled: make(chan struct{}, 1),
 	}
 	h.conn = newActivityConn(h.rec)
 	h.conn.now = h.clock.Now
@@ -102,6 +121,7 @@ func newActivityHarness(t *testing.T) *activityHarness {
 		h.interval = interval
 		return h.ticker
 	}
+	h.conn.tickHandled = func() { h.handled <- struct{}{} }
 	t.Cleanup(func() {
 		_ = h.conn.Close()
 		_ = peer.Close()
@@ -116,8 +136,14 @@ func (h *activityHarness) enable(t *testing.T, ctx context.Context, timeout time
 	}
 }
 
-// sendTick blocks until the refresher receives one tick.
-func (h *activityHarness) sendTick(t *testing.T) {
+// extension returns the deadline extension for timeout at the harness interval.
+func (h *activityHarness) extension(timeout time.Duration) time.Duration {
+	return idleDeadlineExtension(timeout, h.interval)
+}
+
+// tick delivers one tick and returns only after the refresher finished
+// processing it, so the test's next I/O or clock change cannot race with it.
+func (h *activityHarness) tick(t *testing.T) {
 	t.Helper()
 	timer := time.NewTimer(testWaitLimit)
 	defer timer.Stop()
@@ -126,15 +152,11 @@ func (h *activityHarness) sendTick(t *testing.T) {
 	case <-timer.C:
 		t.Fatal("refresher did not receive tick")
 	}
-}
-
-// tick delivers one tick and returns only after the refresher handled it: the
-// unbuffered barrier tick can be received only once the first one is done.
-// The barrier sees no activity because the test performs none in between.
-func (h *activityHarness) tick(t *testing.T) {
-	t.Helper()
-	h.sendTick(t)
-	h.sendTick(t)
+	select {
+	case <-h.handled:
+	case <-timer.C:
+		t.Fatal("refresher did not finish handling tick")
+	}
 }
 
 func (h *activityHarness) waitStopped(t *testing.T) {
@@ -193,20 +215,24 @@ func (h *activityHarness) wantDeadlines(t *testing.T, want ...time.Time) {
 
 func TestIdleRefreshInterval(t *testing.T) {
 	tests := []struct {
-		timeout time.Duration
-		want    time.Duration
+		timeout     time.Duration
+		minInterval time.Duration
+		want        time.Duration
 	}{
-		{timeout: time.Millisecond, want: time.Second},
-		{timeout: time.Second, want: time.Second},
-		{timeout: 4 * time.Second, want: time.Second},
-		{timeout: 8 * time.Second, want: 2 * time.Second},
-		{timeout: time.Minute, want: 15 * time.Second},
-		{timeout: 2 * time.Minute, want: 30 * time.Second},
-		{timeout: 15 * time.Minute, want: 30 * time.Second},
+		{timeout: time.Millisecond, minInterval: minIdleRefreshInterval, want: time.Second},
+		{timeout: time.Second, minInterval: minIdleRefreshInterval, want: time.Second},
+		{timeout: 4 * time.Second, minInterval: minIdleRefreshInterval, want: time.Second},
+		{timeout: 8 * time.Second, minInterval: minIdleRefreshInterval, want: 2 * time.Second},
+		{timeout: time.Minute, minInterval: minIdleRefreshInterval, want: 15 * time.Second},
+		{timeout: 2 * time.Minute, minInterval: minIdleRefreshInterval, want: 30 * time.Second},
+		{timeout: 15 * time.Minute, minInterval: minIdleRefreshInterval, want: 30 * time.Second},
+		{timeout: realTimeout, minInterval: realMinInterval, want: 50 * time.Millisecond},
+		{timeout: 20 * time.Millisecond, minInterval: realMinInterval, want: realMinInterval},
 	}
 	for _, tt := range tests {
-		if got := idleRefreshInterval(tt.timeout); got != tt.want {
-			t.Errorf("idleRefreshInterval(%v) = %v, want %v", tt.timeout, got, tt.want)
+		if got := idleRefreshInterval(tt.timeout, tt.minInterval); got != tt.want {
+			t.Errorf("idleRefreshInterval(%v, %v) = %v, want %v",
+				tt.timeout, tt.minInterval, got, tt.want)
 		}
 	}
 }
@@ -219,7 +245,8 @@ func TestActivityConnEnableSetsInitialDeadline(t *testing.T) {
 	if h.tickerCalls != 1 || h.interval != 15*time.Second {
 		t.Fatalf("ticker calls = %d interval = %v, want 1 call with 15s", h.tickerCalls, h.interval)
 	}
-	h.wantDeadlines(t, h.clock.Now().Add(timeout+h.interval))
+	// timeout + 2 * interval
+	h.wantDeadlines(t, h.clock.Now().Add(90*time.Second))
 }
 
 func TestActivityConnActivityExtendsDeadlineOnTick(t *testing.T) {
@@ -235,7 +262,7 @@ func TestActivityConnActivityExtendsDeadlineOnTick(t *testing.T) {
 			h := newActivityHarness(t)
 			const timeout = time.Minute
 			h.enable(t, t.Context(), timeout)
-			initial := h.clock.Now().Add(timeout + h.interval)
+			initial := h.clock.Now().Add(h.extension(timeout))
 
 			tt.activity(h, t)
 			// I/O itself must not touch the deadline.
@@ -243,7 +270,7 @@ func TestActivityConnActivityExtendsDeadlineOnTick(t *testing.T) {
 
 			h.clock.advance(h.interval)
 			h.tick(t)
-			h.wantDeadlines(t, initial, h.clock.Now().Add(timeout+h.interval))
+			h.wantDeadlines(t, initial, h.clock.Now().Add(h.extension(timeout)))
 		})
 	}
 }
@@ -252,7 +279,7 @@ func TestActivityConnIdleTicksDoNotExtendDeadline(t *testing.T) {
 	h := newActivityHarness(t)
 	const timeout = time.Minute
 	h.enable(t, t.Context(), timeout)
-	initial := h.clock.Now().Add(timeout + h.interval)
+	initial := h.clock.Now().Add(h.extension(timeout))
 
 	for range 5 {
 		h.clock.advance(h.interval)
@@ -275,7 +302,7 @@ func TestActivityConnActivityIsConsumedOncePerTick(t *testing.T) {
 	h := newActivityHarness(t)
 	const timeout = time.Minute
 	h.enable(t, t.Context(), timeout)
-	initial := h.clock.Now().Add(timeout + h.interval)
+	initial := h.clock.Now().Add(h.extension(timeout))
 
 	// A burst of activity just before a tick yields exactly one refresh.
 	for range 10 {
@@ -283,7 +310,7 @@ func TestActivityConnActivityIsConsumedOncePerTick(t *testing.T) {
 	}
 	h.clock.advance(time.Second)
 	h.tick(t)
-	refreshed := h.clock.Now().Add(timeout + h.interval)
+	refreshed := h.clock.Now().Add(h.extension(timeout))
 	h.wantDeadlines(t, initial, refreshed)
 
 	// The flag was cleared: the following idle tick must not extend again.
@@ -295,30 +322,64 @@ func TestActivityConnActivityIsConsumedOncePerTick(t *testing.T) {
 	h.read(t)
 	h.clock.advance(h.interval)
 	h.tick(t)
-	h.wantDeadlines(t, initial, refreshed, h.clock.Now().Add(timeout+h.interval))
+	h.wantDeadlines(t, initial, refreshed, h.clock.Now().Add(h.extension(timeout)))
 }
 
-func TestActivityConnDeadlineOutlastsIdleGapUpToTimeout(t *testing.T) {
-	h := newActivityHarness(t)
-	const timeout = time.Minute
-	h.enable(t, t.Context(), timeout)
-	deadline := h.clock.Now().Add(timeout + h.interval)
+// TestActivityConnLateTickRefreshesBeforeDeadline drives the worst case for an
+// active session: activity just before a tick, an idle gap just under the
+// timeout, and the tick after the next activity delivered late. Timeouts that
+// are not a multiple of the interval (901s with a 30s interval) were the edge
+// case for a timeout + interval extension: there the late tick at 990s would
+// have missed the 961s deadline.
+func TestActivityConnLateTickRefreshesBeforeDeadline(t *testing.T) {
+	timeouts := []time.Duration{
+		901 * time.Second, 900 * time.Second, 61 * time.Second, 5 * time.Second,
+	}
+	for _, timeout := range timeouts {
+		for _, lateIntervals := range []time.Duration{0, 1} {
+			name := fmt.Sprintf("timeout=%v/late=%dintervals", timeout, lateIntervals)
+			t.Run(name, func(t *testing.T) {
+				testLateTickRefreshesBeforeDeadline(t, timeout, lateIntervals)
+			})
+		}
+	}
+}
 
-	// Stay idle for the full timeout, ticking on schedule, then become active
-	// right after a tick: the worst case for picking up the activity.
-	for elapsed := time.Duration(0); elapsed < timeout; elapsed += h.interval {
-		h.clock.advance(h.interval)
+func testLateTickRefreshesBeforeDeadline(t *testing.T, timeout, lateIntervals time.Duration) {
+	h := newActivityHarness(t)
+	start := h.clock.Now()
+	h.enable(t, t.Context(), timeout)
+	interval := h.interval
+	extension := h.extension(timeout)
+	at := start.Add
+
+	// Activity just before the first tick; the tick refreshes the deadline.
+	h.clock.set(at(interval - time.Millisecond))
+	h.write(t)
+	h.clock.set(at(interval))
+	h.tick(t)
+	deadline := at(interval + extension)
+	h.wantDeadlines(t, at(extension), deadline)
+
+	// Idle ticks on schedule until the next activity, just under timeout later.
+	activity := interval + timeout - 100*time.Millisecond
+	next := 2 * interval
+	for ; next <= activity; next += interval {
+		h.clock.set(at(next))
 		h.tick(t)
 	}
+	h.clock.set(at(activity))
 	h.write(t)
-	h.clock.advance(h.interval)
-	if h.clock.Now().After(deadline) {
-		t.Fatalf("next tick at %v is after deadline %v; active session would close", h.clock.Now(), deadline)
+
+	// The first tick due after the activity is handled late.
+	handled := at(next + lateIntervals*interval)
+	if !handled.Before(deadline) {
+		t.Fatalf("late tick at %v is not before deadline %v; active session would close",
+			handled.Sub(start), deadline.Sub(start))
 	}
+	h.clock.set(handled)
 	h.tick(t)
-	if got := h.rec.snapshot(); len(got) != 2 {
-		t.Fatalf("deadlines = %v, want refresh after late activity", got)
-	}
+	h.wantDeadlines(t, at(extension), deadline, handled.Add(extension))
 }
 
 func TestActivityConnCloseStopsRefresher(t *testing.T) {
@@ -361,7 +422,7 @@ func TestActivityConnSetDeadlineErrorStopsRefresher(t *testing.T) {
 
 	h.rec.setErr(net.ErrClosed)
 	h.write(t)
-	h.sendTick(t)
+	h.tick(t)
 	h.waitStopped(t)
 }
 
@@ -394,6 +455,8 @@ func TestActivityConnEnableTwiceFails(t *testing.T) {
 
 func TestActivityConnConcurrentActivityTicksAndClose(t *testing.T) {
 	h := newActivityHarness(t)
+	// Ticks are sent freely below, so nothing waits for tick completion.
+	h.conn.tickHandled = nil
 	h.enable(t, t.Context(), time.Minute)
 
 	var wg sync.WaitGroup
@@ -434,24 +497,95 @@ func TestActivityConnConcurrentActivityTicksAndClose(t *testing.T) {
 	}
 }
 
-func TestActivityConnTimesOutWhenIdle(t *testing.T) {
+// newRealActivityConn returns an activityConn over one end of a net.Pipe with
+// real deadlines and ticker, and the short test refresh interval.
+func newRealActivityConn(t *testing.T) (*activityConn, net.Conn) {
+	t.Helper()
 	serverConn, clientConn := net.Pipe()
-	defer func() { _ = clientConn.Close() }()
-
 	conn := newActivityConn(serverConn)
-	defer func() { _ = conn.Close() }()
-	const timeout = 50 * time.Millisecond
-	if err := conn.enable(t.Context(), timeout); err != nil {
-		t.Fatalf("enable idle timeout: %v", err)
-	}
+	conn.minInterval = realMinInterval
+	t.Cleanup(func() {
+		_ = conn.Close()
+		_ = clientConn.Close()
+	})
+	return conn, clientConn
+}
 
-	started := time.Now()
-	_, err := conn.Read(make([]byte, 1))
+// wantIdleClose asserts err is a timeout that happened within the documented
+// idle close window, [timeout + 2*interval, timeout + 3*interval), after the
+// last activity, allowing idleCloseSlack for late scheduling.
+func wantIdleClose(t *testing.T, err error, sinceLastActivity time.Duration) {
+	t.Helper()
 	var netErr net.Error
 	if !errors.As(err, &netErr) || !netErr.Timeout() {
 		t.Fatalf("idle read error = %v, want network timeout", err)
 	}
-	if elapsed := time.Since(started); elapsed < timeout {
-		t.Fatalf("idle read timed out too early after %v", elapsed)
+	interval := idleRefreshInterval(realTimeout, realMinInterval)
+	earliest := idleDeadlineExtension(realTimeout, interval)
+	latest := earliest + interval + idleCloseSlack
+	if sinceLastActivity < earliest || sinceLastActivity > latest {
+		t.Fatalf("idle close %v after last activity, want within [%v, %v]",
+			sinceLastActivity, earliest, latest)
+	}
+}
+
+func TestActivityConnTimesOutWhenIdle(t *testing.T) {
+	conn, _ := newRealActivityConn(t)
+
+	// Nothing happens after enable, so enable is the last activity.
+	started := time.Now()
+	if err := conn.enable(t.Context(), realTimeout); err != nil {
+		t.Fatalf("enable idle timeout: %v", err)
+	}
+	_, err := conn.Read(make([]byte, 1))
+	wantIdleClose(t, err, time.Since(started))
+}
+
+// TestActivityConnWritesKeepBlockedReadAlive covers the SSH server shape
+// during a long download: the read side is blocked while only writes happen.
+// Real deadlines apply, so write-only activity must keep refreshing the shared
+// deadline, and the blocked read must time out once writes stop.
+func TestActivityConnWritesKeepBlockedReadAlive(t *testing.T) {
+	const (
+		writeEvery = realTimeout / 4
+		activeFor  = time.Second // several deadline extensions of 300ms
+	)
+	conn, peer := newRealActivityConn(t)
+	go func() { _, _ = io.Copy(io.Discard, peer) }()
+	if err := conn.enable(t.Context(), realTimeout); err != nil {
+		t.Fatalf("enable idle timeout: %v", err)
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := conn.Read(make([]byte, 1))
+		readErr <- err
+	}()
+
+	ticker := time.NewTicker(writeEvery)
+	defer ticker.Stop()
+	started := time.Now()
+	var lastWrite time.Time
+	for time.Since(started) < activeFor {
+		select {
+		case err := <-readErr:
+			t.Fatalf("blocked read ended after %v while writes continued: %v",
+				time.Since(started), err)
+		case <-ticker.C:
+		}
+		lastWrite = time.Now()
+		if _, err := conn.Write([]byte{'x'}); err != nil {
+			t.Fatalf("write after %v: %v", time.Since(started), err)
+		}
+	}
+	ticker.Stop()
+
+	timer := time.NewTimer(testWaitLimit)
+	defer timer.Stop()
+	select {
+	case err := <-readErr:
+		wantIdleClose(t, err, time.Since(lastWrite))
+	case <-timer.C:
+		t.Fatal("blocked read did not time out after writes stopped")
 	}
 }
