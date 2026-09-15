@@ -303,8 +303,13 @@ clamped. Removed `Turbo*`, output-delay, EOF-wait-sizing, flush-poll, and
 shutdown-wait keys in older config files are ignored by the lenient decoder.
 
 Authenticated connections use the rolling `IdleSessionTimeoutS` timeout (default
-900 seconds). Successful network reads or writes refresh the deadline, so active
-follow sessions stay connected while clients with no SSH activity are closed.
+900 seconds). Successful network reads or writes mark the connection active, and a
+per-connection ticker (timeout/4, clamped to 1-30 seconds) pushes the deadline to
+now + timeout + one interval when activity was seen, so the hot I/O path does no
+clock reads or `SetDeadline` calls. Active follow sessions stay connected (any idle
+gap up to the timeout is still refreshed in time), while clients with no SSH
+activity are closed between the timeout and the timeout plus two ticker intervals
+after their last activity.
 Per-session payload backing memory waiting on a slow client is capped by
 `OutputBufferMaxBytes` (default 2 MiB); producers apply backpressure when the cap is reached. The
 configured cap must leave room for one maximum-length formatted line.

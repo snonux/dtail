@@ -134,6 +134,9 @@ baseline, and note the commit.
 | `z4` | parent `85475b5` | dcat server mode, default `fout` logger (5 interleaved runs) | 1.30-1.36 s / 1.09-1.18 s / 0.58-0.67 s | 0.82-0.99 s / 0.36-0.41 s / 0.44-0.49 s | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `z4` | parent `85475b5` | client profile, dcat server mode, `--logger stdout` | 1.57 s CPU samples, 273 MB total_alloc, 76 GCs | 0.71 s CPU samples, 128 MB total_alloc, 60 GCs | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `z4` | parent `85475b5` | `BenchmarkBaseHandlerWrite`, 32 KiB chunk of 136-byte lines | 201 µs/op, 163 MB/s, 510 allocs/op | 10 µs/op, 3.28 GB/s, 0 allocs/op | n/a (unit tests compare against the legacy loop) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `05` | parent `59356ae` | dserver CPU (utime+stime from `/proc`) per dcat server-mode run, `--logger stdout` (5 interleaved runs) | 1.25-1.34 s | 1.02-1.07 s (one outlier 1.33 s) | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `05` | parent `59356ae` | client elapsed / user / sys, same runs | 0.85-0.97 s / 0.32-0.39 s / 0.43-0.49 s | 0.72-0.87 s / 0.31-0.40 s / 0.39-0.50 s | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `05` | parent `59356ae` | server CPU profile, dcat server mode | `activityConn.refreshDeadline` 19% of samples (`time.Now` 8%, `SetDeadline` 7%) | no deadline refresh in the profile | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -151,3 +154,17 @@ fell from 46% to about 15% (cumulative); what remains is
 mostly network read syscalls and runtime clock and scheduler work. dgrep
 (`--regex ERROR`), non-plain dcat and dmap output were also compared against
 the before client and are identical.
+
+`05` notes: before and after dservers were built with `go build` from
+`59356ae` and from the change, ran side by side on ports 2299 and 2300, and
+each round ran the before client against the before server and then the
+after client against the after server. Server CPU was read from
+`/proc/<pid>/stat` around each client run. The round-2 after run (1.33 s
+server CPU, 0.87 s elapsed) was not reproduced in the other rounds or in a
+sixth profiled round (1.02 s); it is treated as noise. Read and Write now only
+set an atomic flag; a per-connection ticker (timeout/4, clamped to 1-30 s)
+extends the deadline to now + timeout + interval when activity was seen, so
+an idle session closes between the timeout and the timeout plus two
+intervals after its last activity, and no idle gap up to the timeout closes
+an active session. The remaining `activityConn.Write` cumulative share (28%)
+is the underlying TCP write syscall.
