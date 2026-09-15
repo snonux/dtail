@@ -62,8 +62,9 @@ type file struct {
 	// time.Now; tests inject a fake clock to exercise day rotation.
 	clock func() time.Time
 	// day caches the daily file base name so write() does not read the clock
-	// per message (a clock read costs ~8 µs on hosts without a vDSO clock and
-	// used to dominate client CPU on bulk payload). It is owned by the logger
+	// per message (a clock read costs ~8 µs on hosts whose clocksource the
+	// vDSO cannot read, such as hpet, and used to dominate client CPU on bulk
+	// payload). It is owned by the logger
 	// goroutine: filled on the first daily write and refreshed on every
 	// idle-flush tick. Midnight rotation typically follows within one or two
 	// idle-flush intervals, but that is not a bound: select picks randomly

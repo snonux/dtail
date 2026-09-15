@@ -9,8 +9,9 @@ import (
 //
 // The contract deliberately carries no timestamp: Raw and RawWithColors run once
 // per retrieved payload line, and reading the clock there dominated client CPU
-// on hosts without a vDSO clock. Sinks that need wall time (the daily file
-// sink) read and cache it themselves at a coarse granularity.
+// on hosts whose clocksource the vDSO cannot read, such as hpet. Sinks that
+// need wall time (the daily file sink) read and cache it themselves at a coarse
+// granularity.
 type Logger interface {
 	Log(message string)
 	LogWithColors(message, messageWithColors string)

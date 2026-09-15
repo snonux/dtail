@@ -30,18 +30,25 @@ bhyve guest, Intel N100, 4 vCPUs, Linux 5.14, clocksource `hpet`.
 | dgrep ERROR serverless | 818,561 | 0.20 s | 0.11 s | 0.09 s | |
 
 Client CPU profile of the server-mode dcat run: 73% of samples in `time.Now`,
-called once per received line from `internal/io/dlog/dlog.go` `Raw`. The host
-has no vDSO clock, so each `time.Now` is two `clock_gettime` syscalls
-(`CLOCK_REALTIME` and `CLOCK_MONOTONIC`, see the Go runtime's
-`time_linux_amd64.s`). strace counted about 1.8M `clock_gettime` calls for one
-run: 2 x 818,561 = 1.64M from `Raw`; the remaining ~0.16M were not
-attributed (runtime `nanotime` reads and timers are the likely source). One
-`time.Now` (both syscalls) costs about 8.3 µs here, measured separately on
-2026-09-15. That is consistent with the run's sys time: 818,561 x 8.3 µs is
-about 6.8 s of the 6.93 s sys, or about 4 µs per `clock_gettime` syscall.
+called once per received line from `internal/io/dlog/dlog.go` `Raw`. The
+vDSO is mapped on this host and Go takes its vDSO path, but the clocksource
+is `hpet`, which the vDSO cannot read in user space, so the kernel's vDSO
+code falls back to a real syscall. Both `clock_gettime` calls Go makes per
+`time.Now` (`CLOCK_REALTIME` then `CLOCK_MONOTONIC`, see the Go runtime's
+`time_linux_amd64.s`) therefore become real syscalls. strace counted about
+1.8M `clock_gettime` calls for one run: 2 x 818,561 = 1.64M from `Raw`; the
+remaining ~0.16M were not attributed (runtime `nanotime` reads and timers
+are the likely source). One `time.Now` (both calls, user and kernel time
+together) costs about 8.3 µs here, measured separately on 2026-09-15. Over
+818,561 lines that is about 6.8 s, which roughly accounts for the drop in
+client sys time from before to after `y4` (7.09-7.34 s to 0.62-0.71 s, see
+Results). It is not the whole sys time: part of the 8.3 µs is user time,
+and after the change sys is still 0.62-0.71 s from the unattributed clock
+reads and network syscalls.
 The production r0 to r2 dserver hosts are bhyve guests as well, so this
-matters in production and not only in benchmarks. On hosts with a vDSO clock
-the same change still removes about 50 ns per line.
+matters in production and not only in benchmarks. On hosts whose clocksource
+the vDSO can read (for example `tsc`) the same change still removes about
+50 ns per line.
 
 Server CPU profile of the same run: 16% in `activityConn.refreshDeadline`
 (one `time.Now` plus `SetDeadline` per TCP write), the rest in SSH packet
@@ -120,11 +127,12 @@ baseline, and note the commit.
 
 | Task | Commit | Scenario | Before | After | Verified identical output | Tests pass |
 |---|---|---|---:|---:|---|---|
-| `y4` | parent `c472f83` | dcat server mode, `--logger stdout` (3 runs, elapsed / user / sys) | 8.54-10.59 s / 2.32-2.40 s / 7.09-7.74 s | 1.24-1.42 s / 1.10-1.14 s / 0.62-0.71 s | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `y4` | parent `c472f83` | dcat server mode, `--logger stdout` (3 runs, elapsed / user / sys) | 8.54-10.59 s / 2.32-2.40 s / 7.09-7.34 s | 1.24-1.42 s / 1.10-1.14 s / 0.62-0.71 s | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `y4` | parent `c472f83` | dcat server mode, default `fout` logger | 8.90 s / 2.43 s / 7.36 s | 1.42 s / 1.21 s / 0.70 s | yes, `cmp`; daily log file gets no payload | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `y4` | parent `c472f83` | dcat server mode, `fout --log-payload` | not measured | 3.91 s / 3.47 s / 3.61 s | yes, stdout and file tee both identical to input | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
-in one session; a final baseline rerun (9.01 s) confirmed no machine drift.
+in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
+of the 3-run range) confirmed no machine drift.
 The remaining `--log-payload` cost is the file sink's per-line channel send and
 allocation, which this task did not change.
