@@ -256,14 +256,16 @@ func FuzzLiteralPattern(f *testing.F) {
 		// regexp.Match on a literal pattern) costs O(len(pattern) *
 		// len(input)) in the worst case, so a large input which keeps
 		// re-entering a partial match starves the fuzzer: a 64 KiB
-		// pattern of repeated `\|` against 64 KiB of '|' takes 27-28 s
-		// on this machine and freezes the execution counter for the
-		// rest of the run (against 64 KiB of 'a' the same pattern takes
-		// ~10 ms, so it is the pair, not the size alone). The bugs this
-		// target looks for (an escape unescaped into the wrong bytes, a
-		// metacharacter slipping through) all show up in short
-		// patterns, so bound both sides and keep the execution rate
-		// high.
+		// pattern of repeated `\|` against 64 KiB of '|' spends about
+		// 27.5 s matching on this machine and freezes the execution
+		// counter for the rest of the run. The same pattern against
+		// 64 KiB of 'a' costs about 12 ms per execution of this body,
+		// and nearly all of that is the regexp.Compile below rather
+		// than matching, so it is the pair which is expensive, not the
+		// size alone. The bugs this target looks for (an escape
+		// unescaped into the wrong bytes, a metacharacter slipping
+		// through) all show up in short patterns, so bound both sides
+		// and keep the execution rate high.
 		if len(pattern) > 1024 || len(input) > 4096 {
 			return
 		}

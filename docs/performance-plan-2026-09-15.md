@@ -226,39 +226,37 @@ match; that was wrong, only U+FFFD-bearing patterns widen.
 Correctness is pinned by a table test, by a check of every ASCII escape against
 `regexp` itself, by a seeded randomized differential test, and by
 `FuzzLiteralPattern`, whose body skips patterns over 1 KiB and inputs over
-4 KiB: its reference side (`regexp.MatchString` and `regexp.Match` on an
-accepted literal) costs O(len(pattern) * len(input)) in the worst case, and
-reaching that worst case needs an input which keeps re-entering a partial
-match. The cost is
-therefore a property of the pair, not of the size alone: a 64 KiB pattern
-(`\|` repeated 32768 times) against 64 KiB of `a` takes 9-13 ms here, while the
-same pattern against 64 KiB of `|`, where every position starts a partial match,
-takes 27.3-27.7 s and starves the fuzzer for the rest of the run once it is in
-the corpus. The bound is insurance against that adversarial case rather than a
-throughput fix: at its limits (1 KiB pattern, 4 KiB input) the same adversarial
-pair costs 3.5-5.6 ms and a benign one 70-94 µs, and a corpus-typical short
-pattern and input costs 8-30 µs.
+4 KiB. The bound exists because the reference side of the property
+(`regexp.MatchString` and `regexp.Match` on an accepted literal) costs
+O(len(pattern) * len(input)) in the worst case, and reaching that worst case
+needs an input which keeps re-entering a partial match. The cost is therefore a
+property of the pair, not of the size alone. A 64 KiB pattern (`\|` repeated
+32768 times) against 64 KiB of `|`, where every position starts a partial match,
+spends about 27.5 s matching and starves the fuzzer for the rest of the run once
+it is in the corpus. The same pattern against 64 KiB of `a` costs about 12 ms
+for one execution of the fuzz body, which recompiles the pattern every time, and
+that figure is almost entirely `regexp.Compile` (8-15 ms on its own here) rather
+than matching: the two matches on the already compiled regexp take a few tens of
+microseconds. At the bound (1 KiB pattern, 4 KiB input) even the adversarial
+pair costs single-digit milliseconds.
 
-Fuzzing figures, all from `go test -run XXXnone -fuzz FuzzLiteralPattern
--fuzztime 60s ./internal/regex/` on this machine with the bound in place: two
-plain runs against the current corpus reached 758,627 and 831,900 executions,
-found no new interesting input, and left the cached corpus at 239 entries; the
-first showed one stretch of about 9 s at 0/sec, the second none. The long 0/sec
-stretches are the engine minimizing newly interesting inputs, a phase which does
-not advance the execution counter, so they appear only while such inputs are
-still being found. That is reproducible on a cold corpus, not on the current
-warm one: a run in a throwaway `GOCACHE` with no cached corpus froze the counter
-at 41,863 executions from 3 s to 45 s while it minimized 42 new interesting
-inputs, then finished at 1,705,733 executions. Because the shared corpus grows
-between runs (211 entries when these notes were first written, 239 now),
-absolute execution totals are not comparable across runs; only runs against the
-same corpus state are. Against two identical copies of the 239-entry corpus the
-bounded body reached 879,896 executions and an unbounded control 1,065,003, so
-the bound does not buy throughput on this corpus, it only guards against
-pathological inputs. No failures in any run. The figures recorded here earlier
-(737k executions; 1,576,145 with `-fuzzminimizetime 2s`; 1,286,040 and 488,635
-for the plain runs; 38-45 s of every window spent minimizing; about 50 s for a
-64 KiB pair) did not reproduce and are withdrawn.
+Fuzz runs use `go test -run XXXnone -fuzz FuzzLiteralPattern -fuzztime 60s
+./internal/regex/` and have never failed. Absolute execution totals are not
+comparable across runs, because the shared corpus grows between them (211
+entries when these notes were first written, 239 now); only runs against the
+same corpus state are. Against identical copies of the 239-entry corpus, bounded
+runs and an unbounded control all landed between roughly 0.7M and 1.2M
+executions per 60 s window, which is the run-to-run spread of the bounded body
+by itself, so the bound buys no measurable throughput here; it only guards
+against the pathological pair above. A run can also sit at 0/sec for a long
+stretch. That is typically the engine minimizing a newly interesting input, a
+phase which does not advance the execution counter and which reproduces readily
+on a cold corpus, where such inputs are still being found; but a warm run can
+stall for about 10 s and still add no input at all, so a stall on its own does
+not mean one was found. Per-run execution totals and a ~50 s figure for the
+64 KiB pair recorded in earlier revisions of this note did not reproduce and are
+withdrawn.
+
 The `literal` hint in the serialized form is now only emitted for patterns which
 are their own literal: an older peer trusts that hint verbatim and would search
 for the backslashes, while peers of this version derive the literal from the
