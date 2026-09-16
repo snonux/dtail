@@ -137,7 +137,6 @@ baseline, and note the commit.
 | `05` | parent `59356ae` | dserver CPU (utime+stime from `/proc`) per dcat server-mode run, `--logger stdout` (5 interleaved runs) | 1.25-1.34 s | 1.02-1.07 s (one outlier 1.33 s) | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `05` | parent `59356ae` | client elapsed / user / sys, same runs | 0.85-0.97 s / 0.32-0.39 s / 0.43-0.49 s | 0.72-0.87 s / 0.31-0.40 s / 0.39-0.50 s | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `05` | parent `59356ae` | server CPU profile, dcat server mode | `activityConn.refreshDeadline` 19% of samples (`time.Now` 8%, `SetDeadline` 7%) | no deadline refresh in the profile | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
-
 | `15` | parent `b0340f5` | dmap aggregate serverless, 100 MiB stats log (3 interleaved rounds, elapsed / user / sys) | 1.82-1.87 s / 2.07-2.13 s / 0.30-0.36 s | 1.52-1.72 s / 1.82-2.02 s / 0.36-0.39 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `15` | parent `b0340f5` | dmap count serverless, same log (2 interleaved rounds) | 1.50-1.62 s / 1.78-1.93 s / 0.33-0.40 s | 1.30-1.46 s / 1.62-1.80 s / 0.42-0.43 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `15` | parent `b0340f5` | client CPU profile, dmap aggregate serverless | `regexp.(*Regexp).backtrack` 14.3% cumulative of 1.75 s samples | no `regexp` samples left in the profile (1.68 s samples) | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
@@ -199,9 +198,31 @@ backslash-escaped ASCII punctuation, so the dmap line filter
 escapes, and every other alphanumeric escape), unescaped metacharacters, an
 escaped space, a trailing backslash, and patterns holding U+FFFD or invalid
 UTF-8 all keep the compiled regexp, which stays compiled in either case as the
-fallback. Correctness is pinned by a table test, by a check of every ASCII
-escape against `regexp` itself, by a seeded randomized differential test, and by
-`FuzzLiteralPattern` (737k executions in a 60 s run, no failures).
+fallback. For patterns holding U+FFFD or invalid UTF-8 this is a change of
+behaviour, not only of speed: the old `isLiteralPattern` rejected just
+`.+*?^$[]{}()|\` and so let such a pattern take the `bytes.Contains` path, where
+`dgrep --grep $'abc\xff'` matched only lines holding the exact bytes `abc\xff`.
+The regexp engine decodes the pattern's `\xff` to U+FFFD, which matches `abc`
+followed by any invalid byte, so those patterns now match a superset of what they
+matched before. The regexp semantics are the reference and the intended
+behaviour, but a mixed-version fleet can return different lines for the same such
+pattern until every host is upgraded. Correctness is pinned by a table test, by
+a check of every ASCII escape against `regexp` itself, by a seeded randomized
+differential test, and by `FuzzLiteralPattern`, whose body skips patterns over
+1 KiB and inputs over 4 KiB:
+its reference side (`regexp.MatchString` and `regexp.Match` on an accepted
+literal) costs O(len(pattern) * len(input)), and a single 64 KiB pattern against
+a 64 KiB input takes about 50 s here, which starves the fuzzer once such an
+input is in the corpus. Measured on a warm corpus with that bound in place:
+1,576,145 executions in 60 s, about 30-33k/sec sustained, with
+`-fuzzminimizetime 2s`; and 1,286,040 and 488,635 executions in two runs of the
+plain `-fuzztime 60s` command, each of which spends 38-45 s of its window
+minimizing newly interesting inputs, a phase that does not advance the execution
+counter. An unbounded control run under the same flags reached 1,177,937
+executions, so the bound guards against pathological inputs rather than buying a
+large throughput win on the current corpus. No failures in any run. The figure
+of 737k executions in a 60 s run recorded here earlier did not reproduce on a
+warm corpus and is withdrawn.
 The `literal` hint in the serialized form is now only emitted for patterns which
 are their own literal: an older peer trusts that hint verbatim and would search
 for the backslashes, while peers of this version derive the literal from the
