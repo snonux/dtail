@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -561,8 +562,17 @@ func TestActivityConnConcurrentActivityTicksAndClose(t *testing.T) {
 		}
 	}()
 
+	// Bounded like every other wait in this file: if the refresher ever stops
+	// refreshing, fail within testWaitLimit instead of spinning forever.
+	deadline := time.Now().Add(testWaitLimit)
 	for len(h.rec.snapshot()) < 3 {
+		if time.Now().After(deadline) {
+			t.Fatalf("refresher recorded %d deadlines within %v, want at least 3",
+				len(h.rec.snapshot()), testWaitLimit)
+		}
 		h.clock.advance(time.Second)
+		// Yield so the refresher still makes progress under GOMAXPROCS=1.
+		runtime.Gosched()
 	}
 	if err := h.conn.Close(); err != nil {
 		t.Fatalf("close: %v", err)
