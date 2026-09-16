@@ -310,7 +310,9 @@ clock reads or `SetDeadline` calls. Active follow sessions stay connected: any i
 gap up to the timeout is still refreshed in time even when the refresh tick runs up
 to one interval late. Clients with no SSH activity are closed between the timeout
 plus two intervals and the timeout plus three intervals after their last activity
-(about 960-990 seconds with the defaults; late ticks can only extend this).
+(about 960-990 seconds with the defaults; late ticks can only extend this). The
+interval never drops below one second, so a timeout below four seconds closes
+two to three seconds past it instead of proportionally.
 Per-session payload backing memory waiting on a slow client is capped by
 `OutputBufferMaxBytes` (default 2 MiB); producers apply backpressure when the cap is reached. The
 configured cap must leave room for one maximum-length formatted line.

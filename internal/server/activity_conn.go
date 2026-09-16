@@ -13,7 +13,12 @@ import (
 const (
 	// idleRefreshDivisor sets the refresh tick to a fraction of the idle timeout.
 	idleRefreshDivisor = 4
-	// minIdleRefreshInterval keeps short timeouts from causing busy ticking.
+	// minIdleRefreshInterval keeps short timeouts from causing busy ticking. It
+	// also floors the idle close window: a timeout below
+	// idleRefreshDivisor*minIdleRefreshInterval closes two to three whole
+	// seconds past the timeout instead of proportionally, and leaves the
+	// refresher only one second of scheduling slack per tick. See
+	// config.DefaultIdleSessionTimeoutS.
 	minIdleRefreshInterval = time.Second
 	// maxIdleRefreshInterval bounds how long past the idle timeout an idle
 	// connection may stay open (at most three refresh intervals).
@@ -65,8 +70,11 @@ type activityConn struct {
 	now         func() time.Time
 	newTicker   func(time.Duration) activityTicker
 	minInterval time.Duration
-	// tickHandled, when set before enable, runs after each tick is processed.
-	// Tests use it to synchronize; it is nil in production.
+	// tickHandled, when set before enable, runs on the refresher goroutine
+	// after each tick is processed. Tests use it to synchronize; it is nil in
+	// production. It must never block: while it runs the refresher can neither
+	// take the next tick nor observe cancellation and exit, and Close waits for
+	// that exit.
 	tickHandled func()
 
 	mu      sync.Mutex

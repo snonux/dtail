@@ -121,7 +121,16 @@ func newActivityHarness(t *testing.T) *activityHarness {
 		h.interval = interval
 		return h.ticker
 	}
-	h.conn.tickHandled = func() { h.handled <- struct{}{} }
+	// The hook runs on the refresher goroutine, which must never block on the
+	// test (see activityConn.tickHandled), so drop the token when nobody is
+	// waiting for it. tick drains a stale token before delivering its own, so
+	// its lockstep with the refresher is unaffected.
+	h.conn.tickHandled = func() {
+		select {
+		case h.handled <- struct{}{}:
+		default:
+		}
+	}
 	t.Cleanup(func() {
 		_ = h.conn.Close()
 		_ = peer.Close()
@@ -145,6 +154,12 @@ func (h *activityHarness) extension(timeout time.Duration) time.Duration {
 // processing it, so the test's next I/O or clock change cannot race with it.
 func (h *activityHarness) tick(t *testing.T) {
 	t.Helper()
+	// Drop a token left by a tick this harness did not wait for, so the wait
+	// below observes this tick rather than that earlier one.
+	select {
+	case <-h.handled:
+	default:
+	}
 	timer := time.NewTimer(testWaitLimit)
 	defer timer.Stop()
 	select {
@@ -327,13 +342,16 @@ func TestActivityConnActivityIsConsumedOncePerTick(t *testing.T) {
 
 // TestActivityConnLateTickRefreshesBeforeDeadline drives the worst case for an
 // active session: activity just before a tick, an idle gap just under the
-// timeout, and the tick after the next activity delivered late. Timeouts that
-// are not a multiple of the interval (901s with a 30s interval) were the edge
-// case for a timeout + interval extension: there the late tick at 990s would
-// have missed the 961s deadline.
+// timeout, and the tick after the next activity delivered late. The former
+// timeout + interval extension left zero scheduling margin at every timeout,
+// not only at timeouts that are not a multiple of the interval: one interval
+// late, 900s, 61s, 5s and 2s land exactly on the deadline (the refresh races
+// the poller that enforces it) and 901s misses it outright, by 29s. Timeout mod
+// interval only decides how badly a late tick misses, never whether it misses.
 func TestActivityConnLateTickRefreshesBeforeDeadline(t *testing.T) {
 	timeouts := []time.Duration{
 		901 * time.Second, 900 * time.Second, 61 * time.Second, 5 * time.Second,
+		2 * time.Second, // at the minimum interval
 	}
 	for _, timeout := range timeouts {
 		for _, lateIntervals := range []time.Duration{0, 1} {
@@ -380,6 +398,54 @@ func testLateTickRefreshesBeforeDeadline(t *testing.T, timeout, lateIntervals ti
 	h.clock.set(handled)
 	h.tick(t)
 	h.wantDeadlines(t, at(extension), deadline, handled.Add(extension))
+}
+
+// TestActivityConnSmallTimeoutFloorsTheWindow pins the behaviour documented at
+// config.DefaultIdleSessionTimeoutS for timeouts below
+// idleRefreshDivisor*minIdleRefreshInterval: the interval floor stops the
+// refresher from ticking sub-second, so the idle close window is the timeout
+// plus two to three whole seconds rather than a proportional share of it. The
+// active session guarantee still holds at the floor.
+func TestActivityConnSmallTimeoutFloorsTheWindow(t *testing.T) {
+	h := newActivityHarness(t)
+	const timeout = 2 * time.Second
+	start := h.clock.Now()
+	h.enable(t, t.Context(), timeout)
+
+	if h.interval != minIdleRefreshInterval {
+		t.Fatalf("interval = %v, want the %v floor", h.interval, minIdleRefreshInterval)
+	}
+	if got, want := h.extension(timeout), timeout+2*time.Second; got != want {
+		t.Fatalf("extension = %v, want %v (floored, not %v)", got, want, timeout*3/2)
+	}
+	initial := start.Add(h.extension(timeout))
+	h.wantDeadlines(t, initial)
+
+	// Activity just under one timeout after the last handled tick is still
+	// picked up in time: the tick that follows it refreshes before the
+	// deadline above.
+	lastActivity := start.Add(timeout - 100*time.Millisecond)
+	h.clock.set(lastActivity)
+	h.write(t)
+	h.clock.set(start.Add(2 * h.interval))
+	h.tick(t)
+	refreshed := start.Add(2*h.interval + h.extension(timeout))
+	h.wantDeadlines(t, initial, refreshed)
+
+	// Idle from here on, so that deadline is the one that closes the
+	// connection; it must land inside the documented window.
+	for next := 3 * h.interval; next <= 6*time.Second; next += h.interval {
+		h.clock.set(start.Add(next))
+		h.tick(t)
+	}
+	h.wantDeadlines(t, initial, refreshed)
+
+	idleFor := refreshed.Sub(lastActivity)
+	earliest, latest := timeout+2*h.interval, timeout+3*h.interval
+	if idleFor < earliest || idleFor > latest {
+		t.Fatalf("idle close %v after last activity, want within [%v, %v]",
+			idleFor, earliest, latest)
+	}
 }
 
 func TestActivityConnCloseStopsRefresher(t *testing.T) {

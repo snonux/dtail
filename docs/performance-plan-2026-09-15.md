@@ -167,10 +167,17 @@ extends the deadline when activity was seen, so no idle gap up to the
 timeout closes an active session. The original commit (`95234cc`) used
 now + timeout + interval and described the idle close as "between the
 timeout and the timeout plus two intervals"; the real window was timeout +
-interval to timeout + 2 intervals, and a tick more than
-min(interval, timeout mod interval) late could close an active session. The
-review follow-up extends to now + timeout + 2 intervals, which tolerates a
+interval to timeout + 2 intervals, and that extension left no scheduling
+margin at any timeout: a tick handled one interval late landed exactly on the
+deadline whenever the timeout was a multiple of the interval (900 s, 61 s,
+5 s, 2 s) and past it otherwise (901 s missed by 29 s), so timeout mod
+interval only decided how badly a late tick missed, never whether it missed.
+The review follow-up extends to now + timeout + 2 intervals, which tolerates a
 tick up to one interval late for any timeout; an idle session now closes
 between timeout + 2 intervals and timeout + 3 intervals after its last
-activity (about 960-990 s for the default 900 s timeout). The remaining `activityConn.Write` cumulative share (28%)
+activity (about 960-990 s for the default 900 s timeout). The 1 s floor on the
+interval keeps the refresher from waking sub-second, at the price of a
+disproportionate window for timeouts under 4 s (they close 2-3 s late); that
+trade-off is documented at config.DefaultIdleSessionTimeoutS and pinned by a
+test. The remaining `activityConn.Write` cumulative share (28%)
 is the underlying TCP write syscall.

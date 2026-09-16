@@ -8,7 +8,19 @@ import (
 
 const (
 	// DefaultIdleSessionTimeoutS is the rolling inactivity timeout applied to an
-	// authenticated SSH connection. Successful network reads and writes refresh it.
+	// authenticated SSH connection. Reads and writes only mark the connection
+	// active; a per-connection ticker (timeout/4, clamped to 1-30 seconds)
+	// refreshes the deadline from that flag, so an idle connection closes
+	// between the timeout plus two and the timeout plus three refresh intervals
+	// after its last activity (about 960-990 seconds at this 900 second
+	// default).
+	//
+	// The one second floor on that interval makes the overshoot
+	// disproportionate for very small timeouts: 1 to 4 seconds all close two to
+	// three seconds past the timeout, and the refresher then has to be
+	// scheduled within a second of each tick to keep an active session alive.
+	// Such timeouts are not useful for log streaming; configure at least a
+	// minute.
 	DefaultIdleSessionTimeoutS int = 15 * 60
 
 	// DefaultOutputBufferMaxBytes bounds payload bytes waiting to be written to a
