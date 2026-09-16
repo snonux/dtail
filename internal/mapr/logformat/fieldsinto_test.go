@@ -8,6 +8,8 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -163,6 +165,12 @@ func TestRegisteredParsersAgreeOnFieldsInto(t *testing.T) {
 		strings.Join([]string{"alpha", "1"}, protocol.CSVDelimiter),
 	}
 
+	// exercised records the formats that got all the way through the subtest
+	// body. Without it this test would pass with zero assertions if the
+	// registry were empty or every factory reported its format unavailable, so
+	// an init regression dropping the built-in parsers would still report PASS.
+	exercised := make(map[string]bool)
+
 	parserFactoriesMu.RLock()
 	formats := make([]string, 0, len(parserFactories))
 	for format := range parserFactories {
@@ -203,6 +211,139 @@ func TestRegisteredParsersAgreeOnFieldsInto(t *testing.T) {
 					t.Errorf("line %q: MakeFieldsInto() = %#v, MakeFields() = %#v",
 						line, dst, want)
 				}
+			}
+			// Reached only when nothing above skipped or fataled. Subtests run
+			// synchronously here, so this map needs no locking.
+			exercised[format] = true
+		})
+	}
+
+	// The built-in parsers are always available, so they must have been
+	// compared for real. This is what keeps the walk above from passing
+	// vacuously.
+	for _, format := range []string{"csv", "default", "generic", "generickv"} {
+		if !exercised[format] {
+			t.Errorf("the %q parser was never compared: it is missing from the registry "+
+				"or its subtest skipped, so this test proved nothing about it", format)
+		}
+	}
+}
+
+// TestMakeFieldsIntoMatchesMakeFieldsWithQuery is the configured-plan half of
+// TestMakeFieldsIntoMatchesMakeFields, which builds its parsers with a nil
+// query and therefore only ever exercises the AllFields plan. A real query
+// narrows the plan through setQuery, and a MakeFieldsInto that consulted a
+// different plan than its MakeFields -- or none at all -- would only show up
+// here. The unconfigured control parser makes the subtest fail if the plan
+// stopped narrowing the parse, so the comparison cannot silently become one
+// between two AllFields parsers again.
+func TestMakeFieldsIntoMatchesMakeFieldsWithQuery(t *testing.T) {
+	csvHeader := strings.Join([]string{"name", "value"}, protocol.CSVDelimiter)
+	csvData := strings.Join([]string{"alpha", "1"}, protocol.CSVDelimiter)
+
+	cases := []struct {
+		format string
+		query  string
+		header string
+		line   string
+		want   []string
+	}{
+		{
+			format: "default",
+			query:  `from STATS select count(foo),$hostname group by $hostname`,
+			line:   defaultFormatLine,
+			want:   []string{"foo", "$hostname"},
+		},
+		{
+			format: "generic",
+			query:  `from STATS select count($line),$hostname group by $hostname`,
+			line:   defaultFormatLine,
+			want:   []string{"$line", "$hostname"},
+		},
+		{
+			format: "generickv",
+			query:  `from STATS select count(first),second group by second`,
+			line:   "first=1|malformed|second=2",
+			want:   []string{"first", "second"},
+		},
+		{
+			format: "csv",
+			query:  `from STATS select count(value),name group by name`,
+			header: csvHeader,
+			line:   csvData,
+			want:   []string{"name", "value"},
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.format, func(t *testing.T) {
+			query, err := mapr.NewQuery(testCase.query, logging.NopLogger{})
+			if err != nil {
+				t.Fatalf("NewQuery(%q) error = %v", testCase.query, err)
+			}
+
+			reference, err := NewParserWithHostname(testCase.format, query, "test-host")
+			if err != nil {
+				t.Fatalf("NewParserWithHostname(%q) error = %v", testCase.format, err)
+			}
+			reused, err := NewParserWithHostname(testCase.format, query, "test-host")
+			if err != nil {
+				t.Fatalf("NewParserWithHostname(%q) error = %v", testCase.format, err)
+			}
+			// The control: same format, no query, so it keeps the AllFields plan.
+			unconfigured, err := NewParserWithHostname(testCase.format, nil, "test-host")
+			if err != nil {
+				t.Fatalf("NewParserWithHostname(%q) error = %v", testCase.format, err)
+			}
+			into, ok := reused.(FieldsIntoParser)
+			if !ok {
+				t.Fatalf("%q parser does not implement FieldsIntoParser", testCase.format)
+			}
+
+			dst := map[string]string{"stale-field": "stale-value"}
+			if testCase.header != "" {
+				// Each parser keeps its own per-source CSV header state.
+				_, headerErr := reference.MakeFields(testCase.header, "src")
+				if !errors.Is(headerErr, ErrIgnoreFields) {
+					t.Fatalf("header line error = %v, want ErrIgnoreFields", headerErr)
+				}
+				intoHeaderErr := into.MakeFieldsInto(dst, testCase.header, "src")
+				if !errors.Is(intoHeaderErr, ErrIgnoreFields) {
+					t.Fatalf("header line error = %v, want ErrIgnoreFields", intoHeaderErr)
+				}
+				_, controlHeaderErr := unconfigured.MakeFields(testCase.header, "src")
+				if !errors.Is(controlHeaderErr, ErrIgnoreFields) {
+					t.Fatalf("header line error = %v, want ErrIgnoreFields", controlHeaderErr)
+				}
+			}
+
+			want, wantErr := reference.MakeFields(testCase.line, "src")
+			if wantErr != nil {
+				t.Fatalf("MakeFields() error = %v", wantErr)
+			}
+			if intoErr := into.MakeFieldsInto(dst, testCase.line, "src"); intoErr != nil {
+				t.Fatalf("MakeFieldsInto() error = %v", intoErr)
+			}
+			if !reflect.DeepEqual(want, dst) {
+				t.Errorf("MakeFieldsInto() = %#v, want %#v", dst, want)
+			}
+			if _, found := dst["stale-field"]; found {
+				t.Errorf("MakeFieldsInto() kept a field of a previous line: %#v", dst)
+			}
+			for _, field := range testCase.want {
+				if _, found := dst[field]; !found {
+					t.Errorf("MakeFieldsInto() = %#v, want the queried field %q", dst, field)
+				}
+			}
+
+			allFields, err := unconfigured.MakeFields(testCase.line, "src")
+			if err != nil {
+				t.Fatalf("unconfigured MakeFields() error = %v", err)
+			}
+			if len(allFields) <= len(dst) {
+				t.Errorf("configured plan produced %d fields and the unconfigured "+
+					"AllFields parser %d; the query plan did not narrow the parse, so "+
+					"this subtest is not exercising a configured plan", len(dst), len(allFields))
 			}
 		})
 	}

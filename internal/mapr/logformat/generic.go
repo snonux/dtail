@@ -34,6 +34,9 @@ func (p *genericParser) setQuery(query *mapr.Query) {
 func (p *genericParser) MakeFields(maprLine, sourceID string) (map[string]string, error) {
 	fields := make(map[string]string, p.base.fieldsCapacity)
 	if err := p.MakeFieldsInto(fields, maprLine, sourceID); err != nil {
+		// Currently unreachable: this parser's MakeFieldsInto ignores no line
+		// and always returns nil. Kept for symmetry with default.go and csv.go
+		// so the nil-map contract still holds if it ever starts ignoring lines.
 		if errors.Is(err, ErrIgnoreFields) {
 			return nil, err
 		}

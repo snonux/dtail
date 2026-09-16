@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/io/pool"
+	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/mapr"
+	"github.com/mimecast/dtail/internal/mapr/logformat"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -158,6 +162,89 @@ func TestClearLineScratchReleasesOversizedStorage(t *testing.T) {
 
 	if mapIdentity(scratch.fields) != fieldsID || sliceIdentity(scratch.key) != keyID {
 		t.Error("clearLineScratch() failed to reuse the replacement storage")
+	}
+}
+
+// TestProcessLineTracksFieldHighWaterMark covers the production wiring of the
+// high-water counter, which TestClearLineScratchReleasesOversizedStorage
+// cannot: that test sets scratch.maxFields by hand, so deleting the update in
+// processLine leaves it green and the oversized map would be parked in the
+// pool forever. This test drives processLine with a real line and asserts the
+// counter the aggregator itself recorded.
+func TestProcessLineTracksFieldHighWaterMark(t *testing.T) {
+	query, err := mapr.NewQuery(`from STATS select count($line) group by host`,
+		logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("NewQuery() error = %v", err)
+	}
+	// A nil query leaves the parser on its AllFields plan, so every key-value
+	// token of the synthetic line below really lands in the scratch map. A
+	// query-configured parser would materialize only the fields the query
+	// names and could never inflate the map.
+	parser, err := logformat.NewParserWithHostname("default", nil, "aggregate-test")
+	if err != nil {
+		t.Fatalf("NewParserWithHostname() error = %v", err)
+	}
+	aggregate, err := New(query, parser, "aggregate-test", logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	const oversizedFields = maxRetainedScratchFields + 1
+	var line strings.Builder
+	line.WriteString("INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|" +
+		"MAPREDUCE:STATS|host=alpha")
+	for i := 0; i < oversizedFields; i++ {
+		line.WriteString("|f")
+		line.WriteString(strconv.Itoa(i))
+		line.WriteString("=v")
+	}
+
+	// A scratch of this test's own: one taken from the pool would be handed to
+	// a concurrently running batch of another test once it is put back.
+	scratch := lineScratchPool.New().(*lineScratch)
+	buffer := pool.BytesBuffer.Get().(*bytes.Buffer)
+	defer pool.RecycleBytesBuffer(buffer)
+	buffer.Reset()
+	buffer.WriteString(line.String())
+
+	if err := aggregate.processLine(scratch, buffer, "highwater"); err != nil {
+		t.Fatalf("processLine() error = %v", err)
+	}
+	if got := len(scratch.fields); got < oversizedFields {
+		t.Fatalf("test setup: the line produced %d fields, want at least %d",
+			got, oversizedFields)
+	}
+	if scratch.maxFields != len(scratch.fields) {
+		t.Errorf("processLine() recorded maxFields = %d, want %d; the high-water "+
+			"update is missing, so clearLineScratch cannot see an inflated map",
+			scratch.maxFields, len(scratch.fields))
+	}
+	if scratch.maxFields <= maxRetainedScratchFields {
+		t.Errorf("processLine() recorded maxFields = %d, want more than the "+
+			"retention limit of %d", scratch.maxFields, maxRetainedScratchFields)
+	}
+
+	// It is a high-water mark, not the last line's field count: an ordinary
+	// line after the outlier must not hide the inflated map again.
+	peak := scratch.maxFields
+	buffer.Reset()
+	buffer.WriteString(retentionLines[0])
+	if err := aggregate.processLine(scratch, buffer, "highwater"); err != nil {
+		t.Fatalf("processLine() error = %v", err)
+	}
+	if scratch.maxFields != peak {
+		t.Errorf("processLine() lowered maxFields to %d after an ordinary line, "+
+			"want the peak %d", scratch.maxFields, peak)
+	}
+
+	// End to end: what processLine recorded is what makes the recycle path drop
+	// the inflated map instead of parking it in the pool.
+	inflated := mapIdentity(scratch.fields)
+	clearLineScratch(scratch)
+	if mapIdentity(scratch.fields) == inflated {
+		t.Error("clearLineScratch() parked the inflated fields map; the high-water " +
+			"mark recorded by processLine never reached it")
 	}
 }
 
