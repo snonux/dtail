@@ -138,6 +138,11 @@ baseline, and note the commit.
 | `05` | parent `59356ae` | client elapsed / user / sys, same runs | 0.85-0.97 s / 0.32-0.39 s / 0.43-0.49 s | 0.72-0.87 s / 0.31-0.40 s / 0.39-0.50 s | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `05` | parent `59356ae` | server CPU profile, dcat server mode | `activityConn.refreshDeadline` 19% of samples (`time.Now` 8%, `SetDeadline` 7%) | no deadline refresh in the profile | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
+| `15` | parent `b0340f5` | dmap aggregate serverless, 100 MiB stats log (3 interleaved rounds, elapsed / user / sys) | 1.82-1.87 s / 2.07-2.13 s / 0.30-0.36 s | 1.52-1.72 s / 1.82-2.02 s / 0.36-0.39 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `15` | parent `b0340f5` | dmap count serverless, same log (2 interleaved rounds) | 1.50-1.62 s / 1.78-1.93 s / 0.33-0.40 s | 1.30-1.46 s / 1.62-1.80 s / 0.42-0.43 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `15` | parent `b0340f5` | client CPU profile, dmap aggregate serverless | `regexp.(*Regexp).backtrack` 14.3% cumulative of 1.75 s samples | no `regexp` samples left in the profile (1.68 s samples) | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `15` | parent `b0340f5` | `BenchmarkMaprFilterPattern`, `\|MAPREDUCE:STATS\|` against 3 lines per op | 702-747 ns/op (compiled regexp) | 403-411 ns/op (literal search) | n/a (unit tests compare the literal against regexp) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
 of the 3-run range) confirmed no machine drift.
@@ -182,3 +187,23 @@ disproportionate window for timeouts under 4 s (they close 2-3 s late); that
 trade-off is documented at config.DefaultIdleSessionTimeoutS and pinned by a
 test. The remaining `activityConn.Write` cumulative share (28%)
 is the underlying TCP write syscall.
+
+`15` notes: the before binary was built from `b0340f5`; before and after ran
+alternately in each round against the same 100 MiB `_generate_stats_data` file,
+serverless (`--cfg none --plain --noColor --logger stdout --logLevel error`).
+A pattern is now treated as a literal when its only metacharacters are
+backslash-escaped ASCII punctuation, so the dmap line filter
+`\|MAPREDUCE:STATS\|` unescapes to `|MAPREDUCE:STATS|` and is matched with
+`bytes.Contains`. Escapes with a meaning of their own (`\d \w \s \D \W \S
+\b \B \A \z \Q \E \n \t \a \f \r \v \x41 \x{263a} \p{L}`, octal
+escapes, and every other alphanumeric escape), unescaped metacharacters, an
+escaped space, a trailing backslash, and patterns holding U+FFFD or invalid
+UTF-8 all keep the compiled regexp, which stays compiled in either case as the
+fallback. Correctness is pinned by a table test, by a check of every ASCII
+escape against `regexp` itself, by a seeded randomized differential test, and by
+`FuzzLiteralPattern` (737k executions in a 60 s run, no failures).
+The `literal` hint in the serialized form is now only emitted for patterns which
+are their own literal: an older peer trusts that hint verbatim and would search
+for the backslashes, while peers of this version derive the literal from the
+pattern themselves, so server-mode dmap gets the same optimization without the
+hint.
