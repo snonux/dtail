@@ -1,12 +1,15 @@
 package logformat
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/protocol"
 )
+
+var _ FieldsIntoParser = (*defaultParser)(nil)
 
 type defaultParser struct {
 	hostname       string
@@ -54,8 +57,22 @@ func (p *defaultParser) setQuery(query *mapr.Query) {
 	p.configureFieldPlan(query.ParserFieldPlan())
 }
 
-func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error) {
+// MakeFields allocates a field map and parses maprLine into it.
+func (p *defaultParser) MakeFields(maprLine, sourceID string) (map[string]string, error) {
 	fields := make(map[string]string, p.fieldsCapacity)
+	if err := p.MakeFieldsInto(fields, maprLine, sourceID); err != nil {
+		if errors.Is(err, ErrIgnoreFields) {
+			return nil, err
+		}
+		return fields, err
+	}
+	return fields, nil
+}
+
+// MakeFieldsInto parses maprLine into the caller's map, reusing its storage.
+func (p *defaultParser) MakeFieldsInto(dst map[string]string, maprLine, _ string) error {
+	clear(dst)
+	fields := dst
 	tokenIndex := 0
 	start := 0
 
@@ -64,7 +81,7 @@ func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error
 		switch tokenIndex {
 		case 0:
 			if !strings.HasPrefix(token, "INFO") {
-				return nil, ErrIgnoreFields
+				return ErrIgnoreFields
 			}
 			p.addDefaultFields(fields, maprLine)
 			if p.wantSeverity {
@@ -122,11 +139,11 @@ func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error
 			}
 		case 9:
 			if !strings.HasPrefix(token, "MAPREDUCE:") {
-				return nil, ErrIgnoreFields
+				return ErrIgnoreFields
 			}
 		default:
 			if err := p.addKeyValueField(fields, token); err != nil {
-				return fields, err
+				return err
 			}
 		}
 
@@ -139,10 +156,10 @@ func (p *defaultParser) MakeFields(maprLine, _ string) (map[string]string, error
 
 	if tokenIndex < 11 {
 		// Not a DTail mapreduce log line.
-		return nil, ErrIgnoreFields
+		return ErrIgnoreFields
 	}
 
-	return fields, nil
+	return nil
 }
 
 func (p *defaultParser) addDefaultFields(fields map[string]string, maprLine string) {

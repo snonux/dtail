@@ -1,7 +1,9 @@
 package logformat
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/mimecast/dtail/internal/protocol"
@@ -21,6 +23,7 @@ type csvParser struct {
 }
 
 var _ Parser = (*csvParser)(nil)
+var _ FieldsIntoParser = (*csvParser)(nil)
 
 func newCSVParser(hostname, timeZoneName string, timeZoneOffset int) (*csvParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
@@ -34,13 +37,27 @@ func newCSVParser(hostname, timeZoneName string, timeZoneOffset int) (*csvParser
 }
 
 func (p *csvParser) MakeFields(maprLine, sourceID string) (map[string]string, error) {
+	fields := make(map[string]string, p.fieldsCapacity)
+	if err := p.MakeFieldsInto(fields, maprLine, sourceID); err != nil {
+		if errors.Is(err, ErrIgnoreFields) {
+			return nil, err
+		}
+		return fields, err
+	}
+	return fields, nil
+}
+
+// MakeFieldsInto must be defined here rather than inherited from the embedded
+// defaultParser: the promoted method would parse the line in DTail's own
+// MAPREDUCE layout instead of the CSV one.
+func (p *csvParser) MakeFieldsInto(dst map[string]string, maprLine, sourceID string) error {
+	clear(dst)
 	header, installed := p.ensureHeader(sourceID, maprLine)
 	if installed {
-		return nil, ErrIgnoreFields
+		return ErrIgnoreFields
 	}
 
-	fields := make(map[string]string, p.fieldsCapacity)
-	p.addDefaultFields(fields, maprLine)
+	p.addDefaultFields(dst, maprLine)
 	start := 0
 	column := 0
 	delimiter := protocol.CSVDelimiter[0]
@@ -48,9 +65,9 @@ func (p *csvParser) MakeFields(maprLine, sourceID string) (map[string]string, er
 	for {
 		value, next, done := scanDelimitedField(maprLine, start, delimiter)
 		if column >= len(header) {
-			return fields, fmt.Errorf("CSV file seems corrupted, more fields than header values?")
+			return fmt.Errorf("CSV file seems corrupted, more fields than header values?")
 		}
-		p.addDynamicField(fields, header[column], value)
+		p.addDynamicField(dst, header[column], value)
 		column++
 		if done {
 			break
@@ -58,7 +75,7 @@ func (p *csvParser) MakeFields(maprLine, sourceID string) (map[string]string, er
 		start = next
 	}
 
-	return fields, nil
+	return nil
 }
 
 // ensureHeader atomically checks for, and if necessary installs, the header
@@ -88,13 +105,18 @@ func (p *csvParser) ensureHeader(sourceID, maprLine string) ([]string, bool) {
 	return header, true
 }
 
+// parseHeaderLine copies every column name out of maprLine. The header is kept
+// for the whole session while maprLine is only borrowed for the duration of
+// the parse call (see Parser.MakeFields), so storing sub-slices of it would
+// leave the header pointing at whatever the caller writes into that buffer
+// next.
 func parseHeaderLine(maprLine string) []string {
 	var header []string
 	start := 0
 	delimiter := protocol.CSVDelimiter[0]
 	for {
 		field, next, done := scanDelimitedField(maprLine, start, delimiter)
-		header = append(header, field)
+		header = append(header, strings.Clone(field))
 		if done {
 			break
 		}

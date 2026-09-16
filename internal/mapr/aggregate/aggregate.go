@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"reflect"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -406,8 +405,17 @@ func (a *Aggregate) processBatchAndWait() {
 }
 
 func (a *Aggregate) processRawBatch(batch []rawLine) {
+	if len(batch) == 0 {
+		return
+	}
+	// One scratch per batch: several file processors can run processRawBatch
+	// concurrently, so the reused fields map and group key buffer must not be
+	// shared between them.
+	scratch := lineScratchPool.Get().(*lineScratch)
+	defer recycleLineScratch(scratch)
+
 	for i := range batch {
-		if err := a.processLine(batch[i].content, batch[i].sourceID); err != nil {
+		if err := a.processLine(scratch, batch[i].content, batch[i].sourceID); err != nil {
 			a.errors.Add(1)
 			a.logger.Error("Error processing line:", err, "lineIndex", i)
 		}
@@ -418,9 +426,18 @@ func (a *Aggregate) processRawBatch(batch []rawLine) {
 }
 
 // processLine processes a single line and aggregates it.
-func (a *Aggregate) processLine(lineContent *bytes.Buffer, sourceID string) error {
-	maprLine := strings.TrimSpace(lineContent.String())
-	parsedFields, err := a.parser.MakeFields(maprLine, sourceID)
+//
+// Everything the line yields — the parsed field values, the group key and the
+// line itself — borrows lineContent, which the caller recycles into the buffer
+// pool as soon as this returns. Nothing here may therefore outlive the call:
+// the scratch fields map is replaced per line, a new group key is copied when
+// the serializer inserts it, and mapr.AggregateSet copies the strings that
+// last() and len() retain.
+func (a *Aggregate) processLine(scratch *lineScratch, lineContent *bytes.Buffer,
+	sourceID string) error {
+
+	maprLine := borrowedLine(lineContent)
+	parsedFields, err := logformat.MakeFieldsInto(a.parser, scratch.fields, maprLine, sourceID)
 	if err != nil {
 		if !errors.Is(err, logformat.ErrIgnoreFields) {
 			return err
@@ -440,8 +457,10 @@ func (a *Aggregate) processLine(lineContent *bytes.Buffer, sourceID string) erro
 		}
 	}
 
-	// Aggregate the fields
-	a.serializer.aggregate(parsedFields)
+	// Aggregate the fields. The group key is built in the scratch buffer and
+	// copied by the serializer when it inserts a group of its own.
+	scratch.key = buildGroupKey(scratch.key[:0], a.query.GroupBy, parsedFields)
+	a.serializer.aggregate(parsedFields, scratch.key)
 	return nil
 }
 

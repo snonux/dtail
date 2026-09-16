@@ -150,8 +150,10 @@ func (s *serializer) serialize(ctx context.Context) {
 	}
 }
 
-func (s *serializer) aggregate(fields map[string]string) {
-	groupKey := buildGroupKey(s.query.GroupBy, fields)
+// aggregate merges one parsed line into its group. groupKey is borrowed from
+// the caller's per-line scratch buffer: it is only read here, and copied when
+// it has to become a map key.
+func (s *serializer) aggregate(fields map[string]string, groupKey []byte) {
 	s.groupMu.Lock()
 	defer s.groupMu.Unlock()
 
@@ -165,10 +167,13 @@ func (s *serializer) aggregate(fields map[string]string) {
 		// Allocate the set only after a select field matches. Empty sets would
 		// otherwise reach the client with Samples==0 and produce NaN for avg().
 		if set == nil {
-			set, ok = s.groupSets[groupKey]
+			// Looking up with m[string(b)] takes no allocation; only a group
+			// seen for the first time copies the borrowed key, because the
+			// caller reuses its buffer for the next line.
+			set, ok = s.groupSets[string(groupKey)]
 			if !ok {
 				set = mapr.NewAggregateSet()
-				s.groupSets[groupKey] = set
+				s.groupSets[string(groupKey)] = set
 			}
 		}
 		if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {

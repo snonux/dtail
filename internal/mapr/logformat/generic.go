@@ -5,6 +5,7 @@ type genericParser struct {
 }
 
 var _ Parser = (*genericParser)(nil)
+var _ FieldsIntoParser = (*genericParser)(nil)
 
 func newGenericParser(hostname, timeZoneName string, timeZoneOffset int) (*genericParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
@@ -14,9 +15,17 @@ func newGenericParser(hostname, timeZoneName string, timeZoneOffset int) (*gener
 	return &genericParser{defaultParser: *defaultParser}, nil
 }
 
-func (p *genericParser) MakeFields(maprLine, _ string) (map[string]string, error) {
+func (p *genericParser) MakeFields(maprLine, sourceID string) (map[string]string, error) {
 	fields := make(map[string]string, p.fieldsCapacity)
-	p.addDefaultFields(fields, maprLine)
+	return fields, p.MakeFieldsInto(fields, maprLine, sourceID)
+}
 
-	return fields, nil
+// MakeFieldsInto must be defined here rather than inherited from the embedded
+// defaultParser: the promoted method would parse the line in DTail's own
+// MAPREDUCE layout instead of the generic one.
+func (p *genericParser) MakeFieldsInto(dst map[string]string, maprLine, _ string) error {
+	clear(dst)
+	p.addDefaultFields(dst, maprLine)
+
+	return nil
 }

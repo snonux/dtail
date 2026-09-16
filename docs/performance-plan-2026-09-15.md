@@ -141,6 +141,10 @@ baseline, and note the commit.
 | `15` | parent `b0340f5` | dmap count serverless, same log (2 interleaved rounds) | 1.50-1.62 s / 1.78-1.93 s / 0.33-0.40 s | 1.30-1.46 s / 1.62-1.80 s / 0.42-0.43 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `15` | parent `b0340f5` | client CPU profile, dmap aggregate serverless | `regexp.(*Regexp).backtrack` 14.3% cumulative of 1.75 s samples | no `regexp` samples left in the profile (1.68 s samples) | yes | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `15` | parent `b0340f5` | `BenchmarkMaprFilterPattern`, `\|MAPREDUCE:STATS\|` against 3 lines per op | 702-747 ns/op (compiled regexp) | 403-411 ns/op (literal search) | n/a (unit tests compare the literal against regexp) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `25` | parent `7491087` | dmap aggregate serverless, 100 MiB stats log (3 interleaved rounds, elapsed / user / sys) | 1.53-1.69 s / 1.81-2.00 s / 0.35-0.38 s | 0.79-0.80 s / 0.78-0.79 s / 0.04-0.05 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `25` | parent `7491087` | dmap count serverless, same log (2 interleaved rounds) | 1.36-1.38 s / 1.62-1.66 s / 0.37-0.39 s | 0.60-0.62 s / 0.59-0.60 s / 0.04 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `25` | parent `7491087` | dmap aggregate serverless, client shutdown metrics line (2 runs per binary) | 394.69-394.76 MB total_alloc, 134-135 GCs | 24.24-24.25 MB total_alloc, 8 GCs | yes, `cmp` of the two profiled runs | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `25` | parent `7491087` | `BenchmarkDefaultParserMakeFields`, `all_fields` (allocating form) vs `into_reused_map` (reused map), 200k iterations | 1845 ns/op, 1240 B/op, 4 allocs/op | 759 ns/op, 0 B/op, 0 allocs/op | n/a (unit tests compare `MakeFieldsInto` against `MakeFields` for every built-in parser) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -262,3 +266,31 @@ are their own literal: an older peer trusts that hint verbatim and would search
 for the backslashes, while peers of this version derive the literal from the
 pattern themselves, so server-mode dmap gets the same optimization without the
 hint.
+
+`25` notes: the before binary was built from `7491087` and both binaries ran
+alternately in each round against the same 100 MiB `_generate_stats_data` file,
+serverless (`--cfg none --plain --noColor --logger stdout --logLevel error`).
+The per-line path of the aggregator no longer allocates: the log format parsers
+fill a caller-owned map through the new optional `logformat.FieldsIntoParser`
+interface instead of allocating one map per line, the line is borrowed from the
+pooled `bytes.Buffer` as an `unsafe.String` view instead of being copied by
+`lineContent.String()`, and the group key is built in a reusable `[]byte` and
+looked up with the allocation-free `m[string(b)]` form. Because everything is
+borrowed, every value that outlives its line is copied at the point where it is
+retained: a group copies its key when it is inserted, `mapr.AggregateSet`
+clones the strings that `last()` and `len()` keep, and `csvParser` clones its
+header row. That last one was a live hazard rather than a hypothetical one:
+`parseHeaderLine` stored sub-slices of the line for the whole session, which was
+only safe because the old code handed the parser a fresh copy of every line. The
+per-batch scratch comes from a `sync.Pool` rather than living on the
+`Aggregate`, because several file processors run `processRawBatch` concurrently.
+`TestAggregateDoesNotRetainRecycledLineBuffers` feeds lines from pooled buffers,
+overwrites those buffers in place once the batch has been processed, and fails
+on any retained view; `TestBorrowedLineAliasesTheBuffer` is its negative
+control, failing if `borrowedLine` ever started copying and thereby made the
+retention test vacuous. `last()` and `len()` queries now pay one
+`strings.Clone` per matching line, which is the price of not retaining a view
+into a recycled buffer. dcat and dgrep do not use this code path; both were run
+before and after anyway, and their output still matched the input file and
+`grep ERROR` respectively. Not measured for this task: server-mode dmap (only
+serverless runs were timed) and the 1 GiB inputs.

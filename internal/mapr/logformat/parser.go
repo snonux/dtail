@@ -22,7 +22,43 @@ type Parser interface {
 	// stateful parsers (e.g. CSV with per-file headers) can key their
 	// state per source instead of smearing it across every file in a
 	// session.
+	//
+	// maprLine is borrowed: its backing memory may be reused or recycled by
+	// the caller as soon as MakeFields returns, and the returned field
+	// values are allowed to share that memory. An implementation that keeps
+	// any part of maprLine beyond the call — csvParser keeps the header row
+	// of every source, for example — must store a copy of it, e.g. with
+	// strings.Clone.
 	MakeFields(maprLine, sourceID string) (map[string]string, error)
+}
+
+// FieldsIntoParser is the allocation-free form of Parser. A parser that
+// implements it fills a map owned by the caller instead of allocating a fresh
+// one per line, which removes one map allocation from the per-line hot path of
+// the MapReduce aggregator. Implementations must replace the contents of dst
+// (clear it first) so a reused map cannot leak the fields of a previous line,
+// and the borrowing rules of Parser.MakeFields apply unchanged.
+//
+// The interface is optional: MakeFieldsInto falls back to Parser.MakeFields
+// for parsers that do not implement it, so registered third-party parsers keep
+// working untouched.
+type FieldsIntoParser interface {
+	Parser
+	MakeFieldsInto(dst map[string]string, maprLine, sourceID string) error
+}
+
+// MakeFieldsInto parses maprLine into dst when parser supports it and falls
+// back to Parser.MakeFields otherwise. It returns the map holding the parsed
+// fields: dst on the fast path, a freshly allocated map on the fallback path.
+// On error the returned map is whatever the parser produced so far; callers
+// must check the error before reading fields.
+func MakeFieldsInto(parser Parser, dst map[string]string, maprLine,
+	sourceID string) (map[string]string, error) {
+
+	if into, ok := parser.(FieldsIntoParser); ok && dst != nil {
+		return dst, into.MakeFieldsInto(dst, maprLine, sourceID)
+	}
+	return parser.MakeFields(maprLine, sourceID)
 }
 
 type queryAwareParser interface {
