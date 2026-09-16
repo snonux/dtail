@@ -198,31 +198,67 @@ backslash-escaped ASCII punctuation, so the dmap line filter
 escapes, and every other alphanumeric escape), unescaped metacharacters, an
 escaped space, a trailing backslash, and patterns holding U+FFFD or invalid
 UTF-8 all keep the compiled regexp, which stays compiled in either case as the
-fallback. For patterns holding U+FFFD or invalid UTF-8 this is a change of
-behaviour, not only of speed: the old `isLiteralPattern` rejected just
-`.+*?^$[]{}()|\` and so let such a pattern take the `bytes.Contains` path, where
-`dgrep --grep $'abc\xff'` matched only lines holding the exact bytes `abc\xff`.
-The regexp engine decodes the pattern's `\xff` to U+FFFD, which matches `abc`
-followed by any invalid byte, so those patterns now match a superset of what they
-matched before. The regexp semantics are the reference and the intended
-behaviour, but a mixed-version fleet can return different lines for the same such
-pattern until every host is upgraded. Correctness is pinned by a table test, by
-a check of every ASCII escape against `regexp` itself, by a seeded randomized
-differential test, and by `FuzzLiteralPattern`, whose body skips patterns over
-1 KiB and inputs over 4 KiB:
-its reference side (`regexp.MatchString` and `regexp.Match` on an accepted
-literal) costs O(len(pattern) * len(input)), and a single 64 KiB pattern against
-a 64 KiB input takes about 50 s here, which starves the fuzzer once such an
-input is in the corpus. Measured on a warm corpus with that bound in place:
-1,576,145 executions in 60 s, about 30-33k/sec sustained, with
-`-fuzzminimizetime 2s`; and 1,286,040 and 488,635 executions in two runs of the
-plain `-fuzztime 60s` command, each of which spends 38-45 s of its window
-minimizing newly interesting inputs, a phase that does not advance the execution
-counter. An unbounded control run under the same flags reached 1,177,937
-executions, so the bound guards against pathological inputs rather than buying a
-large throughput win on the current corpus. No failures in any run. The figure
-of 737k executions in a 60 s run recorded here earlier did not reproduce on a
-warm corpus and is withdrawn.
+fallback.
+
+For a pattern holding a validly encoded U+FFFD (the bytes `ef bf bd`) this is a
+change of behaviour, not only of speed: the old `isLiteralPattern` rejected just
+`.+*?^$[]{}()|\`, so such a pattern took the `bytes.Contains` path and
+`dgrep --grep $'abc\xef\xbf\xbd'` returned only the line holding those exact
+bytes. It now takes the compiled regexp, which maps every decoding error in the
+input to U+FFFD as well, so the same pattern also returns lines holding
+`abc\xff` and `abc\xfe`: a superset of what it matched before. Checked end to
+end against a four line file with `dgrep` built from `b0340f5` and from this
+tree. The regexp semantics are the reference and the intended behaviour, but a
+mixed-version fleet can return different lines for a U+FFFD-bearing pattern
+until every host is upgraded.
+
+A pattern holding invalid UTF-8 is not part of that change. `regexp.Compile`
+rejects such a pattern outright (`error parsing regexp: invalid UTF-8`), and the
+old `newRegex` compiled the pattern on its literal path as well and returned the
+same error, so `regex.New("abc\xff", Default)` failed before this change just
+as it does after it. `dgrep --grep $'abc\xff'` exits 1 with that compile error
+in both versions, because `internal/clients/baseclient.go` makes it fatal;
+checked with both binaries. There is no behaviour change and no mixed-version
+hazard for invalid-UTF-8 patterns. An earlier revision of this note, and the
+message of commit `a8e5e0c`, used `$'abc\xff'` as the example of the widened
+match; that was wrong, only U+FFFD-bearing patterns widen.
+
+Correctness is pinned by a table test, by a check of every ASCII escape against
+`regexp` itself, by a seeded randomized differential test, and by
+`FuzzLiteralPattern`, whose body skips patterns over 1 KiB and inputs over
+4 KiB: its reference side (`regexp.MatchString` and `regexp.Match` on an
+accepted literal) costs O(len(pattern) * len(input)) in the worst case, and
+reaching that worst case needs an input which keeps re-entering a partial
+match. The cost is
+therefore a property of the pair, not of the size alone: a 64 KiB pattern
+(`\|` repeated 32768 times) against 64 KiB of `a` takes 9-13 ms here, while the
+same pattern against 64 KiB of `|`, where every position starts a partial match,
+takes 27.3-27.7 s and starves the fuzzer for the rest of the run once it is in
+the corpus. The bound is insurance against that adversarial case rather than a
+throughput fix: at its limits (1 KiB pattern, 4 KiB input) the same adversarial
+pair costs 3.5-5.6 ms and a benign one 70-94 µs, and a corpus-typical short
+pattern and input costs 8-30 µs.
+
+Fuzzing figures, all from `go test -run XXXnone -fuzz FuzzLiteralPattern
+-fuzztime 60s ./internal/regex/` on this machine with the bound in place: two
+plain runs against the current corpus reached 758,627 and 831,900 executions,
+found no new interesting input, and left the cached corpus at 239 entries; the
+first showed one stretch of about 9 s at 0/sec, the second none. The long 0/sec
+stretches are the engine minimizing newly interesting inputs, a phase which does
+not advance the execution counter, so they appear only while such inputs are
+still being found. That is reproducible on a cold corpus, not on the current
+warm one: a run in a throwaway `GOCACHE` with no cached corpus froze the counter
+at 41,863 executions from 3 s to 45 s while it minimized 42 new interesting
+inputs, then finished at 1,705,733 executions. Because the shared corpus grows
+between runs (211 entries when these notes were first written, 239 now),
+absolute execution totals are not comparable across runs; only runs against the
+same corpus state are. Against two identical copies of the 239-entry corpus the
+bounded body reached 879,896 executions and an unbounded control 1,065,003, so
+the bound does not buy throughput on this corpus, it only guards against
+pathological inputs. No failures in any run. The figures recorded here earlier
+(737k executions; 1,576,145 with `-fuzzminimizetime 2s`; 1,286,040 and 488,635
+for the plain runs; 38-45 s of every window spent minimizing; about 50 s for a
+64 KiB pair) did not reproduce and are withdrawn.
 The `literal` hint in the serialized form is now only emitted for patterns which
 are their own literal: an older peer trusts that hint verbatim and would search
 for the backslashes, while peers of this version derive the literal from the

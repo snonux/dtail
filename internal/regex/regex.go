@@ -99,10 +99,14 @@ func literalPattern(pattern string) (string, bool) {
 			i++
 
 		default:
-			// regexp decodes its input as UTF-8 and maps every decoding error
-			// to U+FFFD, so a pattern holding U+FFFD (or invalid UTF-8, which
-			// decodes to it) can match bytes that a plain byte search does
-			// not find. Such patterns are left to regexp.
+			// Both cases which make DecodeRuneInString return RuneError are
+			// left to regexp, for different reasons. A pattern holding
+			// invalid UTF-8 does not compile at all ("error parsing regexp:
+			// invalid UTF-8"), so newRegex must report that error rather
+			// than match anything. A pattern holding a validly encoded
+			// U+FFFD does compile, but regexp maps every decoding error in
+			// the input to U+FFFD as well, so it matches invalid bytes which
+			// a plain byte search does not find.
 			r, size := utf8.DecodeRuneInString(pattern[i:])
 			if r == utf8.RuneError {
 				return "", false

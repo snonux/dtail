@@ -254,13 +254,16 @@ func FuzzLiteralPattern(f *testing.F) {
 	f.Fuzz(func(t *testing.T, pattern, input string) {
 		// The reference side of this property (regexp.MatchString and
 		// regexp.Match on a literal pattern) costs O(len(pattern) *
-		// len(input)), so a few large inputs in the corpus starve the
-		// fuzzer: a single 64 KiB pattern against a 64 KiB input takes
-		// ~50 s on this machine and freezes the execution counter for
-		// the rest of the run. The bugs this target looks for (an
-		// escape unescaped into the wrong bytes, a metacharacter
-		// slipping through) all show up in short patterns, so bound
-		// both sides and keep the execution rate high.
+		// len(input)) in the worst case, so a large input which keeps
+		// re-entering a partial match starves the fuzzer: a 64 KiB
+		// pattern of repeated `\|` against 64 KiB of '|' takes 27-28 s
+		// on this machine and freezes the execution counter for the
+		// rest of the run (against 64 KiB of 'a' the same pattern takes
+		// ~10 ms, so it is the pair, not the size alone). The bugs this
+		// target looks for (an escape unescaped into the wrong bytes, a
+		// metacharacter slipping through) all show up in short
+		// patterns, so bound both sides and keep the execution rate
+		// high.
 		if len(pattern) > 1024 || len(input) > 4096 {
 			return
 		}
