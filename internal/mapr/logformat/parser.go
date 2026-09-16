@@ -42,6 +42,17 @@ type Parser interface {
 // The interface is optional: MakeFieldsInto falls back to Parser.MakeFields
 // for parsers that do not implement it, so registered third-party parsers keep
 // working untouched.
+//
+// HAZARD for parser authors: do not reuse another parser by embedding it. An
+// embedded base promotes its MakeFieldsInto onto the new type, so a parser
+// that overrides only MakeFields still satisfies this interface — and the
+// aggregator, which prefers MakeFieldsInto, would then parse every line in the
+// base parser's layout. Nothing fails to compile, no error is logged and only
+// the query results change. The built-in generic, generickv and csv parsers
+// therefore hold their defaultParser in a named field, which makes the
+// compiler insist on a MakeFieldsInto of their own; a parser that genuinely
+// has no faster form should simply not implement this interface and let
+// MakeFieldsInto fall back to its MakeFields.
 type FieldsIntoParser interface {
 	Parser
 	MakeFieldsInto(dst map[string]string, maprLine, sourceID string) error

@@ -9,6 +9,16 @@ import (
 const (
 	scratchFieldsCapacity = 24
 	scratchKeyCapacity    = 128
+	// maxRetainedScratchKeyBytes and maxRetainedScratchFields bound what a
+	// pooled scratch keeps parked between batches. A single pathological line
+	// -- a huge group key, or a query grouping by very many fields -- would
+	// otherwise inflate that scratch for as long as the pool holds it, because
+	// neither a slice nor a map ever shrinks on its own. Both limits are far
+	// above anything ordinary log lines reach, so the common case still reuses
+	// its storage without allocating. Same policy as maxRetainedLineBufBytes
+	// in internal/clients/handlers/basehandler.go.
+	maxRetainedScratchKeyBytes = 64 * 1024
+	maxRetainedScratchFields   = 1024
 )
 
 // lineScratch is the reusable working set of processLine: the field map handed
@@ -19,6 +29,11 @@ const (
 type lineScratch struct {
 	fields map[string]string
 	key    []byte
+	// maxFields is the high-water mark of len(fields) since the scratch was
+	// last cleared. A map keeps its buckets after clear(), and the length at
+	// recycle time is only the last line's, so the peak has to be recorded
+	// while the batch runs for clearLineScratch to spot an inflated map.
+	maxFields int
 }
 
 // lineScratchPool hands out one scratch per batch. The scratch cannot live on
@@ -35,11 +50,33 @@ var lineScratchPool = sync.Pool{
 
 // recycleLineScratch drops every borrowed view before the scratch is parked in
 // the pool, so a pooled scratch can never hand a stale view of an already
-// recycled line buffer to the next batch.
+// recycled line buffer to the next batch. The scratch must not be touched
+// afterwards: another goroutine may already have taken it out of the pool.
 func recycleLineScratch(scratch *lineScratch) {
-	clear(scratch.fields)
-	scratch.key = scratch.key[:0]
+	clearLineScratch(scratch)
 	lineScratchPool.Put(scratch)
+}
+
+// clearLineScratch drops the borrowed views a scratch holds and releases
+// storage that one outlier line inflated beyond the retention limits, so the
+// scratch is safe and reasonably sized to reuse. It is separate from
+// recycleLineScratch so that callers (and tests) can inspect the cleared
+// scratch while they still own it.
+func clearLineScratch(scratch *lineScratch) {
+	if scratch.maxFields > maxRetainedScratchFields {
+		// clear() keeps the buckets a huge line grew, so the map itself has
+		// to go; the next line refills a right-sized one.
+		scratch.fields = make(map[string]string, scratchFieldsCapacity)
+	} else {
+		clear(scratch.fields)
+	}
+	scratch.maxFields = 0
+
+	if cap(scratch.key) > maxRetainedScratchKeyBytes {
+		scratch.key = make([]byte, 0, scratchKeyCapacity)
+	} else {
+		scratch.key = scratch.key[:0]
+	}
 }
 
 // borrowedLine returns the trimmed content of buf as a string sharing buf's

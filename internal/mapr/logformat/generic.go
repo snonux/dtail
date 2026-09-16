@@ -1,31 +1,50 @@
 package logformat
 
+import (
+	"errors"
+
+	"github.com/mimecast/dtail/internal/mapr"
+)
+
+// genericParser keeps its defaultParser in a named field instead of embedding
+// it. Embedding would promote defaultParser.MakeFieldsInto onto this type, so
+// overriding only MakeFields would leave the allocation-free path parsing
+// lines in DTail's own MAPREDUCE layout (see the FieldsIntoParser doc
+// comment). With a named field the compiler demands both methods here.
 type genericParser struct {
-	defaultParser
+	base defaultParser
 }
 
 var _ Parser = (*genericParser)(nil)
 var _ FieldsIntoParser = (*genericParser)(nil)
+var _ queryAwareParser = (*genericParser)(nil)
 
 func newGenericParser(hostname, timeZoneName string, timeZoneOffset int) (*genericParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
 	if err != nil {
 		return &genericParser{}, err
 	}
-	return &genericParser{defaultParser: *defaultParser}, nil
+	return &genericParser{base: *defaultParser}, nil
+}
+
+func (p *genericParser) setQuery(query *mapr.Query) {
+	p.base.setQuery(query)
 }
 
 func (p *genericParser) MakeFields(maprLine, sourceID string) (map[string]string, error) {
-	fields := make(map[string]string, p.fieldsCapacity)
-	return fields, p.MakeFieldsInto(fields, maprLine, sourceID)
+	fields := make(map[string]string, p.base.fieldsCapacity)
+	if err := p.MakeFieldsInto(fields, maprLine, sourceID); err != nil {
+		if errors.Is(err, ErrIgnoreFields) {
+			return nil, err
+		}
+		return fields, err
+	}
+	return fields, nil
 }
 
-// MakeFieldsInto must be defined here rather than inherited from the embedded
-// defaultParser: the promoted method would parse the line in DTail's own
-// MAPREDUCE layout instead of the generic one.
 func (p *genericParser) MakeFieldsInto(dst map[string]string, maprLine, _ string) error {
 	clear(dst)
-	p.addDefaultFields(dst, maprLine)
+	p.base.addDefaultFields(dst, maprLine)
 
 	return nil
 }

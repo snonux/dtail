@@ -177,7 +177,11 @@ func (s *serializer) aggregate(fields map[string]string, groupKey []byte) {
 			}
 		}
 		if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
-			s.logger.Error("Aggregate aggregation error", err,
+			// err can alias the borrowed line (a *strconv.NumError keeps
+			// the value it failed to parse), and the caller recycles that
+			// buffer as soon as the line is processed. Format it now
+			// rather than handing the alias to the logger.
+			s.logger.Error("Aggregate aggregation error", err.Error(),
 				"field", sc.Field, "operation", sc.Operation)
 			continue
 		}

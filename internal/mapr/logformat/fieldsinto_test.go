@@ -3,6 +3,7 @@ package logformat
 import (
 	"errors"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"unsafe"
@@ -145,4 +146,71 @@ func TestCSVParserCopiesBorrowedHeader(t *testing.T) {
 	if fields["name"] != "alpha" || fields["value"] != "1" {
 		t.Errorf("MakeFields() = %#v, want the header names copied out of the borrowed line", fields)
 	}
+}
+
+// TestRegisteredParsersAgreeOnFieldsInto is the backstop for the embedding
+// hazard documented on FieldsIntoParser. It walks the whole parser registry
+// instead of a hand-written list, so a parser added later -- including one
+// only present in a proprietary build -- has to keep MakeFields and
+// MakeFieldsInto in agreement. A parser that reused another one by embedding
+// it would satisfy FieldsIntoParser through the promoted method and produce
+// the wrong log format's fields here. Formats whose factory reports them as
+// unavailable in this build (mimecast, the custom templates) are skipped.
+func TestRegisteredParsersAgreeOnFieldsInto(t *testing.T) {
+	canaries := []string{
+		defaultFormatLine,
+		"first=1|malformed|second=2",
+		strings.Join([]string{"alpha", "1"}, protocol.CSVDelimiter),
+	}
+
+	parserFactoriesMu.RLock()
+	formats := make([]string, 0, len(parserFactories))
+	for format := range parserFactories {
+		formats = append(formats, format)
+	}
+	parserFactoriesMu.RUnlock()
+	sort.Strings(formats)
+
+	for _, format := range formats {
+		t.Run(format, func(t *testing.T) {
+			reference, err := NewParserWithHostname(format, nil, "test-host")
+			if err != nil {
+				t.Skipf("%q parser is not available in this build: %v", format, err)
+			}
+			reused, err := NewParserWithHostname(format, nil, "test-host")
+			if err != nil {
+				t.Skipf("%q parser is not available in this build: %v", format, err)
+			}
+			into, ok := reused.(FieldsIntoParser)
+			if !ok {
+				// Not implementing the optional interface is fine: such a
+				// parser is served by the MakeFields fallback.
+				t.Skipf("%q parser does not implement FieldsIntoParser", format)
+			}
+
+			dst := make(map[string]string, 8)
+			for _, line := range canaries {
+				want, wantErr := reference.MakeFields(line, "src")
+				gotErr := into.MakeFieldsInto(dst, line, "src")
+				if !sameError(wantErr, gotErr) {
+					t.Fatalf("line %q: MakeFieldsInto() error = %v, MakeFields() error = %v",
+						line, gotErr, wantErr)
+				}
+				if wantErr != nil {
+					continue
+				}
+				if !reflect.DeepEqual(want, dst) {
+					t.Errorf("line %q: MakeFieldsInto() = %#v, MakeFields() = %#v",
+						line, dst, want)
+				}
+			}
+		})
+	}
+}
+
+func sameError(want, got error) bool {
+	if (want == nil) != (got == nil) {
+		return false
+	}
+	return want == nil || want.Error() == got.Error()
 }

@@ -2,7 +2,8 @@ package aggregate
 
 import (
 	"bytes"
-	"strings"
+	"reflect"
+	"strconv"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/io/pool"
@@ -73,21 +74,99 @@ func TestBuildGroupKeyReusesBuffer(t *testing.T) {
 	}
 }
 
-func TestRecycleLineScratchDropsBorrowedViews(t *testing.T) {
+// TestClearLineScratchDropsBorrowedViews asserts on a scratch this test still
+// owns. Asserting after recycleLineScratch would be a use-after-return: the
+// scratch is in the pool by then and another goroutine may legitimately have
+// taken it out and refilled it.
+func TestClearLineScratchDropsBorrowedViews(t *testing.T) {
 	scratch := lineScratchPool.Get().(*lineScratch)
 	scratch.fields["borrowed"] = "view"
 	scratch.key = append(scratch.key[:0], "borrowed"...)
+	scratch.maxFields = len(scratch.fields)
 
-	recycleLineScratch(scratch)
+	clearLineScratch(scratch)
 
 	if len(scratch.fields) != 0 {
-		t.Errorf("recycleLineScratch() left %#v in the fields map", scratch.fields)
+		t.Errorf("clearLineScratch() left %#v in the fields map", scratch.fields)
 	}
 	if len(scratch.key) != 0 {
-		t.Errorf("recycleLineScratch() left %q in the key buffer", scratch.key)
+		t.Errorf("clearLineScratch() left %q in the key buffer", scratch.key)
 	}
-	if strings.Contains(string(scratch.key[:cap(scratch.key)]), "\x00\x00") {
-		// Only here to keep the key buffer referenced; contents are irrelevant.
-		t.Log("key buffer retained its capacity")
+	if scratch.maxFields != 0 {
+		t.Errorf("clearLineScratch() left maxFields = %d, want 0", scratch.maxFields)
 	}
+
+	lineScratchPool.Put(scratch)
+}
+
+// TestClearLineScratchReleasesOversizedStorage pins the retention limits: one
+// pathological line must not park its inflated storage in the pool, while
+// ordinary lines keep reusing the very same map and key array.
+func TestClearLineScratchReleasesOversizedStorage(t *testing.T) {
+	scratch := lineScratchPool.New().(*lineScratch)
+
+	scratch.fields["host"] = "alpha"
+	scratch.maxFields = len(scratch.fields)
+	scratch.key = append(scratch.key[:0], "alpha"...)
+	fieldsID := mapIdentity(scratch.fields)
+	keyID := sliceIdentity(scratch.key)
+
+	clearLineScratch(scratch)
+
+	if mapIdentity(scratch.fields) != fieldsID {
+		t.Error("clearLineScratch() replaced the fields map after a normal line")
+	}
+	if sliceIdentity(scratch.key) != keyID {
+		t.Error("clearLineScratch() replaced the key buffer after a normal line")
+	}
+	if cap(scratch.key) != scratchKeyCapacity {
+		t.Errorf("key buffer capacity = %d, want the pooled %d",
+			cap(scratch.key), scratchKeyCapacity)
+	}
+
+	// Now the outlier: a huge group key and a line with far more fields than
+	// the retention limit.
+	scratch.key = append(scratch.key[:0], make([]byte, maxRetainedScratchKeyBytes+1)...)
+	for i := 0; i <= maxRetainedScratchFields; i++ {
+		scratch.fields[strconv.Itoa(i)] = "value"
+	}
+	scratch.maxFields = len(scratch.fields)
+	inflatedFieldsID := mapIdentity(scratch.fields)
+
+	clearLineScratch(scratch)
+
+	if cap(scratch.key) > maxRetainedScratchKeyBytes {
+		t.Errorf("clearLineScratch() parked a %d byte key buffer, want at most %d",
+			cap(scratch.key), maxRetainedScratchKeyBytes)
+	}
+	if mapIdentity(scratch.fields) == inflatedFieldsID {
+		t.Error("clearLineScratch() kept the inflated fields map; clear() does not " +
+			"release the buckets a huge line grew")
+	}
+	if len(scratch.fields) != 0 {
+		t.Errorf("clearLineScratch() left %d fields behind", len(scratch.fields))
+	}
+
+	// And the replacements are reused again by the lines that follow.
+	scratch.fields["host"] = "beta"
+	scratch.maxFields = len(scratch.fields)
+	scratch.key = append(scratch.key[:0], "beta"...)
+	fieldsID = mapIdentity(scratch.fields)
+	keyID = sliceIdentity(scratch.key)
+
+	clearLineScratch(scratch)
+
+	if mapIdentity(scratch.fields) != fieldsID || sliceIdentity(scratch.key) != keyID {
+		t.Error("clearLineScratch() failed to reuse the replacement storage")
+	}
+}
+
+// mapIdentity and sliceIdentity report which backing storage a map or slice
+// header points at, so a test can tell reuse from replacement.
+func mapIdentity(m map[string]string) uintptr {
+	return reflect.ValueOf(m).Pointer()
+}
+
+func sliceIdentity(b []byte) uintptr {
+	return reflect.ValueOf(b).Pointer()
 }

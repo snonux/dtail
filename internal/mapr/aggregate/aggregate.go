@@ -417,7 +417,10 @@ func (a *Aggregate) processRawBatch(batch []rawLine) {
 	for i := range batch {
 		if err := a.processLine(scratch, batch[i].content, batch[i].sourceID); err != nil {
 			a.errors.Add(1)
-			a.logger.Error("Error processing line:", err, "lineIndex", i)
+			// err can alias the line buffer recycled just below (a
+			// *strconv.NumError keeps the offending value), so it is
+			// formatted here instead of being handed to the logger.
+			a.logger.Error("Error processing line:", err.Error(), "lineIndex", i)
 		}
 		if batch[i].content != nil {
 			pool.RecycleBytesBuffer(batch[i].content)
@@ -438,6 +441,11 @@ func (a *Aggregate) processLine(scratch *lineScratch, lineContent *bytes.Buffer,
 
 	maprLine := borrowedLine(lineContent)
 	parsedFields, err := logformat.MakeFieldsInto(a.parser, scratch.fields, maprLine, sourceID)
+	// Record the peak field count so clearLineScratch can tell an inflated
+	// map from a normal one; it costs one comparison per line.
+	if n := len(scratch.fields); n > scratch.maxFields {
+		scratch.maxFields = n
+	}
 	if err != nil {
 		if !errors.Is(err, logformat.ErrIgnoreFields) {
 			return err

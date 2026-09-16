@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -16,14 +17,20 @@ import (
 // file/stream processed within a mapreduce session; without this, the
 // header row of every file after the first one would silently be mapped
 // as a data row, corrupting aggregates.
+//
+// The defaultParser is held in a named field rather than embedded: embedding
+// would promote defaultParser.MakeFieldsInto onto csvParser, so a parser that
+// overrode only MakeFields would keep compiling while the allocation-free path
+// parsed its lines in the wrong layout (see the FieldsIntoParser doc comment).
 type csvParser struct {
-	defaultParser
+	base    defaultParser
 	mu      sync.RWMutex
 	headers map[string][]string
 }
 
 var _ Parser = (*csvParser)(nil)
 var _ FieldsIntoParser = (*csvParser)(nil)
+var _ queryAwareParser = (*csvParser)(nil)
 
 func newCSVParser(hostname, timeZoneName string, timeZoneOffset int) (*csvParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
@@ -31,13 +38,17 @@ func newCSVParser(hostname, timeZoneName string, timeZoneOffset int) (*csvParser
 		return &csvParser{}, err
 	}
 	return &csvParser{
-		defaultParser: *defaultParser,
-		headers:       make(map[string][]string),
+		base:    *defaultParser,
+		headers: make(map[string][]string),
 	}, nil
 }
 
+func (p *csvParser) setQuery(query *mapr.Query) {
+	p.base.setQuery(query)
+}
+
 func (p *csvParser) MakeFields(maprLine, sourceID string) (map[string]string, error) {
-	fields := make(map[string]string, p.fieldsCapacity)
+	fields := make(map[string]string, p.base.fieldsCapacity)
 	if err := p.MakeFieldsInto(fields, maprLine, sourceID); err != nil {
 		if errors.Is(err, ErrIgnoreFields) {
 			return nil, err
@@ -47,9 +58,7 @@ func (p *csvParser) MakeFields(maprLine, sourceID string) (map[string]string, er
 	return fields, nil
 }
 
-// MakeFieldsInto must be defined here rather than inherited from the embedded
-// defaultParser: the promoted method would parse the line in DTail's own
-// MAPREDUCE layout instead of the CSV one.
+// MakeFieldsInto parses maprLine as a CSV data row into the caller's map.
 func (p *csvParser) MakeFieldsInto(dst map[string]string, maprLine, sourceID string) error {
 	clear(dst)
 	header, installed := p.ensureHeader(sourceID, maprLine)
@@ -57,7 +66,7 @@ func (p *csvParser) MakeFieldsInto(dst map[string]string, maprLine, sourceID str
 		return ErrIgnoreFields
 	}
 
-	p.addDefaultFields(dst, maprLine)
+	p.base.addDefaultFields(dst, maprLine)
 	start := 0
 	column := 0
 	delimiter := protocol.CSVDelimiter[0]
@@ -67,7 +76,7 @@ func (p *csvParser) MakeFieldsInto(dst map[string]string, maprLine, sourceID str
 		if column >= len(header) {
 			return fmt.Errorf("CSV file seems corrupted, more fields than header values?")
 		}
-		p.addDynamicField(dst, header[column], value)
+		p.base.addDynamicField(dst, header[column], value)
 		column++
 		if done {
 			break
