@@ -145,8 +145,12 @@ func (c *activityConn) Close() error {
 
 // enable replaces the handshake deadline with a rolling idle deadline. The
 // refresher stops when ctx is done, the connection is closed, or setting the
-// deadline fails. A timeout <= 0 clears the deadline and disables idle expiry.
-// enable may be called only once per connection.
+// deadline fails. enable may be called only once per connection.
+//
+// A timeout <= 0 clears the deadline and starts no refresher. That branch is
+// defensive and unreachable in production: the only caller substitutes
+// config.DefaultIdleSessionTimeoutS for a non-positive configured timeout, so
+// no dtail.json can disable idle expiry. Only tests exercise it.
 func (c *activityConn) enable(ctx context.Context, timeout time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

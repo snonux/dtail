@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -94,14 +95,20 @@ func (c *deadlineRecorder) snapshot() []time.Time {
 }
 
 type activityHarness struct {
-	conn        *activityConn
-	peer        net.Conn
-	rec         *deadlineRecorder
-	ticker      *fakeTicker
-	clock       *fakeClock
-	handled     chan struct{}
-	tickerCalls int
-	interval    time.Duration
+	conn   *activityConn
+	peer   net.Conn
+	rec    *deadlineRecorder
+	ticker *fakeTicker
+	clock  *fakeClock
+	// handled only wakes a waiter; the tokens carry no identity, so waits are
+	// decided by the counters below, not by receiving a token.
+	handled chan struct{}
+	// handledTicks counts ticks the refresher finished; sentTicks counts ticks
+	// this harness delivered. Only the test goroutine touches sentTicks.
+	handledTicks atomic.Int64
+	sentTicks    int64
+	tickerCalls  int
+	interval     time.Duration
 }
 
 func newActivityHarness(t *testing.T) *activityHarness {
@@ -122,10 +129,12 @@ func newActivityHarness(t *testing.T) *activityHarness {
 		return h.ticker
 	}
 	// The hook runs on the refresher goroutine, which must never block on the
-	// test (see activityConn.tickHandled), so drop the token when nobody is
-	// waiting for it. tick drains a stale token before delivering its own, so
-	// its lockstep with the refresher is unaffected.
+	// test (see activityConn.tickHandled), so it records the handled tick and
+	// then wakes a waiter only if one is listening. tick waits on the counter
+	// rather than on a token, so a token left over by a tick nobody waited for
+	// cannot end a later wait early, and no token can be drained by mistake.
 	h.conn.tickHandled = func() {
+		h.handledTicks.Add(1)
 		select {
 		case h.handled <- struct{}{}:
 		default:
@@ -154,12 +163,6 @@ func (h *activityHarness) extension(timeout time.Duration) time.Duration {
 // processing it, so the test's next I/O or clock change cannot race with it.
 func (h *activityHarness) tick(t *testing.T) {
 	t.Helper()
-	// Drop a token left by a tick this harness did not wait for, so the wait
-	// below observes this tick rather than that earlier one.
-	select {
-	case <-h.handled:
-	default:
-	}
 	timer := time.NewTimer(testWaitLimit)
 	defer timer.Stop()
 	select {
@@ -167,10 +170,18 @@ func (h *activityHarness) tick(t *testing.T) {
 	case <-timer.C:
 		t.Fatal("refresher did not receive tick")
 	}
-	select {
-	case <-h.handled:
-	case <-timer.C:
-		t.Fatal("refresher did not finish handling tick")
+	h.sentTicks++
+	// The refresher handles ticks one at a time and in delivery order, so
+	// waiting for the handled count to reach the number of ticks delivered
+	// waits for exactly this tick, even when an earlier tick was delivered
+	// without waiting for it. Tests that deliver a tick directly keep the
+	// count honest by incrementing sentTicks themselves.
+	for h.handledTicks.Load() < h.sentTicks {
+		select {
+		case <-h.handled:
+		case <-timer.C:
+			t.Fatal("refresher did not finish handling tick")
+		}
 	}
 }
 

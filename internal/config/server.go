@@ -46,6 +46,11 @@ type ServerConfig struct {
 	// The max amount of concurrent user connection allowed to connect to the server.
 	MaxConnections int
 	// Rolling inactivity timeout for authenticated SSH sessions, in seconds.
+	// The close lags this value by two to three refresh intervals (see
+	// DefaultIdleSessionTimeoutS for that window and for the one second
+	// interval floor, which makes timeouts below four seconds close two to
+	// three whole seconds late); omitting the key or setting it to 0 or less
+	// uses the DefaultIdleSessionTimeoutS 900 second default.
 	IdleSessionTimeoutS int `json:",omitempty"`
 	// The max amount of concurrent cats per server.
 	MaxConcurrentCats int

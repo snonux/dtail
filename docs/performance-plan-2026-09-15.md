@@ -173,9 +173,10 @@ deadline whenever the timeout was a multiple of the interval (900 s, 61 s,
 5 s, 2 s) and past it otherwise (901 s missed by 29 s), so timeout mod
 interval only decided how badly a late tick missed, never whether it missed.
 The review follow-up extends to now + timeout + 2 intervals, which tolerates a
-tick up to one interval late for any timeout; an idle session now closes
-between timeout + 2 intervals and timeout + 3 intervals after its last
-activity (about 960-990 s for the default 900 s timeout). The 1 s floor on the
+tick handled less than one interval late for any timeout (a tick exactly one
+interval late would refresh on the deadline, racing the poller); an idle session
+now closes between timeout + 2 intervals and timeout + 3 intervals after its
+last activity (about 960-990 s for the default 900 s timeout). The 1 s floor on the
 interval keeps the refresher from waking sub-second, at the price of a
 disproportionate window for timeouts under 4 s (they close 2-3 s late); that
 trade-off is documented at config.DefaultIdleSessionTimeoutS and pinned by a
