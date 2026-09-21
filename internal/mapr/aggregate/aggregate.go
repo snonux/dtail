@@ -402,7 +402,12 @@ func (a *Aggregate) processRawBatch(batch []rawLine) {
 	if len(batch) == 0 {
 		return
 	}
-	scratch := batchScratchPool.Get().(*batchScratch)
+	a.processRawBatchWith(batchScratchPool.Get().(*batchScratch), batch)
+}
+
+// processRawBatchWith is processRawBatch with the batch scratch to parse into,
+// which it recycles into batchScratchPool when done. Tests pass a fresh one.
+func (a *Aggregate) processRawBatchWith(scratch *batchScratch, batch []rawLine) {
 	// The deferred calls run in reverse order: the scratches, which borrow the
 	// line buffers, are cleared before those buffers go back to the pool. The
 	// batch scratch counts the line scratches it handed out, so recycling after

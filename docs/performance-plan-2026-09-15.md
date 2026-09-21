@@ -335,10 +335,16 @@ runs only after the whole batch was parsed and `Parser.MakeFields` may reuse
 its map. Only parsers registered from outside take that path: the built-in
 `default`, `generic`, `generickv` and `csv` parsers implement `MakeFieldsInto`,
 and the other built-ins are not-implemented stubs. A pooled batch scratch's
-retained storage is now also capped as a whole (8192 fields' worth of map
-buckets, 256 KiB of group-key buffers beyond the default-sized ones), not only
-per line, and `linesProcessed` no longer counts lines an abort discards. The
-end-to-end runs in the row above show no measurable change against `8a2b225`
+retained storage is now also capped as a whole, not only per line: at most
+8192 fields' worth of map buckets and 256 KiB of group-key buffer beyond the
+default size of each line scratch (24 fields, 128 bytes). Default-sized
+storage is not charged and never replaced; over budget, the largest oversized
+scratches are shrunk back to default size first, so after an outlier batch
+ordinary batches again reuse every scratch without allocating (a first version
+charged default-sized storage too and admitted scratches in order, which after
+one outlier batch made every later ordinary batch allocate, 96 times for four
+~60 KiB group keys), and `linesProcessed` no longer counts lines an abort
+discards. The end-to-end runs in the row above show no measurable change against `8a2b225`
 (output raw-identical every round). `BenchmarkProcessorProcessLine` stays at 0
 allocs/op; in one non-interleaved run of 6 each it measured `processors_1`
 811-1268 ns/op before (noisy) and 761-784 ns/op after, `processors_4`
