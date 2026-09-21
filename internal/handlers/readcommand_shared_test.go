@@ -277,9 +277,10 @@ func TestNewReadHubHonoursSharedReadsDisable(t *testing.T) {
 	if newReadHub(&config.ServerConfig{}, nil) == nil {
 		t.Error("newReadHub made no hub with the default configuration")
 	}
-	// Until slow sessions are evicted, dserver does not share reads at all.
-	if got := NewReadHub(&config.ServerConfig{}, nil) != nil; got != sharedReadsAvailable {
-		t.Errorf("NewReadHub made a hub = %v, want %v", got, sharedReadsAvailable)
+	// Until slow sessions are evicted (ask task x8), dserver does not share
+	// reads at all; enabling them must change this assertion on purpose.
+	if NewReadHub(&config.ServerConfig{}, nil) != nil {
+		t.Error("NewReadHub made a hub although shared reads are not available yet")
 	}
 }
 

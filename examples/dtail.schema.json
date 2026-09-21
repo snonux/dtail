@@ -372,7 +372,7 @@
         },
         "SharedReadsDisable": {
           "type": "boolean",
-          "description": "Turn shared follow reads off. By default, sessions that tail the same file share one reader of it in dserver; every session still checks its own permissions, uses its own read slot and filters and processes the lines on its own. When true, every session reads the file with a reader of its own.",
+          "description": "Reserved: turn shared follow reads off. Shared follow reads are not active yet, so every session reads with a reader of its own either way. Once active, sessions that tail the same file will share one reader of it in dserver by default; every session still checks its own permissions, uses its own read slot and filters and processes the lines on its own. When true, every session reads the file with a reader of its own.",
           "default": false
         },
         "MaxLineLength": {

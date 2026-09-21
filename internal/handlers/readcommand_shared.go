@@ -68,7 +68,10 @@ func (r *readCommand) readShared(ctx context.Context, ltx lcontext.LContext, re 
 		panic(err)
 	case errors.Is(err, readhub.ErrReaderFailed):
 		// Nothing was wrong with the session; go on with a private follow
-		// read from the end of the file, as the session would have started.
+		// read. It starts at the end of the file as of now, so lines the
+		// shared reader had not delivered yet are skipped.
+		r.logger.Warn(r.logContext, path, globID,
+			"Shared follow read failed, reading privately from the end of the file")
 		r.executeReadLoop(ctx, ltx, path, globID, re, privateReader, r.readViaProcessor(path, globID, writer))
 	default:
 		r.restartPrivately(ctx, ltx, re, options, writer)
