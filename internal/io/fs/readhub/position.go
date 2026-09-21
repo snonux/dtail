@@ -53,9 +53,3 @@ func (p position) startAt(options *fs.ReadOptions) {
 		options.StartOffsetFile = p.file
 	}
 }
-
-// replacedBy reports whether the file at p was replaced by current, i.e.
-// whether the path was rotated since p was taken.
-func (p position) replacedBy(current position) bool {
-	return p.offset > 0 && p.file != nil && current.file != nil && !os.SameFile(p.file, current.file)
-}

@@ -91,6 +91,9 @@ type Hub struct {
 type hubSeams struct {
 	startReader   func(ctx context.Context, reader *fs.ReadFile, processor line.Processor) error
 	replaceTarget func(reader *fs.ReadFile, target fs.ValidatedReadTarget) error
+	// evicted, when set, is called after an eviction left remaining
+	// subscribers, before an entry without any stops.
+	evicted func(remaining int)
 }
 
 func defaultSeams() hubSeams {
@@ -131,19 +134,30 @@ func New(options Options) *Hub {
 // private reader would start over; the caller decides how to continue.
 //
 // Like a private follow read, which starts at the end of the file when it
-// opens it, a session starts at the end of the file when it joins: it skips
-// published lines that were in the file already. When the private reader
-// opens the file in the middle of a line, it delivers the rest of that line;
-// a shared session gets the next whole line. And a trailing line the file's
-// writer has not finished yet is not delivered when the session leaves,
-// unlike the private reader, which passes such a fragment on when its read is
-// cancelled.
+// opens it, a session starts at the end of the file at the path when it
+// joins: it skips published lines that were in the file already, also while
+// the shared reader still reads a file the path was rotated away from before
+// the join, or has not yet noticed that the file was truncated before it, and
+// it keeps its processor until it gets a line. Two differences remain. When
+// the join falls in the middle of a line, the private reader delivers the
+// rest of that line, a shared session that whole line. And a trailing line
+// the file's writer has not finished yet is not delivered when the session
+// leaves, unlike the private reader, which passes such a fragment on when its
+// read is cancelled.
 //
 // A session that falls behind by more than Options.QueueChunks chunks is
-// evicted, so it never delays the other sessions: it handles what it has
-// queued and goes on with a private follow reader of its own target, just
-// past the last line it handled, with the same filter and processor. So does
-// a session whose shared reader failed without a panic.
+// evicted, so it never delays the other sessions: the file at its path is
+// opened for it, it handles what it has queued, including the rotation,
+// truncation or failure that did not fit, and goes on with a private follow
+// reader of its own target, just past the last line it handled, with the
+// same filter and processor. That reader reads the opened file, so a rotation
+// while the session handles its queue loses no line either. An evicted
+// session does not rejoin the shared reader (a known limitation). A session whose shared reader
+// failed without a panic goes on privately the same way, without an opened
+// file. If the path was rotated since the session's last line and the file
+// opened, if any, is not the one of that line (the rotation came before the
+// eviction), the private reader reads the new file from its beginning with a
+// new processor and warns that the rest of the old file is not read.
 func (h *Hub) Follow(ctx context.Context, session Session) error {
 	if err := validateSession(session); err != nil {
 		return err
@@ -173,29 +187,36 @@ func validateSession(session Session) error {
 
 // join adds sub to the entry for its file, starting one if needed, and
 // records where sub starts: at the end of the file as of the join. A new
-// entry's reader starts there; a subscriber joining a running entry is added
-// before the file is measured, so it cannot miss a line appended after that.
+// entry's reader starts there; a subscriber joining a running entry skips the
+// published lines that predate its join (see entry.join). A closed entry,
+// whose last subscriber was just evicted, is replaced by a new one.
 func (h *Hub) join(sub *subscriber) *entry {
 	key := entryKey{
 		path:        sub.session.Target.ResolvedPath(),
 		compression: fs.CompressionFormat(sub.session.FilePath),
 	}
+	measure := func() position { return h.endOfFile(sub.session) }
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	e := h.entries[key]
-	if e == nil {
-		sub.joinedAt = h.endOfFile(sub.session)
-		e = newEntry(key, sub.session, sub.joinedAt, h.options, h.logger, h.seams, h.forget)
-		h.entries[key] = e
-		e.add(sub)
-		e.start()
-		return e
+	for {
+		h.mu.Lock()
+		e := h.entries[key]
+		if e == nil || e.isClosed() {
+			sub.joinedAt = measure()
+			e = newEntry(key, sub.session, sub.joinedAt, h.options, h.logger, h.seams, h.forget)
+			h.entries[key] = e
+			e.add(sub)
+			e.start()
+			h.mu.Unlock()
+			return e
+		}
+		// Joining waits for a publication in progress, which may take the
+		// hub's lock to drop an entry it closed, so the hub's lock is not
+		// held meanwhile.
+		h.mu.Unlock()
+		if e.join(sub, measure) {
+			return e
+		}
 	}
-	e.add(sub)
-	sub.joinedAt = h.endOfFile(sub.session)
-	sub.skipToJoin = true
-	return e
 }
 
 // endOfFile returns the end of session's file, or an unknown position, which

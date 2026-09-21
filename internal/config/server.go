@@ -59,8 +59,8 @@ type ServerConfig struct {
 	// SharedReadsDisable turns shared follow reads off. By default, sessions
 	// that tail the same uncompressed file share one reader of it in dserver,
 	// and each session still filters and processes the lines on its own; a
-	// session that falls behind moves to a reader of its own. With this set,
-	// every session reads the file with a reader of its own.
+	// session that falls behind moves to a reader of its own for good. With
+	// this set, every session reads the file with a reader of its own.
 	SharedReadsDisable bool `json:",omitempty"`
 	// The max line length until it's split up into multiple smaller lines.
 	MaxLineLength int

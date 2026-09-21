@@ -337,19 +337,34 @@ Sessions that tail the same uncompressed file share one reader of it in
 dserver (`internal/io/fs/readhub`); `Server.SharedReadsDisable: true` turns
 this off. Each session still passes its own permission check, holds its own
 tail slot, and filters, numbers and processes the lines itself. A session
-starts at the end of the file as of its join, like a private follow read. The
-shared reader never waits for a session: one that falls more than 64 chunks
-(about 64 KiB each) behind is evicted, logged at INFO with the remaining
-subscriber count, and goes on with a private reader of its own target just
-past its last line, keeping its line numbering and local context. If the file
-was rotated in between, it reads the new file from the beginning and logs a
-warning, because lines the old file had after that point are not read.
-Compressed files, max-count (`--max`) reads, journal targets and serverless
-mode always read privately. Output with sharing on equals output with sharing
-off (checked with SIGSTOPped, context, late-joining and `--query` `dtail`
-clients). A large burst (about 60 MiB written at once in those checks) can
-also evict sessions that are merely slower than the reader; an evicted session
-stays private, which costs the sharing but not output.
+starts at the end of the file at the path as of its join, like a private
+follow read: it skips published lines that were in the file before, also when
+it joins after a rotation or copytruncate the shared reader has not caught up
+with yet. The shared reader never waits for a session: one that falls more
+than 64 chunks (about 64 KiB each) behind is evicted, logged at INFO with the
+remaining subscriber count. The file is opened for it at the eviction; it
+handles what it had queued (including a rotation, truncation or reader panic
+that no longer fit) and goes on with a private reader of its own target just
+past its last line, keeping its line numbering and local context, so a
+rotation while it works through its queue loses no line. The rest of the old
+file is lost for such a session, with a warning, in two narrow cases where a
+private reader would still have read it: the path was rotated before the
+eviction while the shared reader was still behind in the old file, or the
+shared reader failed without a panic (the session then continues privately
+without a file opened for it) after a rotation. Compressed files, max-count (`--max`)
+reads, journal targets and serverless mode always read privately.
+
+Output with sharing on equals output with sharing off, checked with
+SIGSTOPped, context, late-joining (also right after a rotation or
+copytruncate) and `--query` `dtail` clients, with two exceptions: a session
+that joins in the middle of a line being written gets that whole line, where
+a private read gets the rest of it from the join; and a trailing line the
+writer has not finished yet is not passed on when a session leaves.
+
+Known limitation (tracked as ask task c9): an evicted session does not rejoin
+the shared reader; it stays private until it ends, which costs the sharing but not output. A large
+burst (about 60 MiB written at once in the checks) can also evict sessions
+that are merely slower than the reader.
 
 **Best Practices for High-Concurrency MapReduce:**
 1. Increase MaxConcurrentCats in the server configuration to match workload

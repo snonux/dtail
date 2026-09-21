@@ -58,9 +58,17 @@ func (l *capturingLogger) count(parts ...string) int {
 type gatedProcessor struct {
 	line.Processor
 	gate <-chan struct{}
+	// entered, if set, is signalled when a line waits for the gate.
+	entered chan<- struct{}
 }
 
 func (p gatedProcessor) ProcessLine(buf *bytes.Buffer, lineNum uint64, source string) error {
+	if p.entered != nil {
+		select {
+		case p.entered <- struct{}{}:
+		default:
+		}
+	}
 	<-p.gate
 	return p.Processor.ProcessLine(buf, lineNum, source)
 }
@@ -114,10 +122,11 @@ func (p *lastLineProcessor) saw(text string) bool {
 	return last == text
 }
 
-// startGatedFollower starts a session whose processors wait for gate. The
-// cleanup opens the gate, should the test have failed before it did.
+// startGatedFollower starts a session whose processors wait for gate, and
+// signal entered, if given, when they do. The cleanup opens the gate, should
+// the test have failed before it did.
 func startGatedFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LContext,
-	re regex.Regex, gate chan struct{}) *follower {
+	re regex.Regex, gate chan struct{}, entered ...chan struct{}) *follower {
 
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -125,7 +134,11 @@ func startGatedFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LCo
 	session := Session{
 		Target: file.target(), FilePath: file.path, GlobID: "slow", LContext: ltx, Regex: re,
 		NewProcessor: func() line.Processor {
-			return gatedProcessor{Processor: f.recorder.newProcessor(), gate: gate}
+			processor := gatedProcessor{Processor: f.recorder.newProcessor(), gate: gate}
+			if len(entered) > 0 {
+				processor.entered = entered[0]
+			}
+			return processor
 		},
 	}
 	go func() { f.done <- hub.Follow(ctx, session) }()
@@ -155,10 +168,14 @@ func appendPaced(t *testing.T, file *testFile, fast *lastLineProcessor, lines []
 	}
 }
 
-// burst returns count log lines, every seventh an ERROR, long enough that
-// they fill many chunks.
-func burst(prefix string, count int) []string {
-	lines := make([]string, count)
+// burstLines is how many lines a burst has: many more chunks than a
+// session's queue holds.
+const burstLines = 20000
+
+// burst returns burstLines log lines, every seventh an ERROR, long enough
+// that they fill many chunks.
+func burst(prefix string) []string {
+	lines := make([]string, burstLines)
 	for i := range lines {
 		level := "INFO"
 		if i%7 == 3 {
@@ -188,7 +205,7 @@ func TestEvictedSessionLosesNoLineAndKeepsNumberingAndContext(t *testing.T) {
 			waitFor(t, "slow session to join", func() bool { return subscriberCount(hub, file.path) == 2 })
 
 			// The stuck session does not hold up the other one.
-			lines := burst("burst", 20000)
+			lines := burst("burst")
 			appendPaced(t, file, fast, lines)
 			waitFor(t, "slow session to be evicted", func() bool { return subscriberCount(hub, file.path) == 1 })
 			if logger.count("INFO", "evicted a slow subscriber", "subscribers=1") != 1 {
@@ -237,7 +254,7 @@ func TestEvictingTheLastSessionStopsTheSharedRead(t *testing.T) {
 	waitFor(t, "session to join", func() bool { return subscriberCount(hub, file.path) == 1 })
 	shared := hub.entryFor(file.path)
 
-	lines := burst("only", 20000)
+	lines := burst("only")
 	file.appendLines(lines...)
 	select {
 	case <-shared.done:
@@ -265,7 +282,7 @@ func TestEvictingTheLastSessionStopsTheSharedRead(t *testing.T) {
 	}
 }
 
-func TestEvictedSessionReadsARotatedFileFromItsBeginning(t *testing.T) {
+func TestEvictedSessionReadsTheOldFileToItsEndAfterARotation(t *testing.T) {
 	logger := &capturingLogger{}
 	hub := newEvictingHub(logger)
 	file := newTestFile(t)
@@ -275,7 +292,7 @@ func TestEvictedSessionReadsARotatedFileFromItsBeginning(t *testing.T) {
 	slow := startGatedFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), gate)
 	waitFor(t, "slow session to join", func() bool { return subscriberCount(hub, file.path) == 2 })
 
-	lines := burst("old", 20000)
+	lines := burst("old")
 	appendPaced(t, file, fast, lines)
 	waitFor(t, "slow session to be evicted", func() bool { return subscriberCount(hub, file.path) == 1 })
 
@@ -289,9 +306,9 @@ func TestEvictedSessionReadsARotatedFileFromItsBeginning(t *testing.T) {
 	close(gate)
 	waitFor(t, "slow session to read the new file", func() bool { return slow.recorder.hasLine("new 2") })
 
-	// The slow session got what it had queued of the old file, then, like a
-	// private reader after a rotation, the whole new file with a new
-	// processor; the rest of the old file is lost, and a warning says so.
+	// The slow session got the whole old file, as its private reader holds
+	// the file opened at the eviction, then, like a private reader after a
+	// rotation, the whole new file with a new processor. No line was lost.
 	got := slow.recorder.snapshot()
 	var oldLines, newLines []string
 	var nums []uint64
@@ -309,8 +326,9 @@ func TestEvictedSessionReadsARotatedFileFromItsBeginning(t *testing.T) {
 		}
 		oldLines = append(oldLines, e.text)
 	}
-	if len(oldLines) == 0 || len(oldLines) >= len(lines) || !reflect.DeepEqual(oldLines, lines[:len(oldLines)]) {
-		t.Errorf("old file lines are not a strict prefix of the burst (%d of %d lines)", len(oldLines), len(lines))
+	if !reflect.DeepEqual(oldLines, lines) {
+		t.Errorf("old file lines differ from the burst (%d of %d lines): %s",
+			len(oldLines), len(lines), firstDifference(oldLines, lines))
 	}
 	if want := []string{"new 1", "new 2"}; !reflect.DeepEqual(newLines, want) {
 		t.Errorf("new file lines = %q, want %q", newLines, want)
@@ -320,8 +338,8 @@ func TestEvictedSessionReadsARotatedFileFromItsBeginning(t *testing.T) {
 			t.Fatalf("line numbers are not consecutive at %d: %d then %d", i, nums[i-1], nums[i])
 		}
 	}
-	if logger.count("WARN", "rotated") != 1 {
-		t.Errorf("no warning about the lines lost to the rotation in %q", logger.lines)
+	if n := logger.count("WARN", "rotated"); n != 0 {
+		t.Errorf("warned %d times about lines lost to the rotation, none were: %q", n, logger.lines)
 	}
 }
 
@@ -362,20 +380,6 @@ func TestLateJoinerStartsAtTheEndOfTheFile(t *testing.T) {
 	}
 	if got, want := late.recorder.lineNums(), []uint64{1}; !reflect.DeepEqual(got, want) {
 		t.Errorf("late session line numbers = %v, want %v", got, want)
-	}
-}
-
-func TestLateJoinerSkipsTheOldFileTheReaderStillReads(t *testing.T) {
-	c := &chunk{data: []byte("old"), ends: []int{3}, offsets: []int64{3}, file: fileInfo(t)}
-	joined := position{offset: 10, file: fileInfo(t)}
-	read := newSessionRead(Session{NewProcessor: (&recorder{}).newProcessor, Regex: regex.NewNoop()},
-		logging.NopLogger{}, Options{}, joined, true)
-	defer read.close()
-	if !read.predatesJoin(c.lineEnd(0)) {
-		t.Error("a line of another file than the one joined at was delivered")
-	}
-	if read.at != joined {
-		t.Errorf("position = %+v, want the join position", read.at)
 	}
 }
 

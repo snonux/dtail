@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/fs"
@@ -15,24 +16,32 @@ import (
 // file, wait for it. The evicted session handles what it has queued, then
 // goes on with a private follow reader of its own that starts just past the
 // last line it handled and feeds the session's filter and processor, so it
-// loses no line and keeps its line numbering and local context.
+// loses no line and keeps its line numbering and local context. The file is
+// opened for that reader at the eviction, so a rotation while the session
+// still handles its queue does not cost it the rest of the file.
 
-// evict stops deliveries to sub, whose queue is full, and tells it to go on
-// privately. The caller holds e.publishMu, so nothing is queued after the
-// eviction. An entry left without subscribers stops.
-func (e *entry) evict(sub *subscriber) {
+// evict stops deliveries to sub, whose queue had no room for missed, and
+// tells it to go on privately. The caller holds e.publishMu, so nothing is
+// queued after the eviction. An entry left without subscribers is closed, so
+// that no session joins it any more, and stops.
+func (e *entry) evict(sub *subscriber, missed item) {
 	e.mu.Lock()
 	remaining, found := e.detach(sub)
 	if !found {
 		e.mu.Unlock()
 		return
 	}
+	sub.missed = missed
+	sub.held = holdFile(sub.session.Target)
 	close(sub.evicted)
 	e.logger.Info(e.path, "Shared follow read evicted a slow subscriber", fmt.Sprintf("subscribers=%d", remaining))
 	if e.owner == sub && remaining > 0 {
 		e.handOver(e.subscribers[0])
 	}
 	e.mu.Unlock()
+	if e.seams.evicted != nil {
+		e.seams.evicted(remaining)
+	}
 
 	if remaining == 0 {
 		// The evicted session keeps the file's target valid until it
@@ -43,7 +52,8 @@ func (e *entry) evict(sub *subscriber) {
 }
 
 // detach removes sub from the subscriber list and returns how many remain and
-// whether sub was listed. The caller holds e.mu.
+// whether sub was listed. An entry without subscribers is closed. The caller
+// holds e.mu.
 func (e *entry) detach(sub *subscriber) (remaining int, found bool) {
 	for i, candidate := range e.subscribers {
 		if candidate == sub {
@@ -52,20 +62,47 @@ func (e *entry) detach(sub *subscriber) (remaining int, found bool) {
 			break
 		}
 	}
+	if len(e.subscribers) == 0 {
+		e.closed = true
+	}
 	return len(e.subscribers), found
+}
+
+// holdFile opens the file at target's path when a session is evicted, so
+// that the private reader it goes on with once it handled its queue, which
+// can take long with a stalled client, still reads the rest of that file if
+// the path is rotated meanwhile, as a private reader that had it open would.
+// It returns nil if the file cannot be opened.
+func holdFile(target fs.ValidatedReadTarget) *os.File {
+	fd, err := target.Open()
+	if err != nil {
+		return nil
+	}
+	return fd
+}
+
+func closeHeld(held *os.File) {
+	if held != nil {
+		_ = held.Close()
+	}
 }
 
 // readPrivately goes on with a private follow reader of the session's own
 // target, from where the session's read got to, until ctx ends. Like the read
 // command's retry loop, it reads the file again after a read ended, e.g.
-// after a rotation, with a new processor.
-func (r *sessionRead) readPrivately(ctx context.Context) error {
-	reader, err := r.privateReader()
+// after a rotation, with a new processor. held, if not nil, is the file
+// opened at the eviction; readPrivately closes it.
+func (r *sessionRead) readPrivately(ctx context.Context, held *os.File) error {
+	reader, err := r.privateReader(held)
 	if err != nil {
 		return err
 	}
 	for {
 		err := reader.StartFiltered(ctx, r.filter)
+		if errors.Is(err, fs.ErrStartOffsetFileChanged) {
+			r.readRotatedFile()
+			continue
+		}
 		if err != nil {
 			r.logger.Error(r.session.FilePath, r.session.GlobID, err)
 			if errors.Is(err, fs.ErrReaderWorkerPanic) {
@@ -80,9 +117,24 @@ func (r *sessionRead) readPrivately(ctx context.Context) error {
 	}
 }
 
+// readRotatedFile prepares the session for the private reader's next start,
+// which reads the file now at the path from its beginning: the path was
+// rotated after the session's read got to r.at, which the private reader
+// found before reading anything. Like a private reader after a rotation, the
+// session reads the new file with a new processor.
+func (r *sessionRead) readRotatedFile() {
+	r.logger.Warn(r.session.FilePath, r.session.GlobID,
+		"File was rotated after the last line of the shared read, reading the new file from its beginning;"+
+			" lines the old file had after that line, if any, are not read", "offset", r.at.offset)
+	r.newProcessor()
+	r.at = position{offset: 0}
+	r.atLineEnd = false
+}
+
 // privateReader makes the session's private follow reader, positioned just
-// past the last line the session handled.
-func (r *sessionRead) privateReader() (*fs.ReadFile, error) {
+// past the last line the session handled, or where it joined. Its first read
+// uses held when that is the file of that position, and closes it.
+func (r *sessionRead) privateReader(held *os.File) (*fs.ReadFile, error) {
 	target := r.session.Target
 	options := fs.ReadOptions{
 		Mode:           omode.TailClient,
@@ -97,18 +149,51 @@ func (r *sessionRead) privateReader() (*fs.ReadFile, error) {
 		r.logger.Warn(r.session.FilePath, r.session.GlobID,
 			"Position of the shared read unknown, following privately from the end of the file")
 	}
-	if current, err := endOfFile(target); err == nil && r.at.replacedBy(current) {
-		r.logger.Warn(r.session.FilePath, r.session.GlobID,
-			"File was rotated after the last line of the shared read, reading the new file from its beginning;"+
-				" lines the old file had after that line, if any, are not read")
-		// A private reader reads a new file with a new processor.
-		r.newProcessor()
-		r.at = position{offset: 0}
-	}
 	r.at.startAt(&options)
+	if held != nil && options.StartOffset > 0 && sameFile(held, options.StartOffsetFile) {
+		options.StartFile = held
+	} else {
+		closeHeld(held)
+	}
+	// The shared reader warned about the line it split there already.
+	options.StartOffsetInSplitLine = r.atLineEnd && splitsLine(options.StartFile, target, r.at)
 	reader, err := fs.NewReadFile(options)
 	if err != nil {
+		closeHeld(options.StartFile)
 		return nil, fmt.Errorf("private follow reader after the shared read: %w", err)
 	}
 	return reader, nil
+}
+
+// sameFile reports whether fd is the file info describes.
+func sameFile(fd *os.File, info os.FileInfo) bool {
+	current, err := fd.Stat()
+	return err == nil && info != nil && os.SameFile(current, info)
+}
+
+// splitsLine reports whether at, the end of a line the shared reader fed, is
+// in the middle of a line of the file: the reader split a line longer than
+// the maximum line length there. A line ends at a newline otherwise. It reads
+// the file through held, if given, or opens it through target.
+func splitsLine(held *os.File, target fs.ValidatedReadTarget, at position) bool {
+	if at.offset <= 0 || at.file == nil {
+		return false
+	}
+	fd := held
+	if fd == nil {
+		opened, err := target.Open()
+		if err != nil {
+			return false
+		}
+		defer func() { _ = opened.Close() }()
+		fd = opened
+	}
+	if !sameFile(fd, at.file) {
+		return false
+	}
+	var last [1]byte
+	if _, err := fd.ReadAt(last[:], at.offset-1); err != nil {
+		return false
+	}
+	return last[0] != '\n'
 }

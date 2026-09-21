@@ -416,6 +416,11 @@ func (f *ReadFile) newPositionReporter(fd *os.File, reader *bufio.Reader,
 	if err != nil {
 		return nil, fmt.Errorf("stat %s for line positions: %w", f.filePath, err)
 	}
+	start, err := fd.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return nil, fmt.Errorf("read position of %s: %w", f.filePath, err)
+	}
+	observer.ReadUpTo(start, file)
 	return &positionReporter{observer: observer, fd: fd, reader: reader, file: file}, nil
 }
 
@@ -431,6 +436,7 @@ func (r *positionReporter) beginRead(n int) error {
 		return fmt.Errorf("read position of %s: %w", r.fd.Name(), err)
 	}
 	r.readStart = position - int64(r.reader.Buffered()) - int64(n)
+	r.observer.ReadUpTo(position, r.file)
 	return nil
 }
 

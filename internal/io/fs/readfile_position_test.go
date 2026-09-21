@@ -22,6 +22,9 @@ type positionProcessor struct {
 	lines   []string
 	offsets []int64
 	files   []os.FileInfo
+	// readUpTo and readFiles record the ReadUpTo calls.
+	readUpTo  []int64
+	readFiles []os.FileInfo
 }
 
 func (p *positionProcessor) ProcessLine(buf *bytes.Buffer, _ uint64, _ string) error {
@@ -40,6 +43,13 @@ func (p *positionProcessor) LineEndsAt(offset int64, file os.FileInfo) {
 	defer p.mu.Unlock()
 	p.offsets = append(p.offsets, offset)
 	p.files = append(p.files, file)
+}
+
+func (p *positionProcessor) ReadUpTo(offset int64, file os.FileInfo) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.readUpTo = append(p.readUpTo, offset)
+	p.readFiles = append(p.readFiles, file)
 }
 
 func (p *positionProcessor) state() ([]string, []int64, []os.FileInfo) {
@@ -152,6 +162,25 @@ func TestFollowReaderReportsWhereEachLineEnds(t *testing.T) {
 	}
 	if !os.SameFile(files[len(files)-1], info) {
 		t.Error("the reported file identity is not the file being read")
+	}
+
+	// The reader reports where it starts, at the end of the file it seeked
+	// to, where the first line it fed starts, and after its last read how far
+	// it has read the file.
+	processor.mu.Lock()
+	readUpTo, readFiles := processor.readUpTo, processor.readFiles
+	processor.mu.Unlock()
+	firstLineStart := offsets[0] - int64(len(lines[0])) - 1
+	if len(readUpTo) < 2 || readUpTo[0] != firstLineStart || readUpTo[len(readUpTo)-1] != int64(len(content)) {
+		t.Errorf("read up to %v, want %d first and %d last", readUpTo, firstLineStart, len(content))
+	}
+	for i := 1; i < len(readUpTo); i++ {
+		if readUpTo[i] < readUpTo[i-1] {
+			t.Errorf("read offsets went back: %v", readUpTo)
+		}
+	}
+	if len(readFiles) > 0 && !os.SameFile(readFiles[len(readFiles)-1], info) {
+		t.Error("the file identity reported with the read offset is not the file being read")
 	}
 }
 

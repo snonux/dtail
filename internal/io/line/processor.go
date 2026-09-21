@@ -67,6 +67,14 @@ type SourceRestarter interface {
 // must be fed through a filter that passes every line. The reader does not
 // call it for a trailing fragment it feeds when its read is cancelled. Readers
 // of compressed files and snapshot readers never call it.
+//
+// The same reader calls ReadUpTo, on the same goroutine, once it opened the
+// file, with the offset it starts reading at, and after every read that
+// returned data, before it feeds that read's lines, with the offset it has
+// read the file up to (including bytes it buffered but has not fed yet). An
+// observer can so tell which of the lines fed later were read before a given
+// moment.
 type PositionObserver interface {
 	LineEndsAt(offset int64, file os.FileInfo)
+	ReadUpTo(offset int64, file os.FileInfo)
 }

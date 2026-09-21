@@ -43,10 +43,18 @@ type entry struct {
 	subscribers []*subscriber
 	// owner is the subscriber whose target the reader opens the file with.
 	owner *subscriber
+	// closed is set once the last subscriber left or was evicted: the entry
+	// takes no new subscriber, a joining session starts a new entry.
+	closed bool
 
 	// publishMu keeps every subscriber's queue in the order items were
-	// published, by the reader or by fail.
+	// published, by the reader or by fail, and lets a session join between
+	// two publications (see join).
 	publishMu sync.Mutex
+	// readPos is the file the reader has open and how far it has read it,
+	// or an unknown position from the announcement of a new read until the
+	// reader opened the file. Guarded by publishMu.
+	readPos position
 }
 
 // newEntry makes the shared follow read of creator's file, which starts at
@@ -66,6 +74,8 @@ func newEntry(key entryKey, creator Session, start position, options Options, lo
 		cancel:    cancel,
 		ctx:       ctx,
 		done:      make(chan struct{}),
+		// The reader opens the file at start, unless it was rotated since.
+		readPos: start,
 	}
 	target := creator.Target
 	readOptions := fs.ReadOptions{
@@ -103,10 +113,14 @@ func (e *entry) stop() {
 	})
 }
 
-// add registers sub; the first subscriber owns the reader's target.
-func (e *entry) add(sub *subscriber) {
+// add registers sub, unless the entry is closed; the first subscriber owns
+// the reader's target.
+func (e *entry) add(sub *subscriber) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return false
+	}
 	e.subscribers = append(e.subscribers, sub)
 	if e.owner == nil {
 		e.owner = sub
@@ -114,6 +128,36 @@ func (e *entry) add(sub *subscriber) {
 	if count := len(e.subscribers); count > 1 {
 		e.logger.Info(e.path, "Shared follow read gained a subscriber", fmt.Sprintf("subscribers=%d", count))
 	}
+	return true
+}
+
+// join adds sub to the running entry and records where its read starts: at
+// the end of the file measured by measure, skipping the published lines that
+// predate the join. Nothing is published between the measurement and the
+// addition, so sub gets every item published after the measurement, and the
+// reader's position tells which lines were read before it. Once sub is
+// listed, its start is recorded. join returns false, and adds nothing, when
+// the entry is closed.
+func (e *entry) join(sub *subscriber, measure func() position) bool {
+	e.publishMu.Lock()
+	defer e.publishMu.Unlock()
+	sub.joinedAt = measure()
+	sub.skip = newJoinSkip(sub.joinedAt, e.readPos)
+	return e.add(sub)
+}
+
+// isClosed reports whether the entry takes no new subscriber.
+func (e *entry) isClosed() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.closed
+}
+
+// readUpTo records how far the reader has read which file.
+func (e *entry) readUpTo(p position) {
+	e.publishMu.Lock()
+	defer e.publishMu.Unlock()
+	e.readPos = p
 }
 
 // remove unregisters sub, stops deliveries to it and returns how many
@@ -196,6 +240,13 @@ func (e *entry) run() {
 			e.fail(err)
 			return
 		}
+		if errors.Is(err, fs.ErrStartOffsetFileChanged) && e.ctx.Err() == nil {
+			// Rotated between the creator's join and the first open: read
+			// the new file from its beginning with new processors, like a
+			// private read after a rotation, without waiting.
+			e.logger.Info(e.path, "File was rotated before the shared read opened it, reading the new file")
+			continue
+		}
 		if err != nil {
 			e.logger.Error(e.path, err)
 		}
@@ -212,9 +263,15 @@ func (e *entry) run() {
 func (e *entry) publish(it item) {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()
+	switch it.kind {
+	case reopenItem:
+		e.readPos = unknownPosition()
+	case restartItem:
+		e.readPos.offset = 0
+	}
 	for _, sub := range e.snapshot() {
 		if !sub.offer(it) {
-			e.evict(sub)
+			e.evict(sub, it)
 		}
 	}
 }

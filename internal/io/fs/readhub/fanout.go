@@ -111,6 +111,12 @@ func (p *fanoutProcessor) LineEndsAt(offset int64, file os.FileInfo) {
 	p.pending.file = file
 }
 
+// ReadUpTo records how far the reader has read which file, so that a
+// session joining meanwhile can tell which published lines predate its join.
+func (p *fanoutProcessor) ReadUpTo(offset int64, file os.FileInfo) {
+	p.entry.readUpTo(position{offset: offset, file: file})
+}
+
 // Flush publishes the pending chunk; the reader flushes after every read.
 func (p *fanoutProcessor) Flush() error {
 	p.publishWarning()

@@ -3,6 +3,8 @@ package fs
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -47,6 +49,7 @@ func TestNewReadFileValidatesStartOffset(t *testing.T) {
 		{"zero offset with seek EOF", ReadOptions{FilePath: "/tmp/a.log", SeekEOF: true}, ""},
 		{"zero offset on a compressed file", ReadOptions{FilePath: "/tmp/a.log.gz"}, ""},
 		{"negative offset", ReadOptions{FilePath: "/tmp/a.log", StartOffset: -1}, "negative"},
+		{"start file without offset", ReadOptions{FilePath: "/tmp/a.log", StartFile: os.Stdin}, "start offset"},
 		{"offset with seek EOF", ReadOptions{FilePath: "/tmp/a.log", StartOffset: 10, SeekEOF: true, StartOffsetFile: identity},
 			"mutually exclusive"},
 		{"offset on the stdin pipe", ReadOptions{GlobID: "-", StartOffset: 10, StartOffsetFile: identity}, "stdin pipe"},
@@ -212,12 +215,123 @@ func TestStartOffsetIsIgnoredForAnotherFile(t *testing.T) {
 		Logger:          testLogger,
 	})
 	processor := &captureProcessor{}
+	// The reader reports the rotation before reading anything, so that the
+	// caller can prepare for the new file.
+	err := reader.Start(context.Background(), lcontext.LContext{}, processor, regex.NewNoop())
+	if !errors.Is(err, ErrStartOffsetFileChanged) {
+		t.Fatalf("Start() error = %v, want ErrStartOffsetFileChanged", err)
+	}
+	if len(processor.lines) != 0 {
+		t.Fatalf("Start() read %q from the new file before reporting the rotation", processor.lines)
+	}
+
+	// The next start reads the new file from its beginning; no line of it is
+	// lost.
+	if err := reader.Start(context.Background(), lcontext.LContext{}, processor, regex.NewNoop()); err != nil {
+		t.Fatalf("second Start() error = %v", err)
+	}
+	if want := []string{"new1\n", "new2\n", "new3\n"}; !reflect.DeepEqual(processor.lines, want) {
+		t.Errorf("lines = %q, want %q", processor.lines, want)
+	}
+}
+
+func TestStartOffsetInSplitLineDoesNotWarnAgain(t *testing.T) {
+	const maxLineLength = 8
+	// An unfinished line longer than the limit: an earlier reader split it
+	// after its first maxLineLength bytes.
+	long := strings.Repeat("a", maxLineLength) + strings.Repeat("b", 2*maxLineLength)
+	for _, inSplitLine := range []bool{false, true} {
+		t.Run(fmt.Sprintf("inSplitLine=%v", inSplitLine), func(t *testing.T) {
+			path := writeStartOffsetTestFile(t, "split.log", long)
+			messages := make(chan string, 10)
+			reader := mustNewReadFile(ReadOptions{
+				Mode:                   omode.TailClient,
+				FilePath:               path,
+				GlobID:                 "glob",
+				StartOffset:            maxLineLength,
+				StartOffsetFile:        statStartOffsetTestFile(t, path),
+				StartOffsetInSplitLine: inSplitLine,
+				ServerMessages:         messages,
+				MaxLineLength:          maxLineLength,
+				Logger:                 testLogger,
+			})
+			processor := &positionProcessor{}
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- reader.Start(ctx, lcontext.LContext{}, processor, regex.NewNoop()) }()
+			rest := strings.Repeat("b", 2*maxLineLength)
+			waitUntil(t, "the rest of the long line", func() bool {
+				lines, _, _ := processor.state()
+				return len(lines) > 0 && lines[0] == rest
+			})
+			appendToFile(t, path, "\nshort\n")
+			waitUntil(t, "the next line", func() bool {
+				lines, _, _ := processor.state()
+				return len(lines) == 2 && lines[1] == "short"
+			})
+			cancel()
+			if err := <-done; err != nil {
+				t.Fatalf("Start() error = %v", err)
+			}
+			// The rest of the line is still longer than the limit: a reader
+			// that starts in it warns only if nobody warned about it before.
+			want := 1
+			if inSplitLine {
+				want = 0
+			}
+			if got := len(messages); got != want {
+				t.Errorf("sent %d long line warnings, want %d", got, want)
+			}
+		})
+	}
+}
+
+func TestStartFileIsReadEvenAfterARotation(t *testing.T) {
+	path := writeStartOffsetTestFile(t, "held.log", "old1\nold2\n")
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := held.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The path is rotated after the descriptor was opened, and the old file
+	// still grows.
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".1", []byte("old1\nold2\nold3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("new1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader := mustNewReadFile(ReadOptions{
+		Mode:            omode.CatClient,
+		FilePath:        path,
+		GlobID:          "glob",
+		StartOffset:     int64(len("old1\n")),
+		StartOffsetFile: info,
+		StartFile:       held,
+		Logger:          testLogger,
+	})
+	processor := &captureProcessor{}
 	if err := reader.Start(context.Background(), lcontext.LContext{}, processor, regex.NewNoop()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-
-	// The new file is read from its beginning; no line of it is lost.
-	if want := []string{"new1\n", "new2\n", "new3\n"}; !reflect.DeepEqual(processor.lines, want) {
-		t.Errorf("lines = %q, want %q", processor.lines, want)
+	if want := []string{"old2\n", "old3\n"}; !reflect.DeepEqual(processor.lines, want) {
+		t.Errorf("lines = %q, want the old file's lines after the offset %q", processor.lines, want)
+	}
+	if err := held.Close(); err == nil {
+		t.Error("the reader did not close the start file")
+	}
+	// The next read opens the path.
+	processor.lines = nil
+	if err := reader.Start(context.Background(), lcontext.LContext{}, processor, regex.NewNoop()); err != nil {
+		t.Fatalf("second Start() error = %v", err)
+	}
+	if want := []string{"new1\n"}; !reflect.DeepEqual(processor.lines, want) {
+		t.Errorf("second read lines = %q, want %q", processor.lines, want)
 	}
 }

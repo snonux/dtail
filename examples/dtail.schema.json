@@ -372,7 +372,7 @@
         },
         "SharedReadsDisable": {
           "type": "boolean",
-          "description": "Turn shared follow reads off. By default, sessions that tail the same uncompressed file share one reader of it in dserver; every session still checks its own permissions, uses its own read slot, starts at the end of the file as of its join and filters and processes the lines on its own. A session that falls behind the shared reader moves to a reader of its own at the line where it stopped, so it does not delay the others. When true, every session reads the file with a reader of its own.",
+          "description": "Turn shared follow reads off. By default, sessions that tail the same uncompressed file share one reader of it in dserver; every session still checks its own permissions, uses its own read slot, starts at the end of the file as of its join and filters and processes the lines on its own. A session that falls behind the shared reader moves to a reader of its own at the line where it stopped, so it does not delay the others; it does not rejoin the shared reader. When true, every session reads the file with a reader of its own.",
           "default": false
         },
         "MaxLineLength": {

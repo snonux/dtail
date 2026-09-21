@@ -21,11 +21,16 @@ type subscriber struct {
 	// evicted is closed when the publisher found the queue full and stopped
 	// delivering to the subscriber, which then goes on with a private read.
 	evicted chan struct{}
+	// missed is the item that did not fit into the queue, and held the file
+	// at the path, opened at the eviction (nil if that failed); both are set
+	// before evicted is closed.
+	missed item
+	held   *os.File
 	// joinedAt is the end of the file when the session joined, where its
-	// read starts; skipToJoin tells it to skip published lines ending at or
-	// before it. Both are set before the session's goroutine runs.
-	joinedAt   position
-	skipToJoin bool
+	// read starts, and skip tells it which published lines predate its join.
+	// Both are set before the session's goroutine runs.
+	joinedAt position
+	skip     joinSkip
 }
 
 func newSubscriber(session Session, queueChunks int) *subscriber {
@@ -55,46 +60,59 @@ func (s *subscriber) offer(it item) bool {
 // would: with a max-count stop or an error. When the subscriber is evicted,
 // or the shared reader fails, the session goes on with a private reader.
 func (s *subscriber) run(ctx context.Context, logger logging.Logger, options Options) error {
-	reading := newSessionRead(s.session, logger, options, s.joinedAt, s.skipToJoin)
+	reading := newSessionRead(s.session, logger, options, s.joinedAt, s.skip)
 	defer reading.close()
 
 	for {
 		select {
 		case <-ctx.Done():
+			select {
+			case <-s.evicted:
+				closeHeld(s.held)
+			default:
+			}
 			return nil
 		case it := <-s.queue:
 			goPrivate, err := reading.handle(ctx, it)
 			if goPrivate {
-				return reading.readPrivately(ctx)
+				return reading.readPrivately(ctx, nil)
 			}
 			if err != nil {
 				return err
 			}
 		case <-s.evicted:
-			if err := s.drain(ctx, reading); err != nil {
+			goPrivate, err := s.drain(ctx, reading)
+			if err != nil {
+				closeHeld(s.held)
 				return err
 			}
-			reading.logger.Info(s.session.FilePath, s.session.GlobID,
-				"Following privately after eviction from the shared read", "offset", reading.at.offset)
-			return reading.readPrivately(ctx)
+			if !goPrivate {
+				reading.logger.Info(s.session.FilePath, s.session.GlobID,
+					"Following privately after eviction from the shared read", "offset", reading.at.offset)
+			}
+			return reading.readPrivately(ctx, s.held)
 		}
 	}
 }
 
-// drain handles what was queued before the eviction; nothing is queued after.
-func (s *subscriber) drain(ctx context.Context, reading *sessionRead) error {
+// drain handles what was queued before the eviction, nothing is queued
+// after it, and then the item that did not fit when it tells the session
+// something its private reader would not see: the file was truncated or
+// rotated, or the shared reader failed. A line the private reader reads
+// again, and the long line warning it sends again, are left to it.
+func (s *subscriber) drain(ctx context.Context, reading *sessionRead) (goPrivate bool, err error) {
 	for {
 		select {
 		case it := <-s.queue:
-			goPrivate, err := reading.handle(ctx, it)
-			if goPrivate {
-				return nil
-			}
-			if err != nil {
-				return err
+			if goPrivate, err := reading.handle(ctx, it); goPrivate || err != nil {
+				return goPrivate, err
 			}
 		default:
-			return nil
+			switch s.missed.kind {
+			case restartItem, reopenItem, failedItem:
+				return reading.handle(ctx, s.missed)
+			}
+			return false, nil
 		}
 	}
 }
@@ -109,17 +127,21 @@ type sessionRead struct {
 	processor line.Processor
 	filter    *fs.LineFilter
 	// at is where the session's read got to: just past the last line it
-	// handled, where a private reader would go on.
+	// handled, where a private reader would go on, or where it joined.
 	at position
-	// joinedAt and skipping: lines of the file the session joined at that end
-	// at or before joinedAt were in the file before the session joined, and
-	// a private follow read would not have read them.
-	joinedAt position
-	skipping bool
+	// atLineEnd reports that at is the end of a line the session handled
+	// rather than where it joined or the file started over.
+	atLineEnd bool
+	// skip: lines published before the session joined, which a private
+	// follow read opened at the join would not have read.
+	skip joinSkip
+	// warningPending: a long line warning arrived while the session was
+	// skipping; it is sent only if the split line it precedes is not skipped.
+	warningPending bool
 }
 
 func newSessionRead(session Session, logger logging.Logger, options Options,
-	joinedAt position, skipToJoin bool) *sessionRead {
+	joinedAt position, skip joinSkip) *sessionRead {
 
 	processor := session.NewProcessor()
 	return &sessionRead{
@@ -129,8 +151,7 @@ func newSessionRead(session Session, logger logging.Logger, options Options,
 		processor: processor,
 		filter:    fs.NewLineFilter(session.LContext, processor, session.Regex, session.GlobID),
 		at:        joinedAt,
-		joinedAt:  joinedAt,
-		skipping:  skipToJoin && joinedAt.known() && joinedAt.offset > 0,
+		skip:      skip,
 	}
 }
 
@@ -139,19 +160,31 @@ func newSessionRead(session Session, logger logging.Logger, options Options,
 func (r *sessionRead) handle(ctx context.Context, it item) (goPrivate bool, err error) {
 	switch it.kind {
 	case chunkItem:
-		return false, r.feed(it.chunk)
+		return false, r.feed(ctx, it.chunk)
 	case restartItem:
+		r.warningPending = false
+		if r.skip.restart() {
+			return false, nil
+		}
 		r.filter.Restart()
-		r.skipping = false
 		r.at = position{offset: 0, file: r.at.file}
+		r.atLineEnd = false
 	case reopenItem:
+		r.warningPending = false
+		if r.skip.reopen() {
+			return false, nil
+		}
 		// A private read ends, flushes and closes its processor, and the read
 		// command starts the next read with a new one.
 		r.newProcessor()
-		r.skipping = false
 		r.at = position{offset: 0}
+		r.atLineEnd = false
 	case longLineItem:
-		r.sendMessage(ctx, fs.LongLineWarning(r.messageLogger(), r.session.FilePath))
+		if r.skip.active {
+			r.warningPending = true
+			return false, nil
+		}
+		r.sendLongLineWarning(ctx)
 	case failedItem:
 		if errors.Is(it.err, fs.ErrReaderWorkerPanic) {
 			return false, it.err
@@ -165,14 +198,21 @@ func (r *sessionRead) handle(ctx context.Context, it item) (goPrivate bool, err 
 
 // feed filters every line of c the session has not seen yet, then flushes,
 // as a private follow reader does after every read.
-func (r *sessionRead) feed(c *chunk) error {
+func (r *sessionRead) feed(ctx context.Context, c *chunk) error {
 	for i := range c.ends {
 		end := c.lineEnd(i)
-		if r.predatesJoin(end) {
+		if r.skip.skips(end) {
+			// A warning pending belonged to this line.
+			r.warningPending = false
 			continue
+		}
+		if r.warningPending {
+			r.warningPending = false
+			r.sendLongLineWarning(ctx)
 		}
 		stop, err := r.filter.ProcessLine(c.line(i))
 		r.at = end
+		r.atLineEnd = true
 		if err != nil {
 			return err
 		}
@@ -183,25 +223,8 @@ func (r *sessionRead) feed(c *chunk) error {
 	return r.filter.Flush()
 }
 
-// predatesJoin reports whether a published line that ends at end was in the
-// file before the session joined, so that a private follow read opened at the
-// join would not have read it.
-func (r *sessionRead) predatesJoin(end position) bool {
-	if !r.skipping {
-		return false
-	}
-	switch {
-	case !end.known():
-		// Without a position there is nothing to compare; deliver.
-	case !os.SameFile(end.file, r.joinedAt.file):
-		// The reader has not noticed yet that the path was rotated before
-		// the join: the session starts at the end of the new file.
-		return true
-	case end.offset <= r.joinedAt.offset:
-		return true
-	}
-	r.skipping = false
-	return false
+func (r *sessionRead) sendLongLineWarning(ctx context.Context) {
+	r.sendMessage(ctx, fs.LongLineWarning(r.messageLogger(), r.session.FilePath))
 }
 
 func (r *sessionRead) sendMessage(ctx context.Context, message string) {
