@@ -500,7 +500,7 @@ func requireAllocationFreeAttempt(t *testing.T, attempt func() []string) {
 		}
 	}
 	for _, failure := range failures {
-		t.Errorf("in each of %d attempts: %s", allocationAttempts, failure)
+		t.Errorf("failed in all %d attempts; last attempt: %s", allocationAttempts, failure)
 	}
 }
 
