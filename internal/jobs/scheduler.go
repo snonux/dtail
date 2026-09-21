@@ -71,6 +71,18 @@ func wait(ctx context.Context, duration time.Duration) bool {
 }
 
 func (s *scheduler) runJobs(ctx context.Context) {
+	for _, group := range groupDueJobs(s.dueJobs()) {
+		if ctx.Err() != nil {
+			return
+		}
+		s.runGroup(ctx, group)
+	}
+}
+
+// dueJobs returns the enabled jobs that are in their time range and whose
+// outfile does not exist yet.
+func (s *scheduler) dueJobs() []dueJob {
+	var due []dueJob
 	for i := range s.cfg.Server.Schedule {
 		job := &s.cfg.Server.Schedule[i]
 		if !job.Enable {
@@ -86,18 +98,30 @@ func (s *scheduler) runJobs(ctx context.Context) {
 			s.log().Debug(job.Name, "Not running job out of time range")
 			continue
 		}
-		s.runJob(ctx, job)
+		if planned, ok := s.prepareJob(job); ok {
+			planned.groupLimit = s.groupLimit(planned)
+			due = append(due, planned)
+		}
 	}
+	return due
 }
 
 func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
+	if due, ok := s.prepareJob(job); ok {
+		s.runDueJob(ctx, due)
+	}
+}
+
+// prepareJob returns the client arguments of job, or false when its outfile
+// already exists.
+func (s *scheduler) prepareJob(job *config.Scheduled) (dueJob, bool) {
 	files := fillDates(job.Files)
 	outfile := fillDates(job.Outfile)
 
 	_, err := os.Stat(outfile)
 	if !os.IsNotExist(err) {
 		s.log().Debug(job.Name, "Not running job as outfile already exists", outfile)
-		return
+		return dueJob{}, false
 	}
 
 	servers := strings.Join(job.Servers, ",")
@@ -118,7 +142,12 @@ func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
 
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(job.Name))
 	args.QueryStr = fmt.Sprintf("%s outfile %s", job.Query, outfile)
-	client, err := s.newMaprClient(args, clients.CumulativeMode)
+	return dueJob{job: job, args: args, outfile: outfile}, true
+}
+
+func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
+	job := due.job
+	client, err := s.newMaprClient(due.args, clients.CumulativeMode)
 	if err != nil {
 		s.log().Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
 		return
