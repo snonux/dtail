@@ -59,6 +59,15 @@ func (fp *filteringProcessor) resetGeneration() {
 	fp.afterCount = 0
 }
 
+// restartSource tells the wrapped processor, when it is a
+// line.SourceRestarter, that the content it is fed from starts over (an
+// in-place truncation). Local context is reset separately by resetGeneration.
+func (fp *filteringProcessor) restartSource() {
+	if restarter, ok := fp.processor.(line.SourceRestarter); ok {
+		restarter.SourceRestarted()
+	}
+}
+
 // ProcessFilteredLine applies regex filtering before passing to the underlying processor
 func (fp *filteringProcessor) ProcessFilteredLine(rawLine *bytes.Buffer) error {
 	ownedRawLine := rawLine

@@ -60,6 +60,15 @@ func TestAggregateDoesNotRetainRecycledLineBuffers(t *testing.T) {
 		buffer.Reset()
 		buffer.WriteString(strings.Repeat("X", len(retentionLines[i])))
 	}
+	// The poisoned buffers are back in the pool, whose users expect empty
+	// buffers (RecycleBytesBuffer resets before Put). Empty them again once
+	// the checks are done, or a later test's pool.BytesBuffer.Get, such as a
+	// follow reader's partial-line buffer, starts with the poison.
+	defer func() {
+		for _, buffer := range handed {
+			buffer.Reset()
+		}
+	}()
 
 	wantLast := map[string]string{"alpha": "violet", "beta": "purple"}
 	wantSamples := map[string]int{"alpha": 2, "beta": 1}

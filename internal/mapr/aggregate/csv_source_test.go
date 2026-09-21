@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/mapr/logformat"
@@ -62,7 +63,10 @@ func csvRows(header string, n int) []string {
 // file to reach the parser before the header row of another file with the
 // same glob ID. Readers pass the glob ID as sourceID, and it is the same for
 // files with the same base name in different directories and for the reads
-// before and after a follow-mode reader reopens a truncated file. Parsed
+// before and after a follow-mode reader reopens a rotated file, which it does
+// with a new Processor. (An in-place truncation keeps the same Processor, see
+// TestProcessorSourceRestartedDrainsThenTakesFreshKey and
+// TestCSVFollowReaderInPlaceTruncationInstallsNewHeader.) Parsed
 // under that shared sourceID, the second file's header row was mapped as data
 // (an extra "label" group), or, with a different column order, every row of
 // it was mapped against the other file's header.
@@ -113,7 +117,7 @@ func TestCSVProcessorsSharingGlobIDKeepTheirOwnHeader(t *testing.T) {
 			want: map[string]int{"a": 2, "b": 1},
 		},
 		{
-			name: "file read again after truncation",
+			name: "file reopened after rotation",
 			run: func(t *testing.T, aggregate *Aggregate) {
 				before := NewProcessor(aggregate, "x.csv")
 				feedLines(t, before, "label,value", "a,1", "a,2")
@@ -251,5 +255,69 @@ func TestProcessorParsesUnderOwnSourceKeyAndReleasesIt(t *testing.T) {
 	defer parser.mu.Unlock()
 	if fmt.Sprint(parser.events) != fmt.Sprint(want) {
 		t.Errorf("parser events = %q, want %q", parser.events, want)
+	}
+}
+
+var _ line.SourceRestarter = (*Processor)(nil)
+
+// TestProcessorSourceRestartedDrainsThenTakesFreshKey pins what an in-place
+// truncation does to a processor: the lines batched before it (not yet
+// flushed) are parsed under the old key, the old key is released, and every
+// later line is parsed under a new key of the same processor, which Close
+// releases in turn.
+func TestProcessorSourceRestartedDrainsThenTakesFreshKey(t *testing.T) {
+	query, err := mapr.NewQuery(csvSourceTestQuery, logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("NewQuery() error = %v", err)
+	}
+	parser := &sourceRecordingParser{}
+	aggregate, err := New(query, parser, "aggregate-test", logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	processor := NewProcessor(aggregate, "x.csv")
+	oldKey := processor.sourceKey
+	feedLines(t, processor, "one", "two")
+	processor.SourceRestarted()
+	newKey := processor.sourceKey
+	if newKey == oldKey {
+		t.Fatalf("source key %q unchanged by SourceRestarted", oldKey)
+	}
+	feedLines(t, processor, "three")
+	closeProcessor(t, processor)
+
+	want := []string{
+		"parse " + oldKey,
+		"parse " + oldKey,
+		"release " + oldKey,
+		"parse " + newKey,
+		"release " + newKey,
+	}
+	parser.mu.Lock()
+	defer parser.mu.Unlock()
+	if fmt.Sprint(parser.events) != fmt.Sprint(want) {
+		t.Errorf("parser events = %q, want %q", parser.events, want)
+	}
+}
+
+// TestCSVProcessorSourceRestartedInstallsNewHeader is the CSV view of the
+// same contract: after SourceRestarted the processor's next line is a header
+// again, so rewritten content with a different column order is mapped
+// against its own header.
+func TestCSVProcessorSourceRestartedInstallsNewHeader(t *testing.T) {
+	aggregate := newCSVSourceTestAggregate(t)
+	processor := NewProcessor(aggregate, "x.csv")
+	feedLines(t, processor, "label,value", "a,1", "a,2")
+	processor.SourceRestarted()
+	feedLines(t, processor, "value,label", "3,z", "4,z")
+	closeProcessor(t, processor)
+
+	want := map[string]int{"a": 2, "z": 2}
+	if got := groupSamples(aggregate); !maps.Equal(got, want) {
+		t.Errorf("groups = %v, want %v", got, want)
+	}
+	if got := aggregate.errors.Load(); got != 0 {
+		t.Errorf("errors = %d, want 0", got)
 	}
 }

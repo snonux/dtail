@@ -372,6 +372,10 @@ func (p *followLineProcessor) handleTruncation(fd *os.File, reader *bufio.Reader
 	reader.Reset(fd)
 	p.partialLine.Reset()
 	p.filter.resetGeneration()
+	// The same processor keeps being fed, now from the rewritten content:
+	// let a processor with per-source state (the CSV header of a MapReduce
+	// aggregation) start over for it.
+	p.filter.restartSource()
 	p.file.logger.Info(p.file.FilePath(), "File got truncated, reading from beginning")
 	return true, nil
 }

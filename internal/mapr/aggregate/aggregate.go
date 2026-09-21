@@ -55,7 +55,7 @@ type Aggregate struct {
 	processorsSealed bool
 	processorCount   int
 	// processorSeq numbers the processors so that each gets a source key of
-	// its own, see Processor.sourceKey.
+	// its own, and each in-place truncation a new one, see Processor.sourceKey.
 	processorSeq   atomic.Uint64
 	processorsDone chan struct{}
 	// Track active file processors
@@ -583,7 +583,12 @@ func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet
 // goroutine and parses its batches in order. The reader's sourceID (the glob
 // ID) does not: two files with the same base name in different directories
 // share it, and so do the reads before and after a follow-mode reader reopens
-// a truncated file.
+// a rotated file.
+//
+// A follow-mode reader that detects an in-place truncation keeps feeding the
+// same Processor from the rewritten content. It then calls SourceRestarted,
+// which moves the Processor to a fresh source key, so the rewritten content
+// installs its own header as well.
 type Processor struct {
 	aggregate  *Aggregate
 	globID     string
@@ -607,9 +612,29 @@ func NewProcessor(aggregate *Aggregate, globID string) *Processor {
 	return &Processor{
 		aggregate:  aggregate,
 		globID:     globID,
-		sourceKey:  strconv.FormatUint(aggregate.processorSeq.Add(1), 10) + ":" + globID,
+		sourceKey:  aggregate.newSourceKey(globID),
 		registered: registered,
 	}
+}
+
+// newSourceKey returns a parser source key no other processor or source
+// generation of this aggregate uses.
+func (a *Aggregate) newSourceKey(globID string) string {
+	return strconv.FormatUint(a.processorSeq.Add(1), 10) + ":" + globID
+}
+
+// SourceRestarted implements line.SourceRestarter. The reader calls it from
+// the goroutine feeding the processor when the file was truncated in place and
+// is read again from its beginning. The lines batched so far belong to the old
+// content and are aggregated under the old source key first; then that key's
+// parser state is released and the processor continues under a fresh key, so
+// the first line of the new content installs its CSV header.
+func (p *Processor) SourceRestarted() {
+	if p.registered {
+		p.drain()
+	}
+	p.releaseSource()
+	p.sourceKey = p.aggregate.newSourceKey(p.globID)
 }
 
 // ProcessLine adds a line to the processor's batch and aggregates the batch
@@ -664,9 +689,10 @@ func (p *Processor) Close() error {
 }
 
 // releaseSource drops the state a stateful parser keeps for the processor's
-// source key. The key is unique to the processor, so without this every file
-// read, including every reopen of a follow-mode reader, would leave an entry
-// behind for the rest of the session.
+// current source key. The key is unique to the processor and source
+// generation, so without this every file read, including every reopen of a
+// rotated file and every in-place truncation in follow mode, would leave an
+// entry behind for the rest of the session.
 func (p *Processor) releaseSource() {
 	if releaser, ok := p.aggregate.parser.(logformat.SourceReleaser); ok {
 		releaser.ReleaseSource(p.sourceKey)
