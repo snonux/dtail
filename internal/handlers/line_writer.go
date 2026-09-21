@@ -225,7 +225,12 @@ type NetworkWriter struct {
 	ctx           context.Context
 
 	// Internal buffer for batching writes
-	writeBuf    bytes.Buffer
+	writeBuf bytes.Buffer
+	// bulk is set once a full batch was handed over (see takeBatchLocked):
+	// from then on each new batch reserves a whole batch capacity up front.
+	// It is cleared, and the reservation dropped, by the next small flush, so
+	// an idle or follow-mode writer only holds what its small batches need.
+	bulk        bool
 	bufSize     int
 	mutex       sync.Mutex
 	sendStateCh chan struct{}
@@ -348,11 +353,14 @@ func (w *NetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, source
 	return w.sendBufferedData(data)
 }
 
-// reserveBatchLocked gives an empty writeBuf, whose previous backing was handed
-// over by takeBatchLocked, a fresh allocation large enough for a whole batch,
-// so filling it does not regrow and copy it. The caller must hold w.mutex.
+// reserveBatchLocked gives an empty writeBuf of a bulk writer, whose previous
+// backing was handed over by takeBatchLocked, a fresh allocation large enough
+// for a whole batch, so filling it does not regrow and copy it. Outside bulk
+// mode writeBuf grows naturally with what is written, so a writer that only
+// ever sees a few lines (for example an idle follow reader) keeps a small
+// buffer. The caller must hold w.mutex.
 func (w *NetworkWriter) reserveBatchLocked() {
-	if w.writeBuf.Cap() == 0 {
+	if w.bulk && w.writeBuf.Cap() == 0 {
 		w.writeBuf.Grow(networkWriterBatchCapacity(w.bufSize))
 	}
 }
@@ -364,17 +372,25 @@ func (w *NetworkWriter) reserveBatchLocked() {
 // A batch of at least outputAdoptMinBytes, which the output manager adopts
 // without copying, is handed over together with its backing allocation:
 // writeBuf is left without one, so the next batch cannot overwrite the handed
-// over bytes, and reserveBatchLocked allocates a new one on the next write. A
-// smaller batch, such as a partial follow-mode Flush, is copied and writeBuf
-// keeps its allocation, so frequent small flushes do not allocate a whole
-// batch buffer each.
+// over bytes, and the writer enters bulk mode, in which reserveBatchLocked
+// allocates a whole batch on the next write. A smaller batch, such as a partial
+// follow-mode Flush, is copied. A writer outside bulk mode keeps its (naturally
+// sized) buffer for reuse; a bulk writer drops its whole-batch reservation and
+// leaves bulk mode, so a writer that turned idle after bulk output does not
+// hold a 72 KiB buffer for the rest of the session.
 func (w *NetworkWriter) takeBatchLocked() []byte {
 	data := w.writeBuf.Bytes()
 	if len(data) >= outputAdoptMinBytes {
 		w.writeBuf = bytes.Buffer{}
+		w.bulk = true
 		return data
 	}
 	data = append([]byte(nil), data...)
+	if w.bulk {
+		w.writeBuf = bytes.Buffer{}
+		w.bulk = false
+		return data
+	}
 	w.writeBuf.Reset()
 	return data
 }

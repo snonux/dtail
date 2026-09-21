@@ -164,6 +164,8 @@ baseline, and note the commit.
 | `55` | parent `f290a31` | dmap aggregate server mode, 100 MiB stats log, same runs | 0.85-0.86 s elapsed, server 0.80-0.82 s | 0.84-0.85 s elapsed, server 0.79-0.82 s (no change) | yes, canonicalized table identical to the before client every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `55` | parent `f290a31` | dcat server mode, dserver with only the atomic generation change vs `f290a31` (5 interleaved rounds after one cold round) | server 1.00-1.09 s | server 1.00-1.09 s (no measurable change) | yes, `cmp` every run | n/a (measurement build only) |
 | `55` | parent `f290a31` | `BenchmarkNetworkWriterToOutputManager` (new), 128-byte lines through writer, queue and reader, 6 runs | 258-284 ns/op, 256 B/op | 153-159 ns/op, 144 B/op | n/a (unit tests compare the bytes read with the bytes written) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix | parent `7a16500` | retained heap after GC, 1000 `NetworkWriter`s each doing 3 one-line write+`Flush` cycles (idle follow readers) | `7a16500`: 70.6 MiB (each writer keeps a 72 KiB batch reservation); `f290a31`: 0.3 MiB | 0.3 MiB | n/a (unit test asserts writer buffer capacity) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix | parent `7a16500` | dcat server mode, 100 MiB normal log, `--logger stdout`, three dservers side by side (`f290a31`, `7a16500`, fix), 9 rounds rotating the order; dserver CPU from `/proc`, min / median / max | `f290a31` 0.92 / 1.06 / 1.64 s; `7a16500` 0.74 / 0.78 / 0.90 s | 0.73 / 0.77 / 0.89 s (hand-over gain kept) | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `65` | parent `b3a84a9` | dtail follow, 8 sessions on one dserver, single-line latency on session 0 (40 probes per run, 2 interleaved rounds per variant pair; S100/C100 ranges span the 4 runs of both pairings; mean / p95), server EOF poll S and client stdout flush C | S100/C100 (current): 97-107 ms / 160-172 ms | S50/C50: 49-52 ms / 80-89 ms; S20/C20: 17-20 ms / 29-37 ms; S20/C100: 61-66 ms; S100/C20: 57-62 ms; S50/C100: 65-72 ms; S100/C50: 72-79 ms | n/a (intervals only) | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dserver CPU with 8 idle follow sessions (20 s, utime+stime from `/proc`, % of one core), same runs | S100: 6.2-9.2% | S50: 12.1-14.6%; S20: 20.3-27.6% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dtail client CPU per idle follow session, same runs | C100: 0.89-0.97% | C50: 1.77-2.03%; C20: 4.33-4.45% | n/a | `make clean && make build` only (docs-only change, no code kept) |
@@ -516,7 +518,21 @@ slice's full capacity against `OutputBufferMaxBytes`; when that capacity does
 not fit but the length does, the payload is copied at exact size as before,
 so an admissible payload is never stranded by its spare capacity. Payloads
 under 32 KiB (partial follow-mode `Flush` batches) are still copied by the
-writer, which keeps and reuses its buffer, and still coalesce in the queue.
+writer and still coalesce in the queue.
+Review fix (memory): as first committed (`876060d`) the writer reserved a
+whole 72 KiB batch on its first write and kept it across small flushes, so
+every idle follow reader (one `NetworkWriter` per file read) held 72 KiB for
+the whole session: 1000 writers doing 3 one-line write+flush cycles retained
+70.6 MiB after GC, against 0.3 MiB at `f290a31` (about +3.6 MiB with the
+default 50 concurrent tails). Now the whole-batch reservation is made only in
+bulk mode, which a writer enters when it hands a full batch over; outside it
+the buffer grows naturally as before `f290a31`, and a small flush in bulk
+mode copies its bytes out, drops the reservation and leaves bulk mode. The
+same 1000-writer check now retains 0.3 MiB, and the first batch of a bulk
+read grows naturally (one regrow sequence per writer) before later batches
+are reserved up front. Server-mode dcat CPU is unchanged against `7a16500`
+(fix row above); `BenchmarkNetworkWriterToOutputManager` stays at 159-164
+ns/op, 144 B/op.
 One consequence: an adopted 64 KiB batch is charged its 72 KiB allocation,
 so the default 2 MiB cap now holds 28 full batches before backpressure, where
 before it could fill up with 2 MiB of payload (about 31 batches). The session generation is now an
