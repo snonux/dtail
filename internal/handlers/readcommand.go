@@ -425,13 +425,6 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	}
 	defer release()
 
-	// The session's own PrepareReadTarget succeeded and it holds a read slot of
-	// its own, exactly as for a private read, before it may join a shared one.
-	if r.shouldShareRead(ltx, target) {
-		r.readShared(ctx, ltx, re, readerOptions, reader)
-		return
-	}
-
 	// Output is the one and only read path. read() is only ever invoked for the
 	// cat/grep/tail command handlers (see makeReadCommandHandler), and MapReduce
 	// always builds a Aggregate for both server mode and serverless (see
@@ -445,6 +438,12 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	r.logger.Debug(r.logContext, "Selecting read mode",
 		"mode", r.mode, "hasAggregate", r.aggregate != nil)
 	r.logger.Info(r.logContext, "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
+	// The session's own PrepareReadTarget succeeded and it holds a read slot of
+	// its own, exactly as for a private read, before it may join a shared one.
+	if r.shouldShareRead(ltx, target) {
+		r.readShared(ctx, ltx, re, readerOptions, reader)
+		return
+	}
 	r.readWithProcessor(ctx, ltx, path, globID, re, reader)
 }
 

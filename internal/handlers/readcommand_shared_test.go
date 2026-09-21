@@ -268,19 +268,23 @@ func TestShouldShareRead(t *testing.T) {
 }
 
 func TestNewReadHubHonoursSharedReadsDisable(t *testing.T) {
-	if NewReadHub(nil, nil) != nil {
-		t.Error("NewReadHub(nil) made a hub")
+	if newReadHub(nil, nil) != nil {
+		t.Error("newReadHub(nil) made a hub")
 	}
-	if NewReadHub(&config.ServerConfig{SharedReadsDisable: true}, nil) != nil {
-		t.Error("NewReadHub made a hub although shared reads are disabled")
+	if newReadHub(&config.ServerConfig{SharedReadsDisable: true}, nil) != nil {
+		t.Error("newReadHub made a hub although shared reads are disabled")
 	}
-	if NewReadHub(&config.ServerConfig{}, nil) == nil {
-		t.Error("NewReadHub made no hub with the default configuration")
+	if newReadHub(&config.ServerConfig{}, nil) == nil {
+		t.Error("newReadHub made no hub with the default configuration")
+	}
+	// Until slow sessions are evicted, dserver does not share reads at all.
+	if got := NewReadHub(&config.ServerConfig{}, nil) != nil; got != sharedReadsAvailable {
+		t.Errorf("NewReadHub made a hub = %v, want %v", got, sharedReadsAvailable)
 	}
 }
 
 func TestSharedTailReadsShareOneReader(t *testing.T) {
-	hub := NewReadHub(&config.ServerConfig{ReadRetryIntervalMs: 10}, logging.NopLogger{})
+	hub := newReadHub(&config.ServerConfig{ReadRetryIntervalMs: 10}, logging.NopLogger{})
 	path := writeSharedReadFile(t, "existing\n")
 	first := newSharedReadTestServer(t, hub)
 	second := newSharedReadTestServer(t, hub)
