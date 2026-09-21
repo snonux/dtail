@@ -2,6 +2,7 @@ package aggregate
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand/v2"
 	"runtime"
 	"strconv"
@@ -369,7 +370,7 @@ func TestBatchScratchRecoversFromOutlierBatch(t *testing.T) {
 		{"fields over budget, large ordinary", 20, 1000, 5, 100, 64},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			scratch := &batchScratch{}
+			var scratch *batchScratch
 			batch := func(outliers int) {
 				for i := 0; i < processorBatchSize; i++ {
 					if i < outliers {
@@ -380,21 +381,30 @@ func TestBatchScratchRecoversFromOutlierBatch(t *testing.T) {
 				}
 				scratch.clear()
 			}
-			batch(tc.outliers)
-			for b := 1; b < retentionHistory; b++ {
-				if allocs := allocsOfOneRun(func() { batch(0) }); allocs != 0 {
-					t.Errorf("ordinary batch %d after the outlier batch, before "+
-						"the recovery batch, made %d allocations, want 0", b, allocs)
+			// Every attempt replays the whole sequence on a fresh scratch, so
+			// each measured batch sits at the same point of it every time.
+			requireAllocationFreeAttempt(t, func() (failures []string) {
+				scratch = &batchScratch{}
+				batch(tc.outliers)
+				for b := 1; b < retentionHistory; b++ {
+					if allocs := allocsOfOneRun(func() { batch(0) }); allocs != 0 {
+						failures = append(failures, fmt.Sprintf("ordinary batch %d "+
+							"after the outlier batch, before the recovery batch, made "+
+							"%d allocations, want 0", b, allocs))
+					}
 				}
-			}
-			batch(0) // the recovery batch
-			// testing.AllocsPerRun warms up with one unmeasured run, which
-			// would hide a batch that regrows what the recovery batch shrank,
-			// so the first batch after recovery is measured on its own.
-			if allocs := allocsOfOneRun(func() { batch(0) }); allocs != 0 {
-				t.Errorf("the first ordinary batch after the recovery batch made "+
-					"%d allocations, want 0", allocs)
-			}
+				batch(0) // the recovery batch
+				// testing.AllocsPerRun warms up with one unmeasured run, which
+				// would hide a batch that regrows what the recovery batch
+				// shrank, so the first batch after recovery is measured on its
+				// own.
+				if allocs := allocsOfOneRun(func() { batch(0) }); allocs != 0 {
+					failures = append(failures, fmt.Sprintf("the first ordinary "+
+						"batch after the recovery batch made %d allocations, want 0",
+						allocs))
+				}
+				return failures
+			})
 
 			fields, keyBytes := retainedIdle(scratch)
 			if fields > maxRetainedBatchScratchFields || keyBytes > maxRetainedBatchScratchKeyBytes {
@@ -458,6 +468,8 @@ func TestBatchScratchVaryingLineSizesAllocationFree(t *testing.T) {
 // allocsOfOneRun returns the number of heap allocations of a single call of
 // f, without the unmeasured warm-up run testing.AllocsPerRun makes. Like
 // AllocsPerRun it runs with one P so that other goroutines barely interfere.
+// The count is process-wide, so a stray runtime or testing allocation can
+// land in it now and then; use it through requireAllocationFreeAttempt.
 func allocsOfOneRun(f func()) uint64 {
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	var before, after runtime.MemStats
@@ -465,6 +477,31 @@ func allocsOfOneRun(f func()) uint64 {
 	f()
 	runtime.ReadMemStats(&after)
 	return after.Mallocs - before.Mallocs
+}
+
+// allocationAttempts is how often requireAllocationFreeAttempt replays a
+// scenario before it reports the measurements that allocated.
+const allocationAttempts = 3
+
+// requireAllocationFreeAttempt runs attempt, which replays a scenario from a
+// fresh state, measures single runs of it with allocsOfOneRun and returns a
+// description of every measurement that allocated, up to allocationAttempts
+// times, and passes as soon as one attempt allocated nowhere. A stray
+// allocation elsewhere in the process spoils one attempt now and then (about
+// once in a thousand), never all of them, while a real regression allocates in
+// every attempt, since each one replays the same state. Only the failures of
+// the last attempt are reported.
+func requireAllocationFreeAttempt(t *testing.T, attempt func() []string) {
+	t.Helper()
+	var failures []string
+	for i := 0; i < allocationAttempts; i++ {
+		if failures = attempt(); len(failures) == 0 {
+			return
+		}
+	}
+	for _, failure := range failures {
+		t.Errorf("in each of %d attempts: %s", allocationAttempts, failure)
+	}
 }
 
 // copyingParser implements only logformat.Parser, so the aggregate copies
@@ -768,47 +805,53 @@ func TestProcessorSmallerBatchesAllocationFree(t *testing.T) {
 		{"full short batch after 3000 B keys", processorBatchSize, 3000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			aggregate, err := newAggregateFromTextForTest(query, logging.NopLogger{})
-			if err != nil {
-				t.Fatalf("Failed to create aggregate: %v", err)
-			}
-			processor := NewProcessor(aggregate, "smaller")
-			defer func() {
-				if err := processor.Close(); err != nil {
-					t.Errorf("Close() error = %v", err)
-				}
-			}()
 			large := longKey(tc.keyLen)
-			feed := func(line string, n int) {
-				for i := 0; i < n; i++ {
-					buffer := pool.BytesBuffer.Get().(*bytes.Buffer)
-					buffer.Reset()
-					buffer.WriteString(line)
-					if err := processor.ProcessLine(buffer, uint64(i+1), "smaller"); err != nil {
-						t.Fatalf("ProcessLine() error = %v", err)
+			// Every attempt replays the whole sequence on a fresh aggregate
+			// and processor. The pooled batch scratch carries over, but the
+			// warm-up covers more batches than its history holds.
+			requireAllocationFreeAttempt(t, func() (failures []string) {
+				aggregate, err := newAggregateFromTextForTest(query, logging.NopLogger{})
+				if err != nil {
+					t.Fatalf("Failed to create aggregate: %v", err)
+				}
+				processor := NewProcessor(aggregate, "smaller")
+				defer func() {
+					if err := processor.Close(); err != nil {
+						t.Errorf("Close() error = %v", err)
+					}
+				}()
+				feed := func(line string, n int) {
+					for i := 0; i < n; i++ {
+						buffer := pool.BytesBuffer.Get().(*bytes.Buffer)
+						buffer.Reset()
+						buffer.WriteString(line)
+						if err := processor.ProcessLine(buffer, uint64(i+1), "smaller"); err != nil {
+							t.Fatalf("ProcessLine() error = %v", err)
+						}
 					}
 				}
-			}
-			cycle := func() {
-				feed(large, processorBatchSize)
-				feed(retentionLines[0], tc.short)
-				if err := processor.Flush(); err != nil {
-					t.Fatalf("Flush() error = %v", err)
+				cycle := func() {
+					feed(large, processorBatchSize)
+					feed(retentionLines[0], tc.short)
+					if err := processor.Flush(); err != nil {
+						t.Fatalf("Flush() error = %v", err)
+					}
 				}
-			}
-			// Warm-up: both groups exist and the scratches have grown.
-			for i := 0; i < 2*retentionHistory; i++ {
-				cycle()
-			}
-			// Each cycle is measured on its own, without AllocsPerRun's
-			// averaging, over more cycles than the history holds.
-			for i := 0; i < 2*retentionHistory; i++ {
-				if allocs := allocsOfOneRun(cycle); allocs != 0 {
-					t.Fatalf("cycle %d: a full batch of %d byte keys followed by "+
-						"%d short lines made %d allocations, want 0",
-						i, tc.keyLen, tc.short, allocs)
+				// Warm-up: both groups exist and the scratches have grown.
+				for i := 0; i < 2*retentionHistory; i++ {
+					cycle()
 				}
-			}
+				// Each cycle is measured on its own, without AllocsPerRun's
+				// averaging, over more cycles than the history holds.
+				for i := 0; i < 2*retentionHistory; i++ {
+					if allocs := allocsOfOneRun(cycle); allocs != 0 {
+						failures = append(failures, fmt.Sprintf("cycle %d: a full "+
+							"batch of %d byte keys followed by %d short lines made "+
+							"%d allocations, want 0", i, tc.keyLen, tc.short, allocs))
+					}
+				}
+				return failures
+			})
 		})
 	}
 }
@@ -835,20 +878,25 @@ func TestBatchScratchSmallerBatchesAllocationFree(t *testing.T) {
 		{"fields 300, full small batch", 300, 5, processorBatchSize, 3, 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			scratch := &batchScratch{}
-			cycle := func() {
-				fillBatch(scratch, tc.largeFields, tc.largeKey)
-				for i := 0; i < tc.smallLines; i++ {
-					fillLineScratch(scratch.line(i), tc.smallFields, tc.smallKeySize)
+			// Every attempt replays the whole sequence on a fresh scratch.
+			requireAllocationFreeAttempt(t, func() (failures []string) {
+				scratch := &batchScratch{}
+				cycle := func() {
+					fillBatch(scratch, tc.largeFields, tc.largeKey)
+					for i := 0; i < tc.smallLines; i++ {
+						fillLineScratch(scratch.line(i), tc.smallFields, tc.smallKeySize)
+					}
+					scratch.clear()
 				}
-				scratch.clear()
-			}
-			cycle()
-			for i := 0; i < 2*retentionHistory; i++ {
-				if allocs := allocsOfOneRun(cycle); allocs != 0 {
-					t.Fatalf("cycle %d made %d allocations, want 0", i, allocs)
+				cycle()
+				for i := 0; i < 2*retentionHistory; i++ {
+					if allocs := allocsOfOneRun(cycle); allocs != 0 {
+						failures = append(failures, fmt.Sprintf("cycle %d made %d "+
+							"allocations, want 0", i, allocs))
+					}
 				}
-			}
+				return failures
+			})
 		})
 	}
 }

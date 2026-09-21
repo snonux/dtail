@@ -434,3 +434,20 @@ per-line limits). Outliers that recur within 8 batches now keep their storage
 history set to one batch, the `cc15be4` algorithm, 16 per batch and 21 in
 some batches), while outliers rarer than that are still trimmed and regrown (20
 every 9th batch: 16 allocations to trim and 16 to regrow per 9 batches).
+
+`35` known tradeoff, per-line limits (review finding, not changed): the
+per-line retention limits of `clearLineScratch` (64 KiB group key, 1024
+fields) now apply to each of the 100 line scratches of a batch scratch, so a
+steady workload whose lines exceed them releases and regrows every scratch in
+every batch. Measured in the review-fix round after `4d7ed2e` with a throwaway
+test (processor, `GOMAXPROCS(1)`, 100 identical lines per batch, 20 warm-up
+batches, `AllocsPerRun(50)`): default parser, group by a 70,000 byte `color`,
+204 allocations per batch, against 3 at `d5cae8f` measured in a worktree with
+the same test (about two per line scratch now: the reset to the default size
+and the regrow); 60 KiB and 64 KiB keys make 0 (`d5cae8f`: 1). With the
+copying test parser (not a `FieldsIntoParser`), 1101 fields per line make 1912
+allocations per batch and 1001 fields make 0 (`AllocsPerRun(20)`; not measured
+on `d5cae8f`). Keys above 64 KiB or more than 1024 fields per line are far
+outside ordinary logs, and raising the limits would let each pooled batch
+scratch park 100 times as much storage, so the algorithm is unchanged and the
+tradeoff is documented at `clearLineScratch`.

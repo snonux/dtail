@@ -251,6 +251,20 @@ func recycleBatchScratch(scratch *batchScratch) {
 // so the scratch is safe and reasonably sized to reuse. It runs before the
 // owning batch scratch goes back to the pool, so a pooled scratch can never
 // hand a stale view of an already recycled line buffer to the next batch.
+//
+// Known tradeoff: the per-line limits apply to each of the up to
+// processorBatchSize line scratches of a batch scratch, so a steady workload
+// whose group keys exceed maxRetainedScratchKeyBytes, or whose lines exceed
+// maxRetainedScratchFields fields, releases and regrows every scratch in every
+// batch: about two allocations per line for such keys (the reset here and the
+// regrow on the next line). Measured with the default parser, group by a
+// 70,000 byte key, 100 identical lines per batch: 204 allocations per batch,
+// against 3 at d5cae8f, before the per-line scratches, whose single scratch
+// regrew once per batch; 60 KiB and 64 KiB keys make 0 (d5cae8f: 1). With a
+// parser that is not a FieldsIntoParser, 1101 fields per line make 1912
+// allocations per batch and 1001 fields make 0. Such lines are far outside
+// ordinary logs, and raising the limits would let every pooled batch scratch
+// park up to 100 times as much, so the limits stay as they are.
 func clearLineScratch(scratch *lineScratch) {
 	if scratch.maxFields > maxRetainedScratchFields {
 		// clear() keeps the buckets a huge line grew, so the map itself has

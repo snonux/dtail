@@ -2,6 +2,7 @@ package aggregate
 
 import (
 	"bytes"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -115,6 +116,11 @@ func TestProcessorBatchIsAllocationFree(t *testing.T) {
 		t.Skip("the race detector drops sync.Pool items at random, so pooled " +
 			"line buffers and batch scratches are reallocated")
 	}
+	// One P keeps every batch on the same pooled batch scratch and line
+	// buffers. testing.AllocsPerRun switches to one P only for the measured
+	// runs, and resizing the Ps drops the per-P pool contents the warm-up
+	// left behind, so without this the measured batches reallocate them.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 	const query = `from STATS select count($line),sum($goroutines) group by host`
 
 	aggregate, err := newAggregateFromTextForTest(query, logging.NopLogger{})
