@@ -81,6 +81,16 @@ Older copies of the example config contained ``"Logger": "Fout"``. If your insta
 % grep -n '"Logger"' /etc/dserver/dtail.json
 ```
 
+### Upgrade note: ``Client.TermColors`` names now take effect
+
+Older releases copied every ``Client.TermColors`` value verbatim into the output, so a colour name such as ``"Red"`` or ``"Dim"`` was printed as literal text instead of a colour; only raw escape sequences such as ``"\u001b[31m"`` worked. Colour and attribute names (matched case-insensitively) are now converted to terminal escape codes, so a configured palette now changes the client's colours.
+
+Existing config files keep loading, dserver included (it reads the same file but never renders colours):
+
+* The prefixed spellings used by the example config of v4.2.0 through v4.3.4 (``"FgBlack"``, ``"BgCyan"``, ``"AttrDim"``, ``"AttrNone"`` ...) are still accepted and mean the colour or attribute they name. They are deprecated, and ``examples/dtail.schema.json`` reports them; drop the ``Fg``/``Bg``/``Attr`` prefix to silence the schema.
+* Raw escape sequences (including several concatenated ones and ``:``-separated SGR parameters) are used unchanged, as before, and ``""`` still means no escape code.
+* Any other value (for example a typo such as ``"Bleu"``) no longer ends up in the output. dtail uses that field's default colour instead and prints a warning naming the config file and the value on stderr, for example ``WARN: config file /etc/dserver/dtail.json: ignoring invalid background color "Bleu", using the default instead: ...``. A bad colour value is never a fatal config error.
+
 ### SSH listen address (``SSHBindAddress``)
 
 The example config sets ``Server.SSHBindAddress`` to ``0.0.0.0``, so dserver listens on **every** local IPv4 address, including your LAN (e.g. ``192.168.1.x`` on eth0) and any other interface (loopback, WireGuard, etc.). Clients reach it as ``<that-host-LAN-IP>:2222``; you do **not** need to change this for normal LAN access.

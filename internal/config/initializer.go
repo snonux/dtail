@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mimecast/dtail/internal/color"
 	"github.com/mimecast/dtail/internal/source"
 )
 
@@ -27,6 +28,9 @@ const (
 type transformCb func(*initializer, *Args, []string) error
 
 var userHomeDirectory = os.UserHomeDir
+
+// configWarningOutput receives non-fatal config file warnings. Tests replace it.
+var configWarningOutput io.Writer = os.Stderr
 
 func (in *initializer) parseConfig(args *Args) error {
 	if strings.ToLower(args.ConfigFile) == "none" {
@@ -74,8 +78,16 @@ func (in *initializer) parseSpecificConfig(configFile string) error {
 		return fmt.Errorf("unable to read config file %s: %w", configFile, err)
 	}
 
+	color.TakeConfigWarnings() // Drop anything left over from an earlier decode.
 	if err := json.Unmarshal([]byte(cfgBytes), in); err != nil {
+		color.TakeConfigWarnings()
 		return fmt.Errorf("unable to parse config file %s: %w", configFile, err)
+	}
+	// An unrecognised colour value falls back to its default instead of failing,
+	// so an old config file keeps loading (dserver included). The logger is not
+	// set up yet, so the warnings go to stderr, which keeps stdout payload clean.
+	for _, warning := range color.TakeConfigWarnings() {
+		_, _ = fmt.Fprintf(configWarningOutput, "WARN: config file %s: %s\n", configFile, warning)
 	}
 
 	return nil
