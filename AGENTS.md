@@ -282,12 +282,12 @@ and a leftover `TurboBoostDisable` key in an old config file is silently ignored
 **Technical Details:**
 - For cat/grep/tail: the read path writes directly to the output/connection
   without channel hand-offs.
-- Without local context (before/after/max), a matching cat/grep/tail line is
-  handed to `DirectLineProcessor` as a borrowed slice of the reader's buffer
-  through the optional `line.RawProcessor` interface, so no pooled per-line
-  buffer is used; the slice is only valid during the call and must not be
-  retained. Context greps and the MapReduce processor keep the owned-buffer
-  `ProcessLine` path.
+- Without local context (before/after/max), a matching file-backed
+  cat/grep/tail line is handed to `DirectLineProcessor` as a borrowed slice of
+  the reader's buffer through the optional `line.RawProcessor` interface, so no
+  pooled per-line buffer is used; the slice is only valid during the call and
+  must not be retained. Context greps, journal (`journal:`) reads and the
+  MapReduce processor keep the owned-buffer `ProcessLine` path.
 - For MapReduce in server mode: lines are processed directly without channels.
 - For MapReduce in serverless/client mode: the server-side direct processing does
   not apply — client-side aggregation runs on the client.
