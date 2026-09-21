@@ -142,8 +142,13 @@ func TestProcessorBatchIsAllocationFree(t *testing.T) {
 	}
 
 	// Warm up: the first batch allocates the groups, the batch storage, the
-	// batch scratch and the pooled line buffers.
-	feedBatch()
+	// batch scratch and the pooled line buffers. The pooled batch scratch may
+	// come from an earlier test whose larger lines stay in its retention
+	// history for retentionHistory batches, after which their storage is
+	// trimmed, so the warm-up covers that many batches.
+	for i := 0; i <= retentionHistory; i++ {
+		feedBatch()
+	}
 	if got := aggregate.countGroups(); got != 2 {
 		t.Fatalf("a full batch produced %d groups, want 2 without a Flush", got)
 	}

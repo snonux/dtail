@@ -152,6 +152,7 @@ baseline, and note the commit.
 | `35` review fixes | parent `8a2b225` | dmap aggregate / count / aggregate over 4 files, serverless, 100 MiB stats log (5 interleaved rounds, elapsed) | aggregate 0.76-0.79 s (plus one cold 1.13 s first run), count 0.57-0.58 s, 4 files 0.42-0.52 s | aggregate 0.76-0.77 s, count 0.57-0.60 s, 4 files 0.42-0.52 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` retention fix | parent `84eb1e1` | allocations per 100-line batch, steady identical lines, `GOMAXPROCS(1)`, `TestProcessorSteadyLargeLinesAllocationFree` (default parser, group by a 3000 / 4000 byte `color`; copying parser, 150 / 300 fields) | keys 22 / 68, fields 352 / 861 (`d5cae8f`: keys 1 / 1) | keys 0 / 0, fields 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` batch-maximum fix | parent `54568ac` | allocations per 100-line batch, `GOMAXPROCS(1)`, `TestProcessorVaryingKeyLengthsAllocationFree` (default parser, group by `color`, 64 groups with key lengths uniform in 0 to 2 / 4 / 8 / 16 KiB, random line order, fixed seed, 50 warm-up batches, `AllocsPerRun(200)`) | 0 / 0 / 26 / 53 (`d5cae8f`: 1 / 1 / 1 / 1, reviewer measurement) | 0 / 0 / 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `35` batch-history fix | parent `df3e571` | allocations per cycle, `GOMAXPROCS(1)`, steady state, each cycle measured on its own: `TestProcessorSmallerBatchesAllocationFree` (default parser, group by `color`: a full batch of 2700 / 3000 byte keys, then one short line drained by `Flush`; a full batch of 3000 byte keys, then a full batch of short keys) and `TestBatchScratchSmallerBatchesAllocationFree` (fields: 100 lines of 300 fields, then 1 / 100 lines of 3 fields) | keys 22 / 22 / 22, fields 852 / 852 (measured with the history set to one batch, which is the `cc15be4` algorithm; the same tests on `cc15be4` itself also fail with 22 and 852) | keys 0 / 0 / 0, fields 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -328,8 +329,10 @@ abort they are discarded. Not measured for this task: server-mode dmap (only
 serverless runs were timed; the integration tests cover server mode for
 correctness) and the 1 GiB inputs.
 
-`35` review-fix notes: the follow-up commit keeps the design and fixes its
-edges. A panic in the parser, where or set clause part way through a batch now
+`35` review-fix notes (the retention-budget part of this paragraph describes
+the `84eb1e1` algorithm and is superseded by the retention-fix, batch-maximum
+and batch-history notes below; the other fixes still apply): the follow-up
+commit keeps the design and fixes its edges. A panic in the parser, where or set clause part way through a batch now
 reaches the caller unchanged (the batch scratch counts the line scratches it
 handed out instead of clearing by batch length). Fields of a parser without
 `MakeFieldsInto` are copied into the line scratch's own map, because the merge
@@ -353,7 +356,9 @@ allocs/op; in one non-interleaved run of 6 each it measured `processors_1`
 602-1277 ns/op before (noisy) and 532-544 ns/op after, so no regression but no
 claim of a gain either.
 
-`35` retention-fix notes: the batch budget above charged every byte beyond
+`35` retention-fix notes (the per-scratch reference described here is
+superseded by the batch-maximum and batch-history notes below): the batch
+budget above charged every byte beyond
 the default size, including storage the batch just processed had used. On a
 steady workload where every line is moderately large (a group key above about
 2.6 KiB or more than about 106 fields, times 100 lines per batch), every batch
@@ -378,7 +383,8 @@ use still made 16 and 44). Measuring idle headroom against each scratch's own
 last line still thrashed on workloads whose line sizes vary from line to line,
 see the follow-up below.
 
-`35` batch-maximum follow-up: which line lands in which scratch is arbitrary,
+`35` batch-maximum follow-up (measuring against the current batch only is
+superseded by the batch-history notes below): which line lands in which scratch is arbitrary,
 so with group-key lengths that vary from line to line, each scratch settled at
 the longest key it had seen while its own last line was a random draw; about
 half of every scratch counted as idle, and once keys reached about 5 KiB the
@@ -391,13 +397,40 @@ a scratch over budget is shrunk to that size. A varying workload keeps the
 batch maximum near its own maximum, so its batches reuse every scratch (row
 above; `TestBatchScratchVaryingLineSizesAllocationFree` also covers random
 field counts up to 300 and 1000, which the per-line algorithm answered with 79
-and 213 allocations per batch). Outlier recovery is unchanged: an outlier
-batch is followed by an ordinary batch with a small maximum, which trims the
-outlier storage, and the batch after it allocates nothing. The accepted
-tradeoffs, measured with 60 KiB group keys among 64-byte ones: a workload
+and 213 allocations per batch). With this version an outlier batch was
+followed by an ordinary batch with a small maximum, which trimmed the outlier
+storage, and the batch after it allocated nothing. The tradeoffs of this
+version, measured with 60 KiB group keys among 64-byte ones: a workload
 that puts at least one line of size L into every batch lets every scratch keep
 up to L (6.4 MB of key buffers per pooled batch scratch for one 60 KiB key per
 batch at a random position, 0 allocations), within the per-line bound of 100
 times 64 KiB that a batch of maximal lines already reached; and batches that
 alternate between many outliers and none still shrink and regrow (21
 allocations per batch for 20 outliers every other batch).
+
+`35` batch-history follow-up: measuring idle headroom against the current
+batch alone made any single batch whose largest line was smaller than the
+previous batches' look like an outlier recovery. A follow-mode `Flush` drains
+a partial batch, often a single short line, and a workload may interleave
+batches of short and long lines; each such batch shrank the long lines'
+scratches and the next full batch grew them back (22 allocations per cycle for
+3000 byte keys and 852 for 300 fields, row above; `d5cae8f` made about one per
+batch in the reviewer's measurement). The watermark is now the largest group
+key and field count of any line of the last 8 batches processed with the
+batch scratch (`retentionHistory`, two fixed arrays of 8 ints per pooled batch
+scratch updated in `batchScratch.clear`, no allocation), and only headroom
+beyond the larger of that and the default size is charged or shrunk. Those
+workloads now reuse every scratch (row above). Outlier recovery takes 8
+ordinary batches instead of one: measured on a batch scratch, after 20 group
+keys of 60 KiB the next 7 ordinary batches make 0 allocations, the 8th trims
+the idle storage to the budget (16 allocations) and later ones make 0; after
+3000 byte keys drop permanently to 100 bytes the 8th batch makes 11
+allocations, and after 300 fields drop to 5 it makes 284, then 0. So a
+workload whose line sizes shift permanently downward keeps its former storage
+for up to 8 batches; the memory bound is unchanged (idle headroom beyond the
+watermark within the batch budget, storage up to the watermark within the
+per-line limits). Outliers that recur within 8 batches now keep their storage
+(20 outliers of 60 KiB every other batch: 0 allocations per batch; with the
+history set to one batch, the `cc15be4` algorithm, 16 per batch and 21 in
+some batches), while outliers rarer than that are still trimmed and regrown (20
+every 9th batch: 16 allocations to trim and 16 to regrow per 9 batches).

@@ -25,32 +25,47 @@ const (
 	// so the per-line limits alone would let it park 100 times as much storage
 	// that nothing uses any more. Only idle headroom is charged: storage beyond
 	// both the default size of a line scratch (scratchKeyCapacity,
-	// scratchFieldsCapacity) and the largest group key and field count of any
-	// line of the batch just processed. That largest line is the reference for
-	// every scratch, not each scratch's own line: which line lands in which
-	// scratch is arbitrary, so on a workload whose line sizes vary, a scratch's
-	// own last line is a random draw that says nothing about the next one,
-	// while the batch maximum stays near the workload's maximum. Storage up to
-	// the batch maximum is never charged or shrunk: any scratch may have to
-	// hold a line that large in the next batch, and shrinking it would make a
-	// workload of large or varying lines regrow scratches on every batch. When
-	// the idle total exceeds a budget, the scratches with the largest idle
-	// headroom are shrunk to the batch maximum (at least the default size)
-	// until it fits. So after an outlier batch, the next ordinary batch has a
-	// small maximum, finds the outlier storage idle and trims it to the
-	// budget, and later batches whose largest line is no larger than the
-	// recovery batch's reuse all scratches without allocating. Two tradeoffs
-	// remain. A workload with at least one line of size L in every batch lets
-	// every scratch keep up to L, so the storage of a pooled batch scratch is
-	// then bounded only by the per-line limits (processorBatchSize times
-	// maxRetainedScratchKeyBytes and maxRetainedScratchFields). And batches
-	// that alternate between several long outliers and none shrink the
-	// outliers' scratches in every short batch and regrow them in the next
-	// long one, once more outlier storage is idle than the budget holds: four
-	// line scratches of idle headroom at the per-line key limit and eight at
-	// the per-line fields limit.
+	// scratchFieldsCapacity) and the watermark, the largest group key and the
+	// largest field count of any line of the last retentionHistory batches
+	// processed with this batch scratch, the current one included.
+	//
+	// The watermark is the reference for every scratch, not each scratch's own
+	// line: which line lands in which scratch is arbitrary, so on a workload
+	// whose line sizes vary, a scratch's own last line is a random draw that
+	// says nothing about the next one, while the maximum over many lines stays
+	// near the workload's maximum. It spans several batches, not only the
+	// current one, because single smaller batches are ordinary: a follow-mode
+	// Flush drains a partial batch of maybe one short line, and a workload may
+	// interleave batches of short and long lines. Measured against the current
+	// batch alone, each of those found the long lines' storage idle and shrank
+	// it, and the next batch of long lines grew it back.
+	//
+	// Storage up to the watermark is never charged or shrunk. When the idle
+	// total exceeds a budget, the scratches with the largest idle headroom are
+	// shrunk to the watermark (at least the default size) until it fits. After
+	// an outlier batch, the outlier storage stays until the outlier leaves the
+	// history: the next retentionHistory-1 ordinary batches reuse it without
+	// allocating, the retentionHistory-th trims the idle storage to the budget
+	// (allocating for the scratches it shrinks), and later batches whose lines
+	// are no larger than those of the recent history reuse all scratches
+	// without allocating.
+	//
+	// Tradeoffs: a workload whose line sizes shift permanently downward keeps
+	// the storage of its former large lines for up to retentionHistory
+	// batches. A workload with at least one line of size L in any
+	// retentionHistory consecutive batches lets every scratch keep up to L, so
+	// the storage of a pooled batch scratch is then bounded only by the
+	// per-line limits (processorBatchSize times maxRetainedScratchKeyBytes and
+	// maxRetainedScratchFields), as it is right after a batch of maximal lines
+	// anyway. And outliers rarer than that are shrunk and regrown: once more
+	// than four line scratches of idle headroom at the per-line key limit, or
+	// eight at the per-line fields limit, have gone unused for retentionHistory
+	// batches, they are trimmed, and the next outlier batch grows them again.
 	maxRetainedBatchScratchKeyBytes = 256 * 1024
 	maxRetainedBatchScratchFields   = 8 * 1024
+	// retentionHistory is the number of recent batches whose largest line sets
+	// the watermark of a batch scratch, see maxRetainedBatchScratchKeyBytes.
+	retentionHistory = 8
 )
 
 // lineScratch is the reusable working set of parseLine: the field map the line
@@ -88,13 +103,20 @@ type batchScratch struct {
 	// accepted lists the scratches whose line passed the where clause and is
 	// waiting to be merged into the serializer.
 	accepted []*lineScratch
-	// maxFields and maxKeyBytes are the largest field count and group-key
-	// length of any line of the batch just processed, zero when that batch
-	// used no scratch. They are recorded when the batch scratch is cleared,
-	// and the retention budget never charges or shrinks the storage of any
-	// line scratch up to them, see maxRetainedBatchScratchKeyBytes.
-	maxFields   int
-	maxKeyBytes int
+	// recentFields and recentKeyBytes are ring buffers of the largest field
+	// count and group-key length of any line of each of the last
+	// retentionHistory batches, zero for a batch that used no scratch or for
+	// no batch yet; recentNext is the slot the next batch overwrites. They are
+	// updated when the batch scratch is cleared.
+	recentFields   [retentionHistory]int
+	recentKeyBytes [retentionHistory]int
+	recentNext     int
+	// keepFields and keepKeyBytes are the watermark: the maxima over the
+	// ring buffers, at least the default size of a line scratch. The
+	// retention budget never charges or shrinks the storage of any line
+	// scratch up to them, see maxRetainedBatchScratchKeyBytes.
+	keepFields   int
+	keepKeyBytes int
 }
 
 // batchScratchPool hands out one batch scratch per batch. The scratch cannot
@@ -126,20 +148,36 @@ func (b *batchScratch) line(i int) *lineScratch {
 	return b.lines[i]
 }
 
-// clear records the largest line of the current batch, drops the borrowed
-// views of the used line scratches, see clearLineScratch, enforces the batch
-// retention budget and forgets the accepted lines.
+// clear records the largest line of the current batch in the history, drops
+// the borrowed views of the used line scratches, see clearLineScratch,
+// enforces the batch retention budget and forgets the accepted lines.
 func (b *batchScratch) clear() {
-	b.maxFields, b.maxKeyBytes = 0, 0
+	var maxFields, maxKeyBytes int
 	for _, scratch := range b.lines[:b.used] {
-		b.maxFields = max(b.maxFields, len(scratch.fields))
-		b.maxKeyBytes = max(b.maxKeyBytes, len(scratch.key))
+		maxFields = max(maxFields, len(scratch.fields))
+		maxKeyBytes = max(maxKeyBytes, len(scratch.key))
 		clearLineScratch(scratch)
 	}
 	b.used = 0
+	b.recordBatch(maxFields, maxKeyBytes)
 	b.enforceRetentionBudget()
 	clear(b.accepted)
 	b.accepted = b.accepted[:0]
+}
+
+// recordBatch stores the largest line of the batch just processed in the
+// history, replacing the oldest entry, and recomputes the watermark over the
+// last retentionHistory batches. It costs a walk over two fixed-size arrays
+// per batch and never allocates.
+func (b *batchScratch) recordBatch(maxFields, maxKeyBytes int) {
+	b.recentFields[b.recentNext] = maxFields
+	b.recentKeyBytes[b.recentNext] = maxKeyBytes
+	b.recentNext = (b.recentNext + 1) % retentionHistory
+	b.keepFields, b.keepKeyBytes = scratchFieldsCapacity, scratchKeyCapacity
+	for i := range retentionHistory {
+		b.keepFields = max(b.keepFields, b.recentFields[i])
+		b.keepKeyBytes = max(b.keepKeyBytes, b.recentKeyBytes[i])
+	}
 }
 
 // enforceRetentionBudget caps the idle headroom that all line scratches of the
@@ -148,8 +186,6 @@ func (b *batchScratch) clear() {
 // common case, a batch within budget, is a single walk over at most
 // processorBatchSize scratches without any change.
 func (b *batchScratch) enforceRetentionBudget() {
-	keepFields := max(b.maxFields, scratchFieldsCapacity)
-	keepKeyBytes := max(b.maxKeyBytes, scratchKeyCapacity)
 	var fields, keyBytes int
 	for _, scratch := range b.lines {
 		fields += b.idleFields(scratch)
@@ -157,24 +193,24 @@ func (b *batchScratch) enforceRetentionBudget() {
 	}
 	// Shrink the scratch with the largest idle headroom first, so that as few
 	// scratches as possible lose storage. A shrunk scratch keeps room for the
-	// largest line of the batch just processed, so its idle headroom drops to
-	// zero and a next line of up to that size fits without allocating. Each
-	// round removes one scratch's headroom, so the loops end after at most
-	// len(b.lines) rounds, and only a batch over budget runs them at all.
-	// clearLineScratch has already enforced the per-line limits, so a scratch
-	// is only ever shrunk to less than those limits.
+	// watermark, so its idle headroom drops to zero and a next line of up to
+	// that size fits without allocating. Each round removes one scratch's
+	// headroom, so the loops end after at most len(b.lines) rounds, and only a
+	// batch over budget runs them at all. clearLineScratch has already
+	// enforced the per-line limits, so a scratch is only ever shrunk to less
+	// than those limits.
 	for fields > maxRetainedBatchScratchFields {
 		scratch := b.largest(b.idleFields)
 		fields -= b.idleFields(scratch)
-		scratch.fields = make(map[string]string, keepFields)
+		scratch.fields = make(map[string]string, b.keepFields)
 		// The fresh map is sized for keepFields entries, so that is the
 		// storage it retains from now on.
-		scratch.maxFields = keepFields
+		scratch.maxFields = b.keepFields
 	}
 	for keyBytes > maxRetainedBatchScratchKeyBytes {
 		scratch := b.largest(b.idleKeyBytes)
 		keyBytes -= b.idleKeyBytes(scratch)
-		scratch.key = make([]byte, 0, keepKeyBytes)
+		scratch.key = make([]byte, 0, b.keepKeyBytes)
 	}
 }
 
@@ -192,17 +228,15 @@ func (b *batchScratch) largest(idle func(*lineScratch) int) *lineScratch {
 }
 
 // idleFields is how many entries' worth of map buckets scratch retains beyond
-// both the default size of a line scratch's field map and the largest field
-// count of any line of the batch just processed.
+// the watermark keepFields.
 func (b *batchScratch) idleFields(scratch *lineScratch) int {
-	return max(scratch.maxFields-max(b.maxFields, scratchFieldsCapacity), 0)
+	return max(scratch.maxFields-b.keepFields, 0)
 }
 
 // idleKeyBytes is how many bytes of group-key buffer scratch retains beyond
-// both the default size of a line scratch's key buffer and the longest group
-// key of any line of the batch just processed.
+// the watermark keepKeyBytes.
 func (b *batchScratch) idleKeyBytes(scratch *lineScratch) int {
-	return max(cap(scratch.key)-max(b.maxKeyBytes, scratchKeyCapacity), 0)
+	return max(cap(scratch.key)-b.keepKeyBytes, 0)
 }
 
 // recycleBatchScratch clears the used line scratches and parks the batch
