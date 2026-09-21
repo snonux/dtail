@@ -104,8 +104,19 @@ func (in *initializer) transformConfig(sourceProcess source.Source, args *Args,
 // unset with the per-command defaults. The --logger and --logDir flags default
 // to empty, so setupConfig applies them afterwards only when given, which
 // yields the precedence: explicit flag > config file > per-command default.
+//
+// dtailhealth is the exception: it has no --cfg flag and reads the user's
+// client config, so a Common.Logger or Common.LogDir meant for the interactive
+// clients would change its monitoring-check output and create log directories.
+// It therefore ignores both config values, like it ignores Common.LogLevel,
+// and only an explicit --logger flag changes its logger.
 func (in *initializer) applyLoggingDefaults(sourceProcess source.Source) {
 	logger, logDir := loggingDefaults(sourceProcess)
+	if sourceProcess == source.HealthCheck {
+		in.Common.Logger = logger
+		in.Common.LogDir = logDir
+		return
+	}
 	if in.Common.Logger == "" {
 		in.Common.Logger = logger
 	}

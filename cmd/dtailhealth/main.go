@@ -52,7 +52,7 @@ func run() int {
 	flag.BoolVar(&displayVersion, "version", false, "Display version")
 	flag.StringVar(&args.HostnameOverride, "hostname-override", "", "Override the hostname used in logs and output")
 	flag.StringVar(&args.Logger, "logger", "",
-		"Logger name (default: Common.Logger from the config file, else "+config.DefaultHealthCheckLogger+")")
+		"Logger name (default "+config.DefaultHealthCheckLogger+"; Common.Logger from the config file is ignored)")
 	flag.StringVar(&args.LogLevel, "logLevel", "none", "Log level")
 	flag.StringVar(&args.ServersStr, "server", "", "Remote server to connect")
 	flag.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")

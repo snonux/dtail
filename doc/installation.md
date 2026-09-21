@@ -71,6 +71,16 @@ uid=1001(dserver) 1001=670(dserver) groups=1001(dserver)
     sudo tee /etc/dserver/dtail.json
 ```
 
+### Upgrade note: ``Common.Logger`` and ``Common.LogDir`` now take effect
+
+Older releases silently ignored ``Common.Logger`` (and the client commands' ``Common.LogDir``) from the config file, because every command's ``--logger`` and ``--logDir`` flag default always replaced it. These config values now apply. The precedence is: explicit ``--logger``/``--logDir`` flag > ``Common.Logger``/``Common.LogDir`` from the config file > the per-command default (``file`` and ``log`` for dserver, ``fout`` and ``~/log`` for the client commands). dtailhealth is unaffected: it ignores both config values.
+
+Older copies of the example config contained ``"Logger": "Fout"``. If your installed ``/etc/dserver/dtail.json`` still has that line, dserver now tees its log to stdout as well as to the log file, so under systemd every line also lands in the journal. To keep the previous behaviour (log file only), set ``"Logger": "File"`` or remove the ``Logger`` key before restarting dserver after the upgrade:
+
+```console
+% grep -n '"Logger"' /etc/dserver/dtail.json
+```
+
 ### SSH listen address (``SSHBindAddress``)
 
 The example config sets ``Server.SSHBindAddress`` to ``0.0.0.0``, so dserver listens on **every** local IPv4 address, including your LAN (e.g. ``192.168.1.x`` on eth0) and any other interface (loopback, WireGuard, etc.). Clients reach it as ``<that-host-LAN-IP>:2222``; you do **not** need to change this for normal LAN access.

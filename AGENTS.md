@@ -244,8 +244,11 @@ The default client logger is `fout` (stdout + a daily file at
 `<LogDir>/YYYYMMDD.log`, `LogDir` defaults to `~/log`). The logger and log
 directory resolve as: explicit `--logger`/`--logDir` flag > `Common.Logger`/
 `Common.LogDir` from the config file > per-command default (clients `fout` and
-`~/log`, dserver `file` and `log`, dtailhealth `none` and `log`). The flags
-default to empty so an unset flag never masks the config file. By default the
+`~/log`, dserver `file` and `log`). The flags default to empty so an unset flag
+never masks the config file. dtailhealth is the exception: it has no `--cfg`
+flag and reads the user's client config, so it ignores `Common.Logger` and
+`Common.LogDir` and uses `none` and `log` unless its own `--logger` flag is
+given (it has no `--logDir` flag). By default the
 `fout` daily file records DIAGNOSTICS ONLY — the small connection/audit lines (INFO/WARN/ERROR).
 The full retrieved PAYLOAD (the bulk `dcat`/`dgrep`/`dtail` output) is NOT written
 to the file by default, so a large read no longer silently grows the daily log by

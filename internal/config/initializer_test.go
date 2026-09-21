@@ -622,6 +622,8 @@ func writeTestConfig(t *testing.T, path, body string) {
 // TestSetupLoggingPrecedence checks that an explicitly given --logger or
 // --logDir wins over the config file, that the config file wins over the
 // per-command default, and that the per-command default applies otherwise.
+// dtailhealth ignores the config file's logger and log directory, so only its
+// --logger flag replaces its defaults.
 func TestSetupLoggingPrecedence(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -629,6 +631,8 @@ func TestSetupLoggingPrecedence(t *testing.T) {
 	writeTestConfig(t, configPath, `{"Common":{"Logger":"stdout","LogDir":"/cfg/logs"}}`)
 	emptyConfigPath := filepath.Join(t.TempDir(), "empty.json")
 	writeTestConfig(t, emptyConfigPath, `{"Common":{}}`)
+	foutConfigPath := filepath.Join(t.TempDir(), "fout.json")
+	writeTestConfig(t, foutConfigPath, `{"Common":{"Logger":"Fout","LogDir":"/cfg/logs"}}`)
 
 	tests := []struct {
 		name       string
@@ -649,8 +653,12 @@ func TestSetupLoggingPrecedence(t *testing.T) {
 		{"server config", source.Server, configPath, "", "", "stdout", "/cfg/logs"},
 		{"server flag", source.Server, configPath, "fout", "/flag/logs", "fout", "/flag/logs"},
 		{"health default", source.HealthCheck, emptyConfigPath, "", "", DefaultHealthCheckLogger, DefaultServerLogDir},
-		{"health config", source.HealthCheck, configPath, "", "", "stdout", "/cfg/logs"},
-		{"health flag", source.HealthCheck, configPath, "none", "", "none", "/cfg/logs"},
+		// dtailhealth ignores Common.Logger and Common.LogDir from the config.
+		{"health config ignored", source.HealthCheck, configPath, "", "",
+			DefaultHealthCheckLogger, DefaultServerLogDir},
+		{"health fout config ignored", source.HealthCheck, foutConfigPath, "", "",
+			DefaultHealthCheckLogger, DefaultServerLogDir},
+		{"health flag", source.HealthCheck, configPath, "stdout", "", "stdout", DefaultServerLogDir},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
