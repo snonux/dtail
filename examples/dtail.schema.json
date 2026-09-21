@@ -671,7 +671,7 @@
         },
         "LogLevel": {
           "$ref": "#/definitions/loglevel",
-          "description": "Maximum log level. An empty string is the same as the level default, which logs more than info (the value this field defaults to). Note: an explicit --logLevel flag replaces this value; dtailhealth always does (its flag defaults to none), and a serverless client without --logLevel uses warn.",
+          "description": "Maximum log level. An empty string is the same as the level default, which logs more than info (the value this field defaults to). Note: a --logLevel flag other than info replaces this value; dtailhealth's flag defaults to none, so it replaces it unless dtailhealth runs serverless, which always uses warn; a serverless client without --logLevel (or with info) uses warn.",
           "default": "info"
         },
         "LogRotation": {
