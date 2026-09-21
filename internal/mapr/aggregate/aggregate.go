@@ -8,6 +8,7 @@ import (
 	"maps"
 	"reflect"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,7 +54,10 @@ type Aggregate struct {
 	// an inert processor.
 	processorsSealed bool
 	processorCount   int
-	processorsDone   chan struct{}
+	// processorSeq numbers the processors so that each gets a source key of
+	// its own, see Processor.sourceKey.
+	processorSeq   atomic.Uint64
+	processorsDone chan struct{}
 	// Track active file processors
 	activeProcessors atomic.Int32
 	startOnce        sync.Once
@@ -570,9 +574,20 @@ func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet
 // reader, which flushes after each read, never holds lines back past a read
 // boundary. A one-shot read flushes when the file is done; until then up to
 // one batch of lines per file is not yet visible to periodic serialization.
+//
+// Every line of a Processor is parsed under the Processor's sourceKey, never
+// under the sourceID the reader passes along. A stateful parser such as the
+// CSV one installs a source's header from the first line it parses for that
+// source, so each file read needs a key of its own whose lines reach the
+// parser in file order. A Processor guarantees both: it is fed by one reader
+// goroutine and parses its batches in order. The reader's sourceID (the glob
+// ID) does not: two files with the same base name in different directories
+// share it, and so do the reads before and after a follow-mode reader reopens
+// a truncated file.
 type Processor struct {
 	aggregate  *Aggregate
 	globID     string
+	sourceKey  string
 	registered bool
 	batch      lineBatch
 	flushOnce  sync.Once
@@ -592,18 +607,20 @@ func NewProcessor(aggregate *Aggregate, globID string) *Processor {
 	return &Processor{
 		aggregate:  aggregate,
 		globID:     globID,
+		sourceKey:  strconv.FormatUint(aggregate.processorSeq.Add(1), 10) + ":" + globID,
 		registered: registered,
 	}
 }
 
 // ProcessLine adds a line to the processor's batch and aggregates the batch
-// once it is full. The processor takes ownership of lineContent.
-func (p *Processor) ProcessLine(lineContent *bytes.Buffer, _ uint64, sourceID string) error {
+// once it is full. The processor takes ownership of lineContent. The line is
+// parsed under the processor's own source key, see Processor.
+func (p *Processor) ProcessLine(lineContent *bytes.Buffer, _ uint64, _ string) error {
 	if !p.registered || p.aggregate.stopping() {
 		pool.RecycleBytesBuffer(lineContent)
 		return nil
 	}
-	if p.batch.add(rawLine{content: lineContent, sourceID: sourceID}) {
+	if p.batch.add(rawLine{content: lineContent, sourceID: p.sourceKey}) {
 		p.drain()
 	}
 	return nil
@@ -626,10 +643,14 @@ func (p *Processor) Flush() error {
 	return nil
 }
 
-// Close flushes any remaining data.
+// Close flushes any remaining data and releases the parser's state for the
+// processor's source key.
 func (p *Processor) Close() error {
 	var err error
 	p.closeOnce.Do(func() {
+		// Deferred first, so it runs after the final drain below: no line
+		// of this processor is parsed any more once its state is released.
+		defer p.releaseSource()
 		if p.registered {
 			// Register accounting release before Flush. If batch processing
 			// panics, aggregate abort/shutdown must still be able to join every
@@ -640,6 +661,16 @@ func (p *Processor) Close() error {
 		err = p.Flush()
 	})
 	return err
+}
+
+// releaseSource drops the state a stateful parser keeps for the processor's
+// source key. The key is unique to the processor, so without this every file
+// read, including every reopen of a follow-mode reader, would leave an entry
+// behind for the rest of the session.
+func (p *Processor) releaseSource() {
+	if releaser, ok := p.aggregate.parser.(logformat.SourceReleaser); ok {
+		releaser.ReleaseSource(p.sourceKey)
+	}
 }
 
 // drain hands the batched lines to the aggregate, or discards them once the

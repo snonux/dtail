@@ -21,7 +21,10 @@ type Parser interface {
 	// identifies the log file (or stream) the line belongs to so that
 	// stateful parsers (e.g. CSV with per-file headers) can key their
 	// state per source instead of smearing it across every file in a
-	// session.
+	// session. The caller passes the lines of one sourceID in the order of
+	// the source, and the first of them is parsed before any other; the
+	// MapReduce aggregator uses a sourceID of its own for every file read to
+	// guarantee this (see aggregate.Processor).
 	//
 	// maprLine is borrowed: its backing memory may be reused or recycled by
 	// the caller as soon as MakeFields returns, and the returned field
@@ -82,6 +85,14 @@ func MakeFieldsInto(parser Parser, dst map[string]string, maprLine,
 		return dst, into.MakeFieldsInto(dst, maprLine, sourceID)
 	}
 	return parser.MakeFields(maprLine, sourceID)
+}
+
+// SourceReleaser is implemented by parsers that keep state per sourceID. The
+// MapReduce aggregator calls ReleaseSource once it has parsed the last line of
+// a source, so that the state of finished sources does not accumulate over a
+// session. A released sourceID is not passed to the parser again.
+type SourceReleaser interface {
+	ReleaseSource(sourceID string)
 }
 
 type queryAwareParser interface {

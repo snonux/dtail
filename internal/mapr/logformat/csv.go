@@ -18,6 +18,13 @@ import (
 // header row of every file after the first one would silently be mapped
 // as a data row, corrupting aggregates.
 //
+// The parser cannot tell a header row from a data row, so it relies on the
+// ordering promised by Parser.MakeFields: a source's first line is parsed
+// before any other line of that source. Should a data row come first
+// nevertheless, it becomes the header, and the real header row is later
+// mapped as data. The aggregator therefore gives every file read a sourceID
+// of its own, parsed in file order, and releases it via ReleaseSource.
+//
 // The defaultParser is held in a named field rather than embedded: embedding
 // would promote defaultParser.MakeFieldsInto onto csvParser, so a parser that
 // overrode only MakeFields would keep compiling while the allocation-free path
@@ -31,6 +38,7 @@ type csvParser struct {
 var _ Parser = (*csvParser)(nil)
 var _ FieldsIntoParser = (*csvParser)(nil)
 var _ queryAwareParser = (*csvParser)(nil)
+var _ SourceReleaser = (*csvParser)(nil)
 
 func newCSVParser(hostname, timeZoneName string, timeZoneOffset int) (*csvParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
@@ -56,6 +64,13 @@ func (p *csvParser) MakeFields(maprLine, sourceID string) (map[string]string, er
 		return fields, err
 	}
 	return fields, nil
+}
+
+// ReleaseSource forgets the header of sourceID once the source is done.
+func (p *csvParser) ReleaseSource(sourceID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.headers, sourceID)
 }
 
 // MakeFieldsInto parses maprLine as a CSV data row into the caller's map.
