@@ -16,7 +16,7 @@
     },
     "loglevel": {
       "type": "string",
-      "description": "Log level, matched case-insensitively: none, fatal, error, warn, info, default, verbose, debug, devel, trace or all. An empty string selects the default level.",
+      "description": "Log level, matched case-insensitively: none, fatal, error, warn, info, default, verbose, debug, devel, trace or all. An empty string is the same as default, which logs more than info (it sits between info and verbose).",
       "pattern": "^(?:[Nn][Oo][Nn][Ee]|[Ff][Aa][Tt][Aa][Ll]|[Ee][Rr][Rr][Oo][Rr]|[Ww][Aa][Rr][Nn]|[Ii][Nn][Ff][Oo]|[Dd][Ee][Ff][Aa][Uu][Ll][Tt]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Dd][Ee][Vv][Ee][Ll]|[Tt][Rr][Aa][Cc][Ee]|[Aa][Ll][Ll])?$"
     },
     "logger": {
@@ -454,7 +454,7 @@
               },
               "Files": {
                 "type": "string",
-                "description": "File path or glob of the logs to query."
+                "description": "File path or glob of the logs to query. May contain $today, $tomorrow, $yesterday, $yyesterday or $yyyesterday, replaced with the matching YYYYMMDD date before each run."
               },
               "Query": {
                 "type": "string",
@@ -462,7 +462,7 @@
               },
               "Outfile": {
                 "type": "string",
-                "description": "Path of the CSV result file. May contain $today, $yesterday, $yyesterday or $yyyesterday, replaced with the matching YYYYMMDD date."
+                "description": "Path of the CSV result file. May contain $today, $tomorrow, $yesterday, $yyesterday or $yyyesterday, replaced with the matching YYYYMMDD date before each run."
               },
               "Discovery": {
                 "type": "string",
@@ -520,7 +520,7 @@
               },
               "Files": {
                 "type": "string",
-                "description": "File path or glob of the logs to query."
+                "description": "File path or glob of the logs to query. May contain $today, $tomorrow, $yesterday, $yyesterday or $yyyesterday, replaced with the matching YYYYMMDD date before each run."
               },
               "Query": {
                 "type": "string",
@@ -528,7 +528,7 @@
               },
               "Outfile": {
                 "type": "string",
-                "description": "Path of the CSV result file. May contain $today, $yesterday, $yyesterday or $yyyesterday, replaced with the matching YYYYMMDD date."
+                "description": "Path of the CSV result file. May contain $today, $tomorrow, $yesterday, $yyesterday or $yyyesterday, replaced with the matching YYYYMMDD date before each run."
               },
               "Discovery": {
                 "type": "string",
@@ -671,7 +671,7 @@
         },
         "LogLevel": {
           "$ref": "#/definitions/loglevel",
-          "description": "Maximum log level. An empty string selects the default level.",
+          "description": "Maximum log level. An empty string is the same as the level default, which logs more than info (the value this field defaults to).",
           "default": "info"
         },
         "LogRotation": {

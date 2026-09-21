@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 // The JSON schema shipped in examples/ must describe exactly the keys the
@@ -608,6 +613,17 @@ func TestSchemaValidation(t *testing.T) {
 		{name: "color enum", config: `{"Client": {"TermColors": {"Server": {"TextFg": "Purple"}}}}`, wantErr: "is not one of"},
 		{name: "time range length", config: `{"Server": {"Schedule": [{"TimeRange": [1]}]}}`, wantErr: "at least 2 items"},
 		{name: "wrong type", config: `{"Server": {"IdleSessionTimeoutS": "900"}}`, wantErr: "want integer"},
+		{name: "ssh port lowest", config: `{"Common": {"SSHPort": 1}}`},
+		{name: "ssh port highest", config: `{"Common": {"SSHPort": 65535}}`},
+		{name: "ssh port zero", config: `{"Common": {"SSHPort": 0}}`, wantErr: "below the minimum"},
+		{name: "ssh port above range", config: `{"Common": {"SSHPort": 65536}}`, wantErr: "above the maximum"},
+		{name: "one concurrent cat", config: `{"Server": {"MaxConcurrentCats": 1}}`},
+		{name: "zero concurrent cats", config: `{"Server": {"MaxConcurrentCats": 0}}`, wantErr: "below the minimum"},
+		{name: "one concurrent tail", config: `{"Server": {"MaxConcurrentTails": 1}}`},
+		{name: "zero concurrent tails", config: `{"Server": {"MaxConcurrentTails": 0}}`, wantErr: "below the minimum"},
+		{name: "one connection", config: `{"Server": {"MaxConnections": 1}}`},
+		{name: "zero connections", config: `{"Server": {"MaxConnections": 0}}`, wantErr: "below the minimum"},
+		{name: "negative connections", config: `{"Server": {"MaxConnections": -1}}`, wantErr: "below the minimum"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -619,5 +635,179 @@ func TestSchemaValidation(t *testing.T) {
 				t.Fatalf("validation errors %q do not contain %q", errs, tt.wantErr)
 			}
 		})
+	}
+}
+
+// parseGoFile parses one runtime source file for TestSchemaAcceptsRuntimeLogNames.
+func parseGoFile(t *testing.T, path string) *ast.File {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return file
+}
+
+// caseStrings returns the string literals of every case clause of the switch
+// statements in function funcName.
+func caseStrings(t *testing.T, file *ast.File, funcName string) []string {
+	t.Helper()
+	var names []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != funcName {
+			continue
+		}
+		ast.Inspect(fn, func(node ast.Node) bool {
+			clause, ok := node.(*ast.CaseClause)
+			if !ok {
+				return true
+			}
+			for _, expr := range clause.List {
+				if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					name, err := strconv.Unquote(lit.Value)
+					if err != nil {
+						t.Fatalf("unquote %s: %v", lit.Value, err)
+					}
+					names = append(names, name)
+				}
+			}
+			return true
+		})
+	}
+	if len(names) == 0 {
+		t.Fatalf("no case strings found in %s", funcName)
+	}
+	return names
+}
+
+// mapLiteralKeys returns the string keys of the map literal assigned to the
+// package variable varName.
+func mapLiteralKeys(t *testing.T, file *ast.File, varName string) []string {
+	t.Helper()
+	var names []string
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.ValueSpec)
+		if !ok || len(spec.Names) != 1 || spec.Names[0].Name != varName || len(spec.Values) != 1 {
+			return true
+		}
+		literal, ok := spec.Values[0].(*ast.CompositeLit)
+		if !ok {
+			t.Fatalf("%s is not a composite literal", varName)
+		}
+		for _, element := range literal.Elts {
+			kv, ok := element.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			if lit, ok := kv.Key.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+				name, err := strconv.Unquote(lit.Value)
+				if err != nil {
+					t.Fatalf("unquote %s: %v", lit.Value, err)
+				}
+				names = append(names, name)
+			}
+		}
+		return false
+	})
+	if len(names) == 0 {
+		t.Fatalf("no keys found in %s", varName)
+	}
+	return names
+}
+
+// constNamesOfType returns the names of the constants declared with type
+// typeName, with suffix removed and lower-cased (DailyRotation -> daily).
+func constNamesOfType(t *testing.T, file *ast.File, typeName, suffix string) []string {
+	t.Helper()
+	var names []string
+	for _, decl := range file.Decls {
+		gen, ok := decl.(*ast.GenDecl)
+		if !ok || gen.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gen.Specs {
+			value := spec.(*ast.ValueSpec)
+			ident, ok := value.Type.(*ast.Ident)
+			if !ok || ident.Name != typeName {
+				continue
+			}
+			for _, name := range value.Names {
+				names = append(names, strings.ToLower(strings.TrimSuffix(name.Name, suffix)))
+			}
+		}
+	}
+	if len(names) == 0 {
+		t.Fatalf("no constants of type %s found", typeName)
+	}
+	return names
+}
+
+// caseVariants returns name in lower, upper and alternating mixed case.
+func caseVariants(name string) []string {
+	mixed := []rune(strings.ToLower(name))
+	for i := range mixed {
+		if i%2 == 0 {
+			mixed[i] = unicode.ToUpper(mixed[i])
+		}
+	}
+	return []string{strings.ToLower(name), strings.ToUpper(name), string(mixed)}
+}
+
+// TestSchemaAcceptsRuntimeLogNames derives every log level, logger and log
+// rotation name from the runtime sources, so a name added to the runtime (or
+// dropped from a schema pattern) fails here instead of drifting silently.
+func TestSchemaAcceptsRuntimeLogNames(t *testing.T) {
+	schema := loadSchema(t)
+	levelFile := parseGoFile(t, "../io/dlog/level.go")
+	factoryFile := parseGoFile(t, "../io/dlog/loggers/factory.go")
+	strategyFile := parseGoFile(t, "../io/dlog/loggers/strategy.go")
+
+	// The level constants and the parser's switch must agree, otherwise the
+	// switch is no longer a complete source of level names.
+	levels := caseStrings(t, levelFile, "newLevel")
+	constLevels := constNamesOfType(t, levelFile, "level", "")
+	for _, name := range constLevels {
+		if !containsString(levels, name) {
+			t.Fatalf("level constant %q has no case in newLevel %v", name, levels)
+		}
+	}
+	loggerNames := mapLiteralKeys(t, factoryFile, "loggerRegistry")
+	rotations := constNamesOfType(t, strategyFile, "Rotation", "Rotation")
+	// NewStrategy must still parse the daily name explicitly.
+	for _, name := range caseStrings(t, strategyFile, "NewStrategy") {
+		if !containsString(rotations, name) {
+			t.Fatalf("NewStrategy case %q has no Rotation constant %v", name, rotations)
+		}
+	}
+
+	groups := []struct {
+		key   string
+		names []string
+	}{
+		{key: "LogLevel", names: levels},
+		{key: "Logger", names: loggerNames},
+		{key: "LogRotation", names: rotations},
+	}
+	for _, group := range groups {
+		for _, name := range group.names {
+			variants := caseVariants(name)
+			if name == "" {
+				variants = []string{""}
+			}
+			for _, variant := range variants {
+				t.Run(fmt.Sprintf("%s=%q", group.key, variant), func(t *testing.T) {
+					document, err := json.Marshal(map[string]any{
+						"Common": map[string]any{group.key: variant},
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if errs := validateConfigText(t, schema, string(document)); len(errs) > 0 {
+						t.Fatalf("runtime name rejected:\n%s", strings.Join(errs, "\n"))
+					}
+				})
+			}
+		}
 	}
 }
