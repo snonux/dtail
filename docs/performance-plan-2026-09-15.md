@@ -159,6 +159,10 @@ baseline, and note the commit.
 | `45` | parent `c47e93f` | serverless, 100 MiB normal log (10 interleaved rounds, median user time) | dcat 0.13 s, dgrep INFO 0.14 s, dgrep ERROR 0.07 s | dcat 0.09 s, dgrep INFO 0.10 s, dgrep ERROR 0.07 s | yes, `cmp` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `45` | parent `c47e93f` | server mode, 100 MiB normal log, `--logger stdout` (8 interleaved rounds; client elapsed, dserver CPU from `/proc`) | dcat 0.73-0.93 s, server 1.05-1.17 s; dgrep ERROR 0.22-0.28 s, server 0.21-0.35 s | dcat 0.74-0.95 s, server 1.01-1.13 s; dgrep ERROR 0.21-0.27 s, server 0.23-0.34 s (no measurable change) | yes, `cmp` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `45` | parent `c47e93f` | `BenchmarkDirectLineProcessorLinePath` (new), 128-byte line into a plain serverless `DirectWriter` on `io.Discard`, 6 runs | `buffer` 61.4-61.8 ns/op, 0 allocs/op | `raw` 36.2-36.3 ns/op, 0 allocs/op | n/a (unit test compares both paths byte for byte for six writer formats) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `65` | parent `b3a84a9` | dtail follow, 8 sessions on one dserver, single-line latency on session 0 (40 probes per run, 2 interleaved rounds; mean / p95), server EOF poll S and client stdout flush C | S100/C100 (current): 97-107 ms / 160-172 ms | S50/C50: 49-52 ms / 80-89 ms; S20/C20: 17-20 ms / 29-37 ms; S20/C100: 61-66 ms; S100/C20: 57-62 ms; S50/C100: 65-72 ms; S100/C50: 72-79 ms | n/a (intervals only) | `make clean && make build` only (docs-only change, no code kept) |
+| `65` | parent `b3a84a9` | dserver CPU with 8 idle follow sessions (20 s, utime+stime from `/proc`, % of one core), same runs | S100: 6.2-9.1% | S50: 12.1-14.6%; S20: 20.3-27.6% | n/a | `make clean && make build` only (docs-only change, no code kept) |
+| `65` | parent `b3a84a9` | dtail client CPU per idle follow session, same runs | C100: 0.89-0.97% | C50: 1.77-2.03%; C20: 4.33-4.45% | n/a | `make clean && make build` only (docs-only change, no code kept) |
+| `65` | parent `b3a84a9` | dserver CPU with 1 idle follow session (2 rounds) | S100: 2.8-4.0% | S20: 11.2-11.3% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -490,3 +494,38 @@ ranges overlap in every scenario. dcat and dgrep colored (non-`--plain`)
 serverless output of the before and after binaries was also compared on the
 first 20,000 lines and is identical. Not measured: follow mode (covered by
 `TestTailUsesRawProcessorFastPath` for correctness only).
+
+`65` notes (decision: no change). Both intervals stay at 100 ms: the server
+EOF poll in `followLineProcessor.handleReadError` and
+`stdoutIdleFlushInterval` in the client stdout sink. `fileIdleFlushInterval`
+was not changed or measured: it only bounds when the daily log file is
+written, while the terminal latency of the default `fout` logger comes from
+its stdout sink.
+Variant binaries were built with `go build` from `b3a84a9` with only the two
+constants changed (S = server poll, C = client flush, 100 / 50 / 20 ms). A
+scratch harness started one dserver (`--cfg none --logger stdout`) and 8
+`dtail --plain --logger stdout` follow sessions on separate empty files, waited
+until every session was live, read dserver and client CPU from `/proc` over
+20 s of idle following, then appended 40 single probe lines to session 0's file
+at random 250-450 ms spacing and timed each until it appeared on the client's
+stdout pipe. Variants alternated order per round. `sv_dtail_follow` of
+`benchmarks/upstream_vs_local_bench.sh` was not used for the decision: it
+times a burst with 20 ms marker polling, so it measures burst throughput, not
+the per-line floor.
+The latency floor is as expected from two independent 100 ms timers: mean
+about 100 ms, worst about 200 ms. Shortening either interval lowers latency in
+proportion, but idle CPU rises with the wakeup rate: 50 ms roughly doubles
+both dserver idle CPU with 8 sessions and client idle CPU per session, 20 ms
+about triples dserver and more than quadruples the client. Even at the current
+setting a dserver with 8 idle follow sessions uses 6-9% of a core on this
+bhyve/hpet VM. A 20 s server CPU profile of that state caught only 190 ms of
+samples (the rest is presumably kernel time the profiler does not see); 79% of
+them are runtime scheduler work (`runtime.findRunnable`, netpoll,
+`runtime.nanotime`) and no file read or stat call shows up, so the cost is
+waking goroutines on this VM. The task's
+keep rule (clear latency gain and no measurable idle CPU rise) is therefore
+not met by any shorter interval. Latency could be lowered without extra
+wakeups by event-driven designs, not evaluated here: flushing the client
+stdout buffer when the receive loop has drained its input instead of on a
+ticker, and inotify-driven wakeups instead of the server EOF poll.
+Only `make clean && make build` was run for this change (docs only).
