@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
@@ -20,7 +21,11 @@ type serverMessageSink func(string) error
 
 // LineWriter defines the interface for direct writing in output mode
 type LineWriter interface {
-	// WriteLineData writes formatted line data directly to output
+	// WriteLineData writes formatted line data directly to output. lineContent
+	// is borrowed for the duration of the call only: implementations must copy
+	// what they keep (the line formatters append it to the writer's own buffer)
+	// and must not retain the slice, because callers recycle or reuse it right
+	// after the call returns.
 	WriteLineData(lineContent []byte, lineNum uint64, sourceID string) error
 	// WriteServerMessage writes a server message
 	WriteServerMessage(message string) error
@@ -563,6 +568,11 @@ type DirectLineProcessor struct {
 	logger    logging.Logger
 }
 
+var (
+	_ line.Processor    = (*DirectLineProcessor)(nil)
+	_ line.RawProcessor = (*DirectLineProcessor)(nil)
+)
+
 // NewDirectLineProcessor creates a processor that writes directly
 func NewDirectLineProcessor(writer LineWriter, globID string, logger logging.Logger) *DirectLineProcessor {
 	return &DirectLineProcessor{
@@ -572,25 +582,20 @@ func NewDirectLineProcessor(writer LineWriter, globID string, logger logging.Log
 	}
 }
 
-// ProcessLine writes a line directly to the output
+// ProcessLine writes a line directly to the output and recycles lineContent,
+// whose ownership it takes over, on every return path.
 func (p *DirectLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum uint64, sourceID string) error {
-	p.lineCount++
-
-	// Per-line hot path: gate the trace so the uint64/string args are not boxed
-	// into a []any on every line when trace logging is off (the default).
-	// This call site was ~98% of all allocated objects and ~28% of CPU
-	// (convT64+convTstring) in the output serverless dcat profile.
-	if p.logger.TraceEnabled() {
-		writerTrace(p.logger, "DirectLineProcessor.ProcessLine", "lineCount", p.lineCount, "lineNum", lineNum, "sourceID", sourceID)
-	}
-
-	// Write directly to output
-	err := p.writer.WriteLineData(lineContent.Bytes(), lineNum, sourceID)
-
-	// Recycle the buffer
+	err := p.writeLine(lineContent.Bytes(), lineNum, sourceID)
 	pool.RecycleBytesBuffer(lineContent)
-
 	return err
+}
+
+// ProcessRawLine writes a borrowed line directly to the output. It is the
+// line.RawProcessor fast path: the LineWriter formats (copies) raw into its own
+// buffer before returning, so nothing retains raw after the call and there is
+// no pooled buffer to recycle.
+func (p *DirectLineProcessor) ProcessRawLine(raw []byte, lineNum uint64, sourceID string) error {
+	return p.writeLine(raw, lineNum, sourceID)
 }
 
 // Flush ensures all data is written
@@ -603,4 +608,17 @@ func (p *DirectLineProcessor) Flush() error {
 func (p *DirectLineProcessor) Close() error {
 	writerTrace(p.logger, "DirectLineProcessor.Close", "lineCount", p.lineCount)
 	return p.writer.Flush()
+}
+
+func (p *DirectLineProcessor) writeLine(content []byte, lineNum uint64, sourceID string) error {
+	p.lineCount++
+
+	// Per-line hot path: gate the trace so the uint64/string args are not boxed
+	// into a []any on every line when trace logging is off (the default).
+	// This call site was ~98% of all allocated objects and ~28% of CPU
+	// (convT64+convTstring) in the output serverless dcat profile.
+	if p.logger.TraceEnabled() {
+		writerTrace(p.logger, "DirectLineProcessor.ProcessLine", "lineCount", p.lineCount, "lineNum", lineNum, "sourceID", sourceID)
+	}
+	return p.writer.WriteLineData(content, lineNum, sourceID)
 }

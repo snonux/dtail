@@ -81,6 +81,12 @@ func (f *ReadFile) newFilteringProcessor(ltx lcontext.LContext,
 		stats:     &f.stats,
 		globID:    f.globID,
 	}
+	// The raw fast path is only valid without local context; ProcessFilteredRaw
+	// is not called in that case, but leave the field nil so the precondition
+	// does not rest on the callers alone.
+	if rawProcessor, ok := processor.(line.RawProcessor); ok && !ltx.Has() {
+		filterProcessor.rawProcessor = rawProcessor
+	}
 	if f.bufferRecycleObserver != nil {
 		filterProcessor.recycle = f.recycleBytesBuffer
 	}

@@ -20,3 +20,20 @@ type Processor interface {
 	// Called when processing is complete.
 	Close() error
 }
+
+// RawProcessor is an optional extension of Processor for processors that can
+// consume a line straight from the reader's transient byte slice, skipping the
+// pooled-buffer copy that ProcessLine requires.
+//
+// Unlike ProcessLine, ProcessRawLine does not transfer ownership: raw is
+// borrowed and only valid for the duration of the call (it typically aliases a
+// bufio.Scanner token or a reused partial-line buffer). An implementation must
+// copy whatever it needs before returning and must not retain raw or any
+// sub-slice of it. There is nothing to recycle on any return path.
+//
+// Readers use it only where a line is emitted without local context
+// (before/after/max), because the context path has to keep lines beyond the
+// call. Processors that must retain lines keep implementing only Processor.
+type RawProcessor interface {
+	ProcessRawLine(raw []byte, lineNum uint64, sourceID string) error
+}

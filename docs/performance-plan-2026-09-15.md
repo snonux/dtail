@@ -153,6 +153,12 @@ baseline, and note the commit.
 | `35` retention fix | parent `84eb1e1` | allocations per 100-line batch, steady identical lines, `GOMAXPROCS(1)`, `TestProcessorSteadyLargeLinesAllocationFree` (default parser, group by a 3000 / 4000 byte `color`; copying parser, 150 / 300 fields) | keys 22 / 68, fields 352 / 861 (`d5cae8f`: keys 1 / 1) | keys 0 / 0, fields 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` batch-maximum fix | parent `54568ac` | allocations per 100-line batch, `GOMAXPROCS(1)`, `TestProcessorVaryingKeyLengthsAllocationFree` (default parser, group by `color`, 64 groups with key lengths uniform in 0 to 2 / 4 / 8 / 16 KiB, random line order, fixed seed, 50 warm-up batches, `AllocsPerRun(200)`) | 0 / 0 / 26 / 53 (`d5cae8f`: 1 / 1 / 1 / 1, reviewer measurement) | 0 / 0 / 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` batch-history fix | parent `df3e571` | allocations per cycle, `GOMAXPROCS(1)`, steady state, each cycle measured on its own: `TestProcessorSmallerBatchesAllocationFree` (default parser, group by `color`: a full batch of 2700 / 3000 byte keys, then one short line drained by `Flush`; a full batch of 3000 byte keys, then a full batch of short keys) and `TestBatchScratchSmallerBatchesAllocationFree` (fields: 100 lines of 300 fields, then 1 / 100 lines of 3 fields) | keys 22 / 22 / 22, fields 852 / 852 (measured with the history set to one batch, which is the `cc15be4` algorithm; the same tests on `cc15be4` itself also fail with 22 and 852) | keys 0 / 0 / 0, fields 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `45` | parent `c47e93f` | dcat serverless, 1 GiB normal log (the 100 MiB log 10 times, 8,185,610 lines), `--plain` (5 interleaved rounds, elapsed / user / sys, median in parentheses) | 1.79-4.54 (2.08) s / 1.25-3.64 (1.38) s / 0.57-2.02 (0.71) s | 1.39-1.83 (1.40) s / 0.84-1.08 (0.85) s / 0.53-0.84 (0.55) s | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `45` | parent `c47e93f` | dgrep `--regex INFO` (90% of lines match) serverless, same 1 GiB log, same runs | 1.89-3.06 (2.58) s / 1.31-1.53 (1.47) s / 0.51-0.74 (0.64) s | 1.53-2.25 (1.68) s / 0.94-1.06 (0.95) s / 0.51-0.68 (0.64) s | yes, `cmp` against `grep INFO` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `45` | parent `c47e93f` | dgrep `--regex ERROR` (10% of lines match) serverless, same 1 GiB log, same runs | 0.94-2.08 (0.94) s / 0.70-1.66 (0.72) s / 0.19-0.76 (0.20) s | 0.87-1.24 (0.91) s / 0.63-0.79 (0.65) s / 0.19-0.32 (0.21) s | yes, `cmp` against `grep ERROR` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `45` | parent `c47e93f` | serverless, 100 MiB normal log (10 interleaved rounds, median user time) | dcat 0.13 s, dgrep INFO 0.14 s, dgrep ERROR 0.07 s | dcat 0.09 s, dgrep INFO 0.10 s, dgrep ERROR 0.07 s | yes, `cmp` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `45` | parent `c47e93f` | server mode, 100 MiB normal log, `--logger stdout` (8 interleaved rounds; client elapsed, dserver CPU from `/proc`) | dcat 0.73-0.93 s, server 1.05-1.17 s; dgrep ERROR 0.22-0.28 s, server 0.21-0.35 s | dcat 0.74-0.95 s, server 1.01-1.13 s; dgrep ERROR 0.21-0.27 s, server 0.23-0.34 s (no measurable change) | yes, `cmp` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `45` | parent `c47e93f` | `BenchmarkDirectLineProcessorLinePath` (new), 128-byte line into a plain serverless `DirectWriter` on `io.Discard`, 6 runs | `buffer` 61.4-61.8 ns/op, 0 allocs/op | `raw` 36.2-36.3 ns/op, 0 allocs/op | n/a (unit test compares both paths byte for byte for six writer formats) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -451,3 +457,36 @@ on `d5cae8f`). Keys above 64 KiB or more than 1024 fields per line are far
 outside ordinary logs, and raising the limits would let each pooled batch
 scratch park 100 times as much storage, so the algorithm is unchanged and the
 tradeoff is documented at `clearLineScratch`.
+
+`45` notes: before binaries were built with `go build` from `c47e93f`; the
+after binaries of the 1 GiB and server-mode rows by `make build` from the
+change, those of the 100 MiB serverless row by `go build` from the same
+source; before and after alternated in each
+round, serverless with `--cfg none --plain --noColor --logger stdout --logLevel
+error` and output written to a file. The file reader now hands a matching line
+of the no-local-context path straight to the processor when the processor
+implements the new optional `line.RawProcessor` interface
+(`ProcessRawLine([]byte, lineNum, sourceID)`); `DirectLineProcessor` does, so
+cat and grep lines no longer go through a pooled `bytes.Buffer` (Get, copy,
+format, recycle). The slice is borrowed, not transferred: it is the scanner
+token (snapshot reads) or the follow reader's reused partial-line buffer, it is
+valid only for the call, and the `LineWriter` formatters copy it into the
+writer's own buffer, so there is nothing to recycle and no double recycle is
+possible. The fast path is wired up once in `newFilteringProcessor`, only when
+no before/after/max context is set, and is used only from
+`ProcessFilteredRaw`, whose precondition is the same. Every local-context
+line and the aggregate `Processor`, which keeps lines until its batch is
+aggregated, keep the owned-buffer `ProcessLine` path; a test pins that the
+aggregate `Processor` does not implement the interface. The before binary had
+slow outlier runs (dcat up to 4.54 s) that the after binary did not show in
+the recorded 1 GiB rounds (an earlier, unrecorded set of 5 rounds with the
+same source showed slow outliers for both binaries); the medians and minimums above are the comparison to rely on.
+The microbenchmark saves about 25 ns per line, the 1 GiB dcat runs about 65 ns
+of user time per line (median 1.38 s to 0.85 s over 8.2M lines); the
+difference between the two was not investigated. At a 10% hit rate (dgrep
+ERROR) the gain is small because only matching lines ever took the buffer.
+Server mode shows no measurable change in client time or dserver CPU: the
+ranges overlap in every scenario. dcat and dgrep colored (non-`--plain`)
+serverless output of the before and after binaries was also compared on the
+first 20,000 lines and is identical. Not measured: follow mode (covered by
+`TestTailUsesRawProcessorFastPath` for correctness only).

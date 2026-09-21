@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/io/pool"
 	"github.com/mimecast/dtail/internal/logging"
 )
@@ -163,5 +164,17 @@ func TestProcessorBatchIsAllocationFree(t *testing.T) {
 	if allocs != 0 {
 		t.Errorf("a batch of %d lines made %.1f allocations, want 0",
 			processorBatchSize, allocs)
+	}
+}
+
+// TestProcessorKeepsBufferContract pins that the aggregate Processor does not
+// implement line.RawProcessor. It keeps each line's pooled buffer until its
+// batch is aggregated, so it cannot borrow the reader's transient slice; the
+// file reader must keep handing it owned buffers through ProcessLine.
+func TestProcessorKeepsBufferContract(t *testing.T) {
+	var processor any = &Processor{}
+	if _, ok := processor.(line.RawProcessor); ok {
+		t.Fatal("aggregate Processor implements line.RawProcessor, but it retains lines " +
+			"beyond the call and must stay on the owned-buffer ProcessLine path")
 	}
 }
