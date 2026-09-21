@@ -475,6 +475,12 @@ func TestFollowLastSessionLeavingStopsTheReader(t *testing.T) {
 func TestFollowHandsTheTargetOverWhenItsSessionLeaves(t *testing.T) {
 	hub := newTestHub()
 	file := newTestFile(t)
+	var replaced []string
+	replace := hub.seams.replaceTarget
+	hub.seams.replaceTarget = func(reader *fs.ReadFile, target fs.ValidatedReadTarget) error {
+		replaced = append(replaced, target.ResolvedPath())
+		return replace(reader, target)
+	}
 	owner := syncReader(t, hub, file)
 	other := startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "other")
 	waitFor(t, "second session to join", func() bool { return subscriberCount(hub, file.path) == 2 })
@@ -485,6 +491,9 @@ func TestFollowHandsTheTargetOverWhenItsSessionLeaves(t *testing.T) {
 	}
 	if err := owner.stop(t); err != nil {
 		t.Fatal(err)
+	}
+	if len(replaced) != 1 || replaced[0] != file.path {
+		t.Errorf("the reader was handed targets %q, want the remaining session's target for %s", replaced, file.path)
 	}
 	if session, ok := e.ownerSession(); !ok || session.GlobID != "other" {
 		t.Fatalf("owner after leave = %q, %v, want the remaining session", session.GlobID, ok)
@@ -556,22 +565,31 @@ type textLogger struct{ logging.NopLogger }
 
 func (textLogger) Warn(args ...any) string { return fmt.Sprint(args...) }
 
-func TestFollowForwardsReaderMessagesToEverySession(t *testing.T) {
+func TestFollowWarnsEverySessionAboutLongLinesWithItsOwnPath(t *testing.T) {
 	hub := New(Options{Logger: textLogger{}, RetryInterval: 10 * time.Millisecond, MaxLineLength: 16})
 	file := newTestFile(t)
 	syncReader(t, hub, file)
-	first := startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "glob")
-	second := startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "glob")
+
+	// A second name for the same file: both sessions share one reader.
+	link := filepath.Join(t.TempDir(), "link.log")
+	if err := os.Symlink(file.path, link); err != nil {
+		t.Fatal(err)
+	}
+	direct := startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "glob")
+	viaLink := startFollowerWithPath(t, hub, file, link)
 	waitFor(t, "sessions to join", func() bool { return subscriberCount(hub, file.path) == 3 })
 
 	// A follow reader only splits, and warns about, a line it has not seen
 	// the end of yet, so write the long line without its newline first.
 	file.appendRaw(strings.Repeat("x", 40))
-	for _, f := range []*follower{first, second} {
+	for _, tt := range []struct {
+		f    *follower
+		path string
+	}{{direct, file.path}, {viaLink, link}} {
 		select {
-		case message := <-f.messages:
-			if !strings.Contains(message, "Long log line") {
-				t.Errorf("message = %q, want the long line warning", message)
+		case message := <-tt.f.messages:
+			if !strings.Contains(message, "Long log line") || !strings.Contains(message, tt.path) {
+				t.Errorf("message = %q, want the long line warning for %s", message, tt.path)
 			}
 		case <-time.After(waitTimeout):
 			t.Fatal("a session did not get the long line warning")
@@ -579,6 +597,101 @@ func TestFollowForwardsReaderMessagesToEverySession(t *testing.T) {
 	}
 }
 
+// startFollowerWithPath follows the test file under another name.
+func startFollowerWithPath(t *testing.T, hub *Hub, file *testFile, path string) *follower {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &follower{recorder: &recorder{}, cancel: cancel, done: make(chan error, 1), messages: make(chan string, 16)}
+	session := Session{
+		Target: file.target(), FilePath: path, GlobID: "link", Regex: regex.NewNoop(),
+		ServerMessages: f.messages, Logger: textLogger{}, NewProcessor: f.recorder.newProcessor,
+	}
+	go func() { f.done <- hub.Follow(ctx, session) }()
+	t.Cleanup(func() {
+		cancel()
+		<-f.done
+	})
+	return f
+}
+
+func TestFollowFlushesAfterEveryPublishedRead(t *testing.T) {
+	hub := newTestHub()
+	file := newTestFile(t)
+	syncReader(t, hub, file)
+	follower := startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "glob")
+	waitFor(t, "session to join", func() bool { return subscriberCount(hub, file.path) == 2 })
+
+	file.appendLines("a", "b")
+	waitFor(t, "both lines", func() bool { return follower.recorder.hasLine("b") })
+	waitFor(t, "the flush after them", func() bool {
+		events := follower.recorder.snapshot()
+		return len(events) > 0 && events[len(events)-1].kind == "flush"
+	})
+	events := follower.recorder.snapshot()
+	var kinds []string
+	for _, e := range events {
+		kinds = append(kinds, e.kind)
+	}
+	if want := []string{"line", "line", "flush"}; !reflect.DeepEqual(kinds, want) {
+		t.Errorf("events = %q, want %q (one flush after the read's lines)", kinds, want)
+	}
+}
+
+func TestFollowSurvivesAReaderPanic(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func(context.Context, *fs.ReadFile, line.Processor) error
+	}{
+		{"panic", func(context.Context, *fs.ReadFile, line.Processor) error { panic("injected reader bug") }},
+		{"worker panic error", func(context.Context, *fs.ReadFile, line.Processor) error {
+			return fmt.Errorf("%w: injected", fs.ErrReaderWorkerPanic)
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			hub := newTestHub()
+			file := newTestFile(t)
+			healthy := hub.seams.startReader
+			release := make(chan struct{})
+			hub.seams.startReader = func(ctx context.Context, reader *fs.ReadFile, processor line.Processor) error {
+				<-release // let both sessions join first
+				return tt.start(ctx, reader, processor)
+			}
+
+			followers := []*follower{
+				startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "a"),
+				startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "b"),
+			}
+			waitFor(t, "sessions to join", func() bool { return subscriberCount(hub, file.path) == 2 })
+			failed := hub.entryFor(file.path)
+			close(release)
+
+			for _, f := range followers {
+				select {
+				case err := <-f.done:
+					f.done <- err
+					if !errors.Is(err, fs.ErrReaderWorkerPanic) {
+						t.Errorf("Follow() = %v, want an error wrapping fs.ErrReaderWorkerPanic", err)
+					}
+				case <-time.After(waitTimeout):
+					t.Fatal("Follow did not return after the reader failed")
+				}
+			}
+			select {
+			case <-failed.done:
+			case <-time.After(waitTimeout):
+				t.Fatal("the failed reader did not stop")
+			}
+
+			// The hub forgot the failed read: a new session gets a new reader.
+			hub.seams.startReader = healthy
+			syncReader(t, hub, file)
+			if hub.entryFor(file.path) == failed {
+				t.Error("a new session joined the failed read")
+			}
+		})
+	}
+}
 func TestFollowRejectsInvalidSessions(t *testing.T) {
 	hub := newTestHub()
 	file := newTestFile(t)
@@ -694,4 +807,47 @@ func afterMarker(r *recorder, marker string) ([]string, []uint64) {
 		steps = append(steps, e.lineNum-base)
 	}
 	return lines, steps
+}
+
+func TestFailedReadIsForgottenWhileSessionsAreStillSubscribed(t *testing.T) {
+	hub := newTestHub()
+	file := newTestFile(t)
+	release := make(chan struct{})
+	healthy := hub.seams.startReader
+	hub.seams.startReader = func(ctx context.Context, reader *fs.ReadFile, processor line.Processor) error {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return healthy(ctx, reader, processor)
+	}
+	defer close(release)
+
+	// A subscriber that is registered but not draining its queue yet, as a
+	// session busy with earlier lines would be.
+	sub := newSubscriber(Session{Target: file.target(), FilePath: file.path,
+		NewProcessor: (&recorder{}).newProcessor}, 4)
+	e := hub.join(sub)
+	defer hub.leave(e, sub)
+
+	failure := fmt.Errorf("%w: injected", fs.ErrReaderWorkerPanic)
+	e.fail(failure)
+	e.fail(errors.New("a second failure must be ignored"))
+
+	if hub.entryFor(file.path) != nil {
+		t.Error("the hub still lists the failed read while a session is subscribed")
+	}
+	select {
+	case it := <-sub.queue:
+		if it.kind != failedItem || !errors.Is(it.err, failure) {
+			t.Errorf("queued item = %+v, want the failure", it)
+		}
+	default:
+		t.Fatal("the subscriber was not told about the failure")
+	}
+	select {
+	case it := <-sub.queue:
+		t.Errorf("a second failure was queued: %+v", it)
+	default:
+	}
 }

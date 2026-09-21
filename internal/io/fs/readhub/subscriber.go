@@ -84,8 +84,8 @@ func (r *sessionRead) handle(ctx context.Context, it item) error {
 		r.endProcessor()
 		r.processor = r.session.NewProcessor()
 		r.filter.Reopen(r.processor)
-	case messageItem:
-		return r.sendMessage(ctx, it.message)
+	case longLineItem:
+		return r.sendMessage(ctx, fs.LongLineWarning(r.messageLogger(), r.session.FilePath))
 	case failedItem:
 		return it.err
 	}
@@ -116,6 +116,14 @@ func (r *sessionRead) sendMessage(ctx context.Context, message string) error {
 	case <-ctx.Done():
 	}
 	return nil
+}
+
+// messageLogger returns the logger that words the session's messages.
+func (r *sessionRead) messageLogger() logging.Logger {
+	if r.session.Logger != nil {
+		return r.session.Logger
+	}
+	return r.logger
 }
 
 // close releases the filter and ends the current processor.

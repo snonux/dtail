@@ -8,10 +8,8 @@ import (
 
 	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/fs"
-	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
-	"github.com/mimecast/dtail/internal/regex"
 )
 
 // entry is the shared follow read of one file.
@@ -22,6 +20,9 @@ type entry struct {
 	logger  logging.Logger
 	// onFailure lets the hub drop an entry whose reader failed for good.
 	onFailure func(*entry)
+	failOnce  sync.Once
+	// seams holds the operations tests replace; see hubSeams.
+	seams hubSeams
 
 	reader   *fs.ReadFile
 	messages chan string
@@ -43,7 +44,7 @@ type entry struct {
 }
 
 func newEntry(key entryKey, creator Session, options Options, logger logging.Logger,
-	onFailure func(*entry)) *entry {
+	seams hubSeams, onFailure func(*entry)) *entry {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &entry{
@@ -52,6 +53,7 @@ func newEntry(key entryKey, creator Session, options Options, logger logging.Log
 		options:   options,
 		logger:    logger,
 		onFailure: onFailure,
+		seams:     seams,
 		messages:  make(chan string),
 		cancel:    cancel,
 		ctx:       ctx,
@@ -132,15 +134,38 @@ func (e *entry) remove(sub *subscriber) int {
 
 // handOver makes the reader use next's target. The caller holds e.mu.
 func (e *entry) handOver(next *subscriber) {
-	if err := e.reader.ReplaceTarget(next.session.Target); err != nil {
+	if err := e.seams.replaceTarget(e.reader, next.session.Target); err != nil {
 		// Every subscriber's target resolves to the entry's path, so this
 		// cannot fail; stop rather than keep reading through a departed
-		// session's target.
-		e.logger.Error(e.path, "Unable to hand over the shared read target", err)
+		// session's target. fail takes the hub's and the entry's locks,
+		// which the caller holds.
 		e.cancel()
+		go e.fail(fmt.Errorf("%w: hand over the shared read target: %w", fs.ErrReaderWorkerPanic, err))
 		return
 	}
 	e.owner = next
+}
+
+// fail ends the shared read for good: the hub forgets the entry, so the next
+// session starts a new reader, and every subscriber's Follow returns err. err
+// wraps fs.ErrReaderWorkerPanic, which a private read reports for a reader
+// that panicked, so callers handle both alike.
+func (e *entry) fail(err error) {
+	e.failOnce.Do(func() {
+		e.logger.Error(e.path, err)
+		e.onFailure(e)
+		e.cancel()
+		e.publish(item{kind: failedItem, err: err})
+	})
+}
+
+// recoverPanic turns a panic on one of the entry's goroutines into a failed
+// shared read: the private reader runs on the session's goroutine, where a
+// panic ends that session only, so a shared one must not crash dserver.
+func (e *entry) recoverPanic(where string) {
+	if recovered := recover(); recovered != nil {
+		e.fail(fmt.Errorf("%w: shared %s: %v", fs.ErrReaderWorkerPanic, where, recovered))
+	}
 }
 
 // run is the shared equivalent of the read command's retry loop for one
@@ -149,22 +174,21 @@ func (e *entry) handOver(next *subscriber) {
 // a new processor as a private read would.
 func (e *entry) run() {
 	defer close(e.done)
+	defer e.recoverPanic("reader")
 	fanout := newFanoutProcessor(e)
 
 	for iteration := 0; ; iteration++ {
 		if iteration > 0 {
 			e.publish(item{kind: reopenItem})
 		}
-		err := e.reader.Start(e.ctx, lcontext.LContext{}, fanout, regex.NewNoop())
+		err := e.seams.startReader(e.ctx, e.reader, fanout)
 		fanout.publishPending()
+		if errors.Is(err, fs.ErrReaderWorkerPanic) {
+			e.fail(err)
+			return
+		}
 		if err != nil {
 			e.logger.Error(e.path, err)
-			if errors.Is(err, fs.ErrReaderWorkerPanic) {
-				e.onFailure(e)
-				e.publish(item{kind: failedItem, err: err})
-				e.cancel()
-				return
-			}
 		}
 		if e.ctx.Err() != nil || !ctxutil.Sleep(e.ctx, e.options.RetryInterval) {
 			return
@@ -173,13 +197,15 @@ func (e *entry) run() {
 	}
 }
 
-// forwardMessages passes the reader's messages for the client, such as the
-// long line warning, on to every subscriber.
+// forwardMessages tells every subscriber when the reader warns about a long
+// line, the only message a reader sends to its client. The subscriber words
+// the warning with its own file path.
 func (e *entry) forwardMessages() {
+	defer e.recoverPanic("message forwarder")
 	for {
 		select {
-		case message := <-e.messages:
-			e.publish(item{kind: messageItem, message: message})
+		case <-e.messages:
+			e.publish(item{kind: longLineItem})
 		case <-e.ctx.Done():
 			return
 		}

@@ -58,10 +58,13 @@ type SourceRestarter interface {
 // so that a consumer can later resume the read with a reader of its own.
 //
 // A follow-mode reader of an uncompressed file calls LinesEndAt from the
-// goroutine that calls ProcessLine, before every Flush, with the byte offset
-// just past the last complete line it fed and the identity of the open file.
-// The offset excludes a trailing line the reader has not finished yet.
-// Readers of compressed files and snapshot readers never call it.
+// goroutine that calls ProcessLine, before the Flush that follows each read,
+// with the byte offset just past the last byte it fed as (part of) a line and
+// the identity of the open file. The offset excludes a trailing line the
+// reader has not finished yet; after the reader split a line longer than the
+// maximum line length, it lies inside that line. The reader does not call it
+// again for a trailing fragment it feeds when its read is cancelled. Readers
+// of compressed files and snapshot readers never call it.
 type PositionObserver interface {
 	LinesEndAt(offset int64, file os.FileInfo)
 }

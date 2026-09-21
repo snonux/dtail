@@ -21,18 +21,18 @@ const (
 	restartItem
 	// reopenItem: a new read of the file starts, e.g. after a rotation.
 	reopenItem
-	// messageItem: a message from the reader for the client.
-	messageItem
+	// longLineItem: the reader split a line that is longer than the maximum
+	// line length; every session warns its client with its own file path.
+	longLineItem
 	// failedItem: the reader failed for good.
 	failedItem
 )
 
 // item is one entry of a subscriber's queue.
 type item struct {
-	kind    itemKind
-	chunk   *chunk
-	message string
-	err     error
+	kind  itemKind
+	chunk *chunk
+	err   error
 }
 
 // chunk holds whole lines, as the follow reader fed them: without their
@@ -55,7 +55,9 @@ func (c *chunk) line(i int) []byte {
 	if i > 0 {
 		start = c.ends[i-1]
 	}
-	return c.data[start:c.ends[i]]
+	// Cap the slice at the line's end: the chunk is shared by every session,
+	// and an append must never reach into the next line.
+	return c.data[start:c.ends[i]:c.ends[i]]
 }
 
 // fanoutProcessor is the processor of an entry's reader. It packs the lines

@@ -212,6 +212,13 @@ func (f *ReadFile) lineLimit() int {
 	return f.maxLineLength
 }
 
+// LongLineWarning formats the message a reader sends to the client, through
+// its ServerMessages channel, when it splits a line of filePath because the
+// line is longer than the maximum line length.
+func LongLineWarning(logger logging.Logger, filePath string) string {
+	return logging.OrNop(logger).Warn(filePath, "Long log line, splitting into multiple lines") + "\n"
+}
+
 func (f *ReadFile) warnAboutLongLine(ctx context.Context) bool {
 	if f.warnedAboutLongLine {
 		return true
@@ -223,8 +230,7 @@ func (f *ReadFile) warnAboutLongLine(ctx context.Context) bool {
 	}
 
 	select {
-	case f.serverMessages <- f.logger.Warn(f.filePath,
-		"Long log line, splitting into multiple lines") + "\n":
+	case f.serverMessages <- LongLineWarning(f.logger, f.filePath):
 		f.warnedAboutLongLine = true
 		return true
 	case <-ctx.Done():

@@ -3,7 +3,8 @@
 // the file into lines once and fans the lines out to every subscribed session.
 // Each session keeps its own regex, local context, line numbering and
 // processor, applied by an fs.LineFilter on the session's own goroutine, so a
-// session sees the lines it would see from a private follow read.
+// session sees the lines it would see from a private follow read, apart from
+// where it starts (see Hub.Follow).
 package readhub
 
 import (
@@ -59,6 +60,9 @@ type Session struct {
 	// ServerMessages receives the reader's messages for the session, such as
 	// the long line warning. It may be nil.
 	ServerMessages chan<- string
+	// Logger words the session's messages, as the logger of its private
+	// reader would; nil selects the hub's logger.
+	Logger logging.Logger
 	// NewProcessor makes the processor for one read of the file, like the
 	// read command does for every iteration of its retry loop. The hub
 	// flushes and closes every processor it made.
@@ -70,9 +74,27 @@ type Session struct {
 type Hub struct {
 	options Options
 	logger  logging.Logger
+	seams   hubSeams
 
 	mu      sync.Mutex
 	entries map[entryKey]*entry
+}
+
+// hubSeams are the reader operations an entry performs, replaceable in tests.
+type hubSeams struct {
+	startReader   func(ctx context.Context, reader *fs.ReadFile, processor line.Processor) error
+	replaceTarget func(reader *fs.ReadFile, target fs.ValidatedReadTarget) error
+}
+
+func defaultSeams() hubSeams {
+	return hubSeams{
+		startReader: func(ctx context.Context, reader *fs.ReadFile, processor line.Processor) error {
+			return reader.Start(ctx, lcontext.LContext{}, processor, regex.NewNoop())
+		},
+		replaceTarget: func(reader *fs.ReadFile, target fs.ValidatedReadTarget) error {
+			return reader.ReplaceTarget(target)
+		},
+	}
 }
 
 type entryKey struct {
@@ -88,6 +110,7 @@ func New(options Options) *Hub {
 	return &Hub{
 		options: options,
 		logger:  logging.OrNop(options.Logger),
+		seams:   defaultSeams(),
 		entries: make(map[entryKey]*entry),
 	}
 }
@@ -96,12 +119,21 @@ func New(options Options) *Hub {
 // the file's shared reader, which it starts if no other session follows the
 // file. It blocks like a private follow read and returns nil once ctx ends,
 // ErrStopped when the session's max-count limit ended the read, and a
-// processor or reader error otherwise. After ErrStopped or an error, a
-// private reader would start over; the caller decides how to continue.
+// processor or reader error otherwise; an error wrapping
+// fs.ErrReaderWorkerPanic means the shared reader panicked. After ErrStopped
+// or an error, a private reader would start over; the caller decides how to
+// continue.
 //
-// Lines of a trailing line the file's writer has not finished yet are not
-// delivered when the session leaves, unlike the private reader, which passes
-// such a fragment on when its read is cancelled.
+// Where a session starts differs from a private follow read, which starts at
+// the end of the file when it opens it: a session gets the lines the shared
+// reader publishes after the session joined. That includes lines the reader
+// read before the join but had not published yet, and, while the reader lags
+// behind the end of the file (it waits for a session with a full queue), the
+// backlog it has still to read. When the private reader opens the file in the
+// middle of a line, it delivers the rest of that line; a shared session gets
+// the next whole line. And a trailing line the file's writer has not finished
+// yet is not delivered when the session leaves, unlike the private reader,
+// which passes such a fragment on when its read is cancelled.
 func (h *Hub) Follow(ctx context.Context, session Session) error {
 	if err := validateSession(session); err != nil {
 		return err
@@ -137,7 +169,7 @@ func (h *Hub) join(sub *subscriber) *entry {
 	defer h.mu.Unlock()
 	e := h.entries[key]
 	if e == nil {
-		e = newEntry(key, sub.session, h.options, h.logger, h.forget)
+		e = newEntry(key, sub.session, h.options, h.logger, h.seams, h.forget)
 		h.entries[key] = e
 		e.add(sub)
 		e.start()
