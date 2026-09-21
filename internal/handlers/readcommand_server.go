@@ -9,6 +9,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/fs"
+	"github.com/mimecast/dtail/internal/io/fs/readhub"
 	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	"github.com/mimecast/dtail/internal/omode"
@@ -36,6 +37,8 @@ type readCommandDependencies struct {
 	newLineWriter   lineWriterFactory
 	abortAfterPanic func()
 	serverless      bool
+	// readHub shares follow reads between sessions; nil reads privately.
+	readHub *readhub.Hub
 }
 
 type readCommandDependencyProvider interface {
@@ -287,6 +290,7 @@ func (h *ServerHandler) readCommandDependencies() readCommandDependencies {
 		newLineWriter:   h.newReadLineWriter,
 		abortAfterPanic: h.abortAfterPanic,
 		serverless:      h.serverless,
+		readHub:         h.readHub,
 	}
 }
 

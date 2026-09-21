@@ -10,6 +10,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/io/fs/readhub"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
@@ -26,6 +27,7 @@ type ServerHandler struct {
 	*baseHandler
 	catLimiter          chan struct{}
 	tailLimiter         chan struct{}
+	readHub             *readhub.Hub
 	serverCfg           *config.ServerConfig
 	readTimings         readTimings
 	authKeyStore        *authkey.Store
@@ -91,6 +93,7 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 		}),
 		catLimiter:   dependencies.CatLimiter,
 		tailLimiter:  dependencies.TailLimiter,
+		readHub:      dependencies.ReadHub,
 		serverCfg:    serverCfg,
 		readTimings:  newReadTimings(serverCfg),
 		authKeyStore: dependencies.AuthKeyStore,

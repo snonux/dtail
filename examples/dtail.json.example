@@ -95,6 +95,7 @@
     "MapreduceLogFormat": "default",
     "MaxConcurrentCats": 2,
     "MaxConcurrentTails": 50,
+    "SharedReadsDisable": false,
     "MaxConnections": 50,
     "MaxLineLength": 1048576,
     "Permissions": {

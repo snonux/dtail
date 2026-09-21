@@ -207,6 +207,20 @@ func (h *Hub) forget(e *entry) {
 	}
 }
 
+// Subscribers returns how many sessions currently follow the file at the
+// validated resolved path through a shared reader, across compression formats.
+func (h *Hub) Subscribers(resolvedPath string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	count := 0
+	for key, e := range h.entries {
+		if key.path == resolvedPath {
+			count += len(e.snapshot())
+		}
+	}
+	return count
+}
+
 // entryFor returns the live entry for path, for tests.
 func (h *Hub) entryFor(path string) *entry {
 	h.mu.Lock()

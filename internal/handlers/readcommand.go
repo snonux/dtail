@@ -10,6 +10,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/fs"
+	"github.com/mimecast/dtail/internal/io/fs/readhub"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
@@ -34,6 +35,9 @@ type readCommand struct {
 	shutdownCoordinator  *shutdownCoordinator
 	inputBatch           *commandBatch
 	inputBatchRead       commandBatchRead
+	// followShared follows a file through the shared reader of dserver's read
+	// hub; nil when there is no hub and every read is private.
+	followShared func(context.Context, readhub.Session) error
 }
 
 type pendingInputReservationKeyType struct{}
@@ -152,6 +156,7 @@ func newReadCommandWithDependencies(dependencies readCommandDependencies, mode o
 		newLineWriter: dependencies.newLineWriter,
 		abort:         dependencies.abortAfterPanic,
 		serverless:    dependencies.serverless,
+		followShared:  followSharedFunc(dependencies.readHub),
 		aggregate:     aggregate,
 		mode:          mode,
 		shutdownCoordinator: newShutdownCoordinator(dependencies.lifecycle, dependencies.aggregates,
@@ -395,7 +400,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	defer closeServerMessages()
 
 	factory := readerFactoryFor(r.mode)
-	reader, limiter, err := factory(readerFactoryOptions{
+	readerOptions := readerFactoryOptions{
 		slots:          r.server,
 		target:         target,
 		path:           path,
@@ -403,7 +408,8 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		serverMessages: serverMessages,
 		maxLineLength:  r.timings.maxLineLength,
 		logger:         r.readerLogger,
-	})
+	}
+	reader, limiter, err := factory(readerOptions)
 	if err != nil {
 		message := "Unable to create file reader"
 		if target != nil && target.Kind == fs.JournalKind {
@@ -418,6 +424,13 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 	defer release()
+
+	// The session's own PrepareReadTarget succeeded and it holds a read slot of
+	// its own, exactly as for a private read, before it may join a shared one.
+	if r.shouldShareRead(ltx, target) {
+		r.readShared(ctx, ltx, re, readerOptions, reader)
+		return
+	}
 
 	// Output is the one and only read path. read() is only ever invoked for the
 	// cat/grep/tail command handlers (see makeReadCommandHandler), and MapReduce

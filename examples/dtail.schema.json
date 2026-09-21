@@ -370,6 +370,11 @@
           "minimum": 1,
           "default": 50
         },
+        "SharedReadsDisable": {
+          "type": "boolean",
+          "description": "Turn shared follow reads off. By default, sessions that tail the same file share one reader of it in dserver; every session still checks its own permissions, uses its own read slot and filters and processes the lines on its own. When true, every session reads the file with a reader of its own.",
+          "default": false
+        },
         "MaxLineLength": {
           "type": "integer",
           "description": "Maximum line length in bytes before a line is split into multiple smaller lines. 0 or less uses the 1 MiB default. The minimum of 1024 is a recommendation of this schema; dserver uses any positive value as is.",
