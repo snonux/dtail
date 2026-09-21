@@ -237,13 +237,24 @@ func (r Regex) MatchString(str string) bool {
 }
 
 // Serialize the regex.
+//
+// Serialize only emits what Deserialize accepts: a regex which is not
+// initialized, which has no flag, or which carries a flag other than Default,
+// Invert or Noop (such as Undefined) is an error rather than a wire string the
+// receiving server would reject.
 func (r Regex) Serialize() (string, error) {
-	var flags []string
-	for _, flag := range r.flags {
-		flags = append(flags, flag.String())
-	}
 	if !r.initialized {
 		return "", fmt.Errorf("unable to serialize regex as not initialized properly: %v", r)
+	}
+	if len(r.flags) == 0 {
+		return "", fmt.Errorf("unable to serialize regex without a flag: %v", r)
+	}
+	flags := make([]string, 0, len(r.flags)+1)
+	for _, flag := range r.flags {
+		if !flag.serializable() {
+			return "", fmt.Errorf("unable to serialize regex with flag %q: %v", flag, r)
+		}
+		flags = append(flags, flag.String())
 	}
 	// Include the literal hint in the serialization, but only for patterns
 	// which are their own literal. The receiver derives the literal from the
