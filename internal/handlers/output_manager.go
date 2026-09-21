@@ -420,6 +420,25 @@ func outputAdoptable(payload []byte) bool {
 	return len(payload) >= outputAdoptMinBytes && cap(payload)-len(payload) <= len(payload)/8
 }
 
+// adoptionKeepsNextBatchRoom reports whether adopting payload, charged its
+// whole capacity on top of retained bytes, stays within maxBytes without
+// costing the next payload of the same length its room. Adoption only differs
+// from an exact copy by the spare capacity it charges, so that capacity
+// matters only when a copy would leave room for the next batch and adoption
+// would not. When the next batch fits either way, or fits in neither case (the
+// usual situation under backpressure, where a reader has just freed about one
+// batch and the queue is otherwise full), adopting costs nothing and saves the
+// copy.
+func adoptionKeepsNextBatchRoom(retained int, payload []byte, maxBytes int) bool {
+	adopted := retained + cap(payload)
+	if adopted > maxBytes {
+		return false
+	}
+	nextFitsAdopted := adopted+len(payload) <= maxBytes
+	nextFitsCopied := retained+2*len(payload) <= maxBytes
+	return nextFitsAdopted || !nextFitsCopied
+}
+
 // tryEnqueueLocked admits a complete logical payload while bounding both the
 // unread bytes and the payload backing allocations retained by queue/buffer.
 //
@@ -427,14 +446,14 @@ func outputAdoptable(payload []byte) bool {
 // descriptor when that has the same generation, so many tiny writes share one
 // descriptor, otherwise into a new exact-size one. A large payload (a writer
 // batch) gets a descriptor of its own. It is adopted without copying when
-// outputAdoptable allows it and the budget left after adopting still holds
-// another payload of the same length; the whole capacity is charged, because
-// the queue retains all of it. Otherwise it is copied at its exact length when
-// that fits. So an admissible payload is never stranded by its spare capacity,
-// and near the cap the spare capacity of an adopted batch never costs the
-// room of the next batch: at the smallest OutputBufferMaxBytes the handler
-// accepts (MaxLineLength plus two 64 KiB batches) two full batches still
-// queue, as they did before batches were adopted.
+// outputAdoptable allows it and adoptionKeepsNextBatchRoom agrees; the whole
+// capacity is charged, because the queue retains all of it. Otherwise it is
+// copied at its exact length when that fits. So an admissible payload is never
+// stranded by its spare capacity, and near the cap the spare capacity of an
+// adopted batch never costs the room of the next batch: at the smallest
+// OutputBufferMaxBytes the handler accepts (MaxLineLength plus two 64 KiB
+// batches) two full batches still queue, as they did before batches were
+// adopted.
 func (t *outputManager) tryEnqueueLocked(generation uint64, payload []byte, maxBytes int) bool {
 	if len(payload) < outputAdoptMinBytes {
 		last := len(t.queue) - 1
@@ -448,7 +467,7 @@ func (t *outputManager) tryEnqueueLocked(generation uint64, payload []byte, maxB
 
 	queued := payload
 	switch {
-	case outputAdoptable(payload) && t.retainedBytes+cap(payload)+len(payload) <= maxBytes:
+	case outputAdoptable(payload) && adoptionKeepsNextBatchRoom(t.retainedBytes, payload, maxBytes):
 		// Adopt: the caller handed its backing over, nothing is copied.
 	case t.retainedBytes+len(payload) <= maxBytes:
 		queued = make([]byte, len(payload))

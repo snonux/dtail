@@ -419,8 +419,23 @@ func TestOutputManagerAdoptionAccounting(t *testing.T) {
 			wantEntries:  1,
 		},
 		{
-			name:         "adoption that would crowd out the next batch falls back to an exact copy",
+			// After the first adoption 72 KiB are retained. Adopting the second
+			// batch (144 KiB) leaves no room for a third, but neither would a
+			// copy (136 KiB, 24 KiB left), so the spare capacity costs nothing
+			// and the copy is saved.
+			name:         "adoption is kept when a third batch fits neither adopted nor copied",
 			maxBytes:     160 * kib,
+			payloads:     [][]byte{largePayload(length, 'a'), largePayload(length, 'b')},
+			wantAdopted:  []bool{true, true},
+			wantRetained: 2 * capacity,
+			wantEntries:  2,
+		},
+		{
+			// After the first adoption 72 KiB are retained. A copy of the second
+			// batch (136 KiB) leaves room for a third (200 KiB), adopting it
+			// (144 KiB) would not (208 KiB), so it is copied.
+			name:         "adoption that would crowd out the next batch falls back to an exact copy",
+			maxBytes:     200 * kib,
 			payloads:     [][]byte{largePayload(length, 'a'), largePayload(length, 'b')},
 			wantAdopted:  []bool{true, false},
 			wantRetained: capacity + length,
@@ -958,5 +973,99 @@ func BenchmarkNetworkWriterToOutputManager(b *testing.B) {
 				}
 			}
 		}
+	}
+}
+
+// backpressuredAdoption drives a production NetworkWriter into a manager
+// capped at maxBytes with a reader that only reads, readSize bytes at a time,
+// while the writer is blocked on a full queue: the queue stays at the cap, as
+// under a slow client. Writer and reader run in one goroutine, so the result
+// is deterministic. It checks the cap and that the bytes read equal the bytes
+// written, and returns how many batches were admitted only after the reader
+// freed room and how many of those were adopted rather than copied.
+func backpressuredAdoption(t *testing.T, plain bool, maxBytes, lineLen, lines, readSize int) (blocked, adopted int) {
+	t.Helper()
+	manager := newHandoverTestManager(maxBytes)
+	user := &userserver.User{Name: "handover-test"}
+	readBuf := make([]byte, readSize)
+	var got []byte
+	writer := NewNetworkWriter(context.Background(), nil, nil, "testhost", plain, false, 1, nil, handlerTestLogger)
+	writer.enqueueOutput = func(_ context.Context, generation uint64, data []byte, _ func() uint64) error {
+		waited := false
+		for {
+			manager.mu.Lock()
+			if manager.tryEnqueueLocked(generation, data, maxBytes) {
+				entry := manager.queue[len(manager.queue)-1]
+				if retained := manager.retainedBytes; retained > maxBytes {
+					manager.mu.Unlock()
+					t.Fatalf("retained %d bytes over the %d byte cap", retained, maxBytes)
+				}
+				manager.mu.Unlock()
+				if waited && len(data) >= outputAdoptMinBytes {
+					blocked++
+					if sharesBacking(entry.payload, data) {
+						adopted++
+					}
+				}
+				return nil
+			}
+			manager.mu.Unlock()
+			waited = true
+			n, _ := manager.tryRead(readBuf, user, nil)
+			if n == 0 {
+				t.Fatalf("queue full but the reader got nothing")
+			}
+			got = append(got, readBuf[:n]...)
+		}
+	}
+
+	var want bytes.Buffer
+	capture := NewNetworkWriter(context.Background(), nil, nil, "testhost", plain, false, 1, nil, handlerTestLogger)
+	capture.enqueueOutput = func(_ context.Context, _ uint64, data []byte, _ func() uint64) error {
+		want.Write(data)
+		return nil
+	}
+	line := bytes.Repeat([]byte{'x'}, lineLen)
+	for i := 0; i < lines; i++ {
+		if err := writer.WriteLineData(line, uint64(i), "app.log"); err != nil {
+			t.Fatalf("WriteLineData: %v", err)
+		}
+		if err := capture.WriteLineData(line, uint64(i), "app.log"); err != nil {
+			t.Fatalf("WriteLineData: %v", err)
+		}
+	}
+	flushWriter(t, writer)
+	flushWriter(t, capture)
+	got = append(got, drainManager(t, manager, readSize)...)
+	if !bytes.Equal(got, want.Bytes()) {
+		t.Fatalf("read %d bytes, want %d identical bytes", len(got), want.Len())
+	}
+	return blocked, adopted
+}
+
+// Under backpressure a reader frees roughly one batch at a time, so the queue
+// has room for the next batch but not for another one after it, whether the
+// batch is adopted or copied. Adoption must not fall back to a copy there. The
+// 0acf3c3 rule (adopt only if another same-length batch still fits afterwards)
+// copied every one of these batches in this reader-only-when-blocked model and
+// about half of them end to end with a timed slow reader, losing much of the
+// hand-over's CPU gain for slow clients.
+func TestOutputAdoptsBatchesUnderBackpressure(t *testing.T) {
+	const (
+		lineLen  = 127
+		lines    = 100000 // about 13-17 MiB of output
+		readSize = 32 * 1024
+	)
+	for _, plain := range []bool{false, true} {
+		t.Run(fmt.Sprintf("plain=%v", plain), func(t *testing.T) {
+			blocked, adopted := backpressuredAdoption(t, plain, defaultOutputBufferMaxBytes, lineLen, lines, readSize)
+			if blocked < 100 {
+				t.Fatalf("only %d batches waited for the reader; the test needs sustained backpressure", blocked)
+			}
+			if adopted*10 < blocked*9 {
+				t.Fatalf("adopted %d of %d batches admitted under backpressure, want at least 90%%", adopted, blocked)
+			}
+			t.Logf("adopted %d of %d batches admitted under backpressure", adopted, blocked)
+		})
 	}
 }
