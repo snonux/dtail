@@ -31,32 +31,13 @@
     },
     "color": {
       "type": "string",
-      "enum": [
-        "Black",
-        "Red",
-        "Green",
-        "Yellow",
-        "Blue",
-        "Magenta",
-        "Cyan",
-        "White",
-        "Default"
-      ]
+      "description": "Terminal color, matched case-insensitively: Black, Red, Green, Yellow, Blue, Magenta, Cyan, White or Default. dtail still accepts a raw ANSI escape sequence such as \"\\u001b[37m\" from older config files and uses it unchanged, but that form is deprecated and this schema reports it.",
+      "pattern": "^(?:[Bb][Ll][Aa][Cc][Kk]|[Rr][Ee][Dd]|[Gg][Rr][Ee][Ee][Nn]|[Yy][Ee][Ll][Ll][Oo][Ww]|[Bb][Ll][Uu][Ee]|[Mm][Aa][Gg][Ee][Nn][Tt][Aa]|[Cc][Yy][Aa][Nn]|[Ww][Hh][Ii][Tt][Ee]|[Dd][Ee][Ff][Aa][Uu][Ll][Tt])$"
     },
     "attribute": {
       "type": "string",
-      "enum": [
-        "None",
-        "Bold",
-        "Dim",
-        "Italic",
-        "Underline",
-        "Blink",
-        "SlowBlink",
-        "RapidBlink",
-        "Reverse",
-        "Hidden"
-      ]
+      "description": "Terminal text attribute, matched case-insensitively: None, Bold, Dim, Italic, Underline, Blink, SlowBlink, RapidBlink, Reverse or Hidden. An empty string is the same as None. dtail still accepts a raw ANSI escape sequence such as \"\\u001b[1m\" from older config files and uses it unchanged, but that form is deprecated and this schema reports it.",
+      "pattern": "^(?:[Nn][Oo][Nn][Ee]|[Bb][Oo][Ll][Dd]|[Dd][Ii][Mm]|[Ii][Tt][Aa][Ll][Ii][Cc]|[Uu][Nn][Dd][Ee][Rr][Ll][Ii][Nn][Ee]|[Bb][Ll][Ii][Nn][Kk]|[Ss][Ll][Oo][Ww][Bb][Ll][Ii][Nn][Kk]|[Rr][Aa][Pp][Ii][Dd][Bb][Ll][Ii][Nn][Kk]|[Rr][Ee][Vv][Ee][Rr][Ss][Ee]|[Hh][Ii][Dd][Dd][Ee][Nn])?$"
     }
   },
   "type": "object",

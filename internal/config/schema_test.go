@@ -614,7 +614,12 @@ func TestSchemaValidation(t *testing.T) {
 		{name: "disabled frame size guard", config: `{"Server": {"MaxCommandFrameSize": 0}}`, wantErr: "below the minimum"},
 		{name: "per-user permissions", config: `{"Server": {"Permissions": {"Users": {"alice": ["readfiles:^/var/log/"]}}}}`},
 		{name: "per-user permission type", config: `{"Server": {"Permissions": {"Users": {"alice": [1]}}}}`, wantErr: "want string"},
-		{name: "color enum", config: `{"Client": {"TermColors": {"Server": {"TextFg": "Purple"}}}}`, wantErr: "is not one of"},
+		{name: "color name", config: `{"Client": {"TermColors": {"Server": {"TextFg": "Purple"}}}}`, wantErr: "does not match the pattern"},
+		{name: "mixed-case color names", config: `{"Client": {"TermColors": {"Server": {"TextFg": "rEd", "TextBg": "BLACK", "TextAttr": "underline"}}}}`},
+		{name: "empty attribute", config: `{"Client": {"TermColors": {"Server": {"TextAttr": ""}}}}`},
+		{name: "empty color", config: `{"Client": {"TermColors": {"Server": {"TextFg": ""}}}}`, wantErr: "does not match the pattern"},
+		{name: "attribute name", config: `{"Client": {"TermColors": {"Server": {"TextAttr": "Strike"}}}}`, wantErr: "does not match the pattern"},
+		{name: "deprecated raw escape color", config: `{"Client": {"TermColors": {"Server": {"TextFg": "\u001b[37m"}}}}`, wantErr: "does not match the pattern"},
 		{name: "time range length", config: `{"Server": {"Schedule": [{"TimeRange": [1]}]}}`, wantErr: "at least 2 items"},
 		{name: "wrong type", config: `{"Server": {"IdleSessionTimeoutS": "900"}}`, wantErr: "want integer"},
 		{name: "ssh port lowest", config: `{"Common": {"SSHPort": 1}}`},
@@ -820,6 +825,47 @@ func TestSchemaAcceptsRuntimeLogNames(t *testing.T) {
 					}
 					if errs := validateConfigText(t, schema, string(document)); len(errs) > 0 {
 						t.Fatalf("runtime name rejected:\n%s", strings.Join(errs, "\n"))
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestSchemaAcceptsRuntimeColorNames checks that every colour and attribute
+// name the runtime decodes (in any letter case) passes the schema, and that
+// the schema accepts nothing the decoder would reject.
+func TestSchemaAcceptsRuntimeColorNames(t *testing.T) {
+	schema := loadSchema(t)
+	colorFile := parseGoFile(t, "../color/color.go")
+	groups := []struct {
+		key   string
+		names []string
+	}{
+		{key: "TextFg", names: caseStrings(t, colorFile, "ToFgColor")},
+		{key: "TextBg", names: caseStrings(t, colorFile, "ToBgColor")},
+		{key: "TextAttr", names: caseStrings(t, colorFile, "ToAttribute")},
+	}
+	for _, group := range groups {
+		for _, name := range group.names {
+			variants := caseVariants(name)
+			if name == "" {
+				variants = []string{""}
+			}
+			for _, variant := range variants {
+				t.Run(fmt.Sprintf("%s=%q", group.key, variant), func(t *testing.T) {
+					document, err := json.Marshal(map[string]any{"Client": map[string]any{
+						"TermColors": map[string]any{"Server": map[string]any{group.key: variant}},
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if errs := validateConfigText(t, schema, string(document)); len(errs) > 0 {
+						t.Fatalf("runtime name rejected by the schema:\n%s", strings.Join(errs, "\n"))
+					}
+					var in initializer
+					if err := json.Unmarshal(document, &in); err != nil {
+						t.Fatalf("schema-valid name rejected by the decoder: %v", err)
 					}
 				})
 			}
