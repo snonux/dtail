@@ -90,8 +90,8 @@ func TestNetworkWriterHandsOverFullBatchWithoutAliasing(t *testing.T) {
 		t.Fatal("handed-over batch changed after later writes")
 	}
 	second := (*batches)[1]
-	// The first batch grew naturally; once in bulk mode the writer reserves a
-	// whole batch up front, so the second one is filled without regrowing.
+	// Once the writer handed a batch over it reserves a whole batch up front,
+	// so the second one is filled without regrowing.
 	if got, want := cap(second.data), networkWriterBatchCapacity(networkWriterBufferSize); got != want {
 		t.Fatalf("second handed-over batch capacity = %d, want the reserved %d (no regrow)", got, want)
 	}
@@ -189,36 +189,149 @@ func TestNetworkWriterIdleSmallFlushesRetainSmallBuffer(t *testing.T) {
 	}
 }
 
-// After bulk output (full batches handed over without copying) a writer whose
-// final or later flushes are small must drop its whole-batch reservation, and
-// start bulk hand-over again when full batches return.
-func TestNetworkWriterBulkThenIdleDropsReservation(t *testing.T) {
-	writer, batches := newCapturingNetworkWriter(t)
-
-	writeLinesUntil(t, writer, batches, 2, 'a')
-	if got, want := cap((*batches)[1].data), networkWriterBatchCapacity(networkWriterBufferSize); got != want {
-		t.Fatalf("bulk batch capacity = %d, want the reserved %d", got, want)
+// writeLinesN writes n lines of lineLen bytes each.
+func writeLinesN(t *testing.T, writer *NetworkWriter, n, lineLen int, prefix byte) {
+	t.Helper()
+	line := bytes.Repeat([]byte{prefix}, lineLen)
+	for i := 0; i < n; i++ {
+		if err := writer.WriteLineData(line, uint64(i), "app.log"); err != nil {
+			t.Fatalf("WriteLineData: %v", err)
+		}
 	}
+}
 
-	// A partial batch is pending in the whole-batch reservation; the small
-	// flush must copy it out and drop that reservation.
-	if err := writer.WriteLineData([]byte("tail"), 1, "app.log"); err != nil {
-		t.Fatalf("WriteLineData: %v", err)
-	}
+func flushWriter(t *testing.T, writer *NetworkWriter) {
+	t.Helper()
 	if err := writer.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	if got := writerBufferCap(writer); got > idleWriterMaxBufferCap {
-		t.Fatalf("writer buffer capacity after bulk then small flush = %d, want at most %d",
-			got, idleWriterMaxBufferCap)
+}
+
+// writerBacking returns the writer's whole buffer allocation.
+func writerBacking(writer *NetworkWriter) []byte {
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	buf := writer.writeBuf.Bytes()
+	return buf[:cap(buf)]
+}
+
+// The first batch of a fresh writer grows naturally but must be moved into an
+// exact whole-batch allocation before it crosses the threshold: with 100 byte
+// records (99 byte lines plus delimiter), which do not divide 64 KiB, plain
+// bytes.Buffer doubling would hand over, and the output manager would charge,
+// a 128 KiB backing for a batch of about 64 KiB.
+func TestNetworkWriterFirstBatchHasExactBatchCapacity(t *testing.T) {
+	manager := newHandoverTestManager(0)
+	writer := NewNetworkWriter(context.Background(), nil, nil, "testhost", true, false,
+		0, nil, handlerTestLogger)
+	var handed [][]byte
+	writer.enqueueOutput = func(ctx context.Context, generation uint64, data []byte,
+		active func() uint64) error {
+		handed = append(handed, data)
+		return manager.enqueue(ctx, generation, data, active)
 	}
-	for i := 0; i < 3; i++ {
+
+	line := bytes.Repeat([]byte{'x'}, 99)
+	for i := 0; len(handed) == 0; i++ {
+		if i > 10000 {
+			t.Fatal("no batch handed over")
+		}
+		if err := writer.WriteLineData(line, uint64(i), "app.log"); err != nil {
+			t.Fatalf("WriteLineData: %v", err)
+		}
+	}
+	want := networkWriterBatchCapacity(networkWriterBufferSize)
+	if got := len(handed[0]); got < networkWriterBufferSize || got%100 != 0 {
+		t.Fatalf("first batch = %d bytes, want whole 100 byte records past %d", got, networkWriterBufferSize)
+	}
+	if got := cap(handed[0]); got != want {
+		t.Fatalf("first handed-over batch capacity = %d, want exactly %d", got, want)
+	}
+	if retained, buffered, _ := managerAccounting(manager); retained != want {
+		t.Fatalf("output manager charged %d bytes for a %d byte batch, want %d", retained, buffered, want)
+	}
+}
+
+// Follow-mode catch-up flushes after every read chunk whose formatted output
+// exceeds one batch: each chunk hands a full batch over and flushes a small
+// remainder. The writer must keep its whole-batch reservation across that
+// remainder flush, so the next chunk continues in the same allocation instead
+// of dropping it and regrowing a new one, and every handed-over batch must be
+// an exact whole-batch allocation.
+func TestNetworkWriterFollowCatchUpKeepsReservation(t *testing.T) {
+	writer, batches := newCapturingNetworkWriter(t)
+	const lineLen, linesPerChunk = 99, 700 // 70000 bytes of output per chunk
+	want := networkWriterBatchCapacity(networkWriterBufferSize)
+
+	var previous []byte
+	for chunk := 0; chunk < 2*networkWriterIdleFlushes+2; chunk++ {
+		before := len(*batches)
+		writeLinesN(t, writer, linesPerChunk, lineLen, byte('a'+chunk%26))
+		flushWriter(t, writer)
+		chunkBatches := (*batches)[before:]
+		if len(chunkBatches) != 2 {
+			t.Fatalf("chunk %d: %d batches, want a hand-over and a remainder", chunk, len(chunkBatches))
+		}
+		full, remainder := chunkBatches[0], chunkBatches[1]
+		if len(full.data) < networkWriterBufferSize || cap(full.data) != want {
+			t.Fatalf("chunk %d: handed-over batch len %d cap %d, want at least %d bytes in exactly %d",
+				chunk, len(full.data), cap(full.data), networkWriterBufferSize, want)
+		}
+		if previous != nil && !sharesBacking(full.data, previous) {
+			t.Fatalf("chunk %d: batch not filled in the reservation kept by the previous flush", chunk)
+		}
+		if len(remainder.data) >= outputAdoptMinBytes {
+			t.Fatalf("chunk %d: remainder = %d bytes, want a small flush", chunk, len(remainder.data))
+		}
+		previous = writerBacking(writer)
+		if cap(previous) != want {
+			t.Fatalf("chunk %d: writer buffer capacity after remainder flush = %d, want the kept %d",
+				chunk, cap(previous), want)
+		}
+		if sharesBacking(previous, full.data) || sharesBacking(previous, remainder.data) {
+			t.Fatalf("chunk %d: writer buffer aliases a batch it sent", chunk)
+		}
+	}
+	for i, b := range *batches {
+		if !bytes.Equal(b.data, b.snapshot) {
+			t.Fatalf("batch %d changed after it was sent", i)
+		}
+	}
+}
+
+// After bulk output (full batches handed over without copying) a writer keeps
+// its whole-batch reservation across a few small flushes, drops it after
+// networkWriterIdleFlushes consecutive ones, then retains only what its small
+// batches need, and starts bulk hand-over again when full batches return.
+func TestNetworkWriterBulkThenIdleDropsReservation(t *testing.T) {
+	writer, batches := newCapturingNetworkWriter(t)
+	reservation := networkWriterBatchCapacity(networkWriterBufferSize)
+
+	writeLinesUntil(t, writer, batches, 2, 'a')
+	if got := cap((*batches)[1].data); got != reservation {
+		t.Fatalf("bulk batch capacity = %d, want the reserved %d", got, reservation)
+	}
+
+	for i := 1; i <= networkWriterIdleFlushes; i++ {
 		if err := writer.WriteLineData([]byte("one short follow line"), uint64(i), "app.log"); err != nil {
 			t.Fatalf("WriteLineData: %v", err)
 		}
-		if err := writer.Flush(); err != nil {
-			t.Fatalf("Flush: %v", err)
+		flushWriter(t, writer)
+		got := writerBufferCap(writer)
+		if i < networkWriterIdleFlushes && got != reservation {
+			t.Fatalf("small flush %d: writer buffer capacity = %d, want the kept reservation %d",
+				i, got, reservation)
 		}
+		if i == networkWriterIdleFlushes && got > idleWriterMaxBufferCap {
+			t.Fatalf("small flush %d: writer buffer capacity = %d, want the reservation dropped (at most %d)",
+				i, got, idleWriterMaxBufferCap)
+		}
+	}
+	for i := 0; i < 3*networkWriterIdleFlushes; i++ {
+		if err := writer.WriteLineData([]byte("one short follow line"), uint64(i), "app.log"); err != nil {
+			t.Fatalf("WriteLineData: %v", err)
+		}
+		flushWriter(t, writer)
 		if got := writerBufferCap(writer); got > idleWriterMaxBufferCap {
 			t.Fatalf("idle cycle %d: writer buffer capacity = %d, want at most %d", i, got, idleWriterMaxBufferCap)
 		}
@@ -231,13 +344,12 @@ func TestNetworkWriterBulkThenIdleDropsReservation(t *testing.T) {
 		if len(b.data) < networkWriterBufferSize {
 			t.Fatalf("bulk batch = %d bytes, want at least %d", len(b.data), networkWriterBufferSize)
 		}
+		if got := cap(b.data); got != reservation {
+			t.Fatalf("renewed bulk batch capacity = %d, want the reserved %d (handed over, no copy)", got, reservation)
+		}
 	}
-	last := (*batches)[len(*batches)-1].data
 	if got := writerBufferCap(writer); got != 0 {
 		t.Fatalf("writer kept a %d byte buffer after handing its batch over", got)
-	}
-	if got, want := cap(last), networkWriterBatchCapacity(networkWriterBufferSize); got != want {
-		t.Fatalf("renewed bulk batch capacity = %d, want the reserved %d (handed over, no copy)", got, want)
 	}
 }
 

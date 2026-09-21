@@ -166,6 +166,10 @@ baseline, and note the commit.
 | `55` | parent `f290a31` | `BenchmarkNetworkWriterToOutputManager` (new), 128-byte lines through writer, queue and reader, 6 runs | 258-284 ns/op, 256 B/op | 153-159 ns/op, 144 B/op | n/a (unit tests compare the bytes read with the bytes written) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `55` fix | parent `7a16500` | retained heap after GC, 1000 `NetworkWriter`s each doing 3 one-line write+`Flush` cycles (idle follow readers) | `7a16500`: 70.6 MiB (each writer keeps a 72 KiB batch reservation); `f290a31`: 0.3 MiB | 0.3 MiB | n/a (unit test asserts writer buffer capacity) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `55` fix | parent `7a16500` | dcat server mode, 100 MiB normal log, `--logger stdout`, three dservers side by side (`f290a31`, `7a16500`, fix), 9 rounds rotating the order; dserver CPU from `/proc`, min / median / max | `f290a31` 0.92 / 1.06 / 1.64 s; `7a16500` 0.74 / 0.78 / 0.90 s | 0.73 / 0.77 / 0.89 s (hand-over gain kept) | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix 2 | parent `5a9ac06` | reviewer benchmark, follow catch-up in protocol format (655 99-byte lines per chunk, `Flush` per chunk), 3 runs of 2000 iterations | `5a9ac06` 360-375 us/op, 333 KB/op, retained/payload 1.335; `7a16500` 213-253 us/op, 142 KB/op, 1.083; `f290a31` 269-285 us/op, 216 KB/op, 1.000 | 218-246 us/op, 142 KB/op, 1.083 | n/a (unit tests compare batch bytes) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix 2 | parent `5a9ac06` | reviewer benchmark, plain 70 KiB chunks of 99-byte lines, largest charged queue entry | `5a9ac06` 310-331 us/op, 348 KB/op, 131,072 B; `7a16500` 105-117 us/op, 87 KB/op, 73,728 B; `f290a31` 170-193 us/op, 161 KB/op, 65,600 B | 107-130 us/op, 87 KB/op, 73,728 B | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix 2 | parent `5a9ac06` | retained heap after GC, 1000 writers that caught up (three 70 KB chunks) then idle | `5a9ac06` 0.3 MiB; `7a16500` 70.6 MiB; `f290a31` 125.3 MiB | 70.6 MiB until 2 more small flushes after the remainder, then 0.4 MiB (idle-only writers 0.4 MiB) | n/a (unit test asserts writer buffer capacity) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix 2 | parent `5a9ac06` | dcat server mode, 100 MiB normal log, four dservers side by side, 16 rounds rotating the order; dserver CPU median / range | `f290a31` 1.06 / 0.92-1.10 s; `7a16500` 0.77 / 0.73-0.88 s; `5a9ac06` 0.78 / 0.71-1.71 s | 0.79 / 0.72-0.88 s (bulk gain kept) | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `65` | parent `b3a84a9` | dtail follow, 8 sessions on one dserver, single-line latency on session 0 (40 probes per run, 2 interleaved rounds per variant pair; S100/C100 ranges span the 4 runs of both pairings; mean / p95), server EOF poll S and client stdout flush C | S100/C100 (current): 97-107 ms / 160-172 ms | S50/C50: 49-52 ms / 80-89 ms; S20/C20: 17-20 ms / 29-37 ms; S20/C100: 61-66 ms; S100/C20: 57-62 ms; S50/C100: 65-72 ms; S100/C50: 72-79 ms | n/a (intervals only) | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dserver CPU with 8 idle follow sessions (20 s, utime+stime from `/proc`, % of one core), same runs | S100: 6.2-9.2% | S50: 12.1-14.6%; S20: 20.3-27.6% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dtail client CPU per idle follow session, same runs | C100: 0.89-0.97% | C50: 1.77-2.03%; C20: 4.33-4.45% | n/a | `make clean && make build` only (docs-only change, no code kept) |
@@ -524,23 +528,65 @@ whole 72 KiB batch on its first write and kept it across small flushes, so
 every idle follow reader (one `NetworkWriter` per file read) held 72 KiB for
 the whole session: 1000 writers doing 3 one-line write+flush cycles retained
 70.6 MiB after GC, against 0.3 MiB at `f290a31` (about +3.6 MiB with the
-default 50 concurrent tails). Now the whole-batch reservation is made only in
-bulk mode, which a writer enters when it hands a full batch over; outside it
-the buffer grows naturally as before `f290a31`, and a small flush in bulk
-mode copies its bytes out, drops the reservation and leaves bulk mode. The
-same 1000-writer check now retains 0.3 MiB, and the first batch of a bulk
-read grows naturally (one regrow sequence per writer) before later batches
-are reserved up front. Server-mode dcat CPU is unchanged against `7a16500`
-(fix row above); `BenchmarkNetworkWriterToOutputManager` stays at 159-164
-ns/op, 144 B/op.
+default 50 concurrent tails). The first memory fix (`5a9ac06`) reserved the
+batch only after a full-batch hand-over and dropped the reservation on the
+next small flush. That regressed follow-mode catch-up, which flushes after
+every read chunk: a chunk whose formatted output exceeds 64 KiB hands one
+batch over and flushes a small remainder, so every chunk regrew a buffer from
+zero, handed it over, allocated a fresh 72 KiB and dropped it again at the
+remainder flush. It also charged too much: a naturally grown batch crossing
+64 KiB usually has a 128 KiB `bytes.Buffer` backing, which the queue adopted
+and charged in full (131,072 B charged for about 65.6 KB of payload with
+99-byte lines; the unit tests used 127-byte lines, which fill exactly
+64 KiB, and missed it).
+
+Final design (second review fix): a writer that is not reserved grows its
+buffer naturally; once its batch reaches 24 KiB (three eighths of the flush
+threshold, while the natural buffer still has its 32 KiB capacity) the
+pending bytes are moved into an exact 72 KiB allocation and the writer
+becomes reserved, so the batch that crosses 64 KiB is never regrown and is
+handed over, and charged, at exactly 72 KiB. After a hand-over a reserved
+writer allocates the next 72 KiB on its next write. A small flush copies its
+bytes out and resets the buffer but keeps the reservation; the reservation
+is dropped, and the writer leaves reserved mode, only after 3 consecutive
+small flushes (under 24 KiB) with no hand-over or larger batch in between.
+Catch-up has at most one small remainder per hand-over, so it keeps its
+reservation and fills the same buffer across chunks; 3 rather than 2 also
+tolerates one short read between full ones. Measured with the reviewer's
+benchmark (`f290a31` / `7a16500` / `5a9ac06` / final, 3 runs of 2000
+iterations each, ns/op ranges): follow catch-up in protocol format, 655
+99-byte lines per chunk, 269-285 us 216 KB/op / 213-253 us 142 KB/op /
+360-375 us 333 KB/op / 218-246 us 142 KB/op, retained/payload 1.000 / 1.083
+/ 1.335 / 1.083; plain 70 KiB chunks 170-193 us 161 KB/op / 105-117 us 87 KB/op
+/ 310-331 us 348 KB/op / 107-130 us 87 KB/op, largest charged entry 65,600 /
+73,728 / 131,072 / 73,728 B; alternating 40K/8K flushes 59 / 47 / 112 / 47
+KB/op. Bulk 1 MiB reads with 99-byte lines: 2.6-2.7 ms / 1.47-1.55 ms /
+1.42-1.55 ms / 1.42-1.55 ms, largest charged entry 65,600 / 73,728 /
+131,072 / 73,728 B. The final design matches `7a16500` on these paths.
+Retained heap after GC for 1000 writers: idle writers (one-line
+write+flush cycles only) 0.3 / 70.6 / 0.3 / 0.4 MiB. Writers that caught up
+(three 70 KB chunks, each flushed) and then went idle: `f290a31` keeps its
+naturally grown 128 KiB buffers for good (125.3 MiB), `7a16500` 70.6 MiB,
+`5a9ac06` 0.3 MiB, and the final design 70.6 MiB until two more small
+flushes after the catch-up remainder, then 0.4 MiB. So a follow reader that
+catches up and then receives nothing keeps 72 KiB (still less than
+`f290a31`'s 128 KiB) until it sees further output. Server-mode dcat (100 MiB, four
+dservers side by side, 16 rounds rotating the order) dserver CPU median /
+range: `f290a31` 1.06 / 0.92-1.10 s, `7a16500` 0.77 / 0.73-0.88 s,
+`5a9ac06` 0.78 / 0.71-1.71 s, final 0.79 / 0.72-0.88 s, `cmp` identical
+every run: the bulk gain holds (ranges overlap between the last three).
 One consequence: an adopted 64 KiB batch is charged its 72 KiB allocation,
 so the default 2 MiB cap now holds 28 full batches before backpressure, where
-before it could fill up with 2 MiB of payload (about 31 batches). The session generation is now an
+before it could fill up with 2 MiB of payload (about 31 batches). A flush of
+32 KiB to 64 KiB (for example a follow chunk of 40 KiB) is also adopted in
+its 72 KiB allocation and charged at up to 1.8 times its payload; this was
+already so in `876060d`. The session generation is now an
 `atomic.Uint64`, still written under the session mutex and read per line
 without a lock; its own row above shows no measurable effect end to end, so
 the dcat gain comes from removing the copies. The atomic read also removes the
-output-lock to session-lock ordering edge that `tryRead` had. Not measured:
-follow mode and the 1 GiB input.
+output-lock to session-lock ordering edge that `tryRead` had. Follow mode is
+measured only at the writer and queue level (benchmark above), not end to
+end; the 1 GiB input was not measured.
 
 `65` notes (decision: no change). Both intervals stay at 100 ms: the server
 EOF poll in `followLineProcessor.handleReadError` and
