@@ -726,10 +726,21 @@ func constNamesOfType(t *testing.T, file *ast.File, typeName, suffix string) []s
 		if !ok || gen.Tok != token.CONST {
 			continue
 		}
+		// Within a const block a spec without type and values repeats the
+		// previous spec's type (the implicit iota style), so track it.
+		var blockType string
 		for _, spec := range gen.Specs {
 			value := spec.(*ast.ValueSpec)
-			ident, ok := value.Type.(*ast.Ident)
-			if !ok || ident.Name != typeName {
+			switch {
+			case value.Type != nil:
+				blockType = ""
+				if ident, ok := value.Type.(*ast.Ident); ok {
+					blockType = ident.Name
+				}
+			case len(value.Values) > 0:
+				blockType = ""
+			}
+			if blockType != typeName {
 				continue
 			}
 			for _, name := range value.Names {
