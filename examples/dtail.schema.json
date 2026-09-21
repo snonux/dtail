@@ -16,72 +16,18 @@
     },
     "loglevel": {
       "type": "string",
-      "description": "Log level, matched case-insensitively.",
-      "enum": [
-        "None",
-        "none",
-        "NONE",
-        "Fatal",
-        "fatal",
-        "FATAL",
-        "Error",
-        "error",
-        "ERROR",
-        "Warn",
-        "warn",
-        "WARN",
-        "Info",
-        "info",
-        "INFO",
-        "Default",
-        "default",
-        "DEFAULT",
-        "Verbose",
-        "verbose",
-        "VERBOSE",
-        "Debug",
-        "debug",
-        "DEBUG",
-        "Devel",
-        "devel",
-        "DEVEL",
-        "Trace",
-        "trace",
-        "TRACE",
-        "All",
-        "all",
-        "ALL"
-      ]
+      "description": "Log level, matched case-insensitively: none, fatal, error, warn, info, default, verbose, debug, devel, trace or all. An empty string selects the default level.",
+      "pattern": "^(?:[Nn][Oo][Nn][Ee]|[Ff][Aa][Tt][Aa][Ll]|[Ee][Rr][Rr][Oo][Rr]|[Ww][Aa][Rr][Nn]|[Ii][Nn][Ff][Oo]|[Dd][Ee][Ff][Aa][Uu][Ll][Tt]|[Vv][Ee][Rr][Bb][Oo][Ss][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Dd][Ee][Vv][Ee][Ll]|[Tt][Rr][Aa][Cc][Ee]|[Aa][Ll][Ll])?$"
     },
     "logger": {
       "type": "string",
-      "description": "Logger implementation, matched case-insensitively.",
-      "enum": [
-        "None",
-        "none",
-        "NONE",
-        "Stdout",
-        "stdout",
-        "STDOUT",
-        "File",
-        "file",
-        "FILE",
-        "Fout",
-        "fout",
-        "FOUT"
-      ]
+      "description": "Logger implementation, matched case-insensitively: none, stdout, file or fout.",
+      "pattern": "^(?:[Nn][Oo][Nn][Ee]|[Ss][Tt][Dd][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee]|[Ff][Oo][Uu][Tt])$"
     },
     "logrotation": {
       "type": "string",
-      "description": "Log rotation strategy, matched case-insensitively. Daily rotates by date; any other value selects signal-based rotation.",
-      "enum": [
-        "Daily",
-        "daily",
-        "DAILY",
-        "Signal",
-        "signal",
-        "SIGNAL"
-      ]
+      "description": "Log rotation strategy, matched case-insensitively: daily or signal. dtail itself treats every value other than daily as signal.",
+      "pattern": "^(?:[Dd][Aa][Ii][Ll][Yy]|[Ss][Ii][Gg][Nn][Aa][Ll])$"
     },
     "color": {
       "type": "string",
@@ -445,7 +391,7 @@
         },
         "MaxLineLength": {
           "type": "integer",
-          "description": "Maximum line length in bytes before a line is split into multiple smaller lines.",
+          "description": "Maximum line length in bytes before a line is split into multiple smaller lines. 0 or less uses the 1 MiB default. The minimum of 1024 is a recommendation of this schema; dserver uses any positive value as is.",
           "minimum": 1024,
           "default": 1048576
         },
@@ -456,7 +402,10 @@
           "properties": {
             "Default": {
               "$ref": "#/definitions/userPermission",
-              "description": "Permissions of users without an entry in Users."
+              "description": "Permissions of users without an entry in Users (default [\"^/.*\"]).",
+              "default": [
+                "^/.*"
+              ]
             },
             "Users": {
               "$ref": "#/definitions/userPermissions",
@@ -484,7 +433,7 @@
         },
         "HostKeyBits": {
           "type": "integer",
-          "description": "RSA host key size in bits when a host key is generated.",
+          "description": "RSA host key size in bits when a host key is generated. 0 or less uses 4096. The minimum of 2048 is a recommendation of this schema; dserver does not enforce it.",
           "minimum": 2048,
           "default": 4096
         },
@@ -517,11 +466,11 @@
               },
               "Discovery": {
                 "type": "string",
-                "description": "Server discovery method used to find the servers to query (alternative to Servers)."
+                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more), optionally with options as MODULE:options. It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
               },
               "Servers": {
                 "type": "array",
-                "description": "Servers to query.",
+                "description": "Servers to query, passed to the Discovery module. When empty, the job queries this dserver's own SSHBindAddress.",
                 "items": {
                   "type": "string"
                 }
@@ -583,11 +532,11 @@
               },
               "Discovery": {
                 "type": "string",
-                "description": "Server discovery method used to find the servers to query (alternative to Servers)."
+                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more), optionally with options as MODULE:options. It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
               },
               "Servers": {
                 "type": "array",
-                "description": "Servers to query.",
+                "description": "Servers to query, passed to the Discovery module. When empty, the job queries this dserver's own SSHBindAddress.",
                 "items": {
                   "type": "string"
                 }
@@ -674,7 +623,8 @@
         },
         "MaxCommandFrameSize": {
           "type": "integer",
-          "description": "Maximum size in bytes of one command frame (bytes between ';' delimiters); larger frames close the session. 0 or less uses the 1 MiB default.",
+          "description": "Maximum size in bytes of one command frame (bytes between ';' delimiters); a larger frame closes the session. dserver treats 0 or less as no limit for normal sessions (only health-check sessions then fall back to the 1 MiB default); this schema requires at least 1 because disabling the guard lets a client grow a frame without bound.",
+          "minimum": 1,
           "default": 1048576
         },
         "MaxGlobTargets": {
@@ -712,7 +662,7 @@
         },
         "LogDir": {
           "type": "string",
-          "description": "Log directory. A leading ~/ is expanded to the home directory.",
+          "description": "Log directory. dserver uses this value (default \"log\", relative to the working directory) unless --logDir is given. The client commands' --logDir flag defaults to ~/log and currently always replaces this value. Every \"~/\" in the path is replaced with the home directory.",
           "default": "log"
         },
         "Logger": {
@@ -721,7 +671,7 @@
         },
         "LogLevel": {
           "$ref": "#/definitions/loglevel",
-          "description": "Maximum log level.",
+          "description": "Maximum log level. An empty string selects the default level.",
           "default": "info"
         },
         "LogRotation": {

@@ -277,7 +277,9 @@ now the one and only mode. There is no on/off toggle: the old
 `DTAIL_TURBOBOOST_DISABLE` environment variable and the `Server.TurboBoostDisable`
 config field have been removed. `DTAIL_TURBOBOOST_DISABLE` is now inert (a no-op),
 and a leftover `TurboBoostDisable` key in an old config file is silently ignored
-(config decoding does not reject unknown keys).
+(config decoding does not reject unknown keys). The example schema
+`examples/dtail.schema.json` does not list the removed `Turbo*` keys, so schema
+validation flags them as stale, while the runtime still ignores them.
 
 **Technical Details:**
 - For cat/grep/tail: the read path writes directly to the output/connection
