@@ -107,7 +107,7 @@ func randomJobs(rng *rand.Rand) ([]config.Scheduled, map[string]bool) {
 		"*.log", "x.csv", "*.csv", "x.csv.query", "sub/../y.csv", "link/a.log"}
 	outfiles := []string{"x.csv", "./x.csv", "y.csv", "sub/../y.csv", "x.csv.query", "link/x.csv",
 		"a.log", "o1.csv", "o2.csv", "o3.csv", "o4.csv"}
-	servers := [][]string{nil, {"remote:2222"}}
+	servers := [][]string{nil, {"127.0.0.1:2222"}, {"192.0.2.1:2222"}}
 	timeRanges := [][2]int{{0, 24}, {0, 24}, {0, 12}, {12, 13}, {13, 24}}
 
 	jobs := make([]config.Scheduled, 2+rng.IntN(6))

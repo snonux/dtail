@@ -102,7 +102,7 @@ func TestSchedulerRunsJobsOnTheSameFilesTogether(t *testing.T) {
 		disabled,
 		scheduledJob(t, "a3", "/var/log/a.log", out("a3")),
 		// Same files, but another server: another group.
-		scheduledJob(t, "a-remote", "/var/log/a.log", out("a-remote"), "remote:2222"),
+		scheduledJob(t, "a-remote", "/var/log/a.log", out("a-remote"), "192.0.2.1:2222"),
 		// Same group key and outfile as a1: runs on its own, after a1.
 		scheduledJob(t, "a1-again", "/var/log/a.log", out("a1")),
 	}
@@ -284,26 +284,39 @@ func (c waveClient) Start(context.Context, <-chan string) int {
 
 // A group larger than a quarter of MaxConnections, divided by the servers of
 // its jobs, runs in waves of at most that many jobs, one wave after another;
-// the jobs of each wave share a read among themselves.
+// the jobs of each wave share a read among themselves. Jobs on another
+// dserver, whose MaxConnections the scheduler does not know, and all jobs
+// when shared reads are disabled run one at a time.
 func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 	tests := []struct {
 		name           string
 		maxConnections int
 		servers        []string
 		discovery      string
-		jobs           int
-		wantWaves      []int
+		// sharedReadsDisable sets Server.SharedReadsDisable.
+		sharedReadsDisable bool
+		jobs               int
+		wantWaves          []int
 	}{
 		{name: "default config", maxConnections: 10, jobs: 12, wantWaves: []int{2, 2, 2, 2, 2, 2}},
 		{name: "uneven last wave", maxConnections: 12, jobs: 7, wantWaves: []int{3, 3, 1}},
-		{name: "two servers", maxConnections: 24, servers: []string{"a:2222", "b:2222"}, jobs: 7,
-			wantWaves: []int{3, 3, 1}},
-		{name: "same server twice", maxConnections: 24, servers: []string{"a:2222", "a:2222"}, jobs: 7,
-			wantWaves: []int{6, 1}},
+		{name: "this dserver named twice", maxConnections: 24, servers: []string{"127.0.0.1:2222", "127.0.0.1"},
+			jobs: 7, wantWaves: []int{3, 3, 1}},
+		{name: "same server twice", maxConnections: 24, servers: []string{"127.0.0.1:2222", "127.0.0.1:2222"},
+			jobs: 7, wantWaves: []int{6, 1}},
 		{name: "fewer than four connections", maxConnections: 3, jobs: 3, wantWaves: []int{1, 1, 1}},
-		{name: "more servers than the bound", maxConnections: 8, servers: []string{"a:1", "b:1", "c:1"}, jobs: 2,
+		{name: "more servers than the bound", maxConnections: 8,
+			servers: []string{"127.0.0.1", "127.0.0.1:2222", "[::ffff:127.0.0.1]:2222"}, jobs: 2,
 			wantWaves: []int{1, 1}},
 		{name: "servers not discoverable", maxConnections: 40, discovery: "nosuchmodule", jobs: 3,
+			wantWaves: []int{1, 1, 1}},
+		{name: "another dserver", maxConnections: 40, servers: []string{"192.0.2.1:2222"}, jobs: 3,
+			wantWaves: []int{1, 1, 1}},
+		{name: "this and another dserver", maxConnections: 40, servers: []string{"127.0.0.1", "192.0.2.1"},
+			jobs: 3, wantWaves: []int{1, 1, 1}},
+		{name: "another port of this host", maxConnections: 40, servers: []string{"127.0.0.1:2223"}, jobs: 3,
+			wantWaves: []int{1, 1, 1}},
+		{name: "shared reads disabled", maxConnections: 40, sharedReadsDisable: true, jobs: 3,
 			wantWaves: []int{1, 1, 1}},
 	}
 	for _, tt := range tests {
@@ -318,7 +331,7 @@ func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 			}
 			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
 				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: tt.maxConnections,
-				Schedule: schedule,
+				SharedReadsDisable: tt.sharedReadsDisable, Schedule: schedule,
 			}}, jobTestLoggers)
 			recorder := &waveRecorder{t: t, shares: map[string]config.ReadShare{},
 				started: map[string]int{}, joined: map[string]chan struct{}{}}

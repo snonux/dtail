@@ -44,9 +44,11 @@ type ServerConfig struct {
 	// The SSH server bind port.
 	SSHBindAddress string
 	// The max amount of concurrent user connection allowed to connect to the server.
-	// Connections still in their SSH handshake count too. The scheduler runs
-	// at most a quarter of it (at least one), divided by the number of
-	// servers of the jobs, of the scheduled jobs it groups at the same time.
+	// Connections still in their SSH handshake count too. Scheduled jobs whose
+	// servers are all this dserver run in groups of at most a quarter of it
+	// (at least one), divided by the number of servers of the jobs; jobs on
+	// other dservers, whose limits the scheduler does not know, run one at a
+	// time.
 	MaxConnections int
 	// Rolling inactivity timeout for authenticated SSH sessions, in seconds.
 	// The close lags this value by two to three refresh intervals (see
@@ -70,7 +72,8 @@ type ServerConfig struct {
 	// free cat slot when the group read starts reads on its own; only the
 	// scheduler's sessions, of user DTAIL-SCHEDULE, ask for group reads).
 	// Each session still filters and processes the lines on its own. With
-	// this set, every session reads the file with a reader of its own.
+	// this set, every session reads the file with a reader of its own, and the
+	// scheduler runs its jobs one at a time.
 	SharedReadsDisable bool `json:",omitempty"`
 	// The max line length until it's split up into multiple smaller lines.
 	MaxLineLength int

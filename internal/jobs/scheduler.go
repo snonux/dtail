@@ -23,14 +23,18 @@ type scheduler struct {
 	// now is the clock the time ranges and the dates in file names and
 	// outfiles are evaluated with.
 	now func() time.Time
+	// thisDServer recognises the servers of jobs that reach the dserver
+	// running the scheduler.
+	thisDServer thisDServer
 }
 
 func newScheduler(cfg config.RuntimeConfig, loggers clients.LoggerDependencies, colorizers ...*brush.Brush) *scheduler {
 	colorizer := firstColorizer(colorizers)
 	return &scheduler{
-		cfg:    cfg,
-		logger: logging.OrNop(loggers.Server),
-		now:    time.Now,
+		cfg:         cfg,
+		logger:      logging.OrNop(loggers.Server),
+		now:         time.Now,
+		thisDServer: newThisDServer(cfg),
 		newMaprClient: func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
 			return clients.NewMaprClient(args, cfg, mode, loggers, colorizer)
 		},
@@ -92,7 +96,7 @@ func (s *scheduler) runJobs(ctx context.Context) {
 			return
 		}
 		var group []dueJob
-		group, pending = s.nextGroup(pending)
+		group, pending = s.nextGroup(ctx, pending)
 		if len(group) > 0 {
 			s.runGroup(ctx, group)
 		}

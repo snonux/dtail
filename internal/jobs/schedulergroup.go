@@ -51,7 +51,7 @@ func (d dueJob) groupKey() jobGroupKey {
 // A group has at most groupLimit jobs; the other jobs that could join it stay
 // pending and form the next groups, each a wave of at most groupLimit jobs
 // sharing reads among themselves.
-func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.Scheduled) {
+func (s *scheduler) nextGroup(ctx context.Context, pending []*config.Scheduled) ([]dueJob, []*config.Scheduled) {
 	now := s.now()
 	first, reason := s.evaluate(pending[0], now)
 	if reason != "" {
@@ -60,7 +60,7 @@ func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.
 	}
 	group := []dueJob{first}
 	key := first.groupKey()
-	limit := s.groupLimit(first.args)
+	limit := s.groupLimit(ctx, first.args)
 	// before holds the footprints of the group's jobs and of the earlier
 	// jobs that stay pending: the jobs a later job must not conflict with to
 	// join the group.
@@ -80,8 +80,14 @@ func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.
 }
 
 // groupLimit returns how many jobs connecting to the servers of args may run
-// together: a quarter of the local dserver's MaxConnections, divided by the
-// number of servers each job connects to, and at least one.
+// together.
+//
+// Jobs run together only when every server of args reaches the dserver
+// running the scheduler (see thisDServer.reaches), whose MaxConnections the
+// scheduler knows, and when that dserver shares reads (Server.SharedReadsDisable
+// is not set): without a shared read, running jobs together only adds load. At
+// most a quarter of MaxConnections, divided by the number of servers each job
+// connects to, and at least one, run together then.
 //
 // Every job of a group opens an SSH connection of its own to each of its
 // servers, and dserver counts connections still in their handshake against
@@ -90,24 +96,33 @@ func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.
 // again until the dates in its outfile change. The quarter leaves the other
 // connections to interactive users and continuous jobs. Dividing by the
 // number of servers keeps the bound when several server names of a job reach
-// the same dserver. The limits of remote dservers are unknown to the
-// scheduler: the bound assumes they allow at least as many connections as the
-// local one. When the servers cannot be discovered, jobs run one at a time,
-// as the scheduler did before it grouped jobs.
-func (s *scheduler) groupLimit(args config.Args) int {
-	servers := 1
+// this dserver. The limits of other dservers are unknown to the scheduler, and
+// others may use up their connections: jobs on them, and jobs whose servers
+// cannot be discovered, run one at a time, as the scheduler did before it
+// grouped jobs.
+func (s *scheduler) groupLimit(ctx context.Context, args config.Args) int {
+	if s.cfg.Server.SharedReadsDisable {
+		return 1
+	}
 	finder, err := discovery.New(args.Discovery, args.ServersStr, discovery.Shuffle, s.log())
+	var servers []string
 	if err == nil {
-		var list []string
-		if list, err = finder.ServerList(); err == nil {
-			servers = max(1, len(list))
-		}
+		servers, err = finder.ServerList()
 	}
 	if err != nil {
 		s.log().Warn("Running jobs one at a time as their servers can not be discovered", err)
 		return 1
 	}
-	return max(1, s.cfg.Server.MaxConnections/4/servers)
+	if len(servers) == 0 {
+		return 1
+	}
+	for _, server := range servers {
+		if !s.thisDServer.reaches(ctx, server) {
+			s.log().Debug("Running jobs one at a time as a server is not this dserver", server)
+			return 1
+		}
+	}
+	return max(1, s.cfg.Server.MaxConnections/4/len(servers))
 }
 
 // jobFootprint is what a scheduled job reads and writes at a time: the
