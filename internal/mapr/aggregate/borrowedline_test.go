@@ -85,7 +85,6 @@ func TestBuildGroupKeyReusesBuffer(t *testing.T) {
 func TestClearLineScratchDropsBorrowedViews(t *testing.T) {
 	scratch := newLineScratch()
 	scratch.fields["borrowed"] = "view"
-	scratch.parsed = scratch.fields
 	scratch.key = append(scratch.key[:0], "borrowed"...)
 	scratch.maxFields = len(scratch.fields)
 
@@ -97,11 +96,10 @@ func TestClearLineScratchDropsBorrowedViews(t *testing.T) {
 	if len(scratch.key) != 0 {
 		t.Errorf("clearLineScratch() left %q in the key buffer", scratch.key)
 	}
-	if scratch.maxFields != 0 {
-		t.Errorf("clearLineScratch() left maxFields = %d, want 0", scratch.maxFields)
-	}
-	if scratch.parsed != nil {
-		t.Errorf("clearLineScratch() left the parsed map %#v", scratch.parsed)
+	// The map keeps the buckets it grew, so the high-water mark stays until
+	// the map is replaced.
+	if scratch.maxFields != 1 {
+		t.Errorf("clearLineScratch() changed maxFields to %d, want 1", scratch.maxFields)
 	}
 }
 

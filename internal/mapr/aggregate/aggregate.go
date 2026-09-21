@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"runtime/debug"
 	"sync"
@@ -32,9 +33,15 @@ type Aggregate struct {
 	// The mapr query
 	query *mapr.Query
 	// The mapr log format parser
-	parser     logformat.Parser
-	serializer *serializer
+	parser logformat.Parser
+	// parserFillsFields reports whether parser is a logformat.FieldsIntoParser
+	// and thus parses straight into a line scratch's own map. The map any
+	// other parser returns is copied, see parseLine.
+	parserFillsFields bool
+	serializer        *serializer
 	// Stats
+	// linesProcessed counts the lines handed to the aggregation; lines an
+	// abort discards before they were parsed are not included.
 	linesProcessed atomic.Uint64
 	errors         atomic.Uint64
 	filesProcessed atomic.Uint64
@@ -91,6 +98,7 @@ func New(query *mapr.Query, parser logformat.Parser, hostname string,
 		started:       make(chan struct{}),
 		shutdownDone:  make(chan struct{}),
 	}
+	_, a.parserFillsFields = parser.(logformat.FieldsIntoParser)
 	a.serializer = newSerializer(query, logger)
 	logger.Debug("Created MapReduce aggregate", "hostname", hostname)
 	return a, nil
@@ -396,9 +404,11 @@ func (a *Aggregate) processRawBatch(batch []rawLine) {
 	}
 	scratch := batchScratchPool.Get().(*batchScratch)
 	// The deferred calls run in reverse order: the scratches, which borrow the
-	// line buffers, are cleared before those buffers go back to the pool.
+	// line buffers, are cleared before those buffers go back to the pool. The
+	// batch scratch counts the line scratches it handed out, so recycling after
+	// a panic part way through the batch leaves the original panic intact.
 	defer recycleRawLines(batch)
-	defer recycleBatchScratch(scratch, len(batch))
+	defer recycleBatchScratch(scratch)
 
 	for i := range batch {
 		lineScratch := scratch.line(i)
@@ -432,8 +442,19 @@ func (a *Aggregate) parseLine(scratch *lineScratch, lineContent *bytes.Buffer,
 
 	maprLine := borrowedLine(lineContent)
 	parsedFields, err := logformat.MakeFieldsInto(a.parser, scratch.fields, maprLine, sourceID)
-	// Record the peak field count so clearLineScratch can tell an inflated
-	// map from a normal one; it costs one comparison per line.
+	if err == nil && !a.parserFillsFields {
+		// Any other parser returns a map of its own, which it may clear and
+		// reuse on its next call. The merge phase reads the fields only after
+		// the whole batch was parsed, so they are copied into the scratch's
+		// map, which stays valid until the batch has been merged. The values
+		// are not cloned: Parser.MakeFields guarantees that they stay valid
+		// and unchanged until maprLine is recycled.
+		clear(scratch.fields)
+		maps.Copy(scratch.fields, parsedFields)
+		parsedFields = scratch.fields
+	}
+	// Record the peak field count so the retention limits can tell an
+	// inflated map from a normal one; it costs one comparison per line.
 	if n := len(scratch.fields); n > scratch.maxFields {
 		scratch.maxFields = n
 	}
@@ -443,10 +464,6 @@ func (a *Aggregate) parseLine(scratch *lineScratch, lineContent *bytes.Buffer,
 		}
 		return false, nil
 	}
-	// MakeFieldsInto fills scratch.fields for FieldsIntoParser parsers but
-	// returns a map of the parser's own for any other parser. The merge phase
-	// reads whichever map it was from the scratch.
-	scratch.parsed = parsedFields
 
 	// Apply where clause
 	if !a.query.WhereClause(parsedFields) {
@@ -629,13 +646,14 @@ func (p *Processor) drain() {
 	}
 	defer p.batch.reset()
 
-	// Counted once per batch rather than per line, so that processors of
-	// different files do not contend on the shared counter.
-	p.aggregate.linesProcessed.Add(uint64(len(lines)))
 	if p.aggregate.stopping() && p.aggregate.aborted() {
 		recycleRawLines(lines)
 		return
 	}
+	// Only lines handed to the aggregation are counted, not those an abort
+	// discards. Counted once per batch rather than per line, so that
+	// processors of different files do not contend on the shared counter.
+	p.aggregate.linesProcessed.Add(uint64(len(lines)))
 	p.aggregate.processRawBatch(lines)
 }
 

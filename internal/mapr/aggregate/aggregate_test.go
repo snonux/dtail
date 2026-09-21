@@ -782,7 +782,10 @@ func TestAggregateConcurrency(t *testing.T) {
 	// Process multiple "files" concurrently
 	var wg sync.WaitGroup
 	numFiles := 10
-	linesPerFile := 100
+	// Not a multiple of processorBatchSize: every file ends with a partial
+	// batch that only Flush hands to the aggregate while other files may
+	// still be merging.
+	linesPerFile := 137
 
 	for f := 0; f < numFiles; f++ {
 		wg.Add(1)
@@ -842,16 +845,16 @@ func TestAggregateConcurrency(t *testing.T) {
 	foundExpectedCount := false
 	for _, result := range results {
 		t.Logf("Result: %s", result)
-		// The result should show count($time)≔1000 (10 files * 100 lines each)
-		if strings.Contains(result, "count($time)≔1000") {
-			t.Log("✓ Found expected count of 1000")
+		// The result should show count($time)≔1370 (10 files * 137 lines each)
+		if strings.Contains(result, "count($time)≔1370") {
+			t.Log("✓ Found expected count of 1370")
 			foundExpectedCount = true
 			break
 		}
 	}
 
 	if !foundExpectedCount {
-		t.Error("Did not find expected count of 1000 in results")
+		t.Error("Did not find expected count of 1370 in results")
 	}
 }
 

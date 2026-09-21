@@ -10,32 +10,44 @@ const (
 	scratchFieldsCapacity = 24
 	scratchKeyCapacity    = 128
 	// maxRetainedScratchKeyBytes and maxRetainedScratchFields bound what a
-	// pooled scratch keeps parked between batches. A single pathological line
-	// -- a huge group key, or a query grouping by very many fields -- would
-	// otherwise inflate that scratch for as long as the pool holds it, because
-	// neither a slice nor a map ever shrinks on its own. Both limits are far
-	// above anything ordinary log lines reach, so the common case still reuses
-	// its storage without allocating. Same policy as maxRetainedLineBufBytes
-	// in internal/clients/handlers/basehandler.go.
+	// single line scratch keeps parked between batches. A single pathological
+	// line -- a huge group key, or a query grouping by very many fields --
+	// would otherwise inflate that scratch for as long as the pool holds it,
+	// because neither a slice nor a map ever shrinks on its own. Both limits
+	// are far above anything ordinary log lines reach, so the common case
+	// still reuses its storage without allocating. Same policy as
+	// maxRetainedLineBufBytes in internal/clients/handlers/basehandler.go.
 	maxRetainedScratchKeyBytes = 64 * 1024
 	maxRetainedScratchFields   = 1024
+	// maxRetainedBatchScratchKeyBytes and maxRetainedBatchScratchFields bound
+	// the same storage summed over all line scratches of one pooled batch
+	// scratch. A batch scratch holds up to processorBatchSize line scratches,
+	// so the per-line limits alone would let it park 100 times as much. The
+	// budget still covers an ordinary batch with room to spare (about 80
+	// fields and 2.5 KiB of group key per line of a full batch), so a
+	// steady stream of ordinary lines never reallocates; only scratches
+	// beyond the budget fall back to fresh, default-sized storage.
+	maxRetainedBatchScratchKeyBytes = 256 * 1024
+	maxRetainedBatchScratchFields   = 8 * 1024
 )
 
-// lineScratch is the reusable working set of parseLine: the field map handed
-// to the log format parser and the buffer the group key is built in. Reusing
-// them keeps the per-line path free of map, string and group-key allocations.
-// Everything a scratch holds borrows the line buffer being processed, so a
-// scratch is only valid while its own batch is being processed.
+// lineScratch is the reusable working set of parseLine: the field map the line
+// is parsed into and the buffer the group key is built in. Reusing them keeps
+// the per-line path free of map, string and group-key allocations. Everything
+// a scratch holds borrows the line buffer being processed, so a scratch is
+// only valid while its own batch is being processed.
 type lineScratch struct {
+	// fields holds the parsed fields of the line. A logformat.FieldsIntoParser
+	// fills it directly; the map any other parser returns is copied into it,
+	// because the merge phase reads it only after the whole batch was parsed
+	// and a parser is free to reuse its own map on the next call.
 	fields map[string]string
-	// parsed is the field map of the line after parsing: fields itself for a
-	// logformat.FieldsIntoParser, otherwise the map the parser returned.
-	parsed map[string]string
 	key    []byte
-	// maxFields is the high-water mark of len(fields) since the scratch was
-	// last cleared. A map keeps its buckets after clear(), and the length at
-	// recycle time is only the last line's, so the peak has to be recorded
-	// while the scratch is in use for clearLineScratch to spot an inflated map.
+	// maxFields is the high-water mark of len(fields) since fields was
+	// allocated, i.e. how many entries' worth of buckets the map retains: a
+	// map keeps its buckets after clear(), and the length at recycle time is
+	// only the last line's, so the peak has to be recorded while the scratch
+	// is in use for the retention limits to spot an inflated map.
 	maxFields int
 }
 
@@ -46,6 +58,11 @@ type lineScratch struct {
 // per line is needed instead of a single reused one.
 type batchScratch struct {
 	lines []*lineScratch
+	// used is the number of line scratches handed out for the current batch.
+	// It is tracked here rather than taken from the batch length so that
+	// recycling after a panic part way through a batch clears exactly the
+	// scratches that exist and were used, and the original panic survives.
+	used int
 	// accepted lists the scratches whose line passed the where clause and is
 	// waiting to be merged into the serializer.
 	accepted []*lineScratch
@@ -74,41 +91,72 @@ func (b *batchScratch) line(i int) *lineScratch {
 	if i == len(b.lines) {
 		b.lines = append(b.lines, newLineScratch())
 	}
+	if i >= b.used {
+		b.used = i + 1
+	}
 	return b.lines[i]
 }
 
-// clear drops the borrowed views of the first used line scratches, see
-// clearLineScratch, and forgets the accepted lines.
-func (b *batchScratch) clear(used int) {
-	for _, scratch := range b.lines[:used] {
+// clear drops the borrowed views of the line scratches used by the current
+// batch, see clearLineScratch, enforces the batch retention budget and forgets
+// the accepted lines.
+func (b *batchScratch) clear() {
+	for _, scratch := range b.lines[:b.used] {
 		clearLineScratch(scratch)
 	}
+	b.used = 0
+	b.enforceRetentionBudget()
 	clear(b.accepted)
 	b.accepted = b.accepted[:0]
 }
 
-// recycleBatchScratch clears the first used line scratches and parks the batch
+// enforceRetentionBudget caps the storage all line scratches of the batch
+// scratch retain together at maxRetainedBatchScratchFields and
+// maxRetainedBatchScratchKeyBytes. Scratches are admitted in order, and one
+// that would exceed a budget gets fresh default-sized storage instead; that
+// default storage (an empty map sized for scratchFieldsCapacity fields and a
+// scratchKeyCapacity byte key buffer per line scratch) is the fixed floor and
+// is not charged against the budget. It runs once per batch and walks at most
+// processorBatchSize scratches.
+func (b *batchScratch) enforceRetentionBudget() {
+	var fields, keyBytes int
+	for _, scratch := range b.lines {
+		if fields+scratch.maxFields > maxRetainedBatchScratchFields {
+			scratch.fields = make(map[string]string, scratchFieldsCapacity)
+			scratch.maxFields = 0
+		}
+		fields += scratch.maxFields
+		if keyBytes+cap(scratch.key) > maxRetainedBatchScratchKeyBytes {
+			// The default-sized buffer is the floor every line scratch has
+			// and is not charged against the budget.
+			scratch.key = make([]byte, 0, scratchKeyCapacity)
+			continue
+		}
+		keyBytes += cap(scratch.key)
+	}
+}
+
+// recycleBatchScratch clears the used line scratches and parks the batch
 // scratch in the pool. The scratch must not be touched afterwards.
-func recycleBatchScratch(scratch *batchScratch, used int) {
-	scratch.clear(used)
+func recycleBatchScratch(scratch *batchScratch) {
+	scratch.clear()
 	batchScratchPool.Put(scratch)
 }
 
 // clearLineScratch drops the borrowed views a scratch holds and releases
-// storage that one outlier line inflated beyond the retention limits, so the
-// scratch is safe and reasonably sized to reuse. It runs before the owning
-// batch scratch goes back to the pool, so a pooled scratch can never hand a
-// stale view of an already recycled line buffer to the next batch.
+// storage that one outlier line inflated beyond the per-line retention limits,
+// so the scratch is safe and reasonably sized to reuse. It runs before the
+// owning batch scratch goes back to the pool, so a pooled scratch can never
+// hand a stale view of an already recycled line buffer to the next batch.
 func clearLineScratch(scratch *lineScratch) {
 	if scratch.maxFields > maxRetainedScratchFields {
 		// clear() keeps the buckets a huge line grew, so the map itself has
 		// to go; the next line refills a right-sized one.
 		scratch.fields = make(map[string]string, scratchFieldsCapacity)
+		scratch.maxFields = 0
 	} else {
 		clear(scratch.fields)
 	}
-	scratch.maxFields = 0
-	scratch.parsed = nil
 
 	if cap(scratch.key) > maxRetainedScratchKeyBytes {
 		scratch.key = make([]byte, 0, scratchKeyCapacity)

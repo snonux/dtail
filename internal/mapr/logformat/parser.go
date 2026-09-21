@@ -29,6 +29,17 @@ type Parser interface {
 	// any part of maprLine beyond the call — csvParser keeps the header row
 	// of every source, for example — must store a copy of it, e.g. with
 	// strings.Clone.
+	//
+	// The returned map belongs to the parser again once MakeFields is next
+	// called: an implementation may clear and reuse one map for every line,
+	// and the caller copies the fields if it needs them longer (the
+	// MapReduce aggregator copies them into a map of its own, because it
+	// parses a whole batch of lines before it merges any of them). The
+	// returned keys and values, however, must stay valid and unchanged until
+	// maprLine itself is recycled, as the aggregator does not copy them: they
+	// may borrow maprLine or be ordinary Go strings, but must not alias a
+	// parser-owned buffer (e.g. via unsafe.String) that a later call
+	// overwrites.
 	MakeFields(maprLine, sourceID string) (map[string]string, error)
 }
 
@@ -60,7 +71,8 @@ type FieldsIntoParser interface {
 
 // MakeFieldsInto parses maprLine into dst when parser supports it and falls
 // back to Parser.MakeFields otherwise. It returns the map holding the parsed
-// fields: dst on the fast path, a freshly allocated map on the fallback path.
+// fields: dst on the fast path, the map Parser.MakeFields returned (which the
+// parser may reuse on its next call) on the fallback path.
 // On error the returned map is whatever the parser produced so far; callers
 // must check the error before reading fields.
 func MakeFieldsInto(parser Parser, dst map[string]string, maprLine,

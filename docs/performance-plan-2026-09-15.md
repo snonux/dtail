@@ -149,6 +149,7 @@ baseline, and note the commit.
 | `35` | parent `d5cae8f` | dmap count serverless, same log (5 interleaved rounds) | 0.62-0.64 s / 0.59-0.62 s / 0.04-0.06 s | 0.57-0.61 s / 0.56-0.57 s / 0.02-0.06 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` | parent `d5cae8f` | dmap aggregate serverless, the same log split into 4 files of 25 MiB (5 interleaved rounds) | 0.79-0.83 s / 1.54-1.60 s / 0.05-0.07 s | 0.42-0.50 s / 0.80-0.92 s / 0.04-0.05 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` | parent `d5cae8f` | `BenchmarkProcessorProcessLine` (new), 1M lines, 6 runs, ns per line | `processors_1` 798-831 ns/op, `processors_4` 868-896 ns/op | `processors_1` 809-859 ns/op, `processors_4` 607-667 ns/op | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `35` review fixes | parent `8a2b225` | dmap aggregate / count / aggregate over 4 files, serverless, 100 MiB stats log (5 interleaved rounds, elapsed) | aggregate 0.76-0.79 s (plus one cold 1.13 s first run), count 0.57-0.58 s, 4 files 0.42-0.52 s | aggregate 0.76-0.77 s, count 0.57-0.60 s, 4 files 0.42-0.52 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -324,3 +325,22 @@ aggregated when the processor closes, before the final serialization; after an
 abort they are discarded. Not measured for this task: server-mode dmap (only
 serverless runs were timed; the integration tests cover server mode for
 correctness) and the 1 GiB inputs.
+
+`35` review-fix notes: the follow-up commit keeps the design and fixes its
+edges. A panic in the parser, where or set clause part way through a batch now
+reaches the caller unchanged (the batch scratch counts the line scratches it
+handed out instead of clearing by batch length). Fields of a parser without
+`MakeFieldsInto` are copied into the line scratch's own map, because the merge
+runs only after the whole batch was parsed and `Parser.MakeFields` may reuse
+its map. Only parsers registered from outside take that path: the built-in
+`default`, `generic`, `generickv` and `csv` parsers implement `MakeFieldsInto`,
+and the other built-ins are not-implemented stubs. A pooled batch scratch's
+retained storage is now also capped as a whole (8192 fields' worth of map
+buckets, 256 KiB of group-key buffers beyond the default-sized ones), not only
+per line, and `linesProcessed` no longer counts lines an abort discards. The
+end-to-end runs in the row above show no measurable change against `8a2b225`
+(output raw-identical every round). `BenchmarkProcessorProcessLine` stays at 0
+allocs/op; in one non-interleaved run of 6 each it measured `processors_1`
+811-1268 ns/op before (noisy) and 761-784 ns/op after, `processors_4`
+602-1277 ns/op before (noisy) and 532-544 ns/op after, so no regression but no
+claim of a gain either.

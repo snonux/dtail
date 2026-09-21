@@ -156,7 +156,7 @@ func (s *serializer) aggregateBatch(lines []*lineScratch) {
 	s.groupMu.Lock()
 	defer s.groupMu.Unlock()
 	for _, line := range lines {
-		s.aggregateLocked(line.parsed, line.key)
+		s.aggregateLocked(line.fields, line.key)
 	}
 }
 
