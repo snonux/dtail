@@ -7,7 +7,7 @@ Last run: 2026-09-21, local fork at `df52a1e`, upstream (`github.com/mimecast/dt
 ## Test Methodology
 - **Tool**: `benchmarks/upstream_vs_local_bench.sh run --iterations 5`, after its `smoke` mode had checked that both implementations produce matching output.
 - **Cold Start**: The system page cache was dropped using `drop_caches` before every single observation to eliminate memory-caching bias.
-- **Interleaved Runs**: Tests were run in alternating order (Upstream $\rightarrow$ Local $\rightarrow$ Upstream) to ensure fairness.
+- **Interleaved Runs**: Each iteration ran both implementations, alternating which one went first (Upstream then Local, then Local then Upstream), to ensure fairness.
 - **Modes**:
     - **Serverless (`sl_`)**: Direct disk access.
     - **Server (`sv_`)**: Communication via `dserver` over SSH.
@@ -16,6 +16,8 @@ Last run: 2026-09-21, local fork at `df52a1e`, upstream (`github.com/mimecast/dt
 - **Samples**: 5 per scenario and implementation, 0 failures in every scenario.
 
 ## Summary Results (Upstream versus Local)
+
+From the first run (upstream `91d3500` against the local fork).
 
 | Scenario | Samples | Upstream Median | Local Median | Speedup | Upstream MiB/s | Local MiB/s |
 |---|---:|---:|---:|---:|---:|---:|
@@ -33,7 +35,7 @@ Last run: 2026-09-21, local fork at `df52a1e`, upstream (`github.com/mimecast/dt
 
 ## Effect of the 2026-09-15 Performance Plan
 
-The same script was run a second time with the pre-plan fork commit `c472f83` in place of upstream. This isolates what the performance plan changed. Ranges are min-max over the 5 samples.
+The same script was run a second time with the pre-plan fork commit `c472f83` in place of upstream. This isolates what the performance plan changed. Ranges are min-max over the 5 samples. The "Current" column comes from this second run, so its medians differ slightly from the Local column above for the same build (for example 0.18 s versus 0.20 s for sl_dcat_medium), which gives an idea of the run-to-run noise.
 
 | Scenario | Pre-plan (`c472f83`) median | Current median | Speedup | Pre-plan range | Current range |
 |---|---:|---:|---:|---:|---:|
@@ -66,4 +68,4 @@ The MapReduce (`dmap`) scenarios are **40x to 49x faster** than upstream in both
 The local fork is 9.5x to 184x faster than upstream across all measured scenarios, reading, searching, aggregating and following, in both serverless and server mode.
 
 ## Stability and Repeatability
-Across the 5 cold-cache samples of this run, the local version's elapsed times stayed within a narrow range (for example 0.94-0.96 s for server dmap aggregate). Upstream varied more in the MapReduce scenarios (38.5-44.0 s serverless and 35.8-42.3 s server-mode dmap aggregate).
+In the MapReduce scenarios of the upstream comparison run, the local version's 5 cold-cache samples stayed within 4-9% of each other (0.84-0.91 s serverless and 0.94-0.97 s server-mode dmap aggregate, 0.74-0.81 s dmap count), while upstream varied by 13-18% (38.5-44.0 s, 35.8-42.3 s and 36.6-41.4 s). The short local scenarios vary more in relative terms: for example serverless dgrep high-match ranged 0.16-0.21 s and the follow burst 0.21-0.29 s, where a few tens of milliseconds of noise are a large share.

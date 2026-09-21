@@ -181,7 +181,7 @@ baseline, and note the commit.
 | `65` | parent `b3a84a9` | dtail client CPU per idle follow session, same runs | C100: 0.89-0.97% | C50: 1.77-2.03%; C20: 4.33-4.45% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dserver CPU with 1 idle follow session (2 rounds) | S100: 2.8-4.0% | S20: 11.2-11.3% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 | `75` | before `c472f83` (pre-plan), after `df52a1e` | serverless dcat 1 GiB, `upstream_vs_local_bench.sh run --iterations 5`, cold cache, elapsed | 1.860-1.902 s (median 1.873) | 1.441-1.502 s (median 1.469) | yes, the script's smoke correctness checks passed before timing | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
-| `75` | before `c472f83` (pre-plan), after `df52a1e` | serverless dcat 100 MiB, `upstream_vs_local_bench.sh run --iterations 5`, cold cache, elapsed | 0.230-0.397 s (median 0.237) | 0.179-0.273 s (median 0.181) | yes, the script's smoke correctness checks passed before timing | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `75` | before `c472f83` (pre-plan), after `df52a1e` | serverless dcat 100 MiB, `upstream_vs_local_bench.sh run --iterations 5`, cold cache, elapsed | 0.230-0.397 s (median 0.237) | 0.179-0.273 s (median 0.181), ranges overlap | yes, the script's smoke correctness checks passed before timing | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `75` | before `c472f83` (pre-plan), after `df52a1e` | serverless dgrep high-match 100 MiB, `upstream_vs_local_bench.sh run --iterations 5`, cold cache, elapsed | 0.162-0.235 s (median 0.167) | 0.152-0.186 s (median 0.158), ranges overlap | yes, the script's smoke correctness checks passed before timing | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `75` | before `c472f83` (pre-plan), after `df52a1e` | serverless dgrep low-match 100 MiB, `upstream_vs_local_bench.sh run --iterations 5`, cold cache, elapsed | 0.193-0.237 s (median 0.195) | 0.201-0.251 s (median 0.210), ranges overlap: no measurable change | yes, the script's smoke correctness checks passed before timing | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `75` | before `c472f83` (pre-plan), after `df52a1e` | serverless dmap aggregate 100 MiB, `upstream_vs_local_bench.sh run --iterations 5`, cold cache, elapsed | 1.827-1.887 s (median 1.867) | 0.840-0.901 s (median 0.849) | yes, the script's smoke correctness checks passed before timing | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
@@ -732,8 +732,10 @@ before every observation, implementations interleaved): once against upstream
 plan changed; ranges are min-max over the 5 samples. The clear wins are server
 mode dcat (8.67 s to 0.64 s median, the target of `y4`, `z4`, `05` and `55`),
 the dmap scenarios (2.1-2.3x by median, the target of `15`, `25` and `35`),
-server dgrep high-match (2.8x) and the follow burst (4.6x); serverless dcat is
-27-31% faster by median (the target of `45`). The two dgrep low-match
+server dgrep high-match (2.8x) and the follow burst (4.6x). Serverless dcat
+(the target of `45`) improved by median, 1.28x on 1 GiB (1.87 s to 1.47 s,
+ranges clearly apart) and 1.31x on 100 MiB (0.237 s to 0.181 s, but the ranges
+overlap because of one slow pre-plan sample). The two dgrep low-match
 scenarios show no measurable change: their before and after ranges overlap
 (serverless median 0.195 s before versus 0.210 s after, server 0.301 s versus
 0.308 s), which fits the workload: few lines match, and most of the plan's read-path
