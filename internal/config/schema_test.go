@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/mimecast/dtail/internal/color"
 )
 
 // The JSON schema shipped in examples/ must describe exactly the keys the
@@ -865,9 +867,16 @@ func TestSchemaAcceptsRuntimeColorNames(t *testing.T) {
 					if errs := validateConfigText(t, schema, string(document)); len(errs) > 0 {
 						t.Fatalf("runtime name rejected by the schema:\n%s", strings.Join(errs, "\n"))
 					}
+					// A string never fails to decode now; a name the decoder does
+					// not know falls back to the default with a warning instead.
+					color.TakeConfigWarnings()
 					var in initializer
 					if err := json.Unmarshal(document, &in); err != nil {
 						t.Fatalf("schema-valid name rejected by the decoder: %v", err)
+					}
+					if warnings := color.TakeConfigWarnings(); len(warnings) > 0 {
+						t.Fatalf("schema-valid name fell back to the default:\n%s",
+							strings.Join(warnings, "\n"))
 					}
 				})
 			}

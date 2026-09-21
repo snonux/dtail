@@ -31,12 +31,12 @@
     },
     "color": {
       "type": "string",
-      "description": "Terminal color, matched case-insensitively: Black, Red, Green, Yellow, Blue, Magenta, Cyan, White or Default. An empty string means no color code. For compatibility with older config files dtail still accepts the deprecated prefixed spellings of released example configs (e.g. \"FgBlack\", \"BgCyan\") and raw ANSI escape sequences such as \"\\u001b[37m\" (used unchanged); this schema reports both forms. Any other value is not fatal: dtail warns on stderr and uses the default color.",
+      "description": "Terminal color, matched case-insensitively: Black, Red, Green, Yellow, Blue, Magenta, Cyan, White or Default. An empty string means no color code. For compatibility with older config files dtail still accepts the deprecated prefixed spellings of released example configs (e.g. \"FgBlack\", \"BgCyan\") and raw ANSI SGR escape sequences (ESC[...m) such as \"\\u001b[37m\" (used unchanged); this schema reports both forms. Any other value is not fatal: dtail warns on stderr and uses the default color.",
       "pattern": "^(?:[Bb][Ll][Aa][Cc][Kk]|[Rr][Ee][Dd]|[Gg][Rr][Ee][Ee][Nn]|[Yy][Ee][Ll][Ll][Oo][Ww]|[Bb][Ll][Uu][Ee]|[Mm][Aa][Gg][Ee][Nn][Tt][Aa]|[Cc][Yy][Aa][Nn]|[Ww][Hh][Ii][Tt][Ee]|[Dd][Ee][Ff][Aa][Uu][Ll][Tt])?$"
     },
     "attribute": {
       "type": "string",
-      "description": "Terminal text attribute, matched case-insensitively: None, Bold, Dim, Italic, Underline, Blink, SlowBlink, RapidBlink, Reverse or Hidden. An empty string is the same as None. For compatibility with older config files dtail still accepts the deprecated prefixed spellings of released example configs (e.g. \"AttrDim\", \"AttrNone\") and raw ANSI escape sequences such as \"\\u001b[1m\" (used unchanged); this schema reports both forms. Any other value is not fatal: dtail warns on stderr and uses the default attribute.",
+      "description": "Terminal text attribute, matched case-insensitively: None, Bold, Dim, Italic, Underline, Blink, SlowBlink, RapidBlink, Reverse or Hidden. An empty string is the same as None. For compatibility with older config files dtail still accepts the deprecated prefixed spellings of released example configs (e.g. \"AttrDim\", \"AttrNone\") and raw ANSI SGR escape sequences (ESC[...m) such as \"\\u001b[1m\" (used unchanged); this schema reports both forms. Any other value is not fatal: dtail warns on stderr and uses the default attribute.",
       "pattern": "^(?:[Nn][Oo][Nn][Ee]|[Bb][Oo][Ll][Dd]|[Dd][Ii][Mm]|[Ii][Tt][Aa][Ll][Ii][Cc]|[Uu][Nn][Dd][Ee][Rr][Ll][Ii][Nn][Ee]|[Bb][Ll][Ii][Nn][Kk]|[Ss][Ll][Oo][Ww][Bb][Ll][Ii][Nn][Kk]|[Rr][Aa][Pp][Ii][Dd][Bb][Ll][Ii][Nn][Kk]|[Rr][Ee][Vv][Ee][Rr][Ss][Ee]|[Hh][Ii][Dd][Dd][Ee][Nn])?$"
     }
   },

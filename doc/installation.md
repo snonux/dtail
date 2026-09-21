@@ -87,8 +87,8 @@ Older releases copied every ``Client.TermColors`` value verbatim into the output
 
 Existing config files keep loading, dserver included (it reads the same file but never renders colours):
 
-* The prefixed spellings used by the example config of v4.2.0 through v4.3.4 (``"FgBlack"``, ``"BgCyan"``, ``"AttrDim"``, ``"AttrNone"`` ...) are still accepted and mean the colour or attribute they name. They are deprecated, and ``examples/dtail.schema.json`` reports them; drop the ``Fg``/``Bg``/``Attr`` prefix to silence the schema.
-* Raw escape sequences (including several concatenated ones and ``:``-separated SGR parameters) are used unchanged, as before, and ``""`` still means no escape code.
+* The prefixed spellings used by the example configs of v4.0.0 through v4.3.4 (``samples/dtail.json.sample``, later ``examples/dtail.json.example``) (``"FgBlack"``, ``"BgCyan"``, ``"AttrDim"``, ``"AttrNone"`` ...) are still accepted and mean the colour or attribute they name. They are deprecated, and ``examples/dtail.schema.json`` reports them; drop the ``Fg``/``Bg``/``Attr`` prefix to silence the schema.
+* Raw SGR escape sequences (``ESC[...m``, including several concatenated ones and ``:``-separated parameters) are used unchanged, as before, and ``""`` still means no escape code. Other raw strings that older releases passed through verbatim (for example ``"\u001b[K"`` or an escape code followed by text) are now treated like any other invalid value, see below.
 * Any other value (for example a typo such as ``"Bleu"``) no longer ends up in the output. dtail uses that field's default colour instead and prints a warning naming the config file and the value on stderr, for example ``WARN: config file /etc/dserver/dtail.json: ignoring invalid background color "Bleu", using the default instead: ...``. A bad colour value is never a fatal config error.
 
 ### SSH listen address (``SSHBindAddress``)
