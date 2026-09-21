@@ -194,37 +194,189 @@ func TestSchedulerGroupSkipsJobsWithAnExistingOutfile(t *testing.T) {
 	}
 }
 
-func TestGroupDueJobsKeepsGroupsWithinTheCatSlots(t *testing.T) {
+// The scheduler groups every due job on the same files: dserver, not the
+// scheduler's configuration, bounds how many of them share a read, by the
+// cat slots of the dserver that reads.
+func TestSchedulerGroupsAllJobsOnTheSameFiles(t *testing.T) {
+	dir := t.TempDir()
+	var schedule []config.Scheduled
+	var names []string
+	for i := range 5 {
+		name := string(rune('a' + i))
+		names = append(names, name)
+		schedule = append(schedule, scheduledJob(t, name, "/a.log,/b.log", filepath.Join(dir, name)))
+	}
+	s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
+		SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, Schedule: schedule,
+	}}, jobTestLoggers)
+	recorder := newGroupRecorder(t, names...)
+	s.newMaprClient = recorder.newClient
+	s.runJobs(context.Background())
+
+	for _, name := range names {
+		if got := recorder.args[name].ReadShare.Members; got != 5 {
+			t.Errorf("%s read share members = %d, want 5", name, got)
+		}
+	}
+}
+
+// outfileWriter is a fake client factory whose jobs write their outfile, as
+// a MapReduce job does when it ends.
+type outfileWriter struct {
+	mu   sync.Mutex
+	runs []string
+}
+
+func (w *outfileWriter) newClient(args config.Args, _ clients.MaprClientMode) (backgroundClient, error) {
+	name, _, _ := strings.Cut(args.QueryStr, " ")
+	_, outfile, _ := strings.Cut(args.QueryStr, " outfile ")
+	return outfileClient{writer: w, name: name, outfile: outfile}, nil
+}
+
+type outfileClient struct {
+	writer  *outfileWriter
+	name    string
+	outfile string
+}
+
+func (c outfileClient) Start(context.Context, <-chan string) int {
+	c.writer.mu.Lock()
+	c.writer.runs = append(c.writer.runs, c.name)
+	c.writer.mu.Unlock()
+	if err := os.WriteFile(c.outfile, []byte(c.name), 0o600); err != nil {
+		return 1
+	}
+	return 0
+}
+
+func TestSchedulerSkipsAJobWhoseOutfileAnEarlierJobWrote(t *testing.T) {
+	tests := []struct {
+		name     string
+		outfiles func(dir string) (string, string)
+	}{
+		{"same path", func(string) (string, string) { return "x.csv", "x.csv" }},
+		{"relative spellings", func(string) (string, string) { return "./x.csv", "x.csv" }},
+		{"absolute and relative", func(dir string) (string, string) {
+			return filepath.Join(dir, "x.csv"), "x.csv"
+		}},
+		{"unclean path", func(string) (string, string) { return "sub/../x.csv", "x.csv" }},
+		{"symlinked directory", func(dir string) (string, string) {
+			return filepath.Join("link", "x.csv"), filepath.Join("real", "x.csv")
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Chdir(dir)
+			for _, sub := range []string{"sub", "real"} {
+				if err := os.Mkdir(sub, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink("real", "link"); err != nil {
+				t.Fatal(err)
+			}
+			first, second := tt.outfiles(dir)
+			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
+				SSHBindAddress: "127.0.0.1",
+				Schedule: []config.Scheduled{
+					scheduledJob(t, "first", "/var/log/x.log", first),
+					scheduledJob(t, "second", "/var/log/x.log", second),
+				},
+			}}, jobTestLoggers)
+			writer := &outfileWriter{}
+			s.newMaprClient = writer.newClient
+			s.runJobs(context.Background())
+
+			if !reflect.DeepEqual(writer.runs, []string{"first"}) {
+				t.Errorf("jobs run = %q, want only the first: the second one's outfile exists", writer.runs)
+			}
+		})
+	}
+}
+
+// fakeClock is a scheduler clock that jobs can move forward.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
+}
+
+// clockClient is a job that moves the clock to after while it runs.
+type clockClient struct {
+	clock *fakeClock
+	after time.Time
+}
+
+func (c clockClient) Start(context.Context, <-chan string) int {
+	c.clock.set(c.after)
+	return 0
+}
+
+// A job is evaluated when its group starts, as when every job ran on its own
+// right after the one before it, not when the scheduler run started.
+func TestSchedulerEvaluatesAJobWhenItsGroupStarts(t *testing.T) {
+	day := time.Date(2026, 9, 21, 0, 0, 0, 0, time.Local)
 	tests := []struct {
 		name      string
-		maxCats   int
-		files     string
-		jobs      int
-		wantSizes []int
+		start     time.Time
+		after     time.Time
+		timeRange [2]int
+		wantRun   bool
+		wantFiles string
 	}{
-		{"one file, two slots", 2, "/a.log", 5, []int{2, 2, 1}},
-		{"one file, enough slots", 8, "/a.log", 5, []int{5}},
-		{"two files, four slots", 4, "/a.log,/b.log", 5, []int{2, 2, 1}},
-		{"two files, two slots", 2, "/a.log,/b.log", 3, []int{1, 1, 1}},
-		{"no slots configured", 0, "/a.log", 2, []int{1, 1}},
+		{"still in its time range", day.Add(10 * time.Hour), day.Add(10*time.Hour + time.Minute),
+			[2]int{10, 11}, true, "/var/log/b-20260921.log"},
+		{"out of its time range by then", day.Add(10*time.Hour + 59*time.Minute), day.Add(11 * time.Hour),
+			[2]int{10, 11}, false, ""},
+		{"the dates changed by then", day.Add(23*time.Hour + 59*time.Minute), day.Add(24 * time.Hour),
+			[2]int{0, 24}, true, "/var/log/b-20260922.log"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
-			var schedule []config.Scheduled
-			for i := range tt.jobs {
-				name := string(rune('a' + i))
-				schedule = append(schedule, scheduledJob(t, name, tt.files, filepath.Join(dir, name)))
-			}
+			b := scheduledJob(t, "b", "/var/log/b-$today.log", filepath.Join(dir, "b-$today"))
+			b.TimeRange = tt.timeRange
 			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: tt.maxCats, Schedule: schedule,
+				SSHBindAddress: "127.0.0.1",
+				Schedule: []config.Scheduled{
+					scheduledJob(t, "a", "/var/log/a.log", filepath.Join(dir, "a")),
+					b,
+				},
 			}}, jobTestLoggers)
-			var sizes []int
-			for _, group := range groupDueJobs(s.dueJobs()) {
-				sizes = append(sizes, len(group))
+			clock := &fakeClock{now: tt.start}
+			s.now = clock.Now
+			ran := map[string]config.Args{}
+			s.newMaprClient = func(args config.Args, _ clients.MaprClientMode) (backgroundClient, error) {
+				name, _, _ := strings.Cut(args.QueryStr, " ")
+				ran[name] = args
+				return clockClient{clock: clock, after: tt.after}, nil
 			}
-			if !reflect.DeepEqual(sizes, tt.wantSizes) {
-				t.Errorf("group sizes = %v, want %v", sizes, tt.wantSizes)
+			s.runJobs(context.Background())
+
+			if _, ok := ran["a"]; !ok {
+				t.Fatal("job a did not run")
+			}
+			args, ok := ran["b"]
+			if ok != tt.wantRun {
+				t.Fatalf("job b ran = %v, want %v", ok, tt.wantRun)
+			}
+			if ok && args.What != tt.wantFiles {
+				t.Errorf("job b read %q, want %q", args.What, tt.wantFiles)
 			}
 		})
 	}

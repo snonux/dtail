@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -14,8 +15,6 @@ type dueJob struct {
 	job     *config.Scheduled
 	args    config.Args
 	outfile string
-	// groupLimit is the largest group the job may run in.
-	groupLimit int
 }
 
 // jobGroupKey identifies the jobs that read the same files from the same
@@ -31,51 +30,65 @@ func (d dueJob) groupKey() jobGroupKey {
 	return jobGroupKey{files: d.args.What, servers: d.args.ServersStr, discovery: d.args.Discovery}
 }
 
-// groupLimit returns how many jobs reading the files of due may run as one
-// group: as many as the server's cat slots let read all their files at the
-// same time. Every member takes a slot per file before it joins the group
-// read, and a member that gets its slots only after the read started reads
-// on its own, after the group waited for it.
-func (s *scheduler) groupLimit(due dueJob) int {
-	files := len(strings.Split(due.args.What, ","))
-	return max(1, s.cfg.Server.MaxConcurrentCats/files)
-}
-
-// groupDueJobs groups due jobs by the files, servers and discovery they read
-// with, in the order of each group's first job; a group has at most its
-// jobs' groupLimit members, further jobs form further groups. A job whose
-// outfile an earlier job of the run writes too runs on its own and after that
-// job, as it did when every job ran one after another: it runs only if the
-// earlier job did not write the outfile.
-func groupDueJobs(due []dueJob) [][]dueJob {
-	var groups [][]dueJob
-	openGroup := make(map[jobGroupKey]int)
-	outfiles := make(map[string]bool)
-	for _, job := range due {
-		if outfiles[job.outfile] {
-			groups = append(groups, []dueJob{job})
-			continue
-		}
-		outfiles[job.outfile] = true
-		key := job.groupKey()
-		if index, ok := openGroup[key]; ok && len(groups[index]) < job.groupLimit {
-			groups[index] = append(groups[index], job)
-			continue
-		}
-		openGroup[key] = len(groups)
-		groups = append(groups, []dueJob{job})
+// nextGroup evaluates the first pending job at the current time and, if it
+// is due, groups it with the pending jobs that are due at the same time and
+// read the same files from the same servers with the same discovery. It
+// returns the group, empty when the first job is not due, and the jobs still
+// pending, in their order; those are evaluated again when their group starts.
+//
+// A job that writes the same outfile as a job of the group stays pending, so
+// that it runs after the group and, as when every job ran on its own, only if
+// the group did not write the outfile. dserver bounds how many members share
+// a read by its own cat slots; the other members read on their own.
+func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.Scheduled) {
+	now := s.now()
+	first, reason := s.evaluate(pending[0], now)
+	if reason != "" {
+		s.log().Debug(pending[0].Name, reason)
+		return nil, pending[1:]
 	}
-	return groups
+	group := []dueJob{first}
+	key := first.groupKey()
+	outfiles := map[string]bool{outfileKey(first.outfile): true}
+	var rest []*config.Scheduled
+	for _, job := range pending[1:] {
+		due, reason := s.evaluate(job, now)
+		if reason != "" || due.groupKey() != key || outfiles[outfileKey(due.outfile)] {
+			rest = append(rest, job)
+			continue
+		}
+		outfiles[outfileKey(due.outfile)] = true
+		group = append(group, due)
+	}
+	return group, rest
 }
 
-// runGroup runs the jobs of one group. A single job runs as before, checking
-// its outfile again. The jobs of a larger group run concurrently and ask
+// outfileKey returns the file an outfile path names: the absolute, cleaned
+// path, with the symbolic links of the path, or of its directory while the
+// outfile does not exist, resolved. Two jobs writing ./x.csv and x.csv write
+// the same file.
+func outfileKey(outfile string) string {
+	path, err := filepath.Abs(outfile)
+	if err != nil {
+		return filepath.Clean(outfile)
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		return filepath.Join(dir, filepath.Base(path))
+	}
+	return path
+}
+
+// runGroup runs the jobs of one group. A single job runs as before. The jobs
+// of a larger group run concurrently and ask
 // dserver, with a read share that is random for this run, to read their files
 // once for the whole group; a dserver without shared reads ignores the share
 // and every job reads on its own.
 func (s *scheduler) runGroup(ctx context.Context, group []dueJob) {
 	if len(group) == 1 {
-		s.runJob(ctx, group[0].job)
+		s.runDueJob(ctx, group[0])
 		return
 	}
 

@@ -3,12 +3,15 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/mimecast/dtail/internal/clients"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 type statusBackgroundClient struct{ status int }
@@ -84,5 +87,42 @@ func TestSchedulerRunJobSkipAndFailurePaths(t *testing.T) {
 				t.Fatalf("client factory calls = %d, want %d", calls, tt.wantCalls)
 			}
 		})
+	}
+}
+
+// exitLogger records the scheduler's info and warning lines.
+type exitLogger struct {
+	logging.NopLogger
+	lines []string
+}
+
+func (l *exitLogger) Info(args ...any) string {
+	l.lines = append(l.lines, fmt.Sprint(args...))
+	return ""
+}
+
+func (l *exitLogger) Warn(args ...any) string {
+	l.lines = append(l.lines, fmt.Sprint(args...))
+	return ""
+}
+
+func TestSchedulerLogsTheJobNameWithItsExitStatus(t *testing.T) {
+	for _, status := range []int{0, 3} {
+		s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{SSHBindAddress: "127.0.0.1"}},
+			jobTestLoggers)
+		logger := &exitLogger{}
+		s.logger = logger
+		s.newMaprClient = func(config.Args, clients.MaprClientMode) (backgroundClient, error) {
+			return statusBackgroundClient{status: status}, nil
+		}
+		job := config.Scheduled{}
+		job.Name = "nightly"
+		job.Outfile = filepath.Join(t.TempDir(), "result")
+		s.runJob(context.Background(), &job)
+
+		want := fmt.Sprintf("Job nightly exited with status %d", status)
+		if !slices.Contains(logger.lines, want) {
+			t.Errorf("log = %q, want %q", logger.lines, want)
+		}
 	}
 }
