@@ -395,10 +395,13 @@ func drainManager(t *testing.T, manager *outputManager, readSize int) []byte {
 func TestOutputManagerAdoptionAccounting(t *testing.T) {
 	const (
 		kib       = 1024
-		length    = 40 * kib
+		length    = 64 * kib // spare capacity exactly an eighth: adoptable
 		capacity  = largePayloadCapacity
+		partial   = 40 * kib // spare capacity over an eighth: copied
 		smallSize = outputAdoptMinBytes - 1
 	)
+	// The smallest cap the server handler accepts, for 1 KiB lines.
+	minimumCap := minimumOutputBufferMaxBytes(kib)
 	tests := []struct {
 		name         string
 		maxBytes     int
@@ -408,16 +411,16 @@ func TestOutputManagerAdoptionAccounting(t *testing.T) {
 		wantEntries  int
 	}{
 		{
-			name:         "large payload adopted and charged its capacity",
-			maxBytes:     128 * kib,
+			name:         "full batch adopted and charged its capacity",
+			maxBytes:     256 * kib,
 			payloads:     [][]byte{largePayload(length, 'a')},
 			wantAdopted:  []bool{true},
 			wantRetained: capacity,
 			wantEntries:  1,
 		},
 		{
-			name:         "capacity over the remaining budget falls back to an exact copy",
-			maxBytes:     120 * kib,
+			name:         "adoption that would crowd out the next batch falls back to an exact copy",
+			maxBytes:     160 * kib,
 			payloads:     [][]byte{largePayload(length, 'a'), largePayload(length, 'b')},
 			wantAdopted:  []bool{true, false},
 			wantRetained: capacity + length,
@@ -425,11 +428,19 @@ func TestOutputManagerAdoptionAccounting(t *testing.T) {
 		},
 		{
 			name:         "capacity over the whole cap is copied, not stranded",
-			maxBytes:     64 * kib,
+			maxBytes:     128 * kib,
 			payloads:     [][]byte{largePayload(length, 'a')},
 			wantAdopted:  []bool{false},
 			wantRetained: length,
 			wantEntries:  1,
+		},
+		{
+			name:         "two full batches queue at the minimum accepted cap",
+			maxBytes:     minimumCap,
+			payloads:     [][]byte{largePayload(length, 'a'), largePayload(length, 'b')},
+			wantAdopted:  []bool{false, false},
+			wantRetained: 2 * length,
+			wantEntries:  2,
 		},
 		{
 			name:         "same-generation large payloads get their own descriptors",
@@ -438,6 +449,14 @@ func TestOutputManagerAdoptionAccounting(t *testing.T) {
 			wantAdopted:  []bool{true, true},
 			wantRetained: 2 * capacity,
 			wantEntries:  2,
+		},
+		{
+			name:         "partial batch with over an eighth spare capacity is copied",
+			maxBytes:     256 * kib,
+			payloads:     [][]byte{largePayload(partial, 'a')},
+			wantAdopted:  []bool{false},
+			wantRetained: partial,
+			wantEntries:  1,
 		},
 		{
 			name:         "payload below the adoption size is copied",
@@ -454,7 +473,12 @@ func TestOutputManagerAdoptionAccounting(t *testing.T) {
 			var want []byte
 			for _, payload := range tt.payloads {
 				want = append(want, payload...)
-				if err := manager.enqueue(context.Background(), 1, payload, nil); err != nil {
+				// Every payload must be admitted without a reader draining the
+				// queue; the timeout turns a wrongly blocked enqueue into a failure.
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				err := manager.enqueue(ctx, 1, payload, nil)
+				cancel()
+				if err != nil {
 					t.Fatalf("enqueue: %v", err)
 				}
 			}
@@ -494,16 +518,19 @@ func TestOutputManagerAdoptionAccounting(t *testing.T) {
 // consumed all of it, and backpressure releases exactly when it is gone.
 func TestOutputManagerAdoptedCapacityBackpressure(t *testing.T) {
 	const kib = 1024
-	manager := newHandoverTestManager(100 * kib)
-	first := largePayload(40*kib, 'a')
+	manager := newHandoverTestManager(140 * kib)
+	first := largePayload(64*kib, 'a')
 	if err := manager.enqueue(context.Background(), 1, first, nil); err != nil {
 		t.Fatalf("enqueue first: %v", err)
 	}
+	if retained, _, _ := managerAccounting(manager); retained != 72*kib {
+		t.Fatalf("retained after adopting the first batch = %d, want %d", retained, 72*kib)
+	}
 
-	// 72 KiB retained: 40 KiB fits neither adopted (72) nor copied (40).
+	// 72 KiB retained: a 70 KiB batch fits neither adopted (72) nor copied (70).
 	done := make(chan error, 1)
 	go func() {
-		done <- manager.enqueue(context.Background(), 1, largePayload(40*kib, 'b'), nil)
+		done <- manager.enqueue(context.Background(), 1, largePayload(70*kib, 'b'), nil)
 	}()
 	select {
 	case err := <-done:
@@ -511,7 +538,7 @@ func TestOutputManagerAdoptedCapacityBackpressure(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 
-	buf := make([]byte, 40*kib-1)
+	buf := make([]byte, 64*kib-1)
 	if n, handled := manager.tryRead(buf, &userserver.User{Name: "handover-test"}, nil); !handled || n != len(buf) {
 		t.Fatalf("partial read = handled %v n %d", handled, n)
 	}
@@ -535,8 +562,135 @@ func TestOutputManagerAdoptedCapacityBackpressure(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("blocked enqueue not released after the adopted allocation drained")
 	}
-	if retained, buffered, _ := managerAccounting(manager); retained != 72*kib || buffered != 40*kib {
-		t.Fatalf("retained/buffered = %d/%d, want %d/%d", retained, buffered, 72*kib, 40*kib)
+	// Adopting the 70 KiB batch would leave no room for another one of its
+	// size (72+70 > 140 KiB), so it was copied at its exact length.
+	if retained, buffered, _ := managerAccounting(manager); retained != 70*kib || buffered != 70*kib {
+		t.Fatalf("retained/buffered = %d/%d, want %d/%d", retained, buffered, 70*kib, 70*kib)
+	}
+}
+
+// fillUntilBackpressure writes lines of lineLen bytes through a production
+// NetworkWriter into manager, which nobody drains, until the writer blocks on
+// the full queue. It returns the retained and payload bytes queued then.
+func fillUntilBackpressure(t *testing.T, manager *outputManager, plain bool, lineLen int) (retained, buffered, entries int) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	writer := NewNetworkWriter(ctx, nil, nil, "testhost", plain, false, 1, nil, handlerTestLogger)
+	writer.enqueueOutput = manager.enqueue
+	line := bytes.Repeat([]byte{'x'}, lineLen)
+	for i := 0; ; i++ {
+		if i > 1<<20 {
+			t.Fatal("writer never blocked on the full output queue")
+		}
+		if err := writer.WriteLineData(line, uint64(i), "app.log"); err != nil {
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("WriteLineData: %v", err)
+			}
+			return managerAccounting(manager)
+		}
+	}
+}
+
+// maxChargePerPayload bounds what the output queue may charge against
+// OutputBufferMaxBytes per payload byte: a full 64 KiB batch in its 72 KiB
+// allocation.
+const maxChargePerPayload = 1.125
+
+// Lines longer than 8 KiB do not fit the 72 KiB batch reservation, so the
+// batch crossing the threshold regrows the writer's buffer. The queue must not
+// be charged for that doubled buffer: every entry, and the whole queue, stays
+// within maxChargePerPayload of its payload, and the default 2 MiB cap still
+// holds close to 2 MiB of payload before backpressure (at d38aea8 it held
+// about 1.03 MB with 9-12 KiB lines).
+func TestOutputChargeBoundedForLongLines(t *testing.T) {
+	const kib = 1024
+	for _, plain := range []bool{false, true} {
+		for _, lineLen := range []int{99, 9 * kib, 12 * kib, 20 * kib, 40 * kib, 100 * kib} {
+			t.Run(fmt.Sprintf("plain=%v/line=%d", plain, lineLen), func(t *testing.T) {
+				manager := newHandoverTestManager(64 << 20)
+				retained, buffered, _ := fillBytes(t, manager, plain, lineLen, 4<<20)
+				if ratio := float64(retained) / float64(buffered); ratio > maxChargePerPayload {
+					t.Fatalf("queue charged %d bytes for %d payload bytes (%.3f), want at most %.3f",
+						retained, buffered, ratio, maxChargePerPayload)
+				}
+				manager.mu.Lock()
+				for i, entry := range manager.queue {
+					if float64(entry.retainedBytes) > maxChargePerPayload*float64(len(entry.payload)) {
+						manager.mu.Unlock()
+						t.Fatalf("entry %d charged %d bytes for %d payload bytes", i,
+							entry.retainedBytes, len(entry.payload))
+					}
+				}
+				manager.mu.Unlock()
+
+				capped := newHandoverTestManager(defaultOutputBufferMaxBytes)
+				_, queued, _ := fillUntilBackpressure(t, capped, plain, lineLen)
+				if minimum := defaultOutputBufferMaxBytes * 85 / 100; queued < minimum {
+					t.Fatalf("payload queued before backpressure at the %d byte cap = %d, want at least %d",
+						defaultOutputBufferMaxBytes, queued, minimum)
+				}
+			})
+		}
+	}
+}
+
+// fillBytes writes at least total bytes of lines through a production
+// NetworkWriter into manager, whose cap must not be reached.
+func fillBytes(t *testing.T, manager *outputManager, plain bool, lineLen, total int) (retained, buffered, entries int) {
+	t.Helper()
+	writer := NewNetworkWriter(context.Background(), nil, nil, "testhost", plain, false, 1, nil, handlerTestLogger)
+	writer.enqueueOutput = manager.enqueue
+	writeLinesN(t, writer, total/lineLen+1, lineLen, 'x')
+	return managerAccounting(manager)
+}
+
+// At the smallest OutputBufferMaxBytes the server handler accepts, the queue
+// holds two full writer batches before backpressure, as it did before batches
+// were adopted: adopting the first one in its 72 KiB allocation would leave
+// too little room for the second.
+func TestOutputQueueHoldsTwoBatchesAtMinimumCap(t *testing.T) {
+	const maxLineLength = 1024
+	for _, plain := range []bool{false, true} {
+		manager := newHandoverTestManager(minimumOutputBufferMaxBytes(maxLineLength))
+		retained, buffered, entries := fillUntilBackpressure(t, manager, plain, 99)
+		if entries != 2 || buffered < 2*networkWriterBufferSize {
+			t.Fatalf("plain=%v: queued %d entries with %d payload bytes (%d retained) at the minimum cap, want 2 full batches",
+				plain, entries, buffered, retained)
+		}
+	}
+}
+
+// A long line regrows the writer's buffer past a whole batch. The writer may
+// keep that buffer while it keeps taking large batches from it, but must drop
+// it on a small flush instead of holding it into an idle phase.
+func TestNetworkWriterDropsRegrownBufferOnSmallFlush(t *testing.T) {
+	writer, batches := newCapturingNetworkWriter(t)
+	reservation := networkWriterBatchCapacity(networkWriterBufferSize)
+	writeLinesN(t, writer, 16, 9*1024, 'x')
+	if len(*batches) < 2 {
+		t.Fatalf("batches = %d, want at least 2", len(*batches))
+	}
+	for i, b := range *batches {
+		if cap(b.data)-len(b.data) > len(b.data)/8 {
+			t.Fatalf("batch %d: len %d cap %d, want at most an eighth of spare capacity",
+				i, len(b.data), cap(b.data))
+		}
+	}
+	if got := writerBufferCap(writer); got <= reservation {
+		t.Fatalf("writer buffer capacity = %d; the test needs a buffer regrown past %d", got, reservation)
+	}
+	if err := writer.WriteLineData([]byte("one short follow line"), 1, "app.log"); err != nil {
+		t.Fatalf("WriteLineData: %v", err)
+	}
+	flushWriter(t, writer)
+	if got := writerBufferCap(writer); got > reservation {
+		t.Fatalf("writer buffer capacity after a small flush = %d, want at most %d", got, reservation)
+	}
+	for i, b := range *batches {
+		if !bytes.Equal(b.data, b.snapshot) {
+			t.Fatalf("batch %d changed after it was sent", i)
+		}
 	}
 }
 

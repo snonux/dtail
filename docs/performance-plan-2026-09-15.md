@@ -170,6 +170,9 @@ baseline, and note the commit.
 | `55` fix 2 | parent `5a9ac06` | reviewer benchmark, plain 70 KiB chunks of 99-byte lines, largest charged queue entry | `5a9ac06` 310-331 us/op, 348 KB/op, 131,072 B; `7a16500` 105-117 us/op, 87 KB/op, 73,728 B; `f290a31` 170-193 us/op, 161 KB/op, 65,600 B | 107-130 us/op, 87 KB/op, 73,728 B | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `55` fix 2 | parent `5a9ac06` | retained heap after GC, 1000 writers that caught up (three 70 KB chunks) then idle | `5a9ac06` 0.3 MiB; `7a16500` 70.6 MiB; `f290a31` 125.3 MiB | 70.6 MiB until 2 more small flushes after the remainder, then 0.4 MiB (idle-only writers 0.4 MiB) | n/a (unit test asserts writer buffer capacity) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `55` fix 2 | parent `5a9ac06` | dcat server mode, 100 MiB normal log, four dservers side by side, 16 rounds rotating the order; dserver CPU median / range | `f290a31` 1.06 / 0.92-1.10 s; `7a16500` 0.77 / 0.73-0.88 s; `5a9ac06` 0.78 / 0.71-1.71 s | 0.79 / 0.72-0.88 s (bulk gain kept) | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix 3 | parent `d38aea8` | payload queued before backpressure at the default 2 MiB cap, writer into queue, 9 / 12 / 20 / 40 / 100 KiB lines (protocol format) | `d38aea8` 1,032,304 / 1,032,276 / 1,146,936 / 1,146,908 / 1,433,614 B (charged/payload 1.995 / 1.996 / 1.798 / 1.799 / 1.430); `f290a31` 2,064,608 / 2,064,552 / 2,048,100 / 2,048,050 / 2,048,020 B | 1,843,400 / 1,843,350 / 1,884,252 / 1,884,206 / 1,945,619 B (charged/payload 1.108 / 1.109 / 1.099 / 1.099 / 1.040) | n/a (unit tests compare the bytes read with the bytes written) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix 3 | parent `d38aea8` | batches of 99-byte lines queued at the minimum accepted cap (1 KiB `MaxLineLength` + 128 KiB = 132,096 B) | `d38aea8` 1 (73,728 B charged); `f290a31` 2 (131,200 B) | 2 (131,200 B, both copied) | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` fix 3 | parent `d38aea8` | reviewer benchmark (3 runs of 2000 iterations): follow catch-up protocol 64 KiB chunks; bulk 1 MiB 99-byte lines; constant 40 KiB flushes | `d38aea8` 201-252 us, 142 KB/op; 1.47-1.49 ms; 79-90 us, 74 KB/op, retained/payload 1.798 | 187-222 us, 142 KB/op; 1.46-1.53 ms; 100-106 us, 99 KB/op, retained/payload 1.000 (`f290a31` 92-109 us, 99 KB/op) | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `65` | parent `b3a84a9` | dtail follow, 8 sessions on one dserver, single-line latency on session 0 (40 probes per run, 2 interleaved rounds per variant pair; S100/C100 ranges span the 4 runs of both pairings; mean / p95), server EOF poll S and client stdout flush C | S100/C100 (current): 97-107 ms / 160-172 ms | S50/C50: 49-52 ms / 80-89 ms; S20/C20: 17-20 ms / 29-37 ms; S20/C100: 61-66 ms; S100/C20: 57-62 ms; S50/C100: 65-72 ms; S100/C50: 72-79 ms | n/a (intervals only) | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dserver CPU with 8 idle follow sessions (20 s, utime+stime from `/proc`, % of one core), same runs | S100: 6.2-9.2% | S50: 12.1-14.6%; S20: 20.3-27.6% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dtail client CPU per idle follow session, same runs | C100: 0.89-0.97% | C50: 1.77-2.03%; C20: 4.33-4.45% | n/a | `make clean && make build` only (docs-only change, no code kept) |
@@ -516,8 +519,10 @@ into a fresh slice and a second time into the output queue, where same-generatio
 batches were coalesced into one entry that was regrown geometrically (up to
 the 2 MiB cap) by copying. Now the writer hands its batch buffer over and
 reserves a new one (72 KiB, so a line of up to 8 KiB that crosses the
-threshold fits without regrowing), and the queue adopts any payload of at least 32 KiB as
-its own entry without copying. Retained-bytes accounting charges the adopted
+threshold fits without regrowing), and the queue adopts a large payload as
+its own entry without copying (as first committed, any payload of at least
+32 KiB; see the third review fix below for the final rule). Retained-bytes
+accounting charges the adopted
 slice's full capacity against `OutputBufferMaxBytes`; when that capacity does
 not fit but the length does, the payload is copied at exact size as before,
 so an admissible payload is never stranded by its spare capacity. Payloads
@@ -544,8 +549,9 @@ Final design (second review fix): a writer that is not reserved grows its
 buffer naturally; once its batch reaches 24 KiB (three eighths of the flush
 threshold, while the natural buffer still has its 32 KiB capacity) the
 pending bytes are moved into an exact 72 KiB allocation and the writer
-becomes reserved, so the batch that crosses 64 KiB is never regrown and is
-handed over, and charged, at exactly 72 KiB. After a hand-over a reserved
+becomes reserved, so a batch of lines up to 8 KiB that crosses 64 KiB is
+never regrown and is handed over, and charged, at 72 KiB (longer lines: see
+the third review fix below). After a hand-over a reserved
 writer allocates the next 72 KiB on its next write. A small flush copies its
 bytes out and resets the buffer but keeps the reservation; the reservation
 is dropped, and the writer leaves reserved mode, only after 3 consecutive
@@ -575,12 +581,47 @@ dservers side by side, 16 rounds rotating the order) dserver CPU median /
 range: `f290a31` 1.06 / 0.92-1.10 s, `7a16500` 0.77 / 0.73-0.88 s,
 `5a9ac06` 0.78 / 0.71-1.71 s, final 0.79 / 0.72-0.88 s, `cmp` identical
 every run: the bulk gain holds (ranges overlap between the last three).
-One consequence: an adopted 64 KiB batch is charged its 72 KiB allocation,
-so the default 2 MiB cap now holds 28 full batches before backpressure, where
-before it could fill up with 2 MiB of payload (about 31 batches). A flush of
-32 KiB to 64 KiB (for example a follow chunk of 40 KiB) is also adopted in
-its 72 KiB allocation and charged at up to 1.8 times its payload; this was
-already so in `876060d`. The session generation is now an
+Review fix 3 (charging): at `d38aea8` a line longer than 8 KiB made the
+batch crossing 64 KiB overflow the 72 KiB reservation, so `bytes.Buffer`
+regrew it (to 144 KiB for 9-12 KiB lines) and the queue adopted and charged
+that whole buffer: charged/payload 2.00 for 9-12 KiB lines, 1.80 for
+20-40 KiB, 1.43 for 100 KiB, and the default 2 MiB cap held only about
+1.03 MB of payload before backpressure (f290a31: 2.03-2.06 MB). A flush of
+32 KiB to 64 KiB was likewise adopted in its 72 KiB allocation (charged up to
+1.8 times its payload, 2.25 at the 32 KiB bound). Also, at the smallest
+`OutputBufferMaxBytes` the handler accepts (`MaxLineLength` plus two 64 KiB
+batches) the first batch was adopted at 73,728 B and the second then fit
+neither adopted nor copied, so the queue held one batch instead of two (not a
+deadlock). The validated minimum was not raised, because configs that are
+valid today would then be rejected. Final rule: the queue adopts a payload of
+at least 32 KiB only when its spare capacity is at most an eighth of its
+length (`outputAdoptable`, so an adopted payload is charged at most 1.125
+times its bytes) and the budget left after adopting still holds another
+payload of the same length; otherwise it copies at exact length when that
+fits. The writer hands over only a batch that passes the same spare-capacity
+check and copies any other batch at exact length; a buffer regrown past
+72 KiB is kept while large batches keep coming from it (a stream of long
+lines refills it without regrowing) and dropped on a small flush. Measured
+with the reviewer's overlay test (writer into queue, lines of 9 / 12 / 20 /
+40 / 100 KiB, protocol format): charged/payload 1.108 / 1.109 / 1.099 /
+1.099 / 1.040 (`d38aea8` 1.995 / 1.996 / 1.798 / 1.799 / 1.430; the long-line
+batch copy lands in an 80-104 KiB size class, which the queue charges); 99-byte
+lines stay at 1.124 (a full batch in 72 KiB). Payload queued before
+backpressure at the default 2 MiB cap: 99-byte lines 1,836,800 B (28 batches,
+unchanged since `876060d`; `f290a31` 2,033,600 B), 9 / 12 / 20 / 40 / 100 KiB
+lines 1,843,400 / 1,843,350 / 1,884,252 / 1,884,206 / 1,945,619 B (`d38aea8`
+1,032,304 / 1,032,276 / 1,146,936 / 1,146,908 / 1,433,614 B; `f290a31`
+2,048,020-2,064,608 B). At the minimum cap for 1 KiB lines (132,096 B) two
+batches of 99-byte lines queue again (131,200 B, both copied), as at
+`f290a31`. The reviewer's writer/queue benchmark (3 runs of 2000 iterations,
+final / `d38aea8` / `f290a31`): follow catch-up in protocol format 187-222 /
+201-252 / 266-294 us/op, 142 / 142 / 216 KB/op, retained/payload 1.083 /
+1.083 / 1.000; bulk 1 MiB of 99-byte lines 1.46-1.53 / 1.47-1.49 /
+2.38-2.50 ms/op; plain 70 KiB chunks 109-136 / 103-110 / 160-178 us/op,
+largest charged entry 73,728 / 73,728 / 65,600 B. Constant 40 KiB flushes
+are copied again: 100-106 us/op, 99 KB/op, retained/payload 1.000 (`d38aea8`
+79-90 us/op, 74 KB/op, 1.798; `f290a31` 92-109 us/op, 99 KB/op, 1.000).
+The session generation is now an
 `atomic.Uint64`, still written under the session mutex and read per line
 without a lock; its own row above shows no measurable effect end to end, so
 the dcat gain comes from removing the copies. The atomic read also removes the

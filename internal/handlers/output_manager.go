@@ -17,10 +17,10 @@ import (
 const (
 	defaultOutputBufferMaxBytes = config.DefaultOutputBufferMaxBytes
 	outputQueueEntryBudgetBytes = 64
-	// outputAdoptMinBytes is the payload size from which enqueue adopts the
-	// caller's backing allocation instead of copying it. Writer batches of
-	// half a NetworkWriter buffer or more are adopted; smaller payloads are
-	// copied, which keeps coalescing many tiny writes into one descriptor.
+	// outputAdoptMinBytes is the payload size from which enqueue may adopt
+	// the caller's backing allocation instead of copying it (see
+	// outputAdoptable). Smaller payloads are always copied, which keeps
+	// coalescing many tiny writes into one descriptor.
 	outputAdoptMinBytes            = networkWriterBufferSize / 2
 	defaultOutputFlushTimeout      = 2 * time.Second
 	defaultOutputReadRetryInterval = time.Millisecond
@@ -408,17 +408,33 @@ func (t *outputManager) enqueue(ctx context.Context, generation uint64, payload 
 
 }
 
+// outputAdoptable reports whether payload's backing allocation is worth
+// queueing as it is: the payload is at least outputAdoptMinBytes long and its
+// spare capacity is at most an eighth of its length. The queue charges an
+// adopted payload its whole capacity, so this bounds the charge at 1.125
+// times the payload (a full 64 KiB NetworkWriter batch in its 72 KiB
+// allocation). A payload with more spare capacity, such as a partial flush or
+// a batch whose buffer bytes.Buffer doubled for a long line, is copied at its
+// exact length instead of charging the slack against OutputBufferMaxBytes.
+func outputAdoptable(payload []byte) bool {
+	return len(payload) >= outputAdoptMinBytes && cap(payload)-len(payload) <= len(payload)/8
+}
+
 // tryEnqueueLocked admits a complete logical payload while bounding both the
 // unread bytes and the payload backing allocations retained by queue/buffer.
 //
 // A small payload (below outputAdoptMinBytes) is copied: into the last
 // descriptor when that has the same generation, so many tiny writes share one
 // descriptor, otherwise into a new exact-size one. A large payload (a writer
-// batch) gets a descriptor of its own and is adopted without copying when its
-// backing allocation fits the budget; the whole capacity is charged, because
-// the queue retains all of it. When only the exact length fits, it is copied
-// instead, so a payload that is admissible by length is never stranded by its
-// spare capacity.
+// batch) gets a descriptor of its own. It is adopted without copying when
+// outputAdoptable allows it and the budget left after adopting still holds
+// another payload of the same length; the whole capacity is charged, because
+// the queue retains all of it. Otherwise it is copied at its exact length when
+// that fits. So an admissible payload is never stranded by its spare capacity,
+// and near the cap the spare capacity of an adopted batch never costs the
+// room of the next batch: at the smallest OutputBufferMaxBytes the handler
+// accepts (MaxLineLength plus two 64 KiB batches) two full batches still
+// queue, as they did before batches were adopted.
 func (t *outputManager) tryEnqueueLocked(generation uint64, payload []byte, maxBytes int) bool {
 	if len(payload) < outputAdoptMinBytes {
 		last := len(t.queue) - 1
@@ -432,7 +448,7 @@ func (t *outputManager) tryEnqueueLocked(generation uint64, payload []byte, maxB
 
 	queued := payload
 	switch {
-	case len(payload) >= outputAdoptMinBytes && t.retainedBytes+cap(payload) <= maxBytes:
+	case outputAdoptable(payload) && t.retainedBytes+cap(payload)+len(payload) <= maxBytes:
 		// Adopt: the caller handed its backing over, nothing is copied.
 	case t.retainedBytes+len(payload) <= maxBytes:
 		queued = make([]byte, len(payload))
