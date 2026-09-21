@@ -48,6 +48,9 @@ type Options struct {
 	RetryInterval time.Duration
 	// QueueChunks bounds each subscriber's queue; zero selects a default.
 	QueueChunks int
+	// GroupWait bounds how long a one-shot group read waits for its members
+	// to join (see Hub.ReadOnce); zero selects DefaultGroupWait.
+	GroupWait time.Duration
 }
 
 // Session describes one session's follow read of a file.
@@ -83,6 +86,8 @@ type Hub struct {
 
 	mu      sync.Mutex
 	entries map[entryKey]*entry
+	// groups holds the one-shot group reads; see oneshot.go.
+	groups map[groupKey]*groupEntry
 }
 
 // hubSeams are the reader operations an entry performs, replaceable in tests.

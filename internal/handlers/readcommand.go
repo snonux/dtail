@@ -38,6 +38,9 @@ type readCommand struct {
 	// followShared follows a file through the shared reader of dserver's read
 	// hub; nil when there is no hub and every read is private.
 	followShared func(context.Context, readhub.Session) error
+	// readGroup reads a file once for a group of sessions through dserver's
+	// read hub; nil when there is no hub.
+	readGroup groupReadFunc
 }
 
 type pendingInputReservationKeyType struct{}
@@ -157,6 +160,7 @@ func newReadCommandWithDependencies(dependencies readCommandDependencies, mode o
 		abort:         dependencies.abortAfterPanic,
 		serverless:    dependencies.serverless,
 		followShared:  followSharedFunc(dependencies.readHub),
+		readGroup:     groupReadFuncFor(dependencies.readHub),
 		aggregate:     aggregate,
 		mode:          mode,
 		shutdownCoordinator: newShutdownCoordinator(dependencies.lifecycle, dependencies.aggregates,
@@ -442,6 +446,9 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	// its own, exactly as for a private read, before it may join a shared one.
 	if r.shouldShareRead(ltx, target) {
 		r.readShared(ctx, ltx, re, readerOptions, reader)
+		return
+	}
+	if group, ok := r.readShareGroup(ctx, target); ok && r.readWithGroup(ctx, ltx, re, readerOptions, group) {
 		return
 	}
 	r.readWithProcessor(ctx, ltx, path, globID, re, reader)

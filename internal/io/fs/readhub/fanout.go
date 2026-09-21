@@ -60,11 +60,17 @@ func (c *chunk) line(i int) []byte {
 	return c.data[start:c.ends[i]:c.ends[i]]
 }
 
+// publisher delivers an item to every subscriber of a shared read, in
+// publication order: a follow entry or a one-shot group entry.
+type publisher interface {
+	publish(it item)
+}
+
 // fanoutProcessor is the processor of an entry's reader. It packs the lines
 // it is fed into chunks and publishes them, in order with the control items
 // for truncation, to every subscriber. It runs on the reader's goroutine.
 type fanoutProcessor struct {
-	entry   *entry
+	entry   publisher
 	pending *chunk
 	// endOffset and file are the position the reader reported for the lines
 	// fed so far; they belong to the pending chunk when it is published next.
@@ -79,7 +85,7 @@ var (
 	_ line.PositionObserver = (*fanoutProcessor)(nil)
 )
 
-func newFanoutProcessor(e *entry) *fanoutProcessor {
+func newFanoutProcessor(e publisher) *fanoutProcessor {
 	return &fanoutProcessor{entry: e, endOffset: -1}
 }
 

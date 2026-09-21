@@ -147,6 +147,7 @@ func (d *commandDispatcher) dispatchCommand(ctx context.Context, args []string, 
 		}
 		d.handleOptions(options)
 		ltx = parsedContext
+		ctx = withReadShareOption(ctx, options[config.ReadShareOption])
 	}
 
 	if d.prepareCommandContextCb != nil {
