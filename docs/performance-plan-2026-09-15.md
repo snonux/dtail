@@ -589,7 +589,8 @@ batch crossing 64 KiB overflow the 72 KiB reservation, so `bytes.Buffer`
 regrew it (to 144 KiB for 9-12 KiB lines) and the queue adopted and charged
 that whole buffer: charged/payload (protocol format) 2.00 for 9-12 KiB lines, 1.80 for
 20-40 KiB, 1.43 for 100 KiB, and the default 2 MiB cap held only about
-1.03 MB of payload before backpressure (plain format; f290a31: 2.03-2.06 MB). A flush of
+1.03 MB of payload before backpressure for 9-12 KiB lines (1.15 MB for
+20-40 KiB, 1.43 MB for 100 KiB; plain format; f290a31: 2.05-2.06 MB). A flush of
 32 KiB to 64 KiB was likewise adopted in its 72 KiB allocation (charged up to
 2.25 times its payload at the 32 KiB bound, 1.8 for 40 KiB flushes). Also, at the smallest
 `OutputBufferMaxBytes` the handler accepts (`MaxLineLength` plus two 64 KiB
@@ -614,7 +615,7 @@ backpressure at the default 2 MiB cap (plain format): 99-byte lines 1,836,800 B 
 unchanged since `876060d`; `f290a31` 2,033,600 B), 9 / 12 / 20 / 40 / 100 KiB
 lines 1,843,400 / 1,843,350 / 1,884,252 / 1,884,206 / 1,945,619 B (`d38aea8`
 1,032,304 / 1,032,276 / 1,146,936 / 1,146,908 / 1,433,614 B; `f290a31`
-2,048,020-2,064,608 B). At the minimum cap for 1 KiB lines (132,096 B) two
+2,048,020-2,064,608 B). At the minimum cap for a 1 KiB `MaxLineLength` (132,096 B) two
 batches of 99-byte lines queue again (131,200 B in plain format, both copied), as at
 `f290a31`. The reviewer's writer/queue benchmark (3 runs of 2000 iterations,
 final / `d38aea8` / `f290a31`): follow catch-up in protocol format 187-222 /
