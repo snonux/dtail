@@ -33,7 +33,6 @@ type Aggregate struct {
 	query *mapr.Query
 	// The mapr log format parser
 	parser     logformat.Parser
-	batcher    *batcher
 	serializer *serializer
 	// Stats
 	linesProcessed atomic.Uint64
@@ -83,22 +82,16 @@ func New(query *mapr.Query, parser logformat.Parser, hostname string,
 	if nilParser(parser) {
 		return nil, fmt.Errorf("create aggregate: log format parser must not be nil")
 	}
-	lineBatcher, err := newBatcher(100)
-	if err != nil {
-		return nil, err
-	}
-
 	a := &Aggregate{
 		logger:        logger,
 		done:          internal.NewDone(),
 		inputFinished: internal.NewDone(),
 		query:         query,
 		parser:        parser,
-		batcher:       lineBatcher,
 		started:       make(chan struct{}),
 		shutdownDone:  make(chan struct{}),
 	}
-	a.serializer = newSerializer(query, logger, a.processBatchAndWait)
+	a.serializer = newSerializer(query, logger)
 	logger.Debug("Created MapReduce aggregate", "hostname", hostname)
 	return a, nil
 }
@@ -164,12 +157,14 @@ func (a *Aggregate) shutdown(ctx context.Context, retainOutput bool) {
 			a.stopSerializeTicker()
 			finalizeCtx, cancel := context.WithTimeout(finalizationCtx, 10*time.Second)
 			defer cancel()
+			// Every processor drains its own batch in Close before it
+			// releases its registration, so once processorsDone is closed all
+			// accepted lines have reached the serializer.
 			select {
 			case <-processorsDone:
 			case <-finalizeCtx.Done():
 				return
 			}
-			a.processBatchAndWait()
 			a.doSerialize(finalizeCtx)
 		}()
 	}
@@ -381,63 +376,59 @@ func (a *Aggregate) claimAbort() bool {
 	}
 }
 
-// ProcessLineDirect processes a line directly without channels.
-// This is called from the Processor.
-func (a *Aggregate) ProcessLineDirect(lineContent *bytes.Buffer, sourceID string) error {
-	if a.stopping() {
-		pool.RecycleBytesBuffer(lineContent)
-		return nil
-	}
-
-	a.linesProcessed.Add(1)
-
-	if batch := a.batcher.add(rawLine{content: lineContent, sourceID: sourceID}); len(batch) > 0 {
-		a.processRawBatch(batch)
-	}
-
-	return nil
+// aborted reports whether abrupt, output-free termination won the terminal
+// state transition. Lines still batched in a processor are then discarded
+// instead of aggregated.
+func (a *Aggregate) aborted() bool {
+	a.terminalMu.Lock()
+	defer a.terminalMu.Unlock()
+	return a.terminalState == aggregateAborted
 }
 
-// processBatchAndWait processes a batch of lines synchronously and waits for completion.
-// This is used when flushing to ensure all data is processed before continuing.
-func (a *Aggregate) processBatchAndWait() {
-	a.processRawBatch(a.batcher.take())
-}
-
+// processRawBatch aggregates batch and recycles its line buffers. It runs in
+// two phases: every line is parsed into its own scratch without any lock, then
+// the serializer's group lock is taken once to merge all accepted lines. Only
+// the merge is serialized between concurrently running file processors, and a
+// concurrent serialization observes either the whole batch or none of it.
 func (a *Aggregate) processRawBatch(batch []rawLine) {
 	if len(batch) == 0 {
 		return
 	}
-	// One scratch per batch: several file processors can run processRawBatch
-	// concurrently, so the reused fields map and group key buffer must not be
-	// shared between them.
-	scratch := lineScratchPool.Get().(*lineScratch)
-	defer recycleLineScratch(scratch)
+	scratch := batchScratchPool.Get().(*batchScratch)
+	// The deferred calls run in reverse order: the scratches, which borrow the
+	// line buffers, are cleared before those buffers go back to the pool.
+	defer recycleRawLines(batch)
+	defer recycleBatchScratch(scratch, len(batch))
 
 	for i := range batch {
-		if err := a.processLine(scratch, batch[i].content, batch[i].sourceID); err != nil {
+		lineScratch := scratch.line(i)
+		accepted, err := a.parseLine(lineScratch, batch[i].content, batch[i].sourceID)
+		if err != nil {
 			a.errors.Add(1)
-			// err can alias the line buffer recycled just below (a
+			// err can alias the line buffer recycled after the batch (a
 			// *strconv.NumError keeps the offending value), so it is
 			// formatted here instead of being handed to the logger.
 			a.logger.Error("Error processing line:", err.Error(), "lineIndex", i)
+			continue
 		}
-		if batch[i].content != nil {
-			pool.RecycleBytesBuffer(batch[i].content)
+		if accepted {
+			scratch.accepted = append(scratch.accepted, lineScratch)
 		}
 	}
+	a.serializer.aggregateBatch(scratch.accepted)
 }
 
-// processLine processes a single line and aggregates it.
+// parseLine parses one line into scratch and reports whether it is to be
+// aggregated, in which case scratch holds its fields and its group key.
 //
 // Everything the line yields — the parsed field values, the group key and the
-// line itself — borrows lineContent, which the caller recycles into the buffer
-// pool as soon as this returns. Nothing here may therefore outlive the call:
-// the scratch fields map is replaced per line, a new group key is copied when
-// the serializer inserts it, and mapr.AggregateSet copies the strings that
-// last() and len() retain.
-func (a *Aggregate) processLine(scratch *lineScratch, lineContent *bytes.Buffer,
-	sourceID string) error {
+// line itself — borrows lineContent, which processRawBatch recycles into the
+// buffer pool once the batch has been merged. Nothing here may therefore
+// outlive the batch: the scratch is cleared before the batch scratch is
+// pooled again, a new group key is copied when the serializer inserts it, and
+// mapr.AggregateSet copies the strings that last() and len() retain.
+func (a *Aggregate) parseLine(scratch *lineScratch, lineContent *bytes.Buffer,
+	sourceID string) (bool, error) {
 
 	maprLine := borrowedLine(lineContent)
 	parsedFields, err := logformat.MakeFieldsInto(a.parser, scratch.fields, maprLine, sourceID)
@@ -448,28 +439,31 @@ func (a *Aggregate) processLine(scratch *lineScratch, lineContent *bytes.Buffer,
 	}
 	if err != nil {
 		if !errors.Is(err, logformat.ErrIgnoreFields) {
-			return err
+			return false, err
 		}
-		return nil
+		return false, nil
 	}
+	// MakeFieldsInto fills scratch.fields for FieldsIntoParser parsers but
+	// returns a map of the parser's own for any other parser. The merge phase
+	// reads whichever map it was from the scratch.
+	scratch.parsed = parsedFields
 
 	// Apply where clause
 	if !a.query.WhereClause(parsedFields) {
-		return nil
+		return false, nil
 	}
 
 	// Apply set clause if needed
 	if len(a.query.Set) > 0 {
 		if err := a.query.SetClause(parsedFields); err != nil {
-			return err
+			return false, err
 		}
 	}
 
-	// Aggregate the fields. The group key is built in the scratch buffer and
-	// copied by the serializer when it inserts a group of its own.
+	// The group key is built in the scratch buffer and copied by the
+	// serializer when it inserts a group of its own.
 	scratch.key = buildGroupKey(scratch.key[:0], a.query.GroupBy, parsedFields)
-	a.serializer.aggregate(parsedFields, scratch.key)
-	return nil
+	return true, nil
 }
 
 // serializationLoop handles periodic serialization.
@@ -481,8 +475,9 @@ func (a *Aggregate) serializationLoop(ctx context.Context) {
 }
 
 // Serialize requests serialization of all aggregated data. Requests coalesce
-// while one is already pending; that pending pass will observe all data added
-// before it acquires the aggregate locks.
+// while one is already pending; that pending pass will observe all data
+// aggregated before it acquires the aggregate locks. Lines still batched in a
+// Processor are aggregated on its next full batch or Flush.
 func (a *Aggregate) Serialize(ctx context.Context) {
 	if ctx == nil {
 		panic("aggregate: nil serialize context")
@@ -544,11 +539,20 @@ func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet
 	}
 }
 
-// Processor implements the line processor interface for aggregation.
+// Processor implements the line processor interface for aggregation. Each
+// input file gets its own Processor, fed by a single reader goroutine, and the
+// Processor batches that file's lines locally: no lock is taken per line, and
+// the serializer's group lock is taken once per batch.
+//
+// A batch is aggregated when it is full and on every Flush, so a follow-mode
+// reader, which flushes after each read, never holds lines back past a read
+// boundary. A one-shot read flushes when the file is done; until then up to
+// one batch of lines per file is not yet visible to periodic serialization.
 type Processor struct {
 	aggregate  *Aggregate
 	globID     string
 	registered bool
+	batch      lineBatch
 	flushOnce  sync.Once
 	closeOnce  sync.Once
 }
@@ -570,23 +574,31 @@ func NewProcessor(aggregate *Aggregate, globID string) *Processor {
 	}
 }
 
-// ProcessLine processes a line directly to the aggregate.
+// ProcessLine adds a line to the processor's batch and aggregates the batch
+// once it is full. The processor takes ownership of lineContent.
 func (p *Processor) ProcessLine(lineContent *bytes.Buffer, _ uint64, sourceID string) error {
 	if !p.registered || p.aggregate.stopping() {
 		pool.RecycleBytesBuffer(lineContent)
 		return nil
 	}
-	return p.aggregate.ProcessLineDirect(lineContent, sourceID)
+	if p.batch.add(rawLine{content: lineContent, sourceID: sourceID}) {
+		p.drain()
+	}
+	return nil
 }
 
-// Flush ensures all buffered data is processed.
+// Flush aggregates the lines batched so far. Lines accepted before a graceful
+// shutdown began are still aggregated, so they reach the final serialization;
+// after an abort they are discarded.
 func (p *Processor) Flush() error {
-	if !p.registered || p.aggregate.stopping() {
+	if !p.registered {
 		return nil
 	}
-
+	p.drain()
+	if p.aggregate.stopping() {
+		return nil
+	}
 	p.flushOnce.Do(func() {
-		p.aggregate.processBatchAndWait()
 		p.aggregate.filesProcessed.Add(1)
 	})
 	return nil
@@ -606,6 +618,25 @@ func (p *Processor) Close() error {
 		err = p.Flush()
 	})
 	return err
+}
+
+// drain hands the batched lines to the aggregate, or discards them once the
+// aggregate was aborted, and empties the batch.
+func (p *Processor) drain() {
+	lines := p.batch.pending()
+	if len(lines) == 0 {
+		return
+	}
+	defer p.batch.reset()
+
+	// Counted once per batch rather than per line, so that processors of
+	// different files do not contend on the shared counter.
+	p.aggregate.linesProcessed.Add(uint64(len(lines)))
+	if p.aggregate.stopping() && p.aggregate.aborted() {
+		recycleRawLines(lines)
+		return
+	}
+	p.aggregate.processRawBatch(lines)
 }
 
 func (a *Aggregate) sealProcessors() <-chan struct{} {

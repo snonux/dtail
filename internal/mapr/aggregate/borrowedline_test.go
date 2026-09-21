@@ -79,12 +79,13 @@ func TestBuildGroupKeyReusesBuffer(t *testing.T) {
 }
 
 // TestClearLineScratchDropsBorrowedViews asserts on a scratch this test still
-// owns. Asserting after recycleLineScratch would be a use-after-return: the
+// owns. Asserting after recycleBatchScratch would be a use-after-return: the
 // scratch is in the pool by then and another goroutine may legitimately have
 // taken it out and refilled it.
 func TestClearLineScratchDropsBorrowedViews(t *testing.T) {
-	scratch := lineScratchPool.Get().(*lineScratch)
+	scratch := newLineScratch()
 	scratch.fields["borrowed"] = "view"
+	scratch.parsed = scratch.fields
 	scratch.key = append(scratch.key[:0], "borrowed"...)
 	scratch.maxFields = len(scratch.fields)
 
@@ -99,15 +100,16 @@ func TestClearLineScratchDropsBorrowedViews(t *testing.T) {
 	if scratch.maxFields != 0 {
 		t.Errorf("clearLineScratch() left maxFields = %d, want 0", scratch.maxFields)
 	}
-
-	lineScratchPool.Put(scratch)
+	if scratch.parsed != nil {
+		t.Errorf("clearLineScratch() left the parsed map %#v", scratch.parsed)
+	}
 }
 
 // TestClearLineScratchReleasesOversizedStorage pins the retention limits: one
 // pathological line must not park its inflated storage in the pool, while
 // ordinary lines keep reusing the very same map and key array.
 func TestClearLineScratchReleasesOversizedStorage(t *testing.T) {
-	scratch := lineScratchPool.New().(*lineScratch)
+	scratch := newLineScratch()
 
 	scratch.fields["host"] = "alpha"
 	scratch.maxFields = len(scratch.fields)
@@ -168,8 +170,8 @@ func TestClearLineScratchReleasesOversizedStorage(t *testing.T) {
 // TestProcessLineTracksFieldHighWaterMark covers the production wiring of the
 // high-water counter, which TestClearLineScratchReleasesOversizedStorage
 // cannot: that test sets scratch.maxFields by hand, so deleting the update in
-// processLine leaves it green and the oversized map would be parked in the
-// pool forever. This test drives processLine with a real line and asserts the
+// parseLine leaves it green and the oversized map would be parked in the
+// pool forever. This test drives parseLine with a real line and asserts the
 // counter the aggregator itself recorded.
 func TestProcessLineTracksFieldHighWaterMark(t *testing.T) {
 	query, err := mapr.NewQuery(`from STATS select count($line) group by host`,
@@ -200,28 +202,27 @@ func TestProcessLineTracksFieldHighWaterMark(t *testing.T) {
 		line.WriteString("=v")
 	}
 
-	// A scratch of this test's own: one taken from the pool would be handed to
-	// a concurrently running batch of another test once it is put back.
-	scratch := lineScratchPool.New().(*lineScratch)
+	// A scratch of this test's own, never shared with a pooled batch scratch.
+	scratch := newLineScratch()
 	buffer := pool.BytesBuffer.Get().(*bytes.Buffer)
 	defer pool.RecycleBytesBuffer(buffer)
 	buffer.Reset()
 	buffer.WriteString(line.String())
 
-	if err := aggregate.processLine(scratch, buffer, "highwater"); err != nil {
-		t.Fatalf("processLine() error = %v", err)
+	if _, err := aggregate.parseLine(scratch, buffer, "highwater"); err != nil {
+		t.Fatalf("parseLine() error = %v", err)
 	}
 	if got := len(scratch.fields); got < oversizedFields {
 		t.Fatalf("test setup: the line produced %d fields, want at least %d",
 			got, oversizedFields)
 	}
 	if scratch.maxFields != len(scratch.fields) {
-		t.Errorf("processLine() recorded maxFields = %d, want %d; the high-water "+
+		t.Errorf("parseLine() recorded maxFields = %d, want %d; the high-water "+
 			"update is missing, so clearLineScratch cannot see an inflated map",
 			scratch.maxFields, len(scratch.fields))
 	}
 	if scratch.maxFields <= maxRetainedScratchFields {
-		t.Errorf("processLine() recorded maxFields = %d, want more than the "+
+		t.Errorf("parseLine() recorded maxFields = %d, want more than the "+
 			"retention limit of %d", scratch.maxFields, maxRetainedScratchFields)
 	}
 
@@ -230,21 +231,21 @@ func TestProcessLineTracksFieldHighWaterMark(t *testing.T) {
 	peak := scratch.maxFields
 	buffer.Reset()
 	buffer.WriteString(retentionLines[0])
-	if err := aggregate.processLine(scratch, buffer, "highwater"); err != nil {
-		t.Fatalf("processLine() error = %v", err)
+	if _, err := aggregate.parseLine(scratch, buffer, "highwater"); err != nil {
+		t.Fatalf("parseLine() error = %v", err)
 	}
 	if scratch.maxFields != peak {
-		t.Errorf("processLine() lowered maxFields to %d after an ordinary line, "+
+		t.Errorf("parseLine() lowered maxFields to %d after an ordinary line, "+
 			"want the peak %d", scratch.maxFields, peak)
 	}
 
-	// End to end: what processLine recorded is what makes the recycle path drop
+	// End to end: what parseLine recorded is what makes the recycle path drop
 	// the inflated map instead of parking it in the pool.
 	inflated := mapIdentity(scratch.fields)
 	clearLineScratch(scratch)
 	if mapIdentity(scratch.fields) == inflated {
 		t.Error("clearLineScratch() parked the inflated fields map; the high-water " +
-			"mark recorded by processLine never reached it")
+			"mark recorded by parseLine never reached it")
 	}
 }
 

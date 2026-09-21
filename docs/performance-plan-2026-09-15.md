@@ -145,6 +145,10 @@ baseline, and note the commit.
 | `25` | parent `7491087` | dmap count serverless, same log (2 interleaved rounds) | 1.36-1.38 s / 1.62-1.66 s / 0.37-0.39 s | 0.60-0.62 s / 0.59-0.60 s / 0.04 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `25` | parent `7491087` | dmap aggregate serverless, client shutdown metrics line (2 runs per binary) | 394.69-394.76 MB total_alloc, 134-135 GCs | 24.24-24.25 MB total_alloc, 8 GCs | yes, `cmp` of the two profiled runs | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `25` | parent `7491087` | `BenchmarkDefaultParserMakeFields`, `all_fields` (allocating form) vs `into_reused_map` (reused map), 200k iterations | 1845 ns/op, 1240 B/op, 4 allocs/op | 759 ns/op, 0 B/op, 0 allocs/op | n/a (unit tests compare `MakeFieldsInto` against `MakeFields` for every built-in parser) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `35` | parent `d5cae8f` | dmap aggregate serverless, 100 MiB stats log (5 interleaved rounds, elapsed / user / sys) | 0.80-0.85 s / 0.79-0.81 s / 0.03-0.07 s | 0.76-0.78 s / 0.75-0.76 s / 0.03-0.04 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `35` | parent `d5cae8f` | dmap count serverless, same log (5 interleaved rounds) | 0.62-0.64 s / 0.59-0.62 s / 0.04-0.06 s | 0.57-0.61 s / 0.56-0.57 s / 0.02-0.06 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `35` | parent `d5cae8f` | dmap aggregate serverless, the same log split into 4 files of 25 MiB (5 interleaved rounds) | 0.79-0.83 s / 1.54-1.60 s / 0.05-0.07 s | 0.42-0.50 s / 0.80-0.92 s / 0.04-0.05 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `35` | parent `d5cae8f` | `BenchmarkProcessorProcessLine` (new), 1M lines, 6 runs, ns per line | `processors_1` 798-831 ns/op, `processors_4` 868-896 ns/op | `processors_1` 809-859 ns/op, `processors_4` 607-667 ns/op | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -294,3 +298,29 @@ into a recycled buffer. dcat and dgrep do not use this code path; both were run
 before and after anyway, and their output still matched the input file and
 `grep ERROR` respectively. Not measured for this task: server-mode dmap (only
 serverless runs were timed) and the 1 GiB inputs.
+
+`35` notes: the before binary was built from `d5cae8f`; before and after ran
+alternately in each round, serverless, with the flags of the `25` runs. The
+4-file scenario is the 100 MiB stats log cut with `split -n l/4` and passed as
+one comma-separated `--files` list. Each `Processor` now batches its own
+file's lines in a slice that only its reader goroutine touches, so the shared
+batcher and its mutex per line are gone, and `stopping` is checked once per
+line instead of twice. A full batch is aggregated in two phases: every line is
+parsed into its own pooled scratch without a lock, then the serializer's group
+lock is taken once for the whole batch. Before, the group lock was taken per
+line, and with 4 processors 72% of the benchmark's CPU samples were
+`runtime.procyield` spinning on it. After, the merge (mostly
+`AggregateSet.Aggregate` parsing floats) is still serialized and 55% of the
+`processors_4` samples still spin, so the scaling over files is far from
+linear; moving value parsing out of the lock, or pre-aggregating per batch,
+would be the next step. With a single file the change is within noise in the
+microbenchmark; the end-to-end single-file runs came out about 5% faster.
+`Flush` now drains the processor's partial batch on every call, which follow
+readers do after each read (and the journal reader after each line), so
+follow output is not held back. A one-shot read keeps up to 99 lines per file
+out of periodic interim results until the batch fills or the file ends; the
+final result is unchanged. Lines accepted before a graceful shutdown are still
+aggregated when the processor closes, before the final serialization; after an
+abort they are discarded. Not measured for this task: server-mode dmap (only
+serverless runs were timed; the integration tests cover server mode for
+correctness) and the 1 GiB inputs.

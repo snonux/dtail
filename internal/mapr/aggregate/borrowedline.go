@@ -21,47 +21,84 @@ const (
 	maxRetainedScratchFields   = 1024
 )
 
-// lineScratch is the reusable working set of processLine: the field map handed
+// lineScratch is the reusable working set of parseLine: the field map handed
 // to the log format parser and the buffer the group key is built in. Reusing
 // them keeps the per-line path free of map, string and group-key allocations.
 // Everything a scratch holds borrows the line buffer being processed, so a
 // scratch is only valid while its own batch is being processed.
 type lineScratch struct {
 	fields map[string]string
+	// parsed is the field map of the line after parsing: fields itself for a
+	// logformat.FieldsIntoParser, otherwise the map the parser returned.
+	parsed map[string]string
 	key    []byte
 	// maxFields is the high-water mark of len(fields) since the scratch was
 	// last cleared. A map keeps its buckets after clear(), and the length at
 	// recycle time is only the last line's, so the peak has to be recorded
-	// while the batch runs for clearLineScratch to spot an inflated map.
+	// while the scratch is in use for clearLineScratch to spot an inflated map.
 	maxFields int
 }
 
-// lineScratchPool hands out one scratch per batch. The scratch cannot live on
-// the Aggregate: several file processors call processRawBatch concurrently, and
-// a shared fields map would let one file's line overwrite another's.
-var lineScratchPool = sync.Pool{
-	New: func() any {
-		return &lineScratch{
-			fields: make(map[string]string, scratchFieldsCapacity),
-			key:    make([]byte, 0, scratchKeyCapacity),
-		}
-	},
+// batchScratch holds one lineScratch per line of a batch. processRawBatch
+// parses every line of the batch into its own scratch first, without any lock,
+// and only then takes the serializer's group lock once to merge the whole
+// batch. The scratches of a batch therefore have to coexist, which is why one
+// per line is needed instead of a single reused one.
+type batchScratch struct {
+	lines []*lineScratch
+	// accepted lists the scratches whose line passed the where clause and is
+	// waiting to be merged into the serializer.
+	accepted []*lineScratch
 }
 
-// recycleLineScratch drops every borrowed view before the scratch is parked in
-// the pool, so a pooled scratch can never hand a stale view of an already
-// recycled line buffer to the next batch. The scratch must not be touched
-// afterwards: another goroutine may already have taken it out of the pool.
-func recycleLineScratch(scratch *lineScratch) {
-	clearLineScratch(scratch)
-	lineScratchPool.Put(scratch)
+// batchScratchPool hands out one batch scratch per batch. The scratch cannot
+// live on the Aggregate: several file processors call processRawBatch
+// concurrently, and a shared fields map would let one file's line overwrite
+// another's. It does not live on the Processor either, so that many idle
+// follow-mode processors do not each pin a full batch worth of maps.
+var batchScratchPool = sync.Pool{
+	New: func() any { return &batchScratch{} },
+}
+
+func newLineScratch() *lineScratch {
+	return &lineScratch{
+		fields: make(map[string]string, scratchFieldsCapacity),
+		key:    make([]byte, 0, scratchKeyCapacity),
+	}
+}
+
+// line returns the scratch for the i-th line of the batch, growing the batch
+// scratch on first use. Lines are handed out in order, so i is at most
+// len(b.lines).
+func (b *batchScratch) line(i int) *lineScratch {
+	if i == len(b.lines) {
+		b.lines = append(b.lines, newLineScratch())
+	}
+	return b.lines[i]
+}
+
+// clear drops the borrowed views of the first used line scratches, see
+// clearLineScratch, and forgets the accepted lines.
+func (b *batchScratch) clear(used int) {
+	for _, scratch := range b.lines[:used] {
+		clearLineScratch(scratch)
+	}
+	clear(b.accepted)
+	b.accepted = b.accepted[:0]
+}
+
+// recycleBatchScratch clears the first used line scratches and parks the batch
+// scratch in the pool. The scratch must not be touched afterwards.
+func recycleBatchScratch(scratch *batchScratch, used int) {
+	scratch.clear(used)
+	batchScratchPool.Put(scratch)
 }
 
 // clearLineScratch drops the borrowed views a scratch holds and releases
 // storage that one outlier line inflated beyond the retention limits, so the
-// scratch is safe and reasonably sized to reuse. It is separate from
-// recycleLineScratch so that callers (and tests) can inspect the cleared
-// scratch while they still own it.
+// scratch is safe and reasonably sized to reuse. It runs before the owning
+// batch scratch goes back to the pool, so a pooled scratch can never hand a
+// stale view of an already recycled line buffer to the next batch.
 func clearLineScratch(scratch *lineScratch) {
 	if scratch.maxFields > maxRetainedScratchFields {
 		// clear() keeps the buckets a huge line grew, so the map itself has
@@ -71,6 +108,7 @@ func clearLineScratch(scratch *lineScratch) {
 		clear(scratch.fields)
 	}
 	scratch.maxFields = 0
+	scratch.parsed = nil
 
 	if cap(scratch.key) > maxRetainedScratchKeyBytes {
 		scratch.key = make([]byte, 0, scratchKeyCapacity)
@@ -82,9 +120,9 @@ func clearLineScratch(scratch *lineScratch) {
 // borrowedLine returns the trimmed content of buf as a string sharing buf's
 // memory instead of copying it, which is worth one string allocation per
 // processed line. The result is only valid until buf is written to again or
-// recycled into the buffer pool, which the caller does as soon as the line has
-// been processed; see processLine for the copy-on-retention rules that make
-// that safe.
+// recycled into the buffer pool, which the caller does as soon as the line's
+// batch has been processed; see parseLine for the copy-on-retention rules that
+// make that safe.
 func borrowedLine(buf *bytes.Buffer) string {
 	if buf == nil {
 		// bytes.Buffer.String renders a nil receiver as "<nil>". Keep that

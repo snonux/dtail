@@ -1050,13 +1050,8 @@ func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
 }
 
 func TestAggregateProcessorCountsFlushOnce(t *testing.T) {
-	lineBatcher, err := newBatcher(16)
-	if err != nil {
-		t.Fatalf("newBatcher: %v", err)
-	}
 	aggregate := &Aggregate{
 		done:       internal.NewDone(),
-		batcher:    lineBatcher,
 		serializer: &serializer{},
 	}
 
@@ -1080,13 +1075,10 @@ func TestAggregateProcessorCloseReleasesAccountingWhenFlushPanics(t *testing.T) 
 	aggregate := &Aggregate{
 		done:       internal.NewDone(),
 		serializer: &serializer{},
-		// A nil parser makes real batch processing panic inside Flush.
-		batcher: &batcher{
-			maxSize: 1,
-			pending: []rawLine{{content: bytes.NewBufferString("trigger flush panic")}},
-		},
 	}
 	processor := NewProcessor(aggregate, "test")
+	// A nil parser makes real batch processing panic inside Flush.
+	processor.batch.add(rawLine{content: bytes.NewBufferString("trigger flush panic")})
 
 	var recovered any
 	func() {
@@ -1211,11 +1203,16 @@ func TestAggregateStreamingContinuesWithoutFinishInput(t *testing.T) {
 	waitForAggregateStart(t, agg)
 
 	// Keep the processor open for the whole test, simulating a followed file.
+	// A follow-mode reader flushes the processor after every read, which hands
+	// the processor's partial batch to the aggregate.
 	processor := NewProcessor(agg, "test")
 	feed := func(lineStr string) {
 		t.Helper()
 		if err := processor.ProcessLine(bytes.NewBufferString(lineStr), 1, "test"); err != nil {
 			t.Fatalf("ProcessLine failed: %v", err)
+		}
+		if err := processor.Flush(); err != nil {
+			t.Fatalf("Flush failed: %v", err)
 		}
 	}
 	waitForResult := func(what string) string {

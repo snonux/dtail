@@ -105,37 +105,52 @@ func TestAggregateDoesNotRetainRecycledLineBuffers(t *testing.T) {
 	}
 }
 
-// TestProcessLineIsAllocationFree pins the point of this optimization: a line
-// joining a group that already exists must not allocate at all. A regression
-// (a per-line fields map, a copied line, a copied group key) shows up here as
-// a nonzero allocation count.
-func TestProcessLineIsAllocationFree(t *testing.T) {
+// TestProcessorBatchIsAllocationFree pins the point of the allocation-free
+// line path: a batch of lines joining groups that already exist must not
+// allocate at all, from ProcessLine through the batch merge. A regression (a
+// per-line fields map, a copied line, a copied group key, a new batch slice)
+// shows up here as a nonzero allocation count.
+func TestProcessorBatchIsAllocationFree(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector drops sync.Pool items at random, so pooled " +
+			"line buffers and batch scratches are reallocated")
+	}
 	const query = `from STATS select count($line),sum($goroutines) group by host`
 
 	aggregate, err := newAggregateFromTextForTest(query, logging.NopLogger{})
 	if err != nil {
 		t.Fatalf("Failed to create aggregate: %v", err)
 	}
+	processor := NewProcessor(aggregate, "alloc")
+	defer func() {
+		if err := processor.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 
-	scratch := lineScratchPool.Get().(*lineScratch)
-	defer recycleLineScratch(scratch)
-
-	buffer := pool.BytesBuffer.Get().(*bytes.Buffer)
-	defer pool.RecycleBytesBuffer(buffer)
-	buffer.Reset()
-	buffer.WriteString(retentionLines[0])
-
-	// Warm up: the first line of a group allocates the group itself.
-	if err := aggregate.processLine(scratch, buffer, "alloc"); err != nil {
-		t.Fatalf("processLine() error = %v", err)
+	// One full batch per run. The line buffers come from the pool the
+	// processor recycles them into, as they do for a file reader.
+	feedBatch := func() {
+		for i := 0; i < processorBatchSize; i++ {
+			buffer := pool.BytesBuffer.Get().(*bytes.Buffer)
+			buffer.Reset()
+			buffer.WriteString(retentionLines[i%len(retentionLines)])
+			if err := processor.ProcessLine(buffer, uint64(i+1), "alloc"); err != nil {
+				t.Fatalf("ProcessLine() error = %v", err)
+			}
+		}
 	}
 
-	allocs := testing.AllocsPerRun(100, func() {
-		if err := aggregate.processLine(scratch, buffer, "alloc"); err != nil {
-			t.Fatalf("processLine() error = %v", err)
-		}
-	})
+	// Warm up: the first batch allocates the groups, the batch storage, the
+	// batch scratch and the pooled line buffers.
+	feedBatch()
+	if got := aggregate.countGroups(); got != 2 {
+		t.Fatalf("a full batch produced %d groups, want 2 without a Flush", got)
+	}
+
+	allocs := testing.AllocsPerRun(20, feedBatch)
 	if allocs != 0 {
-		t.Errorf("processLine() made %.1f allocations per line, want 0", allocs)
+		t.Errorf("a batch of %d lines made %.1f allocations, want 0",
+			processorBatchSize, allocs)
 	}
 }

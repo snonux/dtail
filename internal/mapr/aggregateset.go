@@ -174,7 +174,7 @@ func (s *AggregateSet) Aggregate(key string, agg AggregateOperation, value strin
 		return
 	case Last:
 		// value may borrow memory that the caller reuses for the next line
-		// (see aggregate.processLine), so anything retained must be a copy.
+		// (see aggregate.parseLine), so anything retained must be a copy.
 		s.setString(key, strings.Clone(value))
 		return
 	case Len:

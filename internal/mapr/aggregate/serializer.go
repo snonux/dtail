@@ -20,7 +20,6 @@ type aggregateOutput struct {
 type serializer struct {
 	logger logging.Logger
 	query  *mapr.Query
-	flush  func()
 
 	groupMu   sync.Mutex
 	groupSets map[string]*mapr.AggregateSet
@@ -30,13 +29,12 @@ type serializer struct {
 	output    atomic.Pointer[aggregateOutput]
 }
 
-func newSerializer(query *mapr.Query, logger logging.Logger, flush func()) *serializer {
+func newSerializer(query *mapr.Query, logger logging.Logger) *serializer {
 	permit := make(chan struct{}, 1)
 	permit <- struct{}{}
 	return &serializer{
 		logger:    logger,
 		query:     query,
-		flush:     flush,
 		groupSets: make(map[string]*mapr.AggregateSet),
 		permit:    permit,
 		requests:  make(chan struct{}, 1),
@@ -126,7 +124,6 @@ func (s *serializer) serialize(ctx context.Context) {
 	}
 	defer s.release()
 
-	s.flush()
 	output := s.output.Load()
 	if output == nil {
 		s.logger.Error("Aggregate maprMessages channel is nil")
@@ -150,13 +147,23 @@ func (s *serializer) serialize(ctx context.Context) {
 	}
 }
 
-// aggregate merges one parsed line into its group. groupKey is borrowed from
-// the caller's per-line scratch buffer: it is only read here, and copied when
-// it has to become a map key.
-func (s *serializer) aggregate(fields map[string]string, groupKey []byte) {
+// aggregateBatch merges the parsed lines of one batch into their groups under
+// a single acquisition of the group lock.
+func (s *serializer) aggregateBatch(lines []*lineScratch) {
+	if len(lines) == 0 {
+		return
+	}
 	s.groupMu.Lock()
 	defer s.groupMu.Unlock()
+	for _, line := range lines {
+		s.aggregateLocked(line.parsed, line.key)
+	}
+}
 
+// aggregateLocked merges one parsed line into its group; the caller holds
+// groupMu. groupKey is borrowed from the caller's per-line scratch buffer: it
+// is only read here, and copied when it has to become a map key.
+func (s *serializer) aggregateLocked(fields map[string]string, groupKey []byte) {
 	var set *mapr.AggregateSet
 	var addedSample bool
 	for _, sc := range s.query.Select {
