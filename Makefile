@@ -34,8 +34,8 @@ install:
 	${GO} install -tags '${GO_TAGS}' ./cmd/dtail/main.go
 	${GO} install -tags '${GO_TAGS}' ./cmd/dtailhealth/main.go
 clean:
-	ls ./cmd/ | while read cmd; do \
-	  test -f $$cmd && rm $$cmd; \
+	for dir in ./cmd/*/; do \
+	  rm -f -- "$$(basename "$$dir")"; \
 	done
 	@echo "Removing .tmp files..."
 	find . -name "*.tmp" -type f -delete
