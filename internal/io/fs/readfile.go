@@ -276,8 +276,10 @@ func (f *ReadFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, 
 // at its path. A replacement must be detected by identity, because its size can
 // equal or exceed the current read offset. An in-place truncation is only seen
 // when the file is still shorter than the read offset at the next check; a
-// rewrite that has already grown back to or past that offset goes undetected,
-// and reading resumes at the old offset in the middle of the new content.
+// rewrite that has already grown back to or past that offset goes undetected:
+// reading resumes at the old offset of the new content, skipping everything
+// before it, and a partial line pending from the old content is joined to the
+// first bytes read from the new one.
 func (f *ReadFile) truncated(fd *os.File) (bool, error) {
 	if fd == nil {
 		return false, nil
