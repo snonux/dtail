@@ -238,21 +238,24 @@ func TestShouldShareRead(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*readCommand, *lcontext.LContext, **fs.ValidatedReadTarget)
+		path   string
 		want   bool
 	}{
-		{"tail of a file with a hub", func(*readCommand, *lcontext.LContext, **fs.ValidatedReadTarget) {}, true},
+		{"tail of a file with a hub", func(*readCommand, *lcontext.LContext, **fs.ValidatedReadTarget) {}, "", true},
 		{"local context", func(_ *readCommand, ltx *lcontext.LContext, _ **fs.ValidatedReadTarget) {
 			ltx.BeforeContext, ltx.AfterContext = 2, 1
-		}, true},
-		{"no hub", func(r *readCommand, _ *lcontext.LContext, _ **fs.ValidatedReadTarget) { r.followShared = nil }, false},
-		{"serverless", func(r *readCommand, _ *lcontext.LContext, _ **fs.ValidatedReadTarget) { r.serverless = true }, false},
-		{"cat", func(r *readCommand, _ *lcontext.LContext, _ **fs.ValidatedReadTarget) { r.mode = omode.CatClient }, false},
-		{"grep", func(r *readCommand, _ *lcontext.LContext, _ **fs.ValidatedReadTarget) { r.mode = omode.GrepClient }, false},
+		}, "", true},
+		{"no hub", func(r *readCommand, _ *lcontext.LContext, _ **fs.ValidatedReadTarget) { r.followShared = nil }, "", false},
+		{"serverless", func(r *readCommand, _ *lcontext.LContext, _ **fs.ValidatedReadTarget) { r.serverless = true }, "", false},
+		{"cat", func(r *readCommand, _ *lcontext.LContext, _ **fs.ValidatedReadTarget) { r.mode = omode.CatClient }, "", false},
+		{"grep", func(r *readCommand, _ *lcontext.LContext, _ **fs.ValidatedReadTarget) { r.mode = omode.GrepClient }, "", false},
 		{"journal", func(_ *readCommand, _ *lcontext.LContext, target **fs.ValidatedReadTarget) {
 			*target = &journalTarget
-		}, false},
-		{"no target", func(_ *readCommand, _ *lcontext.LContext, target **fs.ValidatedReadTarget) { *target = nil }, false},
-		{"max count", func(_ *readCommand, ltx *lcontext.LContext, _ **fs.ValidatedReadTarget) { ltx.MaxCount = 3 }, false},
+		}, "", false},
+		{"no target", func(_ *readCommand, _ *lcontext.LContext, target **fs.ValidatedReadTarget) { *target = nil }, "", false},
+		{"max count", func(_ *readCommand, ltx *lcontext.LContext, _ **fs.ValidatedReadTarget) { ltx.MaxCount = 3 }, "", false},
+		{"gzip", func(*readCommand, *lcontext.LContext, **fs.ValidatedReadTarget) {}, "app.log.gz", false},
+		{"zstd", func(*readCommand, *lcontext.LContext, **fs.ValidatedReadTarget) {}, "app.log.zst", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -260,7 +263,11 @@ func TestShouldShareRead(t *testing.T) {
 			ltx := lcontext.LContext{}
 			target := &fileTarget
 			tt.mutate(r, &ltx, &target)
-			if got := r.shouldShareRead(ltx, target); got != tt.want {
+			path := tt.path
+			if path == "" {
+				path = file
+			}
+			if got := r.shouldShareRead(ltx, target, path); got != tt.want {
 				t.Errorf("shouldShareRead() = %v, want %v", got, tt.want)
 			}
 		})
@@ -268,24 +275,20 @@ func TestShouldShareRead(t *testing.T) {
 }
 
 func TestNewReadHubHonoursSharedReadsDisable(t *testing.T) {
-	if newReadHub(nil, nil) != nil {
-		t.Error("newReadHub(nil) made a hub")
+	if NewReadHub(nil, nil) != nil {
+		t.Error("NewReadHub(nil) made a hub")
 	}
-	if newReadHub(&config.ServerConfig{SharedReadsDisable: true}, nil) != nil {
-		t.Error("newReadHub made a hub although shared reads are disabled")
+	// Shared reads are on by default in dserver.
+	if NewReadHub(&config.ServerConfig{}, nil) == nil {
+		t.Error("NewReadHub made no hub with the default configuration")
 	}
-	if newReadHub(&config.ServerConfig{}, nil) == nil {
-		t.Error("newReadHub made no hub with the default configuration")
-	}
-	// Until slow sessions are evicted (ask task x8), dserver does not share
-	// reads at all; enabling them must change this assertion on purpose.
-	if NewReadHub(&config.ServerConfig{}, nil) != nil {
-		t.Error("NewReadHub made a hub although shared reads are not available yet")
+	if NewReadHub(&config.ServerConfig{SharedReadsDisable: true}, nil) != nil {
+		t.Error("NewReadHub made a hub although shared reads are disabled")
 	}
 }
 
 func TestSharedTailReadsShareOneReader(t *testing.T) {
-	hub := newReadHub(&config.ServerConfig{ReadRetryIntervalMs: 10}, logging.NopLogger{})
+	hub := NewReadHub(&config.ServerConfig{ReadRetryIntervalMs: 10}, logging.NopLogger{})
 	path := writeSharedReadFile(t, "existing\n")
 	first := newSharedReadTestServer(t, hub)
 	second := newSharedReadTestServer(t, hub)
@@ -350,12 +353,10 @@ func TestSharedReadEndings(t *testing.T) {
 		err       error
 		wantPanic bool
 		// wantExisting: the read went on from the file's beginning, as the
-		// private loop does after a processor error; otherwise it goes on
-		// from the end of the file.
+		// private loop does after a processor error.
 		wantExisting bool
 	}{
 		{"reader panic", fmt.Errorf("%w: %w: boom", readhub.ErrReaderFailed, fs.ErrReaderWorkerPanic), true, false},
-		{"shared reader failed", fmt.Errorf("%w: hand over", readhub.ErrReaderFailed), false, false},
 		{"processor error", errors.New("processor failed"), false, true},
 		{"max count stop", readhub.ErrStopped, false, true},
 	}

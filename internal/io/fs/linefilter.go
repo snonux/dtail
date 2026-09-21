@@ -1,6 +1,8 @@
 package fs
 
 import (
+	"context"
+
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
@@ -72,6 +74,17 @@ func (lf *LineFilter) Reopen(processor line.Processor) {
 func (lf *LineFilter) Restart() {
 	lf.filter.resetGeneration()
 	lf.filter.restartSource()
+}
+
+// StartFiltered reads the file like Start, but feeds the lines it reads
+// through lf, and so to lf's current processor, instead of through a filter of
+// its own: line numbering, max-count and local context carry on from the lines
+// fed to lf before, for example when a session that was fed by a shared reader
+// goes on with a private one. Like Start, it flushes the processor when the
+// read ends and releases before-context lines still buffered; the reader's own
+// line statistics are not used. lf must not be fed from elsewhere meanwhile.
+func (f *ReadFile) StartFiltered(ctx context.Context, lf *LineFilter) error {
+	return f.start(ctx, lf.filter)
 }
 
 // Close releases before-context lines still buffered by the filter. It does

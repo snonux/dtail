@@ -332,6 +332,25 @@ Per-session payload backing memory waiting on a slow client is capped by
 `OutputBufferMaxBytes` (default 2 MiB); producers apply backpressure when the cap is reached. The
 configured cap must leave room for one maximum-length formatted line.
 
+**Shared follow reads (dserver):**
+Sessions that tail the same uncompressed file share one reader of it in
+dserver (`internal/io/fs/readhub`); `Server.SharedReadsDisable: true` turns
+this off. Each session still passes its own permission check, holds its own
+tail slot, and filters, numbers and processes the lines itself. A session
+starts at the end of the file as of its join, like a private follow read. The
+shared reader never waits for a session: one that falls more than 64 chunks
+(about 64 KiB each) behind is evicted, logged at INFO with the remaining
+subscriber count, and goes on with a private reader of its own target just
+past its last line, keeping its line numbering and local context. If the file
+was rotated in between, it reads the new file from the beginning and logs a
+warning, because lines the old file had after that point are not read.
+Compressed files, max-count (`--max`) reads, journal targets and serverless
+mode always read privately. Output with sharing on equals output with sharing
+off (checked with SIGSTOPped, context, late-joining and `--query` `dtail`
+clients). A large burst (about 60 MiB written at once in those checks) can
+also evict sessions that are merely slower than the reader; an evicted session
+stays private, which costs the sharing but not output.
+
 **Best Practices for High-Concurrency MapReduce:**
 1. Increase MaxConcurrentCats in the server configuration to match workload
 2. Use server mode for large-scale MapReduce operations

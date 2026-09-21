@@ -852,7 +852,7 @@ func TestFailedReadIsForgottenWhileSessionsAreStillSubscribed(t *testing.T) {
 	}
 }
 
-func TestFailedHandOverEndsTheReadWithoutAPanicError(t *testing.T) {
+func TestFailedHandOverMovesTheRemainingSessionToAPrivateRead(t *testing.T) {
 	hub := newTestHub()
 	file := newTestFile(t)
 	hub.seams.replaceTarget = func(*fs.ReadFile, fs.ValidatedReadTarget) error {
@@ -861,23 +861,32 @@ func TestFailedHandOverEndsTheReadWithoutAPanicError(t *testing.T) {
 	owner := syncReader(t, hub, file)
 	other := startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "other")
 	waitFor(t, "second session to join", func() bool { return subscriberCount(hub, file.path) == 2 })
+	file.appendLines("before the failure")
+	waitFor(t, "line before the failure", func() bool { return other.recorder.hasLine("before the failure") })
 	failed := hub.entryFor(file.path)
 
 	if err := owner.stop(t); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case err := <-other.done:
-		other.done <- err
-		if !errors.Is(err, ErrReaderFailed) || errors.Is(err, fs.ErrReaderWorkerPanic) {
-			t.Errorf("Follow() = %v, want ErrReaderFailed without fs.ErrReaderWorkerPanic", err)
-		}
-	case <-time.After(waitTimeout):
-		t.Fatal("the remaining session did not end after the hand-over failed")
-	}
-	select {
 	case <-failed.done:
 	case <-time.After(waitTimeout):
 		t.Fatal("the reader did not stop after the hand-over failed")
+	}
+	// The failure is not the session's: it goes on privately, from where the
+	// shared read left it, without losing or repeating a line.
+	file.appendLines("after the failure 1", "after the failure 2")
+	waitFor(t, "lines after the failure", func() bool { return other.recorder.hasLine("after the failure 2") })
+	select {
+	case err := <-other.done:
+		t.Fatalf("Follow() = %v after a failed hand-over, want the session to go on", err)
+	default:
+	}
+	if got, want := other.recorder.lines(), []string{"before the failure", "after the failure 1",
+		"after the failure 2"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("lines = %q, want %q", got, want)
+	}
+	if got, want := other.recorder.lineNums(), []uint64{1, 2, 3}; !reflect.DeepEqual(got, want) {
+		t.Errorf("line numbers = %v, want %v", got, want)
 	}
 }

@@ -240,9 +240,7 @@ func TestReadWithProcessorOptimizedDetectsTruncation(t *testing.T) {
 		fd,
 		reader,
 		truncate,
-		lcontext.LContext{},
-		&captureProcessor{},
-		regex.NewNoop(),
+		rf.newFilteringProcessor(lcontext.LContext{}, &captureProcessor{}, regex.NewNoop()),
 	)
 	if readErr == nil {
 		t.Fatal("expected truncation to be detected, got nil error")
@@ -413,9 +411,7 @@ func TestTailWithProcessorOptimizedExitsWhenContextCanceledDuringLongLineWarning
 			fd,
 			reader,
 			make(chan struct{}),
-			lcontext.LContext{},
-			&captureProcessor{},
-			re,
+			rf.newFilteringProcessor(lcontext.LContext{}, &captureProcessor{}, re),
 		)
 	}()
 
@@ -444,9 +440,7 @@ func TestTailWithProcessorOptimizedRecognizesWrappedEOF(t *testing.T) {
 		nil,
 		bufio.NewReader(errorReader{err: fmt.Errorf("read tail: %w", io.EOF)}),
 		make(chan struct{}),
-		lcontext.LContext{},
-		&captureProcessor{},
-		regex.NewNoop(),
+		rf.newFilteringProcessor(lcontext.LContext{}, &captureProcessor{}, regex.NewNoop()),
 	)
 	if err != nil {
 		t.Fatalf("tailWithProcessorOptimized returned wrapped EOF: %v", err)
@@ -467,9 +461,7 @@ func TestTailWithProcessorOptimizedPropagatesNonEOFReadError(t *testing.T) {
 		nil,
 		bufio.NewReader(errorReader{err: wantErr}),
 		make(chan struct{}),
-		lcontext.LContext{},
-		&captureProcessor{},
-		regex.NewNoop(),
+		rf.newFilteringProcessor(lcontext.LContext{}, &captureProcessor{}, regex.NewNoop()),
 	)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("tailWithProcessorOptimized error = %v, want %v", err, wantErr)
@@ -768,7 +760,7 @@ func TestTailWithProcessorOptimizedMaxCountEarlyStop(t *testing.T) {
 		processor := &captureProcessor{}
 		reader := bufio.NewReader(strings.NewReader(input))
 		if err := rf.tailWithProcessorOptimized(ctx, nil, reader,
-			make(chan struct{}), ltx, processor, re); err != nil {
+			make(chan struct{}), rf.newFilteringProcessor(ltx, processor, re)); err != nil {
 			t.Fatalf("tail returned error; max-count sentinel must be swallowed: %v", err)
 		}
 		return processor
@@ -930,9 +922,7 @@ func TestReadWithProcessorOptimizedTransfersCurrentBufferBeforeContextPanic(t *t
 					nil,
 					bufio.NewReader(strings.NewReader(test.input)),
 					nil,
-					lcontext.LContext{BeforeContext: 1},
-					processor,
-					re,
+					rf.newFilteringProcessor(lcontext.LContext{BeforeContext: 1}, processor, re),
 				)
 			}()
 

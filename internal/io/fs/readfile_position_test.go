@@ -16,7 +16,7 @@ import (
 	"github.com/mimecast/dtail/internal/regex"
 )
 
-// positionProcessor records lines and the positions a follow reader reports.
+// positionProcessor records lines and the line ends a follow reader reports.
 type positionProcessor struct {
 	mu      sync.Mutex
 	lines   []string
@@ -35,7 +35,7 @@ func (p *positionProcessor) ProcessLine(buf *bytes.Buffer, _ uint64, _ string) e
 func (p *positionProcessor) Flush() error { return nil }
 func (p *positionProcessor) Close() error { return nil }
 
-func (p *positionProcessor) LinesEndAt(offset int64, file os.FileInfo) {
+func (p *positionProcessor) LineEndsAt(offset int64, file os.FileInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.offsets = append(p.offsets, offset)
@@ -72,13 +72,13 @@ func waitUntil(t *testing.T, what string, condition func() bool) {
 	}
 }
 
-func TestFollowReaderReportsWhereItsLinesEnd(t *testing.T) {
+func TestFollowReaderReportsWhereEachLineEnds(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "positions.log")
-	existing := "existing\n"
-	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("existing\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	reader := newFollowReadFile(path, "glob", nil, defaultMaxLineLength, testLogger)
+	const maxLineLength = 16
+	reader := newFollowReadFile(path, "glob", nil, maxLineLength, testLogger)
 	processor := &positionProcessor{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -95,25 +95,56 @@ func TestFollowReaderReportsWhereItsLinesEnd(t *testing.T) {
 		lines, _, _ := processor.state()
 		return len(lines) > 0
 	})
-	// An unfinished line must not count as fed.
-	appendToFile(t, path, "complete\nunfinish")
+	// Empty lines are skipped but still take their byte, an unfinished line
+	// is not fed, and a line split at the maximum length ends at the split.
+	appendToFile(t, path, "a\n\n\nbb\ncomplete\nunfinish")
 	waitUntil(t, "the complete line", func() bool {
 		lines, _, _ := processor.state()
 		return len(lines) > 0 && lines[len(lines)-1] == "complete"
 	})
-	time.Sleep(50 * time.Millisecond)
+	appendToFile(t, path, "ed and too long for one line")
+	waitUntil(t, "the split line", func() bool {
+		lines, _, _ := processor.state()
+		return len(lines) > 0 && strings.HasPrefix(lines[len(lines)-1], "unfinish")
+	})
+	appendToFile(t, path, "\nlast\n")
+	waitUntil(t, "the last line", func() bool {
+		lines, _, _ := processor.state()
+		return len(lines) > 0 && lines[len(lines)-1] == "last"
+	})
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantOffset := int64(strings.LastIndexByte(string(data), '\n') + 1)
-	_, offsets, files := processor.state()
-	if len(offsets) == 0 {
-		t.Fatal("the reader reported no position")
+	content := string(data)
+	lines, offsets, files := processor.state()
+	if len(offsets) != len(lines) {
+		t.Fatalf("got %d offsets for %d lines", len(offsets), len(lines))
 	}
-	if got := offsets[len(offsets)-1]; got != wantOffset {
-		t.Errorf("last reported offset = %d, want %d (just past the last complete line)", got, wantOffset)
+	splitEnd := int64(strings.Index(content, "long for one line") + len("long for one line"))
+	want := map[string]int64{
+		"a":        int64(strings.Index(content, "a\n") + 2),
+		"bb":       int64(strings.Index(content, "bb\n") + 3),
+		"complete": int64(strings.Index(content, "complete\n") + 9),
+		"last":     int64(len(content)),
+	}
+	checked := 0
+	for i, text := range lines {
+		wantOffset, ok := want[text]
+		if strings.HasPrefix(text, "unfinish") {
+			wantOffset, ok = splitEnd, true
+		}
+		if !ok {
+			continue
+		}
+		checked++
+		if offsets[i] != wantOffset {
+			t.Errorf("line %q ends at %d, want %d", text, offsets[i], wantOffset)
+		}
+	}
+	if checked != len(want)+1 {
+		t.Errorf("checked %d lines, want %d: %q", checked, len(want)+1, lines)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -137,7 +168,7 @@ func TestReadersWithoutAnObserverOrForCompressedFilesReportNothing(t *testing.T)
 
 	plain := newFollowReadFile(path, "glob", nil, defaultMaxLineLength, testLogger)
 	if reporter, err := plain.newPositionReporter(fd, nil, &captureProcessor{}); reporter != nil || err != nil {
-		t.Errorf("reporter for a processor without LinesEndAt = %v, %v, want nil", reporter, err)
+		t.Errorf("reporter for a processor without LineEndsAt = %v, %v, want nil", reporter, err)
 	}
 	gz := newFollowReadFile(path+".gz", "glob", nil, defaultMaxLineLength, testLogger)
 	if reporter, err := gz.newPositionReporter(fd, nil, &positionProcessor{}); reporter != nil || err != nil {
@@ -147,9 +178,10 @@ func TestReadersWithoutAnObserverOrForCompressedFilesReportNothing(t *testing.T)
 		t.Errorf("reporter for the stdin pipe = %v, %v, want nil", reporter, err)
 	}
 	var none *positionReporter
-	if err := none.report(0); err != nil {
+	if err := none.beginRead(1); err != nil {
 		t.Errorf("a nil reporter reported an error: %v", err)
 	}
+	none.lineEndsAt(1)
 }
 
 func TestReplaceTarget(t *testing.T) {

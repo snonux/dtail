@@ -22,7 +22,7 @@ import (
 )
 
 // defaultQueueChunks bounds how many chunks, of about chunkSize bytes each, a
-// subscriber may have waiting before the shared reader waits for it.
+// subscriber may have waiting before it is evicted to a private reader.
 const defaultQueueChunks = 64
 
 // ErrStopped reports that the session's max-count limit ended its read. A
@@ -31,9 +31,10 @@ const defaultQueueChunks = 64
 // cannot do that for one session, so it hands the read back to the caller.
 var ErrStopped = errors.New("shared read stopped by the session's max-count limit")
 
-// ErrReaderFailed reports that the shared reader failed for good, so the
-// session's read ended. If the reader panicked, the error also wraps
-// fs.ErrReaderWorkerPanic, as a private reader's worker panic does.
+// ErrReaderFailed reports that the shared reader panicked, so the session's
+// read ended; the error also wraps fs.ErrReaderWorkerPanic, as a private
+// reader's worker panic does. After any other failure of the shared reader
+// the session goes on with a private reader.
 var ErrReaderFailed = errors.New("shared reader failed")
 
 // Options configures a Hub.
@@ -46,7 +47,8 @@ type Options struct {
 	// a read ended, e.g. because the file was rotated, as the read command's
 	// retry interval is for a private reader.
 	RetryInterval time.Duration
-	// QueueChunks bounds each subscriber's queue; zero selects a default.
+	// QueueChunks bounds each subscriber's queue; zero selects a default. A
+	// subscriber whose queue is full is evicted to a private reader.
 	QueueChunks int
 }
 
@@ -124,29 +126,35 @@ func New(options Options) *Hub {
 // the file's shared reader, which it starts if no other session follows the
 // file. It blocks like a private follow read and returns nil once ctx ends,
 // ErrStopped when the session's max-count limit ended the read, and a
-// processor error or ErrReaderFailed otherwise; ErrReaderFailed together with
-// fs.ErrReaderWorkerPanic means the shared reader panicked. After ErrStopped
-// or an error, a private reader would start over; the caller decides how to
-// continue.
+// processor error or ErrReaderFailed together with fs.ErrReaderWorkerPanic
+// (the shared reader panicked) otherwise. After ErrStopped or an error, a
+// private reader would start over; the caller decides how to continue.
 //
-// Where a session starts differs from a private follow read, which starts at
-// the end of the file when it opens it: a session gets the lines the shared
-// reader publishes after the session joined. That includes lines the reader
-// read before the join but had not published yet, and, while the reader lags
-// behind the end of the file (it waits for a session with a full queue), the
-// backlog it has still to read. When the private reader opens the file in the
-// middle of a line, it delivers the rest of that line; a shared session gets
-// the next whole line. And a trailing line the file's writer has not finished
-// yet is not delivered when the session leaves, unlike the private reader,
-// which passes such a fragment on when its read is cancelled.
+// Like a private follow read, which starts at the end of the file when it
+// opens it, a session starts at the end of the file when it joins: it skips
+// published lines that were in the file already. When the private reader
+// opens the file in the middle of a line, it delivers the rest of that line;
+// a shared session gets the next whole line. And a trailing line the file's
+// writer has not finished yet is not delivered when the session leaves,
+// unlike the private reader, which passes such a fragment on when its read is
+// cancelled.
+//
+// A session that falls behind by more than Options.QueueChunks chunks is
+// evicted, so it never delays the other sessions: it handles what it has
+// queued and goes on with a private follow reader of its own target, just
+// past the last line it handled, with the same filter and processor. So does
+// a session whose shared reader failed without a panic.
 func (h *Hub) Follow(ctx context.Context, session Session) error {
 	if err := validateSession(session); err != nil {
 		return err
 	}
+	if format := fs.CompressionFormat(session.FilePath); format != "" {
+		return fmt.Errorf("shared follow read requires an uncompressed file, got %s", format)
+	}
 	sub := newSubscriber(session, h.options.QueueChunks)
 	e := h.join(sub)
 	defer h.leave(e, sub)
-	return sub.run(ctx, h.logger)
+	return sub.run(ctx, h.logger, h.options)
 }
 
 func validateSession(session Session) error {
@@ -163,7 +171,10 @@ func validateSession(session Session) error {
 	return nil
 }
 
-// join adds sub to the entry for its file, starting one if needed.
+// join adds sub to the entry for its file, starting one if needed, and
+// records where sub starts: at the end of the file as of the join. A new
+// entry's reader starts there; a subscriber joining a running entry is added
+// before the file is measured, so it cannot miss a line appended after that.
 func (h *Hub) join(sub *subscriber) *entry {
 	key := entryKey{
 		path:        sub.session.Target.ResolvedPath(),
@@ -174,14 +185,27 @@ func (h *Hub) join(sub *subscriber) *entry {
 	defer h.mu.Unlock()
 	e := h.entries[key]
 	if e == nil {
-		e = newEntry(key, sub.session, h.options, h.logger, h.seams, h.forget)
+		sub.joinedAt = h.endOfFile(sub.session)
+		e = newEntry(key, sub.session, sub.joinedAt, h.options, h.logger, h.seams, h.forget)
 		h.entries[key] = e
 		e.add(sub)
 		e.start()
 		return e
 	}
 	e.add(sub)
+	sub.joinedAt = h.endOfFile(sub.session)
+	sub.skipToJoin = true
 	return e
+}
+
+// endOfFile returns the end of session's file, or an unknown position, which
+// makes the session take every line published from now on.
+func (h *Hub) endOfFile(session Session) position {
+	end, err := endOfFile(session.Target)
+	if err != nil {
+		h.logger.Warn(session.FilePath, "Unable to measure file for a shared follow read", err)
+	}
+	return end
 }
 
 // leave removes sub from e. The last subscriber stops e's reader; otherwise

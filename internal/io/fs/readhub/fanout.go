@@ -41,11 +41,10 @@ type chunk struct {
 	data []byte
 	// ends[i] is the end of line i in data; line i starts at ends[i-1].
 	ends []int
-	// endOffset is the byte offset in the file just past the chunk's last
-	// line, or -1 when unknown: for compressed files, and for a chunk that was
-	// published because it was full rather than at the end of a read.
-	endOffset int64
-	// file identifies the file endOffset belongs to; nil when unknown.
+	// offsets[i] is the byte offset in the file just past line i, or -1 when
+	// the reader did not report it (see line.PositionObserver).
+	offsets []int64
+	// file identifies the file the offsets belong to; nil when unknown.
 	file os.FileInfo
 }
 
@@ -60,16 +59,22 @@ func (c *chunk) line(i int) []byte {
 	return c.data[start:c.ends[i]:c.ends[i]]
 }
 
+// lineEnd returns the position just past line i of the chunk.
+func (c *chunk) lineEnd(i int) position {
+	if c.file == nil || c.offsets[i] < 0 {
+		return unknownPosition()
+	}
+	return position{offset: c.offsets[i], file: c.file}
+}
+
 // fanoutProcessor is the processor of an entry's reader. It packs the lines
-// it is fed into chunks and publishes them, in order with the control items
-// for truncation, to every subscriber. It runs on the reader's goroutine.
+// it is fed, and where each ends in the file, into chunks and publishes them,
+// in order with the control items for truncation, to every subscriber. It
+// runs on the reader's goroutine and is fed through a filter that passes
+// every line, so each reported line end belongs to the line just added.
 type fanoutProcessor struct {
 	entry   *entry
 	pending *chunk
-	// endOffset and file are the position the reader reported for the lines
-	// fed so far; they belong to the pending chunk when it is published next.
-	endOffset int64
-	file      os.FileInfo
 }
 
 var (
@@ -80,7 +85,7 @@ var (
 )
 
 func newFanoutProcessor(e *entry) *fanoutProcessor {
-	return &fanoutProcessor{entry: e, endOffset: -1}
+	return &fanoutProcessor{entry: e}
 }
 
 // ProcessRawLine adds a borrowed line to the pending chunk.
@@ -97,14 +102,18 @@ func (p *fanoutProcessor) ProcessLine(lineBuf *bytes.Buffer, _ uint64, _ string)
 	return nil
 }
 
-// LinesEndAt records where the lines fed so far end in the file.
-func (p *fanoutProcessor) LinesEndAt(offset int64, file os.FileInfo) {
-	p.endOffset = offset
-	p.file = file
+// LineEndsAt records where the line added last ends in the file.
+func (p *fanoutProcessor) LineEndsAt(offset int64, file os.FileInfo) {
+	if p.pending == nil || len(p.pending.offsets) == 0 {
+		return
+	}
+	p.pending.offsets[len(p.pending.offsets)-1] = offset
+	p.pending.file = file
 }
 
 // Flush publishes the pending chunk; the reader flushes after every read.
 func (p *fanoutProcessor) Flush() error {
+	p.publishWarning()
 	p.publishPending()
 	return nil
 }
@@ -121,30 +130,38 @@ func (p *fanoutProcessor) SourceRestarted() {
 }
 
 func (p *fanoutProcessor) add(raw []byte) {
+	p.publishWarning()
 	if p.pending != nil && len(p.pending.data)+len(raw) > cap(p.pending.data) {
-		// The chunk is full in the middle of a read: its end is not a
-		// position the reader reported.
-		p.publish(-1, nil)
+		p.publishPending()
 	}
 	if p.pending == nil {
 		p.pending = &chunk{data: make([]byte, 0, max(chunkSize, len(raw)))}
 	}
 	p.pending.data = append(p.pending.data, raw...)
 	p.pending.ends = append(p.pending.ends, len(p.pending.data))
+	p.pending.offsets = append(p.pending.offsets, -1)
 }
 
-// publishPending publishes the pending chunk with the reported position.
+// publishWarning publishes the long line warning the reader sent, if it
+// did, after the lines fed before it. The reader sends the warning before it
+// feeds the split line, through a channel with room for it, so the warning is
+// always there when that line is added: every session gets it where a
+// private reader would send it.
+func (p *fanoutProcessor) publishWarning() {
+	select {
+	case <-p.entry.messages:
+		p.publishPending()
+		p.entry.publish(item{kind: longLineItem})
+	default:
+	}
+}
+
+// publishPending publishes the pending chunk, if there is one.
 func (p *fanoutProcessor) publishPending() {
-	p.publish(p.endOffset, p.file)
-}
-
-func (p *fanoutProcessor) publish(endOffset int64, file os.FileInfo) {
 	if p.pending == nil {
 		return
 	}
 	published := p.pending
 	p.pending = nil
-	published.endOffset = endOffset
-	published.file = file
 	p.entry.publish(item{kind: chunkItem, chunk: published})
 }

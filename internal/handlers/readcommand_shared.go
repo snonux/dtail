@@ -22,24 +22,28 @@ func followSharedFunc(hub *readhub.Hub) func(context.Context, readhub.Session) e
 }
 
 // shouldShareRead reports whether the read may use the shared follow reader
-// of its file instead of a private one. Only follow reads of a validated file
-// in dserver share. A max-count limit keeps the read private: when the limit
-// is reached, a private follow read starts over from the beginning of the
-// file, which a shared read cannot do for one session.
-func (r *readCommand) shouldShareRead(ltx lcontext.LContext, target *fs.ValidatedReadTarget) bool {
+// of its file instead of a private one. Only follow reads of a validated,
+// uncompressed file in dserver share: a session that falls behind moves to a
+// private reader at the byte offset where its shared read stopped, which a
+// compressed file does not offer. A max-count limit keeps the read private:
+// when the limit is reached, a private follow read starts over from the
+// beginning of the file, which a shared read cannot do for one session.
+func (r *readCommand) shouldShareRead(ltx lcontext.LContext, target *fs.ValidatedReadTarget, path string) bool {
 	return r.followShared != nil &&
 		!r.serverless &&
 		r.mode == omode.TailClient &&
 		target != nil &&
 		target.Kind == fs.FileKind &&
+		fs.CompressionFormat(path) == "" &&
 		ltx.MaxCount == 0
 }
 
-// readShared follows the file through its shared reader. When the shared
-// read ends without the session's context ending, the read goes on as the
-// private read loop would at that point.
+// readShared follows the file through its shared reader. The hub moves the
+// session to a private reader of its own when it falls behind or the shared
+// reader fails, so the read only ends early like the private read loop's
+// iteration would: with a processor error, a max-count stop or a panic.
 func (r *readCommand) readShared(ctx context.Context, ltx lcontext.LContext, re regex.Regex,
-	options readerFactoryOptions, privateReader fs.FileReader) {
+	options readerFactoryOptions) {
 
 	path, globID := options.path, options.globID
 	r.logger.Info(r.logContext, "Using shared follow read", path, globID)
@@ -62,20 +66,11 @@ func (r *readCommand) readShared(ctx context.Context, ltx lcontext.LContext, re 
 	}
 
 	r.logger.Error(r.logContext, path, globID, err)
-	switch {
-	case errors.Is(err, fs.ErrReaderWorkerPanic):
+	if errors.Is(err, fs.ErrReaderWorkerPanic) {
 		// The private read loop panics on a reader worker panic, too.
 		panic(err)
-	case errors.Is(err, readhub.ErrReaderFailed):
-		// Nothing was wrong with the session; go on with a private follow
-		// read. It starts at the end of the file as of now, so lines the
-		// shared reader had not delivered yet are skipped.
-		r.logger.Warn(r.logContext, "Shared follow read failed, reading privately from the end of the file",
-			path, globID)
-		r.executeReadLoop(ctx, ltx, path, globID, re, privateReader, r.readViaProcessor(path, globID, writer))
-	default:
-		r.restartPrivately(ctx, ltx, re, options, writer)
 	}
+	r.restartPrivately(ctx, ltx, re, options, writer)
 }
 
 // restartPrivately continues after the session's processor failed. The

@@ -39,20 +39,25 @@ func chunkLines(c *chunk) []string {
 	return lines
 }
 
-func TestFanoutPublishesOneChunkPerFlushWithItsPosition(t *testing.T) {
+func TestFanoutPublishesOneChunkPerFlushWithItsPositions(t *testing.T) {
 	fanout, sub := fanoutUnderTest(t)
 	info := fileInfo(t)
 
+	fanout.LineEndsAt(7, info) // no line added yet: ignored
 	raw := []byte("first")
 	if err := fanout.ProcessRawLine(raw, 1, "src"); err != nil {
 		t.Fatal(err)
 	}
+	fanout.LineEndsAt(6, info)
 	copy(raw, "XXXXX") // the reader reuses its buffer: the chunk must not alias it
 	buf := bytes.NewBufferString("second")
 	if err := fanout.ProcessLine(buf, 2, "src"); err != nil {
 		t.Fatal(err)
 	}
-	fanout.LinesEndAt(42, info)
+	fanout.LineEndsAt(42, info)
+	if err := fanout.ProcessRawLine([]byte("fragment"), 3, "src"); err != nil {
+		t.Fatal(err)
+	}
 	if err := fanout.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -65,27 +70,37 @@ func TestFanoutPublishesOneChunkPerFlushWithItsPosition(t *testing.T) {
 		t.Fatalf("items = %+v, want one chunk", items)
 	}
 	c := items[0].chunk
-	if got, want := chunkLines(c), []string{"first", "second"}; !reflect.DeepEqual(got, want) {
+	if got, want := chunkLines(c), []string{"first", "second", "fragment"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("chunk lines = %q, want %q", got, want)
 	}
-	if c.endOffset != 42 || c.file != info {
-		t.Errorf("chunk position = %d, %v, want 42 and the reported file", c.endOffset, c.file)
+	// A line without a reported end, like a fragment fed on cancellation,
+	// has an unknown position.
+	want := []position{{offset: 6, file: info}, {offset: 42, file: info}, unknownPosition()}
+	for i, wantEnd := range want {
+		if got := c.lineEnd(i); got.offset != wantEnd.offset || got.file != wantEnd.file {
+			t.Errorf("line %d ends at %+v, want %+v", i, got, wantEnd)
+		}
 	}
 }
 
-func TestFanoutPublishesAFullChunkWithoutPosition(t *testing.T) {
+func TestFanoutPublishesAFullChunkWithItsPositions(t *testing.T) {
 	fanout, sub := fanoutUnderTest(t)
+	info := fileInfo(t)
 	line := strings.Repeat("a", chunkSize/2)
+	var end int64
 	for i := 0; i < 3; i++ {
 		if err := fanout.ProcessRawLine([]byte(line), 0, ""); err != nil {
 			t.Fatal(err)
 		}
+		end += int64(len(line)) + 1
+		fanout.LineEndsAt(end, info)
 	}
 	huge := strings.Repeat("b", 2*chunkSize)
 	if err := fanout.ProcessRawLine([]byte(huge), 0, ""); err != nil {
 		t.Fatal(err)
 	}
-	fanout.LinesEndAt(99, nil)
+	end += int64(len(huge)) + 1
+	fanout.LineEndsAt(end, info)
 	if err := fanout.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -99,17 +114,18 @@ func TestFanoutPublishesAFullChunkWithoutPosition(t *testing.T) {
 			lengths = append(lengths, len(text))
 		}
 		sizes = append(sizes, lengths)
-		offsets = append(offsets, it.chunk.endOffset)
+		offsets = append(offsets, it.chunk.lineEnd(len(it.chunk.ends)-1).offset)
 	}
 	// Two half-size lines fill a chunk, the third starts the next one, the
-	// oversized line gets a chunk of its own, and only the chunk published by
-	// Flush carries the reported position.
+	// oversized line gets a chunk of its own, and every chunk, published full
+	// or by Flush, knows where its last line ends.
 	wantSizes := [][]int{{chunkSize / 2, chunkSize / 2}, {chunkSize / 2}, {2 * chunkSize}}
 	if !reflect.DeepEqual(sizes, wantSizes) {
 		t.Errorf("chunk line lengths = %v, want %v", sizes, wantSizes)
 	}
-	if want := []int64{-1, -1, 99}; !reflect.DeepEqual(offsets, want) {
-		t.Errorf("chunk offsets = %v, want %v", offsets, want)
+	half := int64(chunkSize/2 + 1)
+	if want := []int64{2 * half, 3 * half, end}; !reflect.DeepEqual(offsets, want) {
+		t.Errorf("chunk end offsets = %v, want %v", offsets, want)
 	}
 }
 

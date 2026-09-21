@@ -44,23 +44,10 @@ func NewForUser(ctx context.Context, user *user.User, dependencies Dependencies)
 	return NewServerHandler(ctx, user, dependencies)
 }
 
-// sharedReadsAvailable gates shared follow reads in dserver. It stays false
-// until a session that falls behind is evicted from the shared reader (ask
-// task x8): until then one stalled client would stall every other session
-// following the same file, which a private read never does.
-const sharedReadsAvailable = false
-
 // NewReadHub returns the hub that lets dserver sessions tailing the same file
 // share one reader of it, configured like a session's private reader, or nil
-// when the configuration turns shared reads off or they are not available yet.
+// when the configuration turns shared reads off.
 func NewReadHub(serverCfg *config.ServerConfig, logger logging.Logger) *readhub.Hub {
-	if !sharedReadsAvailable {
-		return nil
-	}
-	return newReadHub(serverCfg, logger)
-}
-
-func newReadHub(serverCfg *config.ServerConfig, logger logging.Logger) *readhub.Hub {
 	if serverCfg == nil || serverCfg.SharedReadsDisable {
 		return nil
 	}

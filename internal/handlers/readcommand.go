@@ -440,8 +440,8 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	r.logger.Info(r.logContext, "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
 	// The session's own PrepareReadTarget succeeded and it holds a read slot of
 	// its own, exactly as for a private read, before it may join a shared one.
-	if r.shouldShareRead(ltx, target) {
-		r.readShared(ctx, ltx, re, readerOptions, reader)
+	if r.shouldShareRead(ltx, target, path) {
+		r.readShared(ctx, ltx, re, readerOptions)
 		return
 	}
 	r.readWithProcessor(ctx, ltx, path, globID, re, reader)

@@ -56,12 +56,11 @@ type ServerConfig struct {
 	MaxConcurrentCats int
 	// The max amount of concurrent tails per server.
 	MaxConcurrentTails int
-	// SharedReadsDisable turns shared follow reads off. They are not active
-	// yet (see handlers.sharedReadsAvailable), so every session reads with a
-	// reader of its own either way. Once active, sessions that tail the same
-	// file share one reader of it in dserver by default, and each session
-	// still filters and processes the lines on its own; with this set, every
-	// session reads the file with a reader of its own.
+	// SharedReadsDisable turns shared follow reads off. By default, sessions
+	// that tail the same uncompressed file share one reader of it in dserver,
+	// and each session still filters and processes the lines on its own; a
+	// session that falls behind moves to a reader of its own. With this set,
+	// every session reads the file with a reader of its own.
 	SharedReadsDisable bool `json:",omitempty"`
 	// The max line length until it's split up into multiple smaller lines.
 	MaxLineLength int

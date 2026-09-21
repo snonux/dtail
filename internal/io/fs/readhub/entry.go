@@ -19,13 +19,18 @@ type entry struct {
 	path    string
 	options Options
 	logger  logging.Logger
-	// onFailure lets the hub drop an entry whose reader failed for good.
+	// onFailure lets the hub drop an entry whose reader failed for good, or
+	// that lost its last subscriber to an eviction.
 	onFailure func(*entry)
 	failOnce  sync.Once
+	stopOnce  sync.Once
 	// seams holds the operations tests replace; see hubSeams.
 	seams hubSeams
 
-	reader   *fs.ReadFile
+	reader *fs.ReadFile
+	// messages receives the reader's long line warning; the fan-out
+	// processor publishes it in order with the lines (see
+	// fanoutProcessor.publishWarning).
 	messages chan string
 	cancel   context.CancelFunc
 	ctx      context.Context
@@ -40,11 +45,13 @@ type entry struct {
 	owner *subscriber
 
 	// publishMu keeps every subscriber's queue in the order items were
-	// published by the reader and the message forwarder.
+	// published, by the reader or by fail.
 	publishMu sync.Mutex
 }
 
-func newEntry(key entryKey, creator Session, options Options, logger logging.Logger,
+// newEntry makes the shared follow read of creator's file, which starts at
+// start, the end of the file when creator joined.
+func newEntry(key entryKey, creator Session, start position, options Options, logger logging.Logger,
 	seams hubSeams, onFailure func(*entry)) *entry {
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -55,42 +62,45 @@ func newEntry(key entryKey, creator Session, options Options, logger logging.Log
 		logger:    logger,
 		onFailure: onFailure,
 		seams:     seams,
-		messages:  make(chan string),
+		messages:  make(chan string, 1),
 		cancel:    cancel,
 		ctx:       ctx,
 		done:      make(chan struct{}),
 	}
 	target := creator.Target
-	reader, err := fs.NewReadFile(fs.ReadOptions{
+	readOptions := fs.ReadOptions{
 		Mode:           omode.TailClient,
 		Target:         &target,
 		FilePath:       creator.FilePath,
 		GlobID:         creator.GlobID,
 		ServerMessages: e.messages,
-		SeekEOF:        true,
 		MaxLineLength:  options.MaxLineLength,
 		Logger:         logger,
-	})
+	}
+	start.startAt(&readOptions)
+	reader, err := fs.NewReadFile(readOptions)
 	if err != nil {
-		// NewReadFile only fails for an unsupported mode or target kind, and
-		// both are fixed or validated before an entry is made.
+		// NewReadFile only fails for an unsupported mode or target kind, or a
+		// start position of a compressed file, and all of them are fixed or
+		// validated before an entry is made.
 		panic(fmt.Sprintf("readhub: shared follow reader: %v", err))
 	}
 	e.reader = reader
 	return e
 }
 
-// start runs the reader and the message forwarder.
+// start runs the reader.
 func (e *entry) start() {
 	e.logger.Info(e.path, "Shared follow read started", "subscribers=1")
-	go e.forwardMessages()
 	go e.run()
 }
 
-// stop ends the read once the last subscriber left.
+// stop ends the read once the last subscriber left or was evicted.
 func (e *entry) stop() {
-	e.logger.Info(e.path, "Shared follow read stopped", "subscribers=0")
-	e.cancel()
+	e.stopOnce.Do(func() {
+		e.logger.Info(e.path, "Shared follow read stopped", "subscribers=0")
+		e.cancel()
+	})
 }
 
 // add registers sub; the first subscriber owns the reader's target.
@@ -112,16 +122,10 @@ func (e *entry) add(sub *subscriber) {
 func (e *entry) remove(sub *subscriber) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	for i, candidate := range e.subscribers {
-		if candidate == sub {
-			e.subscribers = append(e.subscribers[:i], e.subscribers[i+1:]...)
-			break
-		}
-	}
+	remaining, found := e.detach(sub)
 	close(sub.done)
 
-	remaining := len(e.subscribers)
-	if remaining > 0 {
+	if found && remaining > 0 {
 		e.logger.Info(e.path, "Shared follow read lost a subscriber", fmt.Sprintf("subscribers=%d", remaining))
 	}
 	if e.owner == sub {
@@ -186,6 +190,7 @@ func (e *entry) run() {
 			e.publish(item{kind: reopenItem})
 		}
 		err := e.seams.startReader(e.ctx, e.reader, fanout)
+		fanout.publishWarning()
 		fanout.publishPending()
 		if errors.Is(err, fs.ErrReaderWorkerPanic) {
 			e.fail(err)
@@ -201,29 +206,16 @@ func (e *entry) run() {
 	}
 }
 
-// forwardMessages tells every subscriber when the reader warns about a long
-// line, the only message a reader sends to its client. The subscriber words
-// the warning with its own file path.
-func (e *entry) forwardMessages() {
-	defer e.recoverPanic("message forwarder")
-	for {
-		select {
-		case <-e.messages:
-			e.publish(item{kind: longLineItem})
-		case <-e.ctx.Done():
-			return
-		}
-	}
-}
-
 // publish delivers it to every current subscriber, in publication order. A
-// subscriber that joins later does not get it. Until slow subscribers are
-// evicted, publish waits for a subscriber whose queue is full.
+// subscriber that joins later does not get it. publish never waits for a
+// subscriber: one whose queue is full is evicted and reads privately.
 func (e *entry) publish(it item) {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()
 	for _, sub := range e.snapshot() {
-		sub.deliver(it)
+		if !sub.offer(it) {
+			e.evict(sub)
+		}
 	}
 }
 

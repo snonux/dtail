@@ -23,14 +23,16 @@ type followLineProcessor struct {
 	file        *ReadFile
 	filter      *filteringProcessor
 	partialLine *bytes.Buffer
+	// positions tells a line.PositionObserver where each line ends; nil for
+	// every other processor.
+	positions *positionReporter
 }
 
 // readWithProcessorOptimized reads from the file using buffered line reading
 // instead of byte-by-byte reading for better performance
 func (f *ReadFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, reader *bufio.Reader,
-	truncate <-chan struct{}, ltx lcontext.LContext, processor line.Processor, re regex.Regex) error {
+	truncate <-chan struct{}, filterProcessor *filteringProcessor) error {
 
-	filterProcessor := f.newFilteringProcessor(ltx, processor, re)
 	defer filterProcessor.resetGeneration()
 
 	scanner := bufio.NewScanner(reader)
@@ -165,6 +167,12 @@ func (f *ReadFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEO
 func (f *ReadFile) Start(ctx context.Context, ltx lcontext.LContext,
 	processor line.Processor, re regex.Regex) error {
 
+	return f.start(ctx, f.newFilteringProcessor(ltx, processor, re))
+}
+
+// start reads the file through filterProcessor, which numbers, filters and
+// passes the lines on to its processor.
+func (f *ReadFile) start(ctx context.Context, filterProcessor *filteringProcessor) error {
 	truncateCtx, cancelTruncate := context.WithCancel(ctx)
 	defer cancelTruncate()
 
@@ -188,10 +196,10 @@ func (f *ReadFile) Start(ctx context.Context, ltx lcontext.LContext,
 
 	// For tail mode, we need to handle continuous reading
 	if f.follow {
-		err = f.tailWithProcessorOptimized(truncateCtx, fd, reader, truncate, ltx, processor, re)
+		err = f.tailWithProcessorOptimized(truncateCtx, fd, reader, truncate, filterProcessor)
 	} else {
 		// For cat/grep mode, just read once
-		err = f.readWithProcessorOptimized(truncateCtx, fd, reader, truncate, ltx, processor, re)
+		err = f.readWithProcessorOptimized(truncateCtx, fd, reader, truncate, filterProcessor)
 	}
 
 	cancelTruncate()
@@ -203,7 +211,7 @@ func (f *ReadFile) Start(ctx context.Context, ltx lcontext.LContext,
 	}
 
 	// Ensure any buffered data is flushed
-	if flushErr := processor.Flush(); flushErr != nil && err == nil {
+	if flushErr := filterProcessor.processor.Flush(); flushErr != nil && err == nil {
 		err = flushErr
 	}
 
@@ -212,10 +220,15 @@ func (f *ReadFile) Start(ctx context.Context, ltx lcontext.LContext,
 
 // tailWithProcessorOptimized handles continuous reading for tail mode
 func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, reader *bufio.Reader,
-	truncate <-chan struct{}, ltx lcontext.LContext, processor line.Processor, re regex.Regex) error {
+	truncate <-chan struct{}, filterProcessor *filteringProcessor) error {
 
-	filterProcessor := f.newFilteringProcessor(ltx, processor, re)
 	defer filterProcessor.resetGeneration()
+	processor := filterProcessor.processor
+
+	positions, positionsErr := f.newPositionReporter(fd, reader, processor)
+	if positionsErr != nil {
+		return positionsErr
+	}
 
 	partialLine := pool.BytesBuffer.Get().(*bytes.Buffer)
 	defer pool.RecycleBytesBuffer(partialLine)
@@ -223,11 +236,7 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		file:        f,
 		filter:      filterProcessor,
 		partialLine: partialLine,
-	}
-
-	positions, positionsErr := f.newPositionReporter(fd, reader, processor)
-	if positionsErr != nil {
-		return positionsErr
+		positions:   positions,
 	}
 
 	bufPtr := pool.GetMediumBuffer()
@@ -238,15 +247,15 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		n, readErr := reader.Read(buf)
 
 		if n > 0 {
+			if err := positions.beginRead(n); err != nil {
+				return err
+			}
 			stop, err := lineProcessor.processChunk(ctx, buf[:n])
 			if err != nil {
 				return err
 			}
 			if stop {
 				return nil
-			}
-			if reportErr := positions.report(partialLine.Len()); reportErr != nil {
-				return reportErr
 			}
 			if flushErr := processor.Flush(); flushErr != nil {
 				return flushErr
@@ -269,28 +278,33 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	}
 }
 
+// processChunk feeds the lines that data, the bytes of one read, completes.
 func (p *followLineProcessor) processChunk(ctx context.Context, data []byte) (bool, error) {
-	for len(data) > 0 {
-		newline := bytes.IndexByte(data, '\n')
+	consumed := 0 // bytes of data before the rest still to process
+	for consumed < len(data) {
+		rest := data[consumed:]
+		newline := bytes.IndexByte(rest, '\n')
 		if newline < 0 {
-			return p.processFragment(ctx, data)
+			return p.processFragment(ctx, rest, len(data))
 		}
 
-		p.partialLine.Write(data[:newline])
+		consumed += newline + 1
+		p.partialLine.Write(rest[:newline])
 		if p.partialLine.Len() > 0 {
-			if stop, err := stopForProcessingError(p.processPartialLine()); stop || err != nil {
+			if stop, err := stopForProcessingError(p.processPartialLine(consumed)); stop || err != nil {
 				return stop, err
 			}
 		}
 		p.partialLine.Reset()
 		p.file.warnedAboutLongLine = false
-		data = data[newline+1:]
 	}
 	return false, nil
 }
 
-func (p *followLineProcessor) processFragment(ctx context.Context, data []byte) (bool, error) {
-	p.partialLine.Write(data)
+// processFragment keeps fragment, the unfinished end of a read of readLen
+// bytes, unless the pending line grew as long as the maximum line length.
+func (p *followLineProcessor) processFragment(ctx context.Context, fragment []byte, readLen int) (bool, error) {
+	p.partialLine.Write(fragment)
 	if p.partialLine.Len() < p.file.lineLimit() {
 		return false, nil
 	}
@@ -298,15 +312,19 @@ func (p *followLineProcessor) processFragment(ctx context.Context, data []byte) 
 		return true, nil
 	}
 
-	stop, err := stopForProcessingError(p.processPartialLine())
+	stop, err := stopForProcessingError(p.processPartialLine(readLen))
 	if !stop && err == nil {
 		p.partialLine.Reset()
 	}
 	return stop, err
 }
 
-func (p *followLineProcessor) processPartialLine() error {
-	return p.filter.processLine(p.partialLine.Bytes())
+// processPartialLine feeds the pending line, which ends after the first
+// readEnd bytes of the current read.
+func (p *followLineProcessor) processPartialLine(readEnd int) error {
+	err := p.filter.processLine(p.partialLine.Bytes())
+	p.positions.lineEndsAt(readEnd)
+	return err
 }
 
 func (p *followLineProcessor) handleReadError(ctx context.Context, fd *os.File,
@@ -357,7 +375,9 @@ func (p *followLineProcessor) finish() error {
 	if p.partialLine.Len() == 0 {
 		return nil
 	}
-	err := p.processPartialLine()
+	// A fragment fed on cancellation has no position (see
+	// line.PositionObserver).
+	err := p.filter.processLine(p.partialLine.Bytes())
 	if isEarlyStop(err) {
 		return nil
 	}
@@ -371,14 +391,16 @@ func stopForProcessingError(err error) (bool, error) {
 	return false, err
 }
 
-// positionReporter tells a line.PositionObserver processor where the lines it
-// was fed end. A nil reporter reports nothing, which is the case for every
+// positionReporter tells a line.PositionObserver processor where each line
+// it was fed ends. A nil reporter reports nothing, which is the case for every
 // other processor, for compressed files and for the stdin pipe.
 type positionReporter struct {
 	observer line.PositionObserver
 	fd       *os.File
 	reader   *bufio.Reader
 	file     os.FileInfo
+	// readStart is the file offset of the first byte of the current read.
+	readStart int64
 }
 
 // newPositionReporter stats the open file once: its identity does not change
@@ -397,10 +419,10 @@ func (f *ReadFile) newPositionReporter(fd *os.File, reader *bufio.Reader,
 	return &positionReporter{observer: observer, fd: fd, reader: reader, file: file}, nil
 }
 
-// report passes on the offset just past the last complete line fed: the
-// descriptor's position minus what the buffered reader still holds and minus
-// the unfinished line the follow reader keeps back.
-func (r *positionReporter) report(pendingLineLen int) error {
+// beginRead records where the n bytes the reader just returned start in the
+// file: the descriptor's position minus what the buffered reader still holds
+// and minus the n bytes themselves.
+func (r *positionReporter) beginRead(n int) error {
 	if r == nil {
 		return nil
 	}
@@ -408,6 +430,15 @@ func (r *positionReporter) report(pendingLineLen int) error {
 	if err != nil {
 		return fmt.Errorf("read position of %s: %w", r.fd.Name(), err)
 	}
-	r.observer.LinesEndAt(position-int64(r.reader.Buffered())-int64(pendingLineLen), r.file)
+	r.readStart = position - int64(r.reader.Buffered()) - int64(n)
 	return nil
+}
+
+// lineEndsAt reports that the line just fed ends after the first readEnd
+// bytes of the current read.
+func (r *positionReporter) lineEndsAt(readEnd int) {
+	if r == nil {
+		return
+	}
+	r.observer.LineEndsAt(r.readStart+int64(readEnd), r.file)
 }
