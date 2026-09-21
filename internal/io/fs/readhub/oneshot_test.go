@@ -22,8 +22,8 @@ import (
 	"github.com/mimecast/dtail/internal/regex"
 )
 
-// groupMember is one session reading the test file through a group read.
-type groupMember struct {
+// testMember is one session reading the test file through a group read.
+type testMember struct {
 	recorder *recorder
 	cancel   context.CancelFunc
 	done     chan error
@@ -69,14 +69,22 @@ func groupSession(t *testing.T, path string, ltx lcontext.LContext, re regex.Reg
 }
 
 func startGroupMember(t *testing.T, hub *Hub, mode omode.Mode, path string, ltx lcontext.LContext,
-	re regex.Regex, group Group) *groupMember {
+	re regex.Regex, group Group) *testMember {
+
+	t.Helper()
+	return startSlottedMember(t, hub, mode, path, ltx, re, group, freeSlot)
+}
+
+// startSlottedMember is startGroupMember with the member's slot acquirer.
+func startSlottedMember(t *testing.T, hub *Hub, mode omode.Mode, path string, ltx lcontext.LContext,
+	re regex.Regex, group Group, acquire SlotAcquirer) *testMember {
 
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	m := &groupMember{recorder: &recorder{}, cancel: cancel, done: make(chan error, 1),
+	m := &testMember{recorder: &recorder{}, cancel: cancel, done: make(chan error, 1),
 		messages: make(chan string, 16)}
 	session := groupSession(t, path, ltx, re, m.recorder.newProcessor, m.messages)
-	go func() { m.done <- hub.ReadOnce(ctx, mode, session, group) }()
+	go func() { m.done <- hub.ReadOnce(ctx, mode, session, group, acquire) }()
 	t.Cleanup(func() {
 		cancel()
 		<-m.done
@@ -86,7 +94,7 @@ func startGroupMember(t *testing.T, hub *Hub, mode omode.Mode, path string, ltx 
 }
 
 // wait returns what ReadOnce returned.
-func (m *groupMember) wait(t *testing.T) error {
+func (m *testMember) wait(t *testing.T) error {
 	t.Helper()
 	select {
 	case err := <-m.done:
@@ -102,7 +110,7 @@ func groupMembers(hub *Hub, path string) int {
 	hub.mu.Lock()
 	defer hub.mu.Unlock()
 	count := 0
-	for key, e := range hub.groups {
+	for key, e := range hub.oneshot.entries {
 		if key.path == path {
 			count += len(e.snapshot())
 		}
@@ -200,7 +208,7 @@ func TestReadOnceMatchesPrivateSnapshotRead(t *testing.T) {
 			// A small queue makes the reader wait for the members.
 			hub := New(Options{Logger: logging.NopLogger{}, GroupWait: time.Hour, QueueChunks: 1})
 			group := Group{ID: "all-" + mode.String(), Members: len(reads)}
-			members := make([]*groupMember, len(reads))
+			members := make([]*testMember, len(reads))
 			for i, read := range reads {
 				members[i] = startGroupMember(t, hub, mode, path, read.ltx, read.re, group)
 			}
@@ -272,7 +280,7 @@ func TestReadOnceReadsOnceForTheWholeGroup(t *testing.T) {
 	seams.install(hub)
 
 	group := Group{ID: "g", Members: 3}
-	var members []*groupMember
+	var members []*testMember
 	for range group.Members {
 		members = append(members, startGroupMember(t, hub, omode.CatClient, path,
 			lcontext.LContext{}, regex.NewNoop(), group))
@@ -324,7 +332,7 @@ func TestReadOnceLateJoinerReadsPrivately(t *testing.T) {
 
 	late := &recorder{}
 	session := groupSession(t, path, lcontext.LContext{}, regex.NewNoop(), late.newProcessor, nil)
-	if err := hub.ReadOnce(context.Background(), omode.CatClient, session, group); !errors.Is(err, ErrGroupReadStarted) {
+	if err := hub.ReadOnce(context.Background(), omode.CatClient, session, group, freeSlot); !errors.Is(err, ErrGroupReadStarted) {
 		t.Fatalf("late ReadOnce() = %v, want ErrGroupReadStarted", err)
 	}
 	if events := late.snapshot(); len(events) != 0 {
@@ -360,7 +368,7 @@ func TestReadOnceCancelledMemberReleasesTheGroup(t *testing.T) {
 	stuck := &blockingRecorder{ctx: stuckCtx, blocked: make(chan struct{})}
 	stuckDone := make(chan error, 1)
 	session := groupSession(t, path, lcontext.LContext{}, regex.NewNoop(), stuck.newProcessor, nil)
-	go func() { stuckDone <- hub.ReadOnce(stuckCtx, omode.CatClient, session, group) }()
+	go func() { stuckDone <- hub.ReadOnce(stuckCtx, omode.CatClient, session, group, freeSlot) }()
 
 	healthy := startGroupMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group)
 	<-stuck.blocked
@@ -420,7 +428,7 @@ func TestReadOnceGroupLeftBeforeTheStartNeverReads(t *testing.T) {
 	waitFor(t, "the member to join", func() bool { return groupMembers(hub, path) == 1 })
 	hub.mu.Lock()
 	var e *groupEntry
-	for _, candidate := range hub.groups {
+	for _, candidate := range hub.oneshot.entries {
 		e = candidate
 	}
 	hub.mu.Unlock()
@@ -459,7 +467,7 @@ func TestReadOnceReportsReaderFailuresToEveryMember(t *testing.T) {
 			hub := newGroupHub(time.Hour)
 			hub.seams.startReader = tt.start
 			group := Group{ID: "g", Members: 2}
-			members := []*groupMember{
+			members := []*testMember{
 				startGroupMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group),
 				startGroupMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group),
 			}
@@ -476,7 +484,7 @@ func TestReadOnceWarnsEveryMemberAboutLongLines(t *testing.T) {
 	path := writeFile(t, "short\n"+strings.Repeat("x", 40)+"\nshort again\n")
 	hub := New(Options{Logger: textLogger{}, GroupWait: time.Hour, MaxLineLength: 16})
 	group := Group{ID: "g", Members: 2}
-	members := []*groupMember{
+	members := []*testMember{
 		startGroupMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group),
 		startGroupMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group),
 	}
@@ -514,13 +522,21 @@ func TestReadOnceRejectsInvalidReads(t *testing.T) {
 		{"no members", omode.CatClient, valid, Group{ID: "g"}},
 		{"no target", omode.CatClient, Session{FilePath: path, NewProcessor: valid.NewProcessor},
 			Group{ID: "g", Members: 1}},
+		{"no slot acquirer", omode.CatClient, valid, Group{ID: "g", Members: 1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := hub.ReadOnce(context.Background(), tt.mode, tt.session, tt.group)
+			acquire := SlotAcquirer(freeSlot)
+			if tt.name == "no slot acquirer" {
+				acquire = nil
+			}
+			err := hub.ReadOnce(context.Background(), tt.mode, tt.session, tt.group, acquire)
 			if err == nil || errors.Is(err, ErrGroupReadStarted) {
 				t.Errorf("ReadOnce() = %v, want a validation error", err)
 			}
 		})
 	}
 }
+
+// freeSlot is a slot acquirer with unlimited slots.
+func freeSlot(context.Context) (func(), bool) { return func() {}, true }

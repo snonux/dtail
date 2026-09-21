@@ -69,5 +69,8 @@ func newReadHub(serverCfg *config.ServerConfig, logger logging.Logger) *readhub.
 		Logger:        logger,
 		MaxLineLength: timings.maxLineLength,
 		RetryInterval: timings.readRetryInterval,
+		// Every member of a one-shot group read holds one of the server's
+		// cat slots during the read, and the group takes them all at once.
+		MaxGroupMembers: max(1, serverCfg.MaxConcurrentCats),
 	})
 }

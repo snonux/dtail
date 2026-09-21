@@ -2,6 +2,8 @@ package readhub
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"runtime/debug"
@@ -17,9 +19,15 @@ import (
 // all its members to join before it reads with the members it has.
 const DefaultGroupWait = 3 * time.Second
 
+// DefaultGroupMemory is how long the hub remembers, by default, a group read
+// that ended, so that a member arriving after it ended reads privately at
+// once instead of waiting GroupWait for a new group read of its own.
+const DefaultGroupMemory = 10 * time.Minute
+
 // ErrGroupReadStarted reports that the group's shared read had already
-// started when the session came to join it. The session did not join and
-// reads the file on its own, which gives the same result.
+// started, had all the members it admits, or ended when the session came to
+// join it. The session did not join and reads the file on its own, which
+// gives the same result.
 var ErrGroupReadStarted = errors.New("shared one-shot read of the group already started")
 
 // Group names the sessions that read a file once together, such as the
@@ -31,6 +39,30 @@ type Group struct {
 	ID string
 	// Members is how many sessions the group read waits for.
 	Members int
+}
+
+// LogID returns a short hash of the group ID for log lines: the ID itself
+// stays out of the logs, which still tell the reads of one group apart.
+func (g Group) LogID() string {
+	sum := sha256.Sum256([]byte(g.ID))
+	return "group=" + hex.EncodeToString(sum[:4])
+}
+
+// SlotAcquirer waits for one of dserver's cat slots for a group member and
+// returns the function that releases it. It reports false, holding no slot,
+// once ctx ended.
+type SlotAcquirer func(ctx context.Context) (release func(), acquired bool)
+
+// groupReads is the hub's state of the one-shot group reads.
+type groupReads struct {
+	// entries holds the group reads that have not ended yet.
+	entries map[groupKey]*groupEntry
+	// ended remembers when group reads ended, until DefaultGroupMemory
+	// (Options.GroupMemory) passed.
+	ended map[groupKey]time.Time
+	// slotsMu lets one group read at a time take its members' cat slots, so
+	// that two group reads never wait for each other's slots.
+	slotsMu sync.Mutex
 }
 
 // groupKey identifies one group read: the same file, read in the same mode,
@@ -55,6 +87,12 @@ type groupEntry struct {
 	logger  logging.Logger
 	seams   hubSeams
 
+	// expected is how many members the read waits for: the group's members,
+	// at most Options.MaxGroupMembers.
+	expected int
+	// slotsMu is the hub's groupReads.slotsMu.
+	slotsMu *sync.Mutex
+
 	messages chan string
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -67,7 +105,7 @@ type groupEntry struct {
 	// mu guards the member list and started; the hub's mutex is always taken
 	// first when both are needed.
 	mu      sync.Mutex
-	members []*subscriber
+	members []*groupMember
 	// started is set when the read begins; nobody joins afterwards.
 	started bool
 
@@ -77,9 +115,22 @@ type groupEntry struct {
 
 var _ publisher = (*groupEntry)(nil)
 
-func newGroupEntry(key groupKey, group Group, path string, options Options,
-	logger logging.Logger, seams hubSeams) *groupEntry {
+// groupMember is a session in a group read.
+type groupMember struct {
+	*subscriber
+	// acquire takes the member's cat slot, release gives it back. release is
+	// set, under the entry's mutex, once the slot was taken.
+	acquire SlotAcquirer
+	release func()
+}
 
+func newGroupEntry(key groupKey, group Group, path string, options Options,
+	logger logging.Logger, seams hubSeams, slotsMu *sync.Mutex) *groupEntry {
+
+	expected := group.Members
+	if options.MaxGroupMembers > 0 {
+		expected = min(expected, options.MaxGroupMembers)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &groupEntry{
 		key:      key,
@@ -88,6 +139,8 @@ func newGroupEntry(key groupKey, group Group, path string, options Options,
 		options:  options,
 		logger:   logger,
 		seams:    seams,
+		expected: expected,
+		slotsMu:  slotsMu,
 		messages: make(chan string),
 		ctx:      ctx,
 		cancel:   cancel,
@@ -99,24 +152,39 @@ func newGroupEntry(key groupKey, group Group, path string, options Options,
 // ReadOnce feeds session with every line of its file, read once from the
 // beginning like a private cat or grep read, by the one read the members of
 // group share. The group read starts once group.Members sessions joined it,
-// or DefaultGroupWait (Options.GroupWait) after its first member joined.
+// at most Options.MaxGroupMembers, or DefaultGroupWait (Options.GroupWait)
+// after its first member joined.
+//
+// A member holds no cat slot while it waits for the others: the caller must
+// not hold one. Once the members are there, the group read takes one cat slot
+// for every member with the member's acquire, as a private read of each
+// member would, and only then reads; the member's slot is released when the
+// member's read ended. Group reads take their slots one group at a time, and
+// a member holds nothing else while its group waits for slots, so group reads
+// never wait for each other's slots; with Options.MaxGroupMembers at most the
+// server's cat slots, a group read always gets its slots once the reads
+// holding them ended.
 //
 // ReadOnce blocks like a private one-shot read. It returns nil when the read
 // ended, when the session's max-count limit ended it, or when ctx ended; the
 // reader's error otherwise, which wraps fs.ErrReaderWorkerPanic if the shared
 // reader panicked, or a processor error of the session. It returns
 // ErrGroupReadStarted, without having fed the session anything, when the
-// group read had already started; the caller then reads privately.
+// group read had already started, had all the members it admits, or ended
+// less than DefaultGroupMemory (Options.GroupMemory) ago; the caller then
+// takes a slot and reads privately.
 //
 // mode is omode.CatClient or omode.GrepClient; both read the same way. Each
 // member applies its own regex, local context and line numbering, from line 1,
 // to the lines in the form the private snapshot reader feeds them: with their
 // newline, empty lines included.
-func (h *Hub) ReadOnce(ctx context.Context, mode omode.Mode, session Session, group Group) error {
-	if err := validateGroupRead(mode, session, group); err != nil {
+func (h *Hub) ReadOnce(ctx context.Context, mode omode.Mode, session Session, group Group,
+	acquire SlotAcquirer) error {
+
+	if err := validateGroupRead(mode, session, group, acquire); err != nil {
 		return err
 	}
-	member := newSubscriber(session, h.options.QueueChunks)
+	member := &groupMember{subscriber: newSubscriber(session, h.options.QueueChunks), acquire: acquire}
 	e, joined := h.joinGroup(mode, group, member)
 	if !joined {
 		return ErrGroupReadStarted
@@ -125,8 +193,10 @@ func (h *Hub) ReadOnce(ctx context.Context, mode omode.Mode, session Session, gr
 	return member.readOnce(ctx, h.logger)
 }
 
-func validateGroupRead(mode omode.Mode, session Session, group Group) error {
+func validateGroupRead(mode omode.Mode, session Session, group Group, acquire SlotAcquirer) error {
 	switch {
+	case acquire == nil:
+		return errors.New("shared one-shot read requires a slot acquirer")
 	case mode != omode.CatClient && mode != omode.GrepClient:
 		return fmt.Errorf("shared one-shot read requires cat or grep mode, got %s", mode)
 	case group.ID == "":
@@ -138,8 +208,9 @@ func validateGroupRead(mode omode.Mode, session Session, group Group) error {
 }
 
 // joinGroup adds member to its group read, starting one if needed. It
-// reports false when the group read had already started.
-func (h *Hub) joinGroup(mode omode.Mode, group Group, member *subscriber) (*groupEntry, bool) {
+// reports false when the group read had already started, was full, or ended
+// recently.
+func (h *Hub) joinGroup(mode omode.Mode, group Group, member *groupMember) (*groupEntry, bool) {
 	key := groupKey{
 		path:        member.session.Target.ResolvedPath(),
 		compression: fs.CompressionFormat(member.session.FilePath),
@@ -149,36 +220,67 @@ func (h *Hub) joinGroup(mode omode.Mode, group Group, member *subscriber) (*grou
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.groups == nil {
-		h.groups = make(map[groupKey]*groupEntry)
+	reads := &h.oneshot
+	if reads.entries == nil {
+		reads.entries = make(map[groupKey]*groupEntry)
+		reads.ended = make(map[groupKey]time.Time)
 	}
-	e := h.groups[key]
+	if h.endedRecently(key) {
+		h.logger.Info(member.session.FilePath, "Shared one-shot read already ended, reading privately",
+			group.LogID())
+		return nil, false
+	}
+	e := reads.entries[key]
 	if e == nil {
-		e = newGroupEntry(key, group, member.session.FilePath, h.options, h.logger, h.seams)
-		h.groups[key] = e
+		e = newGroupEntry(key, group, member.session.FilePath, h.options, h.logger, h.seams, &reads.slotsMu)
+		reads.entries[key] = e
 		e.add(member)
 		go e.run()
 		return e, true
 	}
 	if !e.add(member) {
-		h.logger.Info(member.session.FilePath, "Shared one-shot read already started, reading privately",
-			"group="+group.ID)
+		h.logger.Info(member.session.FilePath, "Shared one-shot read already started or full, reading privately",
+			group.LogID())
 		return nil, false
 	}
 	return e, true
 }
 
+// endedRecently reports whether the group read of key ended less than the
+// group memory ago, and forgets the group reads that ended longer ago. The
+// caller holds h.mu.
+func (h *Hub) endedRecently(key groupKey) bool {
+	memory := h.options.GroupMemory
+	if memory <= 0 {
+		memory = DefaultGroupMemory
+	}
+	now := time.Now()
+	for candidate, ended := range h.oneshot.ended {
+		if now.Sub(ended) >= memory {
+			delete(h.oneshot.ended, candidate)
+		}
+	}
+	_, ok := h.oneshot.ended[key]
+	return ok
+}
+
 // leaveGroup removes member from e. When the last member left, the hub
-// forgets e and e's read stops.
-func (h *Hub) leaveGroup(e *groupEntry, member *subscriber) {
+// forgets e, remembering that its read ended if it started, and e's read
+// stops.
+func (h *Hub) leaveGroup(e *groupEntry, member *groupMember) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if remaining := e.remove(member); remaining == 0 {
-		if h.groups[e.key] == e {
-			delete(h.groups, e.key)
-		}
-		e.cancel()
+	remaining, started := e.remove(member)
+	if remaining != 0 {
+		return
 	}
+	if h.oneshot.entries[e.key] == e {
+		delete(h.oneshot.entries, e.key)
+		if started {
+			h.oneshot.ended[e.key] = time.Now()
+		}
+	}
+	e.cancel()
 }
 
 // readOnce feeds the session the group read's items until the read ended,
@@ -209,26 +311,27 @@ func (s *subscriber) readOnce(ctx context.Context, logger logging.Logger) error 
 	}
 }
 
-// add registers member unless the read started already.
-func (e *groupEntry) add(member *subscriber) bool {
+// add registers member unless the read started already or has all the
+// members it waits for.
+func (e *groupEntry) add(member *groupMember) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.started {
+	if e.started || len(e.members) >= e.expected {
 		return false
 	}
 	e.members = append(e.members, member)
 	count := len(e.members)
-	e.logger.Info(e.path, "Shared one-shot read gained a member", "group="+e.group.ID,
-		fmt.Sprintf("members=%d/%d", count, e.group.Members))
-	if count >= e.group.Members {
+	e.logger.Info(e.path, "Shared one-shot read gained a member", e.group.LogID(),
+		fmt.Sprintf("members=%d/%d", count, e.expected))
+	if count >= e.expected {
 		e.completeOnce.Do(func() { close(e.complete) })
 	}
 	return true
 }
 
-// remove unregisters member, stops deliveries to it and returns how many
-// members remain.
-func (e *groupEntry) remove(member *subscriber) int {
+// remove unregisters member, stops deliveries to it, releases its cat slot
+// and returns how many members remain and whether the read started.
+func (e *groupEntry) remove(member *groupMember) (remaining int, started bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for i, candidate := range e.members {
@@ -238,21 +341,69 @@ func (e *groupEntry) remove(member *subscriber) int {
 		}
 	}
 	close(member.done)
-	return len(e.members)
+	if member.release != nil {
+		member.release()
+		member.release = nil
+	}
+	return len(e.members), e.started
 }
 
 // begin closes the group and returns its members.
-func (e *groupEntry) begin() []*subscriber {
+func (e *groupEntry) begin() []*groupMember {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.started = true
-	return append([]*subscriber(nil), e.members...)
+	return append([]*groupMember(nil), e.members...)
 }
 
-func (e *groupEntry) snapshot() []*subscriber {
+func (e *groupEntry) snapshot() []*groupMember {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return append([]*subscriber(nil), e.members...)
+	return append([]*groupMember(nil), e.members...)
+}
+
+// acquireSlots takes a cat slot for each of members, one group read at a
+// time, and returns the members that got one; a member that left while it
+// waited is not among them.
+func (e *groupEntry) acquireSlots(members []*groupMember) []*groupMember {
+	e.slotsMu.Lock()
+	defer e.slotsMu.Unlock()
+	holding := members[:0]
+	for _, member := range members {
+		if e.acquireSlot(member) {
+			holding = append(holding, member)
+		}
+	}
+	return holding
+}
+
+// acquireSlot waits for member's cat slot until the member or the whole
+// group left.
+func (e *groupEntry) acquireSlot(member *groupMember) bool {
+	ctx, cancel := context.WithCancel(e.ctx)
+	defer cancel()
+	go func() {
+		select {
+		case <-member.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	release, acquired := member.acquire(ctx)
+	if !acquired {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	select {
+	case <-member.done:
+		// The member left meanwhile and will not release the slot.
+		release()
+		return false
+	default:
+	}
+	member.release = release
+	return true
 }
 
 // run waits for the members, reads the file once and tells every member that
@@ -263,17 +414,17 @@ func (e *groupEntry) run() {
 	if !e.awaitMembers() {
 		return
 	}
-	members := e.begin()
+	members := e.acquireSlots(e.begin())
 	if len(members) == 0 {
 		return
 	}
-	e.logger.Info(e.path, "Shared one-shot read started", "group="+e.group.ID,
-		fmt.Sprintf("members=%d/%d", len(members), e.group.Members))
+	e.logger.Info(e.path, "Shared one-shot read started", e.group.LogID(),
+		fmt.Sprintf("members=%d/%d", len(members), e.expected))
 	// The members joined with their own validated targets for the same
 	// resolved path; the reader opens the file with the first one's.
 	err := e.read(members[0].session)
 	e.publish(item{kind: failedItem, err: err})
-	e.logger.Info(e.path, "Shared one-shot read ended", "group="+e.group.ID)
+	e.logger.Info(e.path, "Shared one-shot read ended", e.group.LogID())
 }
 
 // awaitMembers waits until every member joined or the wait timed out. It

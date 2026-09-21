@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/fs"
@@ -58,7 +59,9 @@ func TestReadShareGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	readGroup := func(context.Context, omode.Mode, readhub.Session, readhub.Group) error { return nil }
+	readGroup := func(context.Context, omode.Mode, readhub.Session, readhub.Group, readhub.SlotAcquirer) error {
+		return nil
+	}
 
 	tests := []struct {
 		name   string
@@ -152,7 +155,7 @@ func TestGroupReadOutputEqualsPrivateReadOutput(t *testing.T) {
 		{"cat max", omode.CatClient, lcontext.LContext{MaxCount: 7}, ""},
 	}
 	logger := &infoRecorder{}
-	hub := newReadHub(&config.ServerConfig{}, logger)
+	hub := newReadHub(&config.ServerConfig{MaxConcurrentCats: 8}, logger)
 	// Every mode is its own group read; each has as many members as cases.
 	membersPerMode := map[omode.Mode]int{}
 	for _, rc := range cases {
@@ -186,7 +189,8 @@ func TestGroupReadOutputEqualsPrivateReadOutput(t *testing.T) {
 		}
 	}
 	for mode, members := range membersPerMode {
-		started := logger.count("Shared one-shot read started", "group=group-"+mode.String(),
+		group := readhub.Group{ID: "group-" + mode.String()}
+		started := logger.count("Shared one-shot read started", group.LogID(),
 			fmt.Sprintf("members=%d/%d", members, members))
 		if started != 1 {
 			t.Errorf("%s: %d group reads started with every member, want 1", mode, started)
@@ -212,7 +216,7 @@ func TestGroupReadEndings(t *testing.T) {
 			server := newSharedReadTestServer(t, nil)
 			cmd := newReadCommandWithDependencies(server.readCommandDependencies(), omode.CatClient, nil)
 			calls := 0
-			cmd.readGroup = func(context.Context, omode.Mode, readhub.Session, readhub.Group) error {
+			cmd.readGroup = func(context.Context, omode.Mode, readhub.Session, readhub.Group, readhub.SlotAcquirer) error {
 				calls++
 				return tt.err
 			}
@@ -265,5 +269,92 @@ func TestDispatchCommandKeepsTheReadShareOptionForTheCommand(t *testing.T) {
 	}
 	if got != "" {
 		t.Errorf("a command without the option got %q", got)
+	}
+}
+
+// Two sessions read the same files through group reads, each file in its
+// own goroutine like a glob read, sharing the server's cat slots. A member
+// must not hold its slot while it waits for the other session's member:
+// with fewer slots than files, the members holding the slots would wait for
+// members that wait for a slot, until the group wait of 3 s ran out, and
+// most files would be read once per session.
+func TestGroupMembersWaitWithoutACatSlot(t *testing.T) {
+	const files = 6
+	tests := []struct {
+		name     string
+		cats     int
+		started  string
+		privates int
+	}{
+		{"two slots", 2, "members=2/2", 0},
+		// Fewer slots than the group has members, as on a dserver whose
+		// MaxConcurrentCats is lower than the scheduling dserver's: each
+		// group read admits one member, the other reads privately at once.
+		{"one slot", 1, "members=1/1", files},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var paths []string
+			for i := range files {
+				paths = append(paths, writeSharedReadFile(t, fmt.Sprintf("file %d line\n", i)))
+			}
+			logger := &infoRecorder{}
+			hub := newReadHub(&config.ServerConfig{MaxConcurrentCats: tt.cats}, logger)
+			catLimiter := make(chan struct{}, tt.cats)
+			sessions := []*sharedReadTestServer{newSharedReadTestServer(t, hub), newSharedReadTestServer(t, hub)}
+
+			began := time.Now()
+			var wg sync.WaitGroup
+			for s, session := range sessions {
+				session.catLimiter = catLimiter
+				for i := range files {
+					// The sessions start their reads in opposite orders.
+					path := paths[i]
+					if s == 1 {
+						path = paths[files-1-i]
+					}
+					wg.Go(func() {
+						runRead(t, session, groupReadCase{"cat", omode.CatClient, lcontext.LContext{}, ""},
+							path, "raw-group-id:2")
+					})
+				}
+			}
+			finished := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(finished)
+			}()
+			select {
+			case <-finished:
+			case <-time.After(sharedReadTimeout):
+				t.Fatal("the reads did not finish: group reads wait for cat slots that their members hold")
+			}
+			elapsed := time.Since(began)
+
+			if elapsed >= readhub.DefaultGroupWait {
+				t.Errorf("the reads took %v, a group waited for a member", elapsed)
+			}
+			group := readhub.Group{ID: "raw-group-id"}
+			if got := logger.count("Shared one-shot read started", group.LogID(), tt.started); got != files {
+				t.Errorf("%d group reads started with %s, want %d", got, tt.started, files)
+			}
+			if got := logger.count("reading privately", group.LogID()); got != tt.privates {
+				t.Errorf("%d members read privately, want %d", got, tt.privates)
+			}
+			if got := logger.count(group.ID); got != 0 {
+				t.Errorf("%d log lines contain the raw group ID", got)
+			}
+			for _, session := range sessions {
+				output := drained(t, session)
+				for i := range files {
+					if want := fmt.Sprintf("file %d line", i); strings.Count(output, want) != 1 {
+						t.Errorf("session output has %q %d times, want once", want, strings.Count(output, want))
+					}
+				}
+			}
+			if len(catLimiter) != 0 {
+				t.Errorf("%d cat slots still in use", len(catLimiter))
+			}
+		})
 	}
 }

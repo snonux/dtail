@@ -15,7 +15,7 @@ import (
 
 // groupReadFunc reads a file once for the members of a group; see
 // readhub.Hub.ReadOnce.
-type groupReadFunc func(context.Context, omode.Mode, readhub.Session, readhub.Group) error
+type groupReadFunc func(context.Context, omode.Mode, readhub.Session, readhub.Group, readhub.SlotAcquirer) error
 
 type readShareKeyType struct{}
 
@@ -40,8 +40,8 @@ func withReadShareOption(ctx context.Context, value string) context.Context {
 
 // readShareGroup returns the group whose one-shot read of a validated file
 // the read may join. The group ID only selects a group read; the session
-// joins it with its own validated target after its own permission check and
-// with a read slot of its own, like a private read.
+// joins it with its own validated target after its own permission check, and
+// the group read takes a cat slot for the session, like a private read.
 func (r *readCommand) readShareGroup(ctx context.Context, target *fs.ValidatedReadTarget) (readhub.Group, bool) {
 	value, _ := ctx.Value(readShareKey).(string)
 	if value == "" || r.readGroup == nil || r.serverless ||
@@ -57,14 +57,17 @@ func (r *readCommand) readShareGroup(ctx context.Context, target *fs.ValidatedRe
 	return readhub.Group{ID: share.Group, Members: share.Members}, true
 }
 
-// readWithGroup reads the file through its group's one-shot read. It reports
-// false, having read nothing, when the group read had already started; the
-// caller then reads privately.
+// readWithGroup reads the file through its group's one-shot read. The caller
+// holds no cat slot: the group read takes the session's slot with limiter once
+// the group's members are there, so that no member holds a slot while it
+// waits for the others. It reports false, having read nothing and holding no
+// slot, when the group read had already started; the caller then takes a
+// slot and reads privately.
 func (r *readCommand) readWithGroup(ctx context.Context, ltx lcontext.LContext, re regex.Regex,
-	options readerFactoryOptions, group readhub.Group) bool {
+	options readerFactoryOptions, group readhub.Group, limiter readLimiter) bool {
 
 	path, globID := options.path, options.globID
-	r.logger.Info(r.logContext, "Using shared one-shot read", path, globID, "group="+group.ID)
+	r.logger.Info(r.logContext, "Using shared one-shot read", path, globID)
 	err := r.readGroup(ctx, r.mode, readhub.Session{
 		Target:         *options.target,
 		FilePath:       path,
@@ -77,7 +80,9 @@ func (r *readCommand) readWithGroup(ctx context.Context, ltx lcontext.LContext, 
 			// Called once, and only after the session joined the group.
 			return r.makeProcessor(path, globID, r.newLineWriter(ctx, r.generation))
 		},
-	}, group)
+	}, group, func(slotCtx context.Context) (func(), bool) {
+		return limiter(slotCtx, path)
+	})
 	switch {
 	case errors.Is(err, readhub.ErrGroupReadStarted):
 		return false
