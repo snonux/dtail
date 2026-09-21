@@ -151,6 +151,7 @@ baseline, and note the commit.
 | `35` | parent `d5cae8f` | `BenchmarkProcessorProcessLine` (new), 1M lines, 6 runs, ns per line | `processors_1` 798-831 ns/op, `processors_4` 868-896 ns/op | `processors_1` 809-859 ns/op, `processors_4` 607-667 ns/op | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` review fixes | parent `8a2b225` | dmap aggregate / count / aggregate over 4 files, serverless, 100 MiB stats log (5 interleaved rounds, elapsed) | aggregate 0.76-0.79 s (plus one cold 1.13 s first run), count 0.57-0.58 s, 4 files 0.42-0.52 s | aggregate 0.76-0.77 s, count 0.57-0.60 s, 4 files 0.42-0.52 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` retention fix | parent `84eb1e1` | allocations per 100-line batch, steady identical lines, `GOMAXPROCS(1)`, `TestProcessorSteadyLargeLinesAllocationFree` (default parser, group by a 3000 / 4000 byte `color`; copying parser, 150 / 300 fields) | keys 22 / 68, fields 352 / 861 (`d5cae8f`: keys 1 / 1) | keys 0 / 0, fields 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `35` batch-maximum fix | parent `54568ac` | allocations per 100-line batch, `GOMAXPROCS(1)`, `TestProcessorVaryingKeyLengthsAllocationFree` (default parser, group by `color`, 64 groups with key lengths uniform in 0 to 2 / 4 / 8 / 16 KiB, random line order, fixed seed, 50 warm-up batches, `AllocsPerRun(200)`) | 0 / 0 / 26 / 53 (`d5cae8f`: 1 / 1 / 1 / 1, reviewer measurement) | 0 / 0 / 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -373,6 +374,30 @@ allocates nothing, also when the ordinary lines are larger than the default
 (in `TestBatchScratchRecoversFromOutlierBatch`, the `84eb1e1` algorithm made
 136 allocations in that batch for 8 KiB ordinary keys and 8 for 100 ordinary
 fields; shrinking idle headroom to the default size instead of to the last
-use still made 16 and 44). A workload whose line sizes swing by more than the
-budget from batch to batch can still shrink and regrow; steady workloads,
-large or small, now reuse everything.
+use still made 16 and 44). Measuring idle headroom against each scratch's own
+last line still thrashed on workloads whose line sizes vary from line to line,
+see the follow-up below.
+
+`35` batch-maximum follow-up: which line lands in which scratch is arbitrary,
+so with group-key lengths that vary from line to line, each scratch settled at
+the longest key it had seen while its own last line was a random draw; about
+half of every scratch counted as idle, and once keys reached about 5 KiB the
+budget was exceeded on every batch, a third of the scratches were shrunk and
+the next batch grew them back. The budget now measures idle headroom against
+the batch instead: `batchScratch.clear` records the longest group key and the
+largest field count of any line of the batch just processed, each scratch is
+charged only for capacity beyond the larger of that and the default size, and
+a scratch over budget is shrunk to that size. A varying workload keeps the
+batch maximum near its own maximum, so its batches reuse every scratch (row
+below; `TestBatchScratchVaryingLineSizesAllocationFree` also covers random
+field counts up to 300 and 1000, which the per-line algorithm answered with 79
+and 213 allocations per batch). Outlier recovery is unchanged: an outlier
+batch is followed by an ordinary batch with a small maximum, which trims the
+outlier storage, and the batch after it allocates nothing. The accepted
+tradeoffs, measured with 60 KiB group keys among 64-byte ones: a workload
+that puts at least one line of size L into every batch lets every scratch keep
+up to L (6.4 MB of key buffers per pooled batch scratch for one 60 KiB key per
+batch at a random position, 0 allocations), within the per-line bound of 100
+times 64 KiB that a batch of maximal lines already reached; and batches that
+alternate between many outliers and none still shrink and regrow (21
+allocations per batch for 20 outliers every other batch).
