@@ -152,12 +152,12 @@ func TestBatchScratchRecycleClearsOnlyUsedScratches(t *testing.T) {
 	}
 }
 
-// retainedExcess sums the storage beyond the default size that the line
-// scratches of scratch retain, which is what the batch budget charges.
-func retainedExcess(scratch *batchScratch) (fields, keyBytes int) {
+// retainedIdle sums the idle headroom that the line scratches of scratch
+// retain, which is what the batch budget charges.
+func retainedIdle(scratch *batchScratch) (fields, keyBytes int) {
 	for _, line := range scratch.lines {
-		fields += fieldsExcess(line)
-		keyBytes += keyExcess(line)
+		fields += idleFields(line)
+		keyBytes += idleKeyBytes(line)
 	}
 	return fields, keyBytes
 }
@@ -192,50 +192,85 @@ func fieldName(f int) string { return fieldNames[f] }
 
 // TestBatchScratchRetentionBudget pins the batch-level retention limits: line
 // scratches that each stay below the per-line limits must not add up to
-// processorBatchSize times those limits in a pooled batch scratch. Only
-// storage beyond the default size is charged, and the largest scratches are
-// the ones shrunk.
+// processorBatchSize times those limits of idle storage in a pooled batch
+// scratch. Storage the batch just processed used is kept; only idle headroom
+// is charged, and the scratches with the largest headroom are the ones shrunk.
 func TestBatchScratchRetentionBudget(t *testing.T) {
+	const ordinaryFields, ordinaryKeyLen = 30, 5
 	scratch := &batchScratch{}
 	for i := 0; i < processorBatchSize; i++ {
 		fillLineScratch(scratch.line(i), maxRetainedScratchFields, maxRetainedScratchKeyBytes)
 	}
+	mapIDs := make([]uintptr, 0, processorBatchSize)
+	keyIDs := make([]uintptr, 0, processorBatchSize)
+	for _, line := range scratch.lines {
+		mapIDs = append(mapIDs, mapIdentity(line.fields))
+		keyIDs = append(keyIDs, sliceIdentity(line.key))
+	}
 	scratch.clear()
+	// Everything the batch used is kept, however large: it is bounded by the
+	// per-line limits, and the next batch of the same lines reuses it.
+	for i, line := range scratch.lines {
+		if mapIdentity(line.fields) != mapIDs[i] || sliceIdentity(line.key) != keyIDs[i] {
+			t.Fatalf("line scratch %d lost storage its line used in the batch just processed", i)
+		}
+	}
 
-	fields, keyBytes := retainedExcess(scratch)
+	// The next, ordinary batch leaves that storage idle, and it is trimmed.
+	for i := 0; i < processorBatchSize; i++ {
+		fillLineScratch(scratch.line(i), ordinaryFields, ordinaryKeyLen)
+	}
+	scratch.clear()
+	fields, keyBytes := retainedIdle(scratch)
 	if fields > maxRetainedBatchScratchFields {
-		t.Errorf("batch scratch retains %d fields beyond the default, want at most %d",
+		t.Errorf("batch scratch retains %d idle fields, want at most %d",
 			fields, maxRetainedBatchScratchFields)
 	}
 	if keyBytes > maxRetainedBatchScratchKeyBytes {
-		t.Errorf("batch scratch retains %d key bytes beyond the default, want at most %d",
+		t.Errorf("batch scratch retains %d idle key bytes, want at most %d",
 			keyBytes, maxRetainedBatchScratchKeyBytes)
 	}
 	// The budget is not shrunk further than it has to be: it holds eight
-	// scratches at the per-line fields limit and four at the key limit.
-	perLineFields := maxRetainedScratchFields - scratchFieldsCapacity
+	// scratches of idle headroom near the per-line fields limit.
+	perLineFields := maxRetainedScratchFields - ordinaryFields
 	if want := maxRetainedBatchScratchFields / perLineFields * perLineFields; fields != want {
-		t.Errorf("batch scratch retains %d fields beyond the default, want %d", fields, want)
+		t.Errorf("batch scratch retains %d idle fields, want %d", fields, want)
 	}
 	for i, line := range scratch.lines {
-		if fieldsExcess(line) == 0 && (len(line.fields) != 0 || line.maxFields != 0) {
-			t.Errorf("shrunk line scratch %d kept fields state", i)
+		if idleFields(line) == 0 && (len(line.fields) != 0 || line.maxFields != ordinaryFields) {
+			t.Errorf("shrunk line scratch %d has %d fields and peak %d, want 0 and %d",
+				i, len(line.fields), line.maxFields, ordinaryFields)
 		}
-		if keyExcess(line) == 0 && cap(line.key) != scratchKeyCapacity {
+		if idleKeyBytes(line) == 0 && cap(line.key) != scratchKeyCapacity {
 			t.Errorf("shrunk line scratch %d has key capacity %d, want %d",
 				i, cap(line.key), scratchKeyCapacity)
 		}
 	}
 
-	// Over budget, the largest scratches go first, wherever they sit: a
+	// A scratch shrunk to what its line used keeps that much, so a steady
+	// line of that size fits it without growing it again.
+	large := &batchScratch{}
+	fillLineScratch(large.line(0), 2*scratchFieldsCapacity, 64*1024)
+	large.clear()
+	fillLineScratch(large.line(0), 2*scratchFieldsCapacity, 16*1024)
+	large.clear() // 48 KiB of idle key headroom is within budget: kept
+	if cap(large.lines[0].key) < 64*1024 {
+		t.Fatalf("key buffer within budget was shrunk to %d", cap(large.lines[0].key))
+	}
+
+	// Over budget, the largest idle scratches go first, wherever they sit: a
 	// moderately oversized early scratch survives larger later ones.
 	mixed := &batchScratch{}
 	fillLineScratch(mixed.line(0), 200, 4096)
 	for i := 1; i < processorBatchSize; i++ {
 		fillLineScratch(mixed.line(i), maxRetainedScratchFields, maxRetainedScratchKeyBytes)
 	}
+	mixed.clear()
 	early := mixed.lines[0]
 	earlyMap, earlyKey := mapIdentity(early.fields), sliceIdentity(early.key)
+	for i := 0; i < processorBatchSize; i++ {
+		fillLineScratch(mixed.line(i), ordinaryFields, ordinaryKeyLen)
+	}
 	mixed.clear()
 	if mapIdentity(early.fields) != earlyMap || early.maxFields != 200 {
 		t.Errorf("smaller early line scratch lost its map to larger later ones")
@@ -266,23 +301,31 @@ func TestBatchScratchRetentionBudget(t *testing.T) {
 // after one outlier batch, the oversized early scratches used up the budget
 // and every later default-sized scratch was replaced on every batch. After an
 // outlier batch and at most one recovery batch, ordinary batches must not
-// allocate, and what stays oversized must fit the budget.
+// allocate, and what stays idle must fit the budget. A scratch shrunk in the
+// recovery batch keeps what its ordinary line used, so ordinary lines larger
+// than the default do not have to grow it again in the batch after.
 func TestBatchScratchRecoversFromOutlierBatch(t *testing.T) {
 	if raceEnabled {
 		t.Skip("allocation counts are not meaningful under the race detector")
 	}
 	for _, tc := range []struct {
-		name             string
-		outliers         int
-		outlierFields    int
-		outlierKeyLength int
+		name              string
+		outliers          int
+		outlierFields     int
+		outlierKeyLength  int
+		ordinaryFields    int
+		ordinaryKeyLength int
 	}{
 		// 4 group keys of about 60 KiB and 8 lines of 1000 fields each fit
 		// the budget exactly as the reported cases; 20 outliers exceed it.
-		{"keys", 4, 5, 60 * 1024},
-		{"fields", 8, 1000, 5},
-		{"keys over budget", 20, 5, 60 * 1024},
-		{"fields over budget", 20, 1000, 5},
+		{"keys", 4, 5, 60 * 1024, 20, 64},
+		{"fields", 8, 1000, 5, 20, 64},
+		{"keys over budget", 20, 5, 60 * 1024, 20, 64},
+		{"fields over budget", 20, 1000, 5, 20, 64},
+		// Ordinary lines above the default size: shrinking to the default
+		// instead of to what they used would make them regrow once more.
+		{"keys over budget, large ordinary", 20, 5, 60 * 1024, 20, 8 * 1024},
+		{"fields over budget, large ordinary", 20, 1000, 5, 100, 64},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scratch := &batchScratch{}
@@ -292,17 +335,24 @@ func TestBatchScratchRecoversFromOutlierBatch(t *testing.T) {
 						fillLineScratch(scratch.line(i), tc.outlierFields, tc.outlierKeyLength)
 						continue
 					}
-					fillLineScratch(scratch.line(i), 20, 64)
+					fillLineScratch(scratch.line(i), tc.ordinaryFields, tc.ordinaryKeyLength)
 				}
 				scratch.clear()
 			}
 			batch(tc.outliers)
 			batch(0) // at most one recovery batch
+			// testing.AllocsPerRun warms up with one unmeasured run, which
+			// would hide a batch that regrows what the recovery batch shrank,
+			// so the first batch after recovery is measured on its own.
+			if allocs := allocsOfOneRun(func() { batch(0) }); allocs != 0 {
+				t.Errorf("the first ordinary batch after the recovery batch made "+
+					"%d allocations, want 0", allocs)
+			}
 
-			fields, keyBytes := retainedExcess(scratch)
+			fields, keyBytes := retainedIdle(scratch)
 			if fields > maxRetainedBatchScratchFields || keyBytes > maxRetainedBatchScratchKeyBytes {
-				t.Errorf("batch scratch retains %d fields and %d key bytes beyond "+
-					"the default, want at most %d and %d", fields, keyBytes,
+				t.Errorf("batch scratch retains %d idle fields and %d idle key "+
+					"bytes, want at most %d and %d", fields, keyBytes,
 					maxRetainedBatchScratchFields, maxRetainedBatchScratchKeyBytes)
 			}
 			if allocs := testing.AllocsPerRun(20, func() { batch(0) }); allocs != 0 {
@@ -311,6 +361,18 @@ func TestBatchScratchRecoversFromOutlierBatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// allocsOfOneRun returns the number of heap allocations of a single call of
+// f, without the unmeasured warm-up run testing.AllocsPerRun makes. Like
+// AllocsPerRun it runs with one P so that other goroutines barely interfere.
+func allocsOfOneRun(f func()) uint64 {
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.Mallocs - before.Mallocs
 }
 
 // copyingParser implements only logformat.Parser, so the aggregate copies
@@ -412,6 +474,88 @@ func TestProcessorRecoversFromOutlierBatch(t *testing.T) {
 			feedBatch(0) // at most one recovery batch
 			if allocs := testing.AllocsPerRun(20, func() { feedBatch(0) }); allocs != 0 {
 				t.Errorf("an ordinary batch after an outlier batch made %.1f "+
+					"allocations, want 0", allocs)
+			}
+		})
+	}
+}
+
+// TestProcessorSteadyLargeLinesAllocationFree is the regression test for a
+// batch budget that also charged storage the batch just processed had used:
+// on a steady workload where every line has a large group key or very many
+// fields, every batch shrank the largest scratches and the next batch grew
+// them back, forever. Storage the last batch used is not idle and must be kept,
+// so after a warm-up batch a steady batch of identical large lines must not
+// allocate at all.
+func TestProcessorSteadyLargeLinesAllocationFree(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector drops sync.Pool items at random, so pooled " +
+			"line buffers and batch scratches are reallocated")
+	}
+	// One P keeps every batch on the same pooled batch scratch.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	manyFields := func(n int) string {
+		var line strings.Builder
+		line.WriteString("color=orange")
+		for f := 1; f < n; f++ {
+			line.WriteString("|f")
+			line.WriteString(strconv.Itoa(f))
+			line.WriteString("=v")
+		}
+		return line.String()
+	}
+	longKey := func(n int) string {
+		return "INFO|1002-071143|1|stats.go:56|8|15|7|0.21|471h0m21s|" +
+			"MAPREDUCE:STATS|color=" + strings.Repeat("x", n)
+	}
+	const query = `from STATS select count($line) group by color`
+	for _, tc := range []struct {
+		name    string
+		copying bool
+		line    string
+	}{
+		{name: "keys 3 KiB", line: longKey(3000)},
+		{name: "keys 4 KiB", line: longKey(4000)},
+		{name: "fields 150", copying: true, line: manyFields(150)},
+		{name: "fields 300", copying: true, line: manyFields(300)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var aggregate *Aggregate
+			if tc.copying {
+				aggregate = newAggregateWithParser(t, query,
+					&copyingParser{fields: make(map[string]string)})
+			} else {
+				var err error
+				aggregate, err = newAggregateFromTextForTest(query, logging.NopLogger{})
+				if err != nil {
+					t.Fatalf("Failed to create aggregate: %v", err)
+				}
+			}
+			processor := NewProcessor(aggregate, "steady")
+			defer func() {
+				if err := processor.Close(); err != nil {
+					t.Errorf("Close() error = %v", err)
+				}
+			}()
+			feedBatch := func() {
+				for i := 0; i < processorBatchSize; i++ {
+					buffer := pool.BytesBuffer.Get().(*bytes.Buffer)
+					buffer.Reset()
+					buffer.WriteString(tc.line)
+					if err := processor.ProcessLine(buffer, uint64(i+1), "steady"); err != nil {
+						t.Fatalf("ProcessLine() error = %v", err)
+					}
+				}
+			}
+			// Warm-up: the scratches grow to the line size once. The
+			// unmeasured warm-up run of testing.AllocsPerRun also absorbs the
+			// one-off growth of sync.Pool's own queues for the recycled line
+			// buffers, which is why the batch right after this one is not
+			// measured on its own here; TestBatchScratchRecoversFromOutlierBatch
+			// does that for the scratches without any pool involved.
+			feedBatch()
+			if allocs := testing.AllocsPerRun(20, feedBatch); allocs != 0 {
+				t.Errorf("a steady batch of identical large lines made %.1f "+
 					"allocations, want 0", allocs)
 			}
 		})

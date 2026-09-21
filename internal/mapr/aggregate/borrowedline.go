@@ -20,18 +20,28 @@ const (
 	maxRetainedScratchKeyBytes = 64 * 1024
 	maxRetainedScratchFields   = 1024
 	// maxRetainedBatchScratchKeyBytes and maxRetainedBatchScratchFields bound
-	// the same storage summed over all line scratches of one pooled batch
+	// the idle storage summed over all line scratches of one pooled batch
 	// scratch. A batch scratch holds up to processorBatchSize line scratches,
-	// so the per-line limits alone would let it park 100 times as much. Only
-	// storage beyond the default size of a line scratch is charged: key
-	// capacity above scratchKeyCapacity and peak field count above
-	// scratchFieldsCapacity. Default-sized storage is the fixed floor of every
-	// line scratch and is never replaced. When the charged total exceeds a
-	// budget, the largest oversized scratches are shrunk back to default size
-	// until it fits, so after an outlier batch the scratches that stay
-	// oversized fit the budget and later ordinary batches reuse everything
-	// without allocating. The budget covers four line scratches at the
-	// per-line key limit and eight at the per-line fields limit.
+	// so the per-line limits alone would let it park 100 times as much storage
+	// that nothing uses any more. Only idle headroom is charged: storage beyond
+	// both the default size of a line scratch (scratchKeyCapacity,
+	// scratchFieldsCapacity) and what the scratch's line in the batch just
+	// processed used (its group-key length and field count; zero for a scratch
+	// that batch did not use or whose line got no group key). Storage the last
+	// batch used is never charged or shrunk: those lines were in memory
+	// anyway, it is bounded by the per-line limits (at most processorBatchSize
+	// times maxRetainedScratchKeyBytes and maxRetainedScratchFields, right
+	// after a batch of nothing but maximal lines), and shrinking it would make
+	// a steady workload of large lines regrow it on every batch. When the idle
+	// total exceeds a budget, the scratches with the largest idle headroom are
+	// shrunk to what their last line used (at least the default size) until
+	// it fits. So after an outlier batch, the next ordinary batch finds the
+	// outlier storage idle and trims it to the budget, and every later batch
+	// of lines no larger than those reuses all scratches without allocating.
+	// Only a workload whose line sizes keep changing by more than the budget
+	// from one batch to the next still shrinks and regrows scratches. The
+	// budget covers four line scratches of idle headroom at the per-line key
+	// limit and eight at the per-line fields limit.
 	maxRetainedBatchScratchKeyBytes = 256 * 1024
 	maxRetainedBatchScratchFields   = 8 * 1024
 )
@@ -54,6 +64,13 @@ type lineScratch struct {
 	// only the last line's, so the peak has to be recorded while the scratch
 	// is in use for the retention limits to spot an inflated map.
 	maxFields int
+	// lastFields and lastKeyBytes are what the line this scratch held in the
+	// batch just processed used: its field count and group-key length, zero
+	// when that batch did not use the scratch. They are recorded when the
+	// batch scratch is cleared, and the retention budget never charges or
+	// shrinks storage up to them, see maxRetainedBatchScratchKeyBytes.
+	lastFields   int
+	lastKeyBytes int
 }
 
 // batchScratch holds one lineScratch per line of a batch. processRawBatch
@@ -102,11 +119,16 @@ func (b *batchScratch) line(i int) *lineScratch {
 	return b.lines[i]
 }
 
-// clear drops the borrowed views of the line scratches used by the current
-// batch, see clearLineScratch, enforces the batch retention budget and forgets
-// the accepted lines.
+// clear records what each line scratch used in the current batch, drops the
+// borrowed views of the used ones, see clearLineScratch, enforces the batch
+// retention budget and forgets the accepted lines.
 func (b *batchScratch) clear() {
-	for _, scratch := range b.lines[:b.used] {
+	for i, scratch := range b.lines {
+		if i >= b.used {
+			scratch.lastFields, scratch.lastKeyBytes = 0, 0
+			continue
+		}
+		scratch.lastFields, scratch.lastKeyBytes = len(scratch.fields), len(scratch.key)
 		clearLineScratch(scratch)
 	}
 	b.used = 0
@@ -115,59 +137,61 @@ func (b *batchScratch) clear() {
 	b.accepted = b.accepted[:0]
 }
 
-// enforceRetentionBudget caps the storage beyond the default size that all
-// line scratches of the batch scratch retain together at
-// maxRetainedBatchScratchFields and maxRetainedBatchScratchKeyBytes, see
-// there. It runs once per batch; the common case, a batch within budget, is a
-// single walk over at most processorBatchSize scratches without any change.
+// enforceRetentionBudget caps the idle headroom that all line scratches of the
+// batch scratch retain together at maxRetainedBatchScratchFields and
+// maxRetainedBatchScratchKeyBytes, see there. It runs once per batch; the
+// common case, a batch within budget, is a single walk over at most
+// processorBatchSize scratches without any change.
 func (b *batchScratch) enforceRetentionBudget() {
 	var fields, keyBytes int
 	for _, scratch := range b.lines {
-		fields += fieldsExcess(scratch)
-		keyBytes += keyExcess(scratch)
+		fields += idleFields(scratch)
+		keyBytes += idleKeyBytes(scratch)
 	}
-	// Shrink the largest oversized scratch first, so that one outlier batch
-	// costs as few scratches as possible their storage and ordinary,
-	// default-sized scratches are never touched. Each round resets one
-	// scratch to default size, so the loops end after at most len(b.lines)
-	// rounds, and only a batch over budget runs them at all.
+	// Shrink the scratch with the largest idle headroom first, so that as few
+	// scratches as possible lose storage. A shrunk scratch keeps what its last
+	// line used, so its idle headroom drops to zero and the next line of the
+	// same size fits without allocating. Each round removes one scratch's
+	// headroom, so the loops end after at most len(b.lines) rounds, and only a
+	// batch over budget runs them at all.
 	for fields > maxRetainedBatchScratchFields {
-		scratch := b.largest(fieldsExcess)
-		fields -= fieldsExcess(scratch)
-		scratch.fields = make(map[string]string, scratchFieldsCapacity)
-		scratch.maxFields = 0
+		scratch := b.largest(idleFields)
+		fields -= idleFields(scratch)
+		scratch.fields = make(map[string]string, max(scratch.lastFields, scratchFieldsCapacity))
+		scratch.maxFields = scratch.lastFields
 	}
 	for keyBytes > maxRetainedBatchScratchKeyBytes {
-		scratch := b.largest(keyExcess)
-		keyBytes -= keyExcess(scratch)
-		scratch.key = make([]byte, 0, scratchKeyCapacity)
+		scratch := b.largest(idleKeyBytes)
+		keyBytes -= idleKeyBytes(scratch)
+		scratch.key = make([]byte, 0, max(scratch.lastKeyBytes, scratchKeyCapacity))
 	}
 }
 
-// largest returns the line scratch with the largest excess. The caller only
-// asks while the summed excess is positive, so the result has storage beyond
-// the default size.
-func (b *batchScratch) largest(excess func(*lineScratch) int) *lineScratch {
+// largest returns the line scratch with the largest idle headroom. The caller
+// only asks while the summed headroom is positive, so the result has some.
+func (b *batchScratch) largest(idle func(*lineScratch) int) *lineScratch {
 	var largest *lineScratch
-	largestExcess := 0
+	largestIdle := 0
 	for _, scratch := range b.lines {
-		if n := excess(scratch); n > largestExcess {
-			largest, largestExcess = scratch, n
+		if n := idle(scratch); n > largestIdle {
+			largest, largestIdle = scratch, n
 		}
 	}
 	return largest
 }
 
-// fieldsExcess is how many entries' worth of map buckets scratch retains
-// beyond the default size of a line scratch's field map.
-func fieldsExcess(scratch *lineScratch) int {
-	return max(scratch.maxFields-scratchFieldsCapacity, 0)
+// idleFields is how many entries' worth of map buckets scratch retains beyond
+// both the default size of a line scratch's field map and the field count of
+// its line in the batch just processed.
+func idleFields(scratch *lineScratch) int {
+	return max(scratch.maxFields-max(scratch.lastFields, scratchFieldsCapacity), 0)
 }
 
-// keyExcess is how many bytes of group-key buffer scratch retains beyond the
-// default size of a line scratch's key buffer.
-func keyExcess(scratch *lineScratch) int {
-	return max(cap(scratch.key)-scratchKeyCapacity, 0)
+// idleKeyBytes is how many bytes of group-key buffer scratch retains beyond
+// both the default size of a line scratch's key buffer and the group-key
+// length of its line in the batch just processed.
+func idleKeyBytes(scratch *lineScratch) int {
+	return max(cap(scratch.key)-max(scratch.lastKeyBytes, scratchKeyCapacity), 0)
 }
 
 // recycleBatchScratch clears the used line scratches and parks the batch

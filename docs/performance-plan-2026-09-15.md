@@ -150,6 +150,7 @@ baseline, and note the commit.
 | `35` | parent `d5cae8f` | dmap aggregate serverless, the same log split into 4 files of 25 MiB (5 interleaved rounds) | 0.79-0.83 s / 1.54-1.60 s / 0.05-0.07 s | 0.42-0.50 s / 0.80-0.92 s / 0.04-0.05 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` | parent `d5cae8f` | `BenchmarkProcessorProcessLine` (new), 1M lines, 6 runs, ns per line | `processors_1` 798-831 ns/op, `processors_4` 868-896 ns/op | `processors_1` 809-859 ns/op, `processors_4` 607-667 ns/op | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `35` review fixes | parent `8a2b225` | dmap aggregate / count / aggregate over 4 files, serverless, 100 MiB stats log (5 interleaved rounds, elapsed) | aggregate 0.76-0.79 s (plus one cold 1.13 s first run), count 0.57-0.58 s, 4 files 0.42-0.52 s | aggregate 0.76-0.77 s, count 0.57-0.60 s, 4 files 0.42-0.52 s | yes, raw `cmp` and canonicalized table every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `35` retention fix | parent `84eb1e1` | allocations per 100-line batch, steady identical lines, `GOMAXPROCS(1)`, `TestProcessorSteadyLargeLinesAllocationFree` (default parser, group by a 3000 / 4000 byte `color`; copying parser, 150 / 300 fields) | keys 22 / 68, fields 352 / 861 (`d5cae8f`: keys 1 / 1) | keys 0 / 0, fields 0 / 0 | n/a | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 
 `y4` notes: both binaries ran against the same `c472f83` dserver on port 2299
 in one session; a final baseline rerun (9.01 s / 2.42 s / 7.74 s, not part
@@ -350,3 +351,28 @@ allocs/op; in one non-interleaved run of 6 each it measured `processors_1`
 811-1268 ns/op before (noisy) and 761-784 ns/op after, `processors_4`
 602-1277 ns/op before (noisy) and 532-544 ns/op after, so no regression but no
 claim of a gain either.
+
+`35` retention-fix notes: the batch budget above charged every byte beyond
+the default size, including storage the batch just processed had used. On a
+steady workload where every line is moderately large (a group key above about
+2.6 KiB or more than about 106 fields, times 100 lines per batch), every batch
+therefore shrank the largest scratches and the next batch grew them back: 22
+and 68 allocations per 100 lines for 3000 and 4000 byte keys, 352 and 861 for
+150 and 300 fields through a copying parser, where `d5cae8f` made 1 (keys;
+measured the same way in a worktree). Each line scratch now records what its
+line in the batch just processed used (group-key length and field count, zero
+if the batch did not use it), and the budget charges only idle headroom:
+capacity beyond both that and the default size. Storage the last batch used
+is kept whatever its size; it is bounded by the per-line limits (at most 100
+times 64 KiB of keys and 100 maps of 1024 fields right after a batch of
+nothing but maximal lines). Over budget, the scratches with the largest idle
+headroom are shrunk to what their last line used, not to the default size,
+so a line of the same size fits again without growing. After an outlier batch
+the next ordinary batch trims the outlier storage and the batch after it
+allocates nothing, also when the ordinary lines are larger than the default
+(in `TestBatchScratchRecoversFromOutlierBatch`, the `84eb1e1` algorithm made
+136 allocations in that batch for 8 KiB ordinary keys and 8 for 100 ordinary
+fields; shrinking idle headroom to the default size instead of to the last
+use still made 16 and 44). A workload whose line sizes swing by more than the
+budget from batch to batch can still shrink and regrow; steady workloads,
+large or small, now reuse everything.
