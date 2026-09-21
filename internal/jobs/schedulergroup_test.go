@@ -249,6 +249,35 @@ func (c outfileClient) Start(context.Context, <-chan string) int {
 	return 0
 }
 
+// j3 reads the files of j1 and could run in j1's group, but j2, an earlier
+// job on other files, writes j3's outfile. Run one by one, j2 wrote x.csv and
+// j3 was skipped; j3 must not run before j2 and write x.csv instead.
+func TestSchedulerRunsNoJobBeforeAnEarlierJobOnItsOutfile(t *testing.T) {
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
+		SSHBindAddress: "127.0.0.1",
+		Schedule: []config.Scheduled{
+			scheduledJob(t, "j1", "/var/log/a.log", "one.csv"),
+			scheduledJob(t, "j2", "/var/log/b.log", "x.csv"),
+			scheduledJob(t, "j3", "/var/log/a.log", "x.csv"),
+		},
+	}}, jobTestLoggers)
+	writer := &outfileWriter{}
+	s.newMaprClient = writer.newClient
+	s.runJobs(context.Background())
+
+	if got, _ := os.ReadFile("x.csv"); string(got) != "j2" {
+		t.Errorf("x.csv written by %q, want j2", got)
+	}
+	if !reflect.DeepEqual(writer.runs, []string{"j1", "j2"}) {
+		t.Errorf("jobs run = %q, want j1 and j2", writer.runs)
+	}
+}
+
 func TestSchedulerSkipsAJobWhoseOutfileAnEarlierJobWrote(t *testing.T) {
 	tests := []struct {
 		name     string

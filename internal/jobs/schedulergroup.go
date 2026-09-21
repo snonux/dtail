@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mimecast/dtail/internal/config"
 )
@@ -36,10 +38,14 @@ func (d dueJob) groupKey() jobGroupKey {
 // returns the group, empty when the first job is not due, and the jobs still
 // pending, in their order; those are evaluated again when their group starts.
 //
-// A job that writes the same outfile as a job of the group stays pending, so
-// that it runs after the group and, as when every job ran on its own, only if
-// the group did not write the outfile. dserver bounds how many members share
-// a read by its own cat slots; the other members read on their own.
+// The jobs of a group run together, before the jobs that stay pending. So
+// that the same jobs run and write the same outfiles as when every job ran on
+// its own in the configured order, a job joins the group only if it does not
+// conflict (see jobFootprint.conflicts) with a job of the group or with an
+// earlier job that stays pending. A job that writes the outfile of such a job
+// thus stays pending, runs after it and, as before, only if that job did not
+// write the outfile. dserver bounds how many members share a read by its own
+// cat slots; the other members read on their own.
 func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.Scheduled) {
 	now := s.now()
 	first, reason := s.evaluate(pending[0], now)
@@ -49,18 +55,98 @@ func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.
 	}
 	group := []dueJob{first}
 	key := first.groupKey()
-	outfiles := map[string]bool{outfileKey(first.outfile): true}
+	// before holds the footprints of the group's jobs and of the earlier
+	// jobs that stay pending: the jobs a later job must not conflict with to
+	// join the group.
+	before := []jobFootprint{footprintAt(first.job, now)}
 	var rest []*config.Scheduled
 	for _, job := range pending[1:] {
+		footprint := footprintAt(job, now)
 		due, reason := s.evaluate(job, now)
-		if reason != "" || due.groupKey() != key || outfiles[outfileKey(due.outfile)] {
+		if reason != "" || due.groupKey() != key || footprint.conflictsWithAny(before) {
 			rest = append(rest, job)
-			continue
+		} else {
+			group = append(group, due)
 		}
-		outfiles[outfileKey(due.outfile)] = true
-		group = append(group, due)
+		before = append(before, footprint)
 	}
 	return group, rest
+}
+
+// jobFootprint is what a scheduled job reads and writes at a time: the
+// patterns of the files it reads and the files it writes, its outfile, the
+// outfile's .query file and their temporary files, each as configured
+// (absolute and cleaned) and with symbolic links resolved (see outfileKey).
+type jobFootprint struct {
+	reads  []string
+	writes []string
+}
+
+func footprintAt(job *config.Scheduled, now time.Time) jobFootprint {
+	var footprint jobFootprint
+	for _, pattern := range strings.Split(fillDatesAt(job.Files, now), ",") {
+		if pattern = strings.TrimSpace(pattern); pattern == "" {
+			continue
+		}
+		footprint.reads = append(footprint.reads, filePatterns(pattern)...)
+	}
+	outfile := fillDatesAt(job.Outfile, now)
+	for _, path := range []string{absPath(outfile), outfileKey(outfile)} {
+		for _, suffix := range []string{"", ".tmp", ".query", ".query.tmp"} {
+			footprint.writes = append(footprint.writes, path+suffix)
+		}
+	}
+	return footprint
+}
+
+// filePatterns returns pattern absolute and cleaned, and with the symbolic
+// links of its directory resolved.
+func filePatterns(pattern string) []string {
+	path := absPath(pattern)
+	patterns := []string{path}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		patterns = append(patterns, filepath.Join(dir, filepath.Base(path)))
+	}
+	return patterns
+}
+
+// conflictsWithAny reports whether f conflicts with one of others.
+func (f jobFootprint) conflictsWithAny(others []jobFootprint) bool {
+	return slices.ContainsFunc(others, f.conflicts)
+}
+
+// conflicts reports whether the jobs of f and other may not run in another
+// order than configured, nor together: they write a file in common, or one
+// reads a file the other writes. Two jobs that do not conflict give the same
+// results in any order.
+func (f jobFootprint) conflicts(other jobFootprint) bool {
+	for _, path := range f.writes {
+		if slices.Contains(other.writes, path) {
+			return true
+		}
+	}
+	return readsAny(f.reads, other.writes) || readsAny(other.reads, f.writes)
+}
+
+// readsAny reports whether one of patterns matches one of paths. A malformed
+// pattern matches every path.
+func readsAny(patterns, paths []string) bool {
+	for _, pattern := range patterns {
+		for _, path := range paths {
+			if matched, err := filepath.Match(pattern, path); matched || err != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func absPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return abs
 }
 
 // outfileKey returns the file an outfile path names: the absolute, cleaned
@@ -68,10 +154,7 @@ func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.
 // outfile does not exist, resolved. Two jobs writing ./x.csv and x.csv write
 // the same file.
 func outfileKey(outfile string) string {
-	path, err := filepath.Abs(outfile)
-	if err != nil {
-		return filepath.Clean(outfile)
-	}
+	path := absPath(outfile)
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		return resolved
 	}
