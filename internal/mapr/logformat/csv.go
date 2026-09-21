@@ -23,8 +23,10 @@ import (
 // before any other line of that source. Should a data row come first
 // nevertheless, it becomes the header, and the real header row is later
 // mapped as data. The aggregator therefore gives every file read, and every
-// rewrite of a file after an in-place truncation in follow mode, a sourceID
-// of its own, parsed in file order, and releases it via ReleaseSource.
+// rewrite of a file after an in-place truncation the follow reader detects, a
+// sourceID of its own, parsed in file order, and releases it via
+// ReleaseSource. A truncation the reader misses (see fs.ReadFile.truncated)
+// keeps the old sourceID and header.
 //
 // The defaultParser is held in a named field rather than embedded: embedding
 // would promote defaultParser.MakeFieldsInto onto csvParser, so a parser that
