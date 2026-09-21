@@ -27,12 +27,25 @@ func newSlots(capacity int) *slots {
 	return &slots{limiter: make(chan struct{}, capacity)}
 }
 
-func (s *slots) acquire(ctx context.Context) (func(), bool) {
+func (s *slots) AcquireSlot(ctx context.Context) (func(), bool) {
 	select {
 	case s.limiter <- struct{}{}:
 	case <-ctx.Done():
 		return nil, false
 	}
+	return s.taken()
+}
+
+func (s *slots) TryAcquireSlot() (func(), bool) {
+	select {
+	case s.limiter <- struct{}{}:
+	default:
+		return nil, false
+	}
+	return s.taken()
+}
+
+func (s *slots) taken() (func(), bool) {
 	s.mu.Lock()
 	s.maxUsed = max(s.maxUsed, len(s.limiter))
 	s.mu.Unlock()
@@ -51,7 +64,7 @@ func TestReadOnceMembersHoldNoSlotWhileTheyWait(t *testing.T) {
 	group := Group{ID: "g", Members: 2}
 
 	first := startSlottedMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(),
-		group, catSlots.acquire)
+		group, catSlots)
 	waitFor(t, "the first member to join", func() bool { return groupMembers(hub, path) == 1 })
 	time.Sleep(20 * time.Millisecond)
 	if used := catSlots.inUse(); used != 0 {
@@ -59,7 +72,7 @@ func TestReadOnceMembersHoldNoSlotWhileTheyWait(t *testing.T) {
 	}
 
 	second := startSlottedMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(),
-		group, catSlots.acquire)
+		group, catSlots)
 	waitFor(t, "the group read to start", func() bool { return seams.starts() == 1 })
 	if used := catSlots.inUse(); used != 2 {
 		t.Errorf("the group read holds %d cat slots, want one per member", used)
@@ -82,7 +95,8 @@ func TestReadOnceMembersHoldNoSlotWhileTheyWait(t *testing.T) {
 // orders, with fewer cat slots than files times sessions. A member that held
 // a slot while it waited for the other session would keep that session's
 // member from joining; the group reads would only start after the group wait
-// (an hour here) with one member each.
+// (an hour here) with one member each. A member without a free slot when its
+// group read starts reads privately (ErrGroupReadStarted, nothing fed).
 func TestReadOnceGroupReadsNeverWaitForEachOthersSlots(t *testing.T) {
 	const files = 6
 	hub := newGroupHub(time.Hour)
@@ -96,12 +110,19 @@ func TestReadOnceGroupReadsNeverWaitForEachOthersSlots(t *testing.T) {
 	for i := range files {
 		members = append(members,
 			startSlottedMember(t, hub, omode.CatClient, paths[i], lcontext.LContext{}, regex.NewNoop(),
-				group, catSlots.acquire),
+				group, catSlots),
 			startSlottedMember(t, hub, omode.CatClient, paths[files-1-i], lcontext.LContext{}, regex.NewNoop(),
-				group, catSlots.acquire))
+				group, catSlots))
 	}
 	for _, m := range members {
-		if err := m.wait(t); err != nil {
+		err := m.wait(t)
+		if errors.Is(err, ErrGroupReadStarted) {
+			if events := m.recorder.snapshot(); len(events) != 0 {
+				t.Errorf("a member reading privately got %v", events)
+			}
+			continue
+		}
+		if err != nil {
 			t.Fatalf("ReadOnce() = %v", err)
 		}
 		if got := m.recorder.lines(); !reflect.DeepEqual(got, []string{"a\n", "b\n", "c\n"}) {
@@ -152,9 +173,8 @@ func TestReadOnceAdmitsAtMostMaxGroupMembers(t *testing.T) {
 func TestGroupEntryRefusesMembersBeyondMaxGroupMembers(t *testing.T) {
 	path := writeFile(t, "a\n")
 	session := groupSession(t, path, lcontext.LContext{}, regex.NewNoop(), (&recorder{}).newProcessor, nil)
-	var slotsMu sync.Mutex
 	e := newGroupEntry(groupKey{path: path}, Group{ID: "g", Members: 3}, path,
-		Options{MaxGroupMembers: 2}, logging.NopLogger{}, defaultSeams(), &slotsMu)
+		Options{MaxGroupMembers: 2}, logging.NopLogger{}, defaultSeams())
 	for i, want := range []bool{true, true, false} {
 		member := &groupMember{subscriber: newSubscriber(session, 1), acquire: freeSlot}
 		if got := e.add(member); got != want {
@@ -210,14 +230,14 @@ func TestReadOnceMemberLeavingWhileWaitingForItsSlot(t *testing.T) {
 	group := Group{ID: "g", Members: 2}
 
 	// Another read holds the only slot.
-	release, _ := catSlots.acquire(context.Background())
+	release, _ := catSlots.AcquireSlot(context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	leaving := &recorder{}
 	leavingDone := make(chan error, 1)
 	session := groupSession(t, path, lcontext.LContext{}, regex.NewNoop(), leaving.newProcessor, nil)
-	go func() { leavingDone <- hub.ReadOnce(ctx, omode.CatClient, session, group, catSlots.acquire) }()
+	go func() { leavingDone <- hub.ReadOnce(ctx, omode.CatClient, session, group, catSlots) }()
 	staying := startSlottedMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(),
-		group, catSlots.acquire)
+		group, catSlots)
 	waitFor(t, "both members to join", func() bool {
 		hub.mu.Lock()
 		defer hub.mu.Unlock()
@@ -282,4 +302,163 @@ func (l *lineLogger) count(substrings ...string) int {
 		}
 	}
 	return count
+}
+
+// A long private cat holds one of two cat slots when a group of two arrives.
+// The group read takes the free slot and reads with one member at once; the
+// other member reads privately. The group never holds a slot while it waits
+// for another, so a cat arriving after the group gets the slot as soon as
+// the short group read ended, not after the long cat.
+func TestReadOnceGroupHoldsNoSlotWhileWaitingForAnother(t *testing.T) {
+	catSlots := newSlots(2)
+	releaseLong, _ := catSlots.AcquireSlot(context.Background())
+	defer releaseLong()
+
+	path := writeFile(t, "a\nb\n")
+	logger := &lineLogger{}
+	hub := New(Options{Logger: logger, GroupWait: time.Hour, MaxGroupMembers: 2})
+	group := Group{ID: "g", Members: 2}
+	members := []*testMember{
+		startSlottedMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group, catSlots),
+		startSlottedMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group, catSlots),
+	}
+	var read, private int
+	for _, m := range members {
+		switch err := m.wait(t); {
+		case errors.Is(err, ErrGroupReadStarted):
+			private++
+			if events := m.recorder.snapshot(); len(events) != 0 {
+				t.Errorf("the member reading privately got %v", events)
+			}
+		case err != nil:
+			t.Fatalf("ReadOnce() = %v", err)
+		default:
+			read++
+			if got := m.recorder.lines(); !reflect.DeepEqual(got, []string{"a\n", "b\n"}) {
+				t.Errorf("lines = %q", got)
+			}
+		}
+	}
+	if read != 1 || private != 1 {
+		t.Errorf("%d members read in the group and %d privately, want 1 and 1", read, private)
+	}
+	if logger.count("Shared one-shot read started", "members=1/2") != 1 {
+		t.Errorf("log = %q, want one group read started with members=1/2", logger.all())
+	}
+	if logger.count("no free cat slot", group.LogID()) != 1 {
+		t.Errorf("log = %q, want one member reading privately for want of a slot", logger.all())
+	}
+
+	// The long cat still holds its slot; the other one is free again.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	release, acquired := catSlots.AcquireSlot(ctx)
+	if !acquired {
+		t.Fatal("a cat after the group read got no slot while the long cat ran: the group held it")
+	}
+	release()
+}
+
+// All cat slots are busy when the group read starts: it waits for one slot,
+// holding none, then reads with the one member; the other member, whose slot
+// is not free then, reads privately.
+func TestReadOnceGroupWaitsForOneSlotHoldingNone(t *testing.T) {
+	catSlots := newSlots(1)
+	releaseOther, _ := catSlots.AcquireSlot(context.Background())
+
+	path := writeFile(t, "a\n")
+	hub := New(Options{Logger: logging.NopLogger{}, GroupWait: time.Hour, MaxGroupMembers: 2})
+	seams := &countingSeams{release: make(chan struct{})}
+	seams.install(hub)
+	group := Group{ID: "g", Members: 2}
+	members := []*testMember{
+		startSlottedMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group, catSlots),
+		startSlottedMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group, catSlots),
+	}
+	waitFor(t, "both members to join", func() bool { return groupMembers(hub, path) == 2 })
+	time.Sleep(20 * time.Millisecond)
+	if used := catSlots.inUse(); used != 1 || seams.starts() != 0 {
+		t.Fatalf("with no free slot: %d slots in use, %d reads started, want 1 and 0", used, seams.starts())
+	}
+	releaseOther()
+	waitFor(t, "the group read to start", func() bool { return seams.starts() == 1 })
+	close(seams.release)
+
+	var read, private int
+	for _, m := range members {
+		switch err := m.wait(t); {
+		case errors.Is(err, ErrGroupReadStarted):
+			private++
+		case err != nil:
+			t.Fatalf("ReadOnce() = %v", err)
+		default:
+			read++
+		}
+	}
+	if read != 1 || private != 1 {
+		t.Errorf("%d members read in the group and %d privately, want 1 and 1", read, private)
+	}
+	if used := catSlots.inUse(); used != 0 {
+		t.Errorf("%d cat slots still in use, want none", used)
+	}
+}
+
+func TestReadOnceForgetsTheOldestEndedGroupReads(t *testing.T) {
+	const memory = time.Minute
+	hub := New(Options{Logger: logging.NopLogger{}, GroupMemory: memory, MaxEndedGroups: 3})
+	hub.oneshot.ended = make(map[groupKey]time.Time)
+	key := func(i int) groupKey { return groupKey{path: "/f", group: fmt.Sprintf("g%d", i)} }
+	start := time.Now()
+	at := func(i int) time.Time { return start.Add(time.Duration(i) * time.Second) }
+
+	for i := range 5 {
+		hub.rememberEnded(key(i), at(i))
+	}
+	// The cap keeps the three that ended last.
+	for i, want := range []bool{false, false, true, true, true} {
+		if got := hub.endedRecently(key(i), at(5)); got != want {
+			t.Errorf("group %d remembered = %v, want %v", i, got, want)
+		}
+	}
+	if len(hub.oneshot.ended) != 3 || len(hub.oneshot.endedOrder) != 3 {
+		t.Fatalf("remembered %d/%d ended group reads, want 3", len(hub.oneshot.ended), len(hub.oneshot.endedOrder))
+	}
+	// The group memory forgets them in the order they ended.
+	if hub.endedRecently(key(2), at(2).Add(memory)) {
+		t.Error("group 2 remembered after the group memory")
+	}
+	if !hub.endedRecently(key(3), at(2).Add(memory)) {
+		t.Error("group 3 forgotten before the group memory passed")
+	}
+	if len(hub.oneshot.ended) != 2 {
+		t.Errorf("remembered %d ended group reads, want 2", len(hub.oneshot.ended))
+	}
+
+	// A group read of a key that ended again is remembered from then on.
+	hub.rememberEnded(key(3), at(10))
+	if !hub.endedRecently(key(3), at(3).Add(memory)) {
+		t.Error("group 3 forgotten with the time it ended first")
+	}
+}
+
+// Looking up an ended group read looks at the oldest remembered ones only,
+// not at every one: a join costs the same with many ended group reads.
+func TestReadOnceEndedLookupLooksAtTheOldestOnly(t *testing.T) {
+	hub := New(Options{Logger: logging.NopLogger{}, MaxEndedGroups: 100000})
+	hub.oneshot.ended = make(map[groupKey]time.Time)
+	now := time.Now()
+	for i := range 100000 {
+		hub.rememberEnded(groupKey{group: fmt.Sprint(i)}, now)
+	}
+	looked := 0
+	hub.oneshot.forgetEnded(func(endedGroup, int) bool {
+		looked++
+		return false
+	})
+	if looked != 1 {
+		t.Errorf("looked at %d ended group reads, want 1", looked)
+	}
+	if !hub.endedRecently(groupKey{group: "99999"}, now) {
+		t.Error("the last ended group read is not remembered")
+	}
 }

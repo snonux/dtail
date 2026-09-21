@@ -62,6 +62,7 @@ type readCommandLifecycle interface {
 type readCommandServer interface {
 	PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool)
 	AcquireReadSlot(context.Context, omode.Mode, string) (release func(), acquired bool)
+	TryAcquireReadSlot(omode.Mode, string) (release func(), acquired bool)
 	SendReadMessage(context.Context, uint64, string)
 	NewReadMessages(context.Context, uint64) (chan string, func())
 	AddPendingFiles(delta int32) int32
@@ -140,10 +141,7 @@ func (h *ServerHandler) ServerlessOutput() io.Writer {
 // AcquireReadSlot waits for the concurrency slot associated with mode and
 // returns an idempotent release function when the slot is acquired.
 func (h *ServerHandler) AcquireReadSlot(ctx context.Context, mode omode.Mode, path string) (func(), bool) {
-	limiter := h.tailLimiter
-	if mode == omode.CatClient || mode == omode.GrepClient {
-		limiter = h.catLimiter
-	}
+	limiter := h.readLimiter(mode)
 
 	select {
 	case limiter <- struct{}{}:
@@ -161,13 +159,40 @@ func (h *ServerHandler) AcquireReadSlot(ctx context.Context, mode omode.Mode, pa
 			return nil, false
 		}
 	}
+	return releaseReadSlot(limiter), true
+}
 
+// TryAcquireReadSlot takes the concurrency slot associated with mode if one is
+// free, without waiting, and returns an idempotent release function when the
+// slot is acquired.
+func (h *ServerHandler) TryAcquireReadSlot(mode omode.Mode, path string) (func(), bool) {
+	limiter := h.readLimiter(mode)
+	select {
+	case limiter <- struct{}{}:
+		h.Logger().Debug(h.user, "Got limiter slot immediately", "path", path)
+		return releaseReadSlot(limiter), true
+	default:
+		h.Logger().Debug(h.user, "No free limiter slot", "path", path)
+		return nil, false
+	}
+}
+
+func (h *ServerHandler) readLimiter(mode omode.Mode) chan struct{} {
+	if mode == omode.CatClient || mode == omode.GrepClient {
+		return h.catLimiter
+	}
+	return h.tailLimiter
+}
+
+// releaseReadSlot returns an idempotent function that gives back a slot of
+// limiter.
+func releaseReadSlot(limiter chan struct{}) func() {
 	var released atomic.Bool
 	return func() {
 		if released.CompareAndSwap(false, true) {
 			<-limiter
 		}
-	}, true
+	}
 }
 
 // SendReadMessage forwards a generation-bound message to the session output.

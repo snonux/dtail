@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -66,6 +67,36 @@ func ParseReadShare(value string) (ReadShare, error) {
 			members, maxReadShareMembers)
 	}
 	return ReadShare{Group: group, Members: members}, nil
+}
+
+// Redacted returns s for logs: its member count, without the group ID.
+func (s ReadShare) Redacted() string {
+	if s.IsZero() {
+		return "none"
+	}
+	return fmt.Sprintf("%s:%d", redacted, s.Members)
+}
+
+// redacted replaces a read share's group ID in logs.
+const redacted = "REDACTED"
+
+// readShareOptionPattern matches a serialized ReadShareOption with its value
+// in a command's options.
+var readShareOptionPattern = regexp.MustCompile(`(^|[: ])` + regexp.QuoteMeta(ReadShareOption) + `=[^: ]*`)
+
+// RedactReadShare returns text, such as a command sent to dserver, with the
+// value of every ReadShareOption in it, which holds the group ID, redacted.
+func RedactReadShare(text string) string {
+	return readShareOptionPattern.ReplaceAllString(text, "${1}"+ReadShareOption+"="+redacted)
+}
+
+// RedactReadShares returns RedactReadShare of each of texts.
+func RedactReadShares(texts []string) []string {
+	redacted := make([]string, len(texts))
+	for i, text := range texts {
+		redacted[i] = RedactReadShare(text)
+	}
+	return redacted
 }
 
 // IsZero reports whether s asks for no shared read.

@@ -102,6 +102,19 @@ func (s *globCapTestServer) AcquireReadSlot(ctx context.Context, mode omode.Mode
 	}
 }
 
+func (s *globCapTestServer) TryAcquireReadSlot(mode omode.Mode, _ string) (func(), bool) {
+	limiter := s.tailLimiter
+	if mode == omode.CatClient || mode == omode.GrepClient {
+		limiter = s.catLimiter
+	}
+	select {
+	case limiter <- struct{}{}:
+		return func() { <-limiter }, true
+	default:
+		return nil, false
+	}
+}
+
 func (s *globCapTestServer) SendReadMessage(ctx context.Context, generation uint64, message string) {
 	select {
 	case s.serverMessage <- encodeGeneratedMessage(generation, message+"\n"):

@@ -58,6 +58,9 @@ type Options struct {
 	// GroupMemory is how long the hub remembers a one-shot group read that
 	// ended; zero selects DefaultGroupMemory.
 	GroupMemory time.Duration
+	// MaxEndedGroups bounds how many ended one-shot group reads the hub
+	// remembers; zero selects DefaultMaxEndedGroups.
+	MaxEndedGroups int
 }
 
 // Session describes one session's follow read of a file.

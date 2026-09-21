@@ -85,3 +85,35 @@ func TestReadShareOptionRoundTripsAndLeavesOtherOptionsAlone(t *testing.T) {
 		t.Errorf("Args without a share serialized %q", serialized)
 	}
 }
+
+func TestReadShareStaysOutOfLogs(t *testing.T) {
+	share := ReadShare{Group: "secretgroupid", Members: 3}
+	args := Args{ReadShare: share, Quiet: true}
+	command := "map:" + args.SerializeOptions() + " from STATS select count($line)"
+	encoded := strings.TrimPrefix(strings.SplitN(strings.SplitN(command, "share=", 2)[1], " ", 2)[0], "base64%")
+
+	logged := map[string]string{
+		"args":     args.String(),
+		"redacted": share.Redacted(),
+		"command":  RedactReadShare(command),
+		"commands": strings.Join(RedactReadShares([]string{command, "cat:" + args.SerializeOptions() + " /f"}), " "),
+	}
+	for name, line := range logged {
+		if strings.Contains(line, share.Group) || strings.Contains(line, encoded) {
+			t.Errorf("%s log %q has the group ID", name, line)
+		}
+	}
+	if got := RedactReadShare(command); got != "map:quiet=true:share=REDACTED from STATS select count($line)" &&
+		got != "map:share=REDACTED:quiet=true from STATS select count($line)" {
+		t.Errorf("RedactReadShare() = %q", got)
+	}
+	if got := share.Redacted(); got != "REDACTED:3" {
+		t.Errorf("Redacted() = %q, want REDACTED:3", got)
+	}
+	if got := (ReadShare{}).Redacted(); got != "none" {
+		t.Errorf("Redacted() of no share = %q, want none", got)
+	}
+	if plain := "cat:max=1:quiet=true /var/log/share=x.log"; RedactReadShare(plain) != plain {
+		t.Errorf("RedactReadShare(%q) = %q, want it unchanged", plain, RedactReadShare(plain))
+	}
+}

@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -15,7 +16,9 @@ import (
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
+	user "github.com/mimecast/dtail/internal/sessionuser"
 )
 
 // infoRecorder records the hub's INFO lines; it is safe for concurrent use.
@@ -246,29 +249,81 @@ func TestGroupReadEndings(t *testing.T) {
 	}
 }
 
-func TestDispatchCommandKeepsTheReadShareOptionForTheCommand(t *testing.T) {
+func TestDispatchCommandKeepsTheReadShareOptionOfTheScheduler(t *testing.T) {
 	share := config.ReadShare{Group: "abc", Members: 2}
 	args := config.Args{ReadShare: share}
-	var got string
-	d := &commandDispatcher{
-		handleCommandCb: func(ctx context.Context, _ lcontext.LContext, _ int, _ []string, _ string) {
-			got, _ = ctx.Value(readShareKey).(string)
-		},
-	}
 	command := "cat:" + args.SerializeOptions() + " /tmp/file.log noop"
-	if err := d.handleRawCommand(context.Background(), command); err != nil {
-		t.Fatal(err)
+
+	tests := []struct {
+		name string
+		user string
+		want string
+	}{
+		{"scheduled job", config.ScheduleUser, share.String()},
+		// Other users cannot start group reads, which the hub remembers.
+		{"interactive user", "paul", ""},
+		{"continuous job", config.ContinuousUser, ""},
 	}
-	if got != share.String() {
-		t.Errorf("read share option on the command context = %q, want %q", got, share.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionUser, err := user.New(tt.user, "127.0.0.1:1234", nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := "unset"
+			d := &commandDispatcher{
+				handler: &baseHandler{user: sessionUser},
+				handleCommandCb: func(ctx context.Context, _ lcontext.LContext, _ int, _ []string, _ string) {
+					got, _ = ctx.Value(readShareKey).(string)
+				},
+			}
+			if err := d.handleRawCommand(context.Background(), command); err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Errorf("read share option on the command context = %q, want %q", got, tt.want)
+			}
+
+			got = "unset"
+			if err := d.handleRawCommand(context.Background(), "cat:max=1 /tmp/file.log noop"); err != nil {
+				t.Fatal(err)
+			}
+			if got != "" {
+				t.Errorf("a command without the option got %q", got)
+			}
+		})
+	}
+}
+
+func TestCommandLogsRedactTheReadShare(t *testing.T) {
+	share := config.ReadShare{Group: "secretgroupid", Members: 2}
+	args := config.Args{ReadShare: share, LContext: lcontext.LContext{MaxCount: 3}, Quiet: true}
+	command := "cat:" + args.SerializeOptions() + " /tmp/file.log noop"
+	encodedShare := strings.TrimPrefix(strings.Split(strings.SplitN(command, "share=", 2)[1], " ")[0], "base64%")
+
+	received := "protocol " + protocol.ProtocolCompat + " base64 " + base64.StdEncoding.EncodeToString([]byte(command))
+	logged := []string{
+		commandForLog(received),
+		commandForLog(command),
+		redactReadShare(command),
+		strings.Join(argsForLog(strings.Split(command, " ")), " "),
+	}
+	for _, line := range logged {
+		if strings.Contains(line, share.Group) || strings.Contains(line, encodedShare) ||
+			strings.Contains(line, base64.StdEncoding.EncodeToString([]byte(command))) {
+			t.Errorf("log line %q has the read share", line)
+		}
+		for _, want := range []string{"max=3", "quiet=true", "share=REDACTED", "/tmp/file.log"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("log line %q lacks %q", line, want)
+			}
+		}
 	}
 
-	got = "unset"
-	if err := d.handleRawCommand(context.Background(), "cat:max=1 /tmp/file.log noop"); err != nil {
-		t.Fatal(err)
-	}
-	if got != "" {
-		t.Errorf("a command without the option got %q", got)
+	// Commands without the option are logged as received.
+	plain := "protocol " + protocol.ProtocolCompat + " base64 " + base64.StdEncoding.EncodeToString([]byte("cat:max=3 /tmp/f noop"))
+	if got := commandForLog(plain); got != plain {
+		t.Errorf("commandForLog(%q) = %q, want it unchanged", plain, got)
 	}
 }
 
@@ -286,7 +341,10 @@ func TestGroupMembersWaitWithoutACatSlot(t *testing.T) {
 		started  string
 		privates int
 	}{
-		{"two slots", 2, "members=2/2", 0},
+		// Each group read takes the slots free when it starts, without
+		// waiting for more; its members without one read privately (-1: as
+		// many as the slots left over).
+		{"two slots", 2, "members=", -1},
 		// Fewer slots than the group has members, as on a dserver whose
 		// MaxConcurrentCats is lower than the scheduling dserver's: each
 		// group read admits one member, the other reads privately at once.
@@ -338,8 +396,14 @@ func TestGroupMembersWaitWithoutACatSlot(t *testing.T) {
 			if got := logger.count("Shared one-shot read started", group.LogID(), tt.started); got != files {
 				t.Errorf("%d group reads started with %s, want %d", got, tt.started, files)
 			}
-			if got := logger.count("reading privately", group.LogID()); got != tt.privates {
-				t.Errorf("%d members read privately, want %d", got, tt.privates)
+			shared := logger.count("Shared one-shot read started", group.LogID(), "members=2/2")*2 +
+				logger.count("Shared one-shot read started", group.LogID(), "members=1/")
+			privates := tt.privates
+			if privates < 0 {
+				privates = 2*files - shared
+			}
+			if got := logger.count("reading privately", group.LogID()); got != privates {
+				t.Errorf("%d members read privately, want %d", got, privates)
 			}
 			if got := logger.count(group.ID); got != 0 {
 				t.Errorf("%d log lines contain the raw group ID", got)

@@ -63,9 +63,11 @@ type ServerConfig struct {
 	// file share one reader of it in dserver by default, and the scheduled
 	// jobs that one scheduler run starts together on the same files read each
 	// file once for the group (at most MaxConcurrentCats members per group
-	// read, each holding one of the cat slots during it). Each session still
-	// filters and processes the lines on its own. With this set, every session
-	// reads the file with a reader of its own.
+	// read, each holding one of the cat slots during it; a member without a
+	// free cat slot when the group read starts reads on its own; only the
+	// scheduler's sessions, of user DTAIL-SCHEDULE, ask for group reads).
+	// Each session still filters and processes the lines on its own. With
+	// this set, every session reads the file with a reader of its own.
 	SharedReadsDisable bool `json:",omitempty"`
 	// The max line length until it's split up into multiple smaller lines.
 	MaxLineLength int

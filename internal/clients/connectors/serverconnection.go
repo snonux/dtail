@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
 	sessionspec "github.com/mimecast/dtail/internal/session"
@@ -93,7 +94,7 @@ func NewServerConnection(server string, userName string,
 	logger logging.Logger) (*ServerConnection, error) {
 
 	logger = logging.OrNop(logger)
-	logger.Debug(server, "Creating new connection", server, handler, commands)
+	logger.Debug(server, "Creating new connection", server, handler, config.RedactReadShares(commands))
 	sshConnectTimeout := defaultSSHConnectTimeout
 	defaultPort := defaultSSHPort
 	if settings != nil {

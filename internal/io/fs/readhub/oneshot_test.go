@@ -539,4 +539,9 @@ func TestReadOnceRejectsInvalidReads(t *testing.T) {
 }
 
 // freeSlot is a slot acquirer with unlimited slots.
-func freeSlot(context.Context) (func(), bool) { return func() {}, true }
+var freeSlot SlotAcquirer = freeSlots{}
+
+type freeSlots struct{}
+
+func (freeSlots) AcquireSlot(context.Context) (func(), bool) { return func() {}, true }
+func (freeSlots) TryAcquireSlot() (func(), bool)             { return func() {}, true }

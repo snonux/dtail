@@ -438,7 +438,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	r.logger.Info(r.logContext, "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
 	// A group member waits for the other members holding no cat slot; its
 	// group read takes the slot for it (see readWithGroup).
-	if group, ok := r.readShareGroup(ctx, target); ok && r.readWithGroup(ctx, ltx, re, readerOptions, group, limiter) {
+	if group, ok := r.readShareGroup(ctx, target); ok && r.readWithGroup(ctx, ltx, re, readerOptions, group) {
 		return
 	}
 

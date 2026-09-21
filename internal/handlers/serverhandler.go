@@ -139,7 +139,7 @@ func minimumOutputBufferMaxBytes(maxLineLength int) int {
 func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LContext,
 	argc int, args []string, commandName string) {
 
-	h.Logger().Debug(h.user, "Handling user command", argc, args)
+	h.Logger().Debug(h.user, "Handling user command", argc, argsForLog(args))
 	// The close acknowledgement completes an existing shutdown handshake; it
 	// is protocol control traffic rather than new workload. Process it even
 	// after graceful shutdown has sealed command admission, and keep it out of
@@ -200,7 +200,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	handler, found := h.commands[commandName]
 	if !found {
 		h.sendln(h.serverMessages, h.Logger().Error(h.user,
-			"Received unknown user command", commandName, argc, args))
+			"Received unknown user command", commandName, argc, argsForLog(args)))
 		commandFinished()
 		return
 	}
