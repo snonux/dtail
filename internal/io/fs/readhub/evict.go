@@ -16,9 +16,11 @@ import (
 // file, wait for it. The evicted session handles what it has queued, then
 // goes on with a private follow reader of its own that starts just past the
 // last line it handled and feeds the session's filter and processor, so it
-// loses no line and keeps its line numbering and local context. The file is
-// opened for that reader at the eviction, so a rotation while the session
-// still handles its queue does not cost it the rest of the file.
+// loses no line and keeps its line numbering and local context. That reader
+// first reads the session's descriptor of the file the shared reader had open
+// at the eviction (see heldFile), so a rotation of the path, before the
+// eviction while the shared reader was still behind in the old file or while
+// the session handles its queue, does not cost it the rest of the old file.
 
 // evict stops deliveries to sub, whose queue had no room for missed, and
 // tells it to go on privately. The caller holds e.publishMu, so nothing is
@@ -32,7 +34,6 @@ func (e *entry) evict(sub *subscriber, missed item) {
 		return
 	}
 	sub.missed = missed
-	sub.held = holdFile(sub.session.Target)
 	close(sub.evicted)
 	e.logger.Info(e.path, "Shared follow read evicted a slow subscriber", fmt.Sprintf("subscribers=%d", remaining))
 	if e.owner == sub && remaining > 0 {
@@ -68,30 +69,12 @@ func (e *entry) detach(sub *subscriber) (remaining int, found bool) {
 	return len(e.subscribers), found
 }
 
-// holdFile opens the file at target's path when a session is evicted, so
-// that the private reader it goes on with once it handled its queue, which
-// can take long with a stalled client, still reads the rest of that file if
-// the path is rotated meanwhile, as a private reader that had it open would.
-// It returns nil if the file cannot be opened.
-func holdFile(target fs.ValidatedReadTarget) *os.File {
-	fd, err := target.Open()
-	if err != nil {
-		return nil
-	}
-	return fd
-}
-
-func closeHeld(held *os.File) {
-	if held != nil {
-		_ = held.Close()
-	}
-}
-
 // readPrivately goes on with a private follow reader of the session's own
 // target, from where the session's read got to, until ctx ends. Like the read
 // command's retry loop, it reads the file again after a read ended, e.g.
-// after a rotation, with a new processor. held, if not nil, is the file
-// opened at the eviction; readPrivately closes it.
+// after a rotation, with a new processor. held, if not nil, is the session's
+// descriptor of the file the shared reader had open when the session left it;
+// readPrivately closes it.
 func (r *sessionRead) readPrivately(ctx context.Context, held *os.File) error {
 	reader, err := r.privateReader(held)
 	if err != nil {
@@ -150,7 +133,7 @@ func (r *sessionRead) privateReader(held *os.File) (*fs.ReadFile, error) {
 			"Position of the shared read unknown, following privately from the end of the file")
 	}
 	r.at.startAt(&options)
-	if held != nil && options.StartOffset > 0 && sameFile(held, options.StartOffsetFile) {
+	if held != nil && r.holds(held) {
 		options.StartFile = held
 	} else {
 		closeHeld(held)
@@ -165,10 +148,19 @@ func (r *sessionRead) privateReader(held *os.File) (*fs.ReadFile, error) {
 	return reader, nil
 }
 
-// sameFile reports whether fd is the file info describes.
-func sameFile(fd *os.File, info os.FileInfo) bool {
-	current, err := fd.Stat()
-	return err == nil && info != nil && os.SameFile(current, info)
+// holds reports whether held, the file the shared reader had open when the
+// session left it, is the file the session's read goes on in: the file of its
+// position, or, when the session is at the beginning of a file it has not
+// seen a line of since the reader announced a new read, the file the reader
+// opened for that read, which held then is.
+func (r *sessionRead) holds(held *os.File) bool {
+	switch {
+	case r.at.offset > 0:
+		return sameFile(held, r.at.file)
+	case r.at.offset == 0:
+		return r.at.file == nil || sameFile(held, r.at.file)
+	}
+	return false
 }
 
 // splitsLine reports whether at, the end of a line the shared reader fed, is

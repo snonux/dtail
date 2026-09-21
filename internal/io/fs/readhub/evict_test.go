@@ -154,12 +154,14 @@ func startGatedFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LCo
 	return f
 }
 
-// appendPaced appends lines in batches of about one chunk and waits for fast
-// to get each batch before it writes the next, so that only a stuck session
-// falls behind by more than a few chunks.
+// appendPaced appends lines in batches of about two chunks, a quarter of the
+// queue of newEvictingHub, and waits for fast to get each batch before it
+// writes the next, so that only a stuck session falls behind by more than a
+// few chunks. The follow reader polls a file it read to its end every 100 ms,
+// so the fewer batches, the faster the test.
 func appendPaced(t *testing.T, file *testFile, fast *lastLineProcessor, lines []string) {
 	t.Helper()
-	const batch = 500
+	const batch = 1500
 	for start := 0; start < len(lines); start += batch {
 		end := min(start+batch, len(lines))
 		// One write per batch, so that the reader reads it in few reads.
@@ -194,6 +196,8 @@ func TestEvictedSessionLosesNoLineAndKeepsNumberingAndContext(t *testing.T) {
 	contexts := []lcontext.LContext{{}, {BeforeContext: 2}, {AfterContext: 3}, {BeforeContext: 1, AfterContext: 2}}
 	for _, ltx := range contexts {
 		t.Run(fmt.Sprintf("%+v", ltx), func(t *testing.T) {
+			// Each case has a hub and file of its own.
+			t.Parallel()
 			logger := &capturingLogger{}
 			hub := newEvictingHub(logger)
 			file := newTestFile(t)

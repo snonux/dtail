@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -91,6 +92,8 @@ type Hub struct {
 type hubSeams struct {
 	startReader   func(ctx context.Context, reader *fs.ReadFile, processor line.Processor) error
 	replaceTarget func(reader *fs.ReadFile, target fs.ValidatedReadTarget) error
+	// openFile opens a subscriber's descriptor of the reader's file.
+	openFile func(target fs.ValidatedReadTarget) (*os.File, error)
 	// evicted, when set, is called after an eviction left remaining
 	// subscribers, before an entry without any stops.
 	evicted func(remaining int)
@@ -103,6 +106,9 @@ func defaultSeams() hubSeams {
 		},
 		replaceTarget: func(reader *fs.ReadFile, target fs.ValidatedReadTarget) error {
 			return reader.ReplaceTarget(target)
+		},
+		openFile: func(target fs.ValidatedReadTarget) (*os.File, error) {
+			return target.Open()
 		},
 	}
 }
@@ -146,18 +152,21 @@ func New(options Options) *Hub {
 // read is cancelled.
 //
 // A session that falls behind by more than Options.QueueChunks chunks is
-// evicted, so it never delays the other sessions: the file at its path is
-// opened for it, it handles what it has queued, including the rotation,
-// truncation or failure that did not fit, and goes on with a private follow
-// reader of its own target, just past the last line it handled, with the
-// same filter and processor. That reader reads the opened file, so a rotation
-// while the session handles its queue loses no line either. An evicted
-// session does not rejoin the shared reader (a known limitation). A session whose shared reader
-// failed without a panic goes on privately the same way, without an opened
-// file. If the path was rotated since the session's last line and the file
-// opened, if any, is not the one of that line (the rotation came before the
-// eviction), the private reader reads the new file from its beginning with a
-// new processor and warns that the rest of the old file is not read.
+// evicted, so it never delays the other sessions: it handles what it has
+// queued, including the rotation, truncation or failure that did not fit, and
+// goes on with a private follow reader of its own target, just past the last
+// line it handled, with the same filter and processor. A session whose shared
+// reader failed without a panic goes on privately the same way. Every session
+// holds a descriptor of its own of the file the shared reader has open (see
+// heldFile), which that private reader reads first, so a rotation of the path
+// costs the session no line, whether it came before the eviction, while the
+// shared reader was still behind in the old file, or after it. Only when the
+// path is rotated in the moment between the shared reader opening a file and
+// the session opening its descriptor of it, does a session lack one; if it
+// is then evicted after the rotation with lines of that file unread, its
+// private reader reads the new file from its beginning with a new processor
+// and warns that the rest of the old file is not read. An evicted session
+// does not rejoin the shared reader (a known limitation).
 func (h *Hub) Follow(ctx context.Context, session Session) error {
 	if err := validateSession(session); err != nil {
 		return err
@@ -167,7 +176,13 @@ func (h *Hub) Follow(ctx context.Context, session Session) error {
 	}
 	sub := newSubscriber(session, h.options.QueueChunks)
 	e := h.join(sub)
-	defer h.leave(e, sub)
+	defer func() {
+		h.leave(e, sub)
+		// Unless the session's private reader took it over, the descriptor
+		// is closed here, after leave: an eviction racing with the end of the
+		// session's read may still have left it held.
+		sub.held.close()
+	}()
 	return sub.run(ctx, h.logger, h.options)
 }
 

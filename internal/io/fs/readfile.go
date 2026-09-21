@@ -60,11 +60,14 @@ type ReadOptions struct {
 	// an earlier reader split a line longer than MaxLineLength and warned
 	// about it, so that it does not warn again about the rest of that line.
 	StartOffsetInSplitLine bool
-	// StartFile, when set together with StartOffset, is an open descriptor
-	// of the file StartOffsetFile describes, which the first read uses
-	// instead of opening the path, so that it reads that file even if the
-	// path was rotated away from it meanwhile. The reader takes ownership and
-	// closes it when that read ends.
+	// StartFile, when set, is an open descriptor, positioned at its
+	// beginning, which the first read uses instead of opening the path, so
+	// that it reads that file even if the path was rotated away from it
+	// meanwhile: from StartOffset, when positive, in which case it must be
+	// the file StartOffsetFile describes, or from its beginning. The reader
+	// takes ownership and closes it when that read ends. It cannot be
+	// combined with SeekEOF and is only supported for uncompressed files, not
+	// for the stdin pipe.
 	StartFile     *os.File
 	MaxLineLength int
 	Logger        logging.Logger
@@ -159,9 +162,10 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 }
 
 func validateStartOffset(options ReadOptions) error {
+	if err := validateStartFile(options); err != nil {
+		return err
+	}
 	switch {
-	case options.StartOffset == 0 && options.StartFile != nil:
-		return errors.New("read start file needs a start offset")
 	case options.StartOffset == 0:
 		return nil
 	case options.StartOffset < 0:
@@ -175,6 +179,20 @@ func validateStartOffset(options ReadOptions) error {
 	case CompressionFormat(options.FilePath) != "":
 		return fmt.Errorf("read start offset is not supported for compressed file %s",
 			options.FilePath)
+	}
+	return nil
+}
+
+func validateStartFile(options ReadOptions) error {
+	switch {
+	case options.StartFile == nil:
+		return nil
+	case options.SeekEOF:
+		return errors.New("read start file and seek to EOF are mutually exclusive")
+	case options.FilePath == "" && options.GlobID == "-":
+		return errors.New("read start file is not supported for the stdin pipe")
+	case CompressionFormat(options.FilePath) != "":
+		return fmt.Errorf("read start file is not supported for compressed file %s", options.FilePath)
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"runtime/debug"
 	"sync"
 
@@ -55,6 +56,11 @@ type entry struct {
 	// or an unknown position from the announcement of a new read until the
 	// reader opened the file. Guarded by publishMu.
 	readPos position
+	// openedFile is the file the reader opened last, for which every
+	// subscriber holds a descriptor (see heldFile), or nil from the
+	// announcement of a new read until the reader opened the file. Guarded by
+	// publishMu.
+	openedFile os.FileInfo
 }
 
 // newEntry makes the shared follow read of creator's file, which starts at
@@ -143,7 +149,11 @@ func (e *entry) join(sub *subscriber, measure func() position) bool {
 	defer e.publishMu.Unlock()
 	sub.joinedAt = measure()
 	sub.skip = newJoinSkip(sub.joinedAt, e.readPos)
-	return e.add(sub)
+	if !e.add(sub) {
+		return false
+	}
+	sub.held.set(openSame(e.seams.openFile, sub.session.Target, e.openedFile))
+	return true
 }
 
 // isClosed reports whether the entry takes no new subscriber.
@@ -153,11 +163,21 @@ func (e *entry) isClosed() bool {
 	return e.closed
 }
 
-// readUpTo records how far the reader has read which file.
+// readUpTo records how far the reader has read which file. When the reader
+// opened a file, every subscriber opens a descriptor of it through its own
+// target (see heldFile). A subscriber whose path was rotated away from the
+// file in the moment since then holds none.
 func (e *entry) readUpTo(p position) {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()
 	e.readPos = p
+	if p.file == e.openedFile {
+		return
+	}
+	e.openedFile = p.file
+	for _, sub := range e.snapshot() {
+		sub.held.set(openSame(e.seams.openFile, sub.session.Target, p.file))
+	}
 }
 
 // remove unregisters sub, stops deliveries to it and returns how many
@@ -266,6 +286,12 @@ func (e *entry) publish(it item) {
 	switch it.kind {
 	case reopenItem:
 		e.readPos = unknownPosition()
+		// A descriptor of the file read so far is of no use to a session
+		// that goes on with the new read.
+		e.openedFile = nil
+		for _, sub := range e.snapshot() {
+			sub.held.set(nil)
+		}
 	case restartItem:
 		e.readPos.offset = 0
 	}

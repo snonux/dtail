@@ -3,7 +3,6 @@ package readhub
 import (
 	"context"
 	"errors"
-	"os"
 
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/line"
@@ -21,11 +20,12 @@ type subscriber struct {
 	// evicted is closed when the publisher found the queue full and stopped
 	// delivering to the subscriber, which then goes on with a private read.
 	evicted chan struct{}
-	// missed is the item that did not fit into the queue, and held the file
-	// at the path, opened at the eviction (nil if that failed); both are set
-	// before evicted is closed.
+	// missed is the item that did not fit into the queue, set before evicted
+	// is closed.
 	missed item
-	held   *os.File
+	// held is the subscriber's descriptor of the file the shared reader has
+	// open, which its private reader goes on with (see heldFile).
+	held heldFile
 	// joinedAt is the end of the file when the session joined, where its
 	// read starts, and skip tells it which published lines predate its join.
 	// Both are set before the session's goroutine runs.
@@ -66,16 +66,11 @@ func (s *subscriber) run(ctx context.Context, logger logging.Logger, options Opt
 	for {
 		select {
 		case <-ctx.Done():
-			select {
-			case <-s.evicted:
-				closeHeld(s.held)
-			default:
-			}
 			return nil
 		case it := <-s.queue:
 			goPrivate, err := reading.handle(ctx, it)
 			if goPrivate {
-				return reading.readPrivately(ctx, nil)
+				return reading.readPrivately(ctx, s.held.take())
 			}
 			if err != nil {
 				return err
@@ -83,14 +78,13 @@ func (s *subscriber) run(ctx context.Context, logger logging.Logger, options Opt
 		case <-s.evicted:
 			goPrivate, err := s.drain(ctx, reading)
 			if err != nil {
-				closeHeld(s.held)
 				return err
 			}
 			if !goPrivate {
 				reading.logger.Info(s.session.FilePath, s.session.GlobID,
 					"Following privately after eviction from the shared read", "offset", reading.at.offset)
 			}
-			return reading.readPrivately(ctx, s.held)
+			return reading.readPrivately(ctx, s.held.take())
 		}
 	}
 }

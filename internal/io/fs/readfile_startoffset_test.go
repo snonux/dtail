@@ -49,7 +49,11 @@ func TestNewReadFileValidatesStartOffset(t *testing.T) {
 		{"zero offset with seek EOF", ReadOptions{FilePath: "/tmp/a.log", SeekEOF: true}, ""},
 		{"zero offset on a compressed file", ReadOptions{FilePath: "/tmp/a.log.gz"}, ""},
 		{"negative offset", ReadOptions{FilePath: "/tmp/a.log", StartOffset: -1}, "negative"},
-		{"start file without offset", ReadOptions{FilePath: "/tmp/a.log", StartFile: os.Stdin}, "start offset"},
+		{"start file without offset", ReadOptions{FilePath: "/tmp/a.log", StartFile: os.Stdin}, ""},
+		{"start file with seek EOF", ReadOptions{FilePath: "/tmp/a.log", StartFile: os.Stdin, SeekEOF: true},
+			"mutually exclusive"},
+		{"start file on the stdin pipe", ReadOptions{GlobID: "-", StartFile: os.Stdin}, "stdin pipe"},
+		{"start file on a zst file", ReadOptions{FilePath: "/tmp/a.log.zst", StartFile: os.Stdin}, "compressed"},
 		{"offset with seek EOF", ReadOptions{FilePath: "/tmp/a.log", StartOffset: 10, SeekEOF: true, StartOffsetFile: identity},
 			"mutually exclusive"},
 		{"offset on the stdin pipe", ReadOptions{GlobID: "-", StartOffset: 10, StartOffsetFile: identity}, "stdin pipe"},
@@ -333,5 +337,36 @@ func TestStartFileIsReadEvenAfterARotation(t *testing.T) {
 	}
 	if want := []string{"new1\n"}; !reflect.DeepEqual(processor.lines, want) {
 		t.Errorf("second read lines = %q, want %q", processor.lines, want)
+	}
+}
+
+func TestStartFileWithoutOffsetIsReadFromItsBeginning(t *testing.T) {
+	path := writeStartOffsetTestFile(t, "held0.log", "old1\nold2\n")
+	held, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("new1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader := mustNewReadFile(ReadOptions{
+		Mode:      omode.CatClient,
+		FilePath:  path,
+		GlobID:    "glob",
+		StartFile: held,
+		Logger:    testLogger,
+	})
+	processor := &captureProcessor{}
+	if err := reader.Start(context.Background(), lcontext.LContext{}, processor, regex.NewNoop()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if want := []string{"old1\n", "old2\n"}; !reflect.DeepEqual(processor.lines, want) {
+		t.Errorf("lines = %q, want the whole held file %q", processor.lines, want)
+	}
+	if err := held.Close(); err == nil {
+		t.Error("the reader did not close the start file")
 	}
 }

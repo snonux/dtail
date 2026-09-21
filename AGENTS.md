@@ -342,24 +342,34 @@ follow read: it skips published lines that were in the file before, also when
 it joins after a rotation or copytruncate the shared reader has not caught up
 with yet. The shared reader never waits for a session: one that falls more
 than 64 chunks (about 64 KiB each) behind is evicted, logged at INFO with the
-remaining subscriber count. The file is opened for it at the eviction; it
-handles what it had queued (including a rotation, truncation or reader panic
-that no longer fit) and goes on with a private reader of its own target just
-past its last line, keeping its line numbering and local context, so a
-rotation while it works through its queue loses no line. The rest of the old
-file is lost for such a session, with a warning, in two narrow cases where a
-private reader would still have read it: the path was rotated before the
-eviction while the shared reader was still behind in the old file, or the
-shared reader failed without a panic (the session then continues privately
-without a file opened for it) after a rotation. Compressed files, max-count (`--max`)
-reads, journal targets and serverless mode always read privately.
+remaining subscriber count. It handles what it had queued (including a
+rotation, truncation or reader panic that no longer fit) and goes on with a
+private reader of its own target just past its last line, keeping its line
+numbering and local context; a shared reader failing without a panic hands
+every session over the same way. Every session holds its own descriptor of
+the file the shared reader has open: a separate open (not a dup, so offsets
+are not shared) through the session's own validated target, made when the
+reader opens a file or the session joins and kept only if it is that same
+file. The private reader starts in that descriptor, so a rotation loses no
+line, also when the path was rotated before the eviction while the shared
+reader was still behind in the old file (a burst larger than the queue
+followed by a size-triggered logrotate). This is portable (no `/proc`) and
+costs one descriptor per session, as a private reader does. The one
+remaining gap: if the path is rotated in the moment between the shared
+reader opening a file and a session opening its descriptor, that session has
+none, and if it is later evicted with lines of the old file unread, it reads
+the new file from its beginning and logs a warning. Compressed files,
+max-count (`--max`) reads, journal targets and serverless mode always read
+privately.
 
 Output with sharing on equals output with sharing off, checked with
 SIGSTOPped, context, late-joining (also right after a rotation or
-copytruncate) and `--query` `dtail` clients, with two exceptions: a session
-that joins in the middle of a line being written gets that whole line, where
-a private read gets the rest of it from the join; and a trailing line the
-writer has not finished yet is not passed on when a session leaves.
+copytruncate), `--query` `dtail` clients and a rotation right after a burst
+that evicts lagging sessions (with and without a SIGSTOPped client). Apart
+from the rotation gap above, two differences remain: a session that joins in
+the middle of a line being written gets that whole line, where a private read
+gets the rest of it from the join; and a trailing line the writer has not
+finished yet is not passed on when a session leaves.
 
 Known limitation (tracked as ask task c9): an evicted session does not rejoin
 the shared reader; it stays private until it ends, which costs the sharing but not output. A large
