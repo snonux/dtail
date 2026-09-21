@@ -159,7 +159,7 @@ baseline, and note the commit.
 | `45` | parent `c47e93f` | serverless, 100 MiB normal log (10 interleaved rounds, median user time) | dcat 0.13 s, dgrep INFO 0.14 s, dgrep ERROR 0.07 s | dcat 0.09 s, dgrep INFO 0.10 s, dgrep ERROR 0.07 s | yes, `cmp` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `45` | parent `c47e93f` | server mode, 100 MiB normal log, `--logger stdout` (8 interleaved rounds; client elapsed, dserver CPU from `/proc`) | dcat 0.73-0.93 s, server 1.05-1.17 s; dgrep ERROR 0.22-0.28 s, server 0.21-0.35 s | dcat 0.74-0.95 s, server 1.01-1.13 s; dgrep ERROR 0.21-0.27 s, server 0.23-0.34 s (no measurable change) | yes, `cmp` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `45` | parent `c47e93f` | `BenchmarkDirectLineProcessorLinePath` (new), 128-byte line into a plain serverless `DirectWriter` on `io.Discard`, 6 runs | `buffer` 61.4-61.8 ns/op, 0 allocs/op | `raw` 36.2-36.3 ns/op, 0 allocs/op | n/a (unit test compares both paths byte for byte for six writer formats) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
-| `65` | parent `b3a84a9` | dtail follow, 8 sessions on one dserver, single-line latency on session 0 (40 probes per run, 2 interleaved rounds; mean / p95), server EOF poll S and client stdout flush C | S100/C100 (current): 97-107 ms / 160-172 ms | S50/C50: 49-52 ms / 80-89 ms; S20/C20: 17-20 ms / 29-37 ms; S20/C100: 61-66 ms; S100/C20: 57-62 ms; S50/C100: 65-72 ms; S100/C50: 72-79 ms | n/a (intervals only) | `make clean && make build` only (docs-only change, no code kept) |
+| `65` | parent `b3a84a9` | dtail follow, 8 sessions on one dserver, single-line latency on session 0 (40 probes per run, 2 interleaved rounds per variant pair; S100/C100 ranges span the 4 runs of both pairings; mean / p95), server EOF poll S and client stdout flush C | S100/C100 (current): 97-107 ms / 160-172 ms | S50/C50: 49-52 ms / 80-89 ms; S20/C20: 17-20 ms / 29-37 ms; S20/C100: 61-66 ms; S100/C20: 57-62 ms; S50/C100: 65-72 ms; S100/C50: 72-79 ms | n/a (intervals only) | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dserver CPU with 8 idle follow sessions (20 s, utime+stime from `/proc`, % of one core), same runs | S100: 6.2-9.2% | S50: 12.1-14.6%; S20: 20.3-27.6% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dtail client CPU per idle follow session, same runs | C100: 0.89-0.97% | C50: 1.77-2.03%; C20: 4.33-4.45% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dserver CPU with 1 idle follow session (2 rounds) | S100: 2.8-4.0% | S20: 11.2-11.3% | n/a | `make clean && make build` only (docs-only change, no code kept) |
@@ -520,14 +520,12 @@ about triples dserver and more than quadruples the client. Even at the current
 setting a dserver with 8 idle follow sessions uses 6-9% of a core on this
 bhyve/hpet VM. A 20 s dserver CPU profile of that state (8 sessions really
 following their files, S100) holds 780 ms of samples: 35% under
-`followLineProcessor.handleReadError` (the EOF poll path), 15% of which is the
-`ReadFile.truncated` check (seek, fstat and lstat on every poll), and 32% in
+`followLineProcessor.handleReadError` (the EOF poll path), including 15% of all
+samples in the `ReadFile.truncated` check (seek, fstat and lstat on every
+poll), and 32% in
 `runtime.nanotime`, which is expensive on this hpet clocksource. So the idle
 cost is the per-wakeup work of the poll plus clock reads, and it scales with
-the wakeup rate. (An earlier profile quoted here, "190 ms of samples, no file
-read or stat call", was of a misconfigured run whose relative `--files` paths
-matched nothing, so its sessions sat in the glob retry loop and followed no
-file; it is withdrawn.) The task's
+the wakeup rate. The task's
 keep rule (clear latency gain and no measurable idle CPU rise) is therefore
 not met by any shorter interval. Latency could be lowered without extra
 wakeups by event-driven designs, not evaluated here: flushing the client
