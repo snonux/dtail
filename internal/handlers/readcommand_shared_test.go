@@ -124,6 +124,19 @@ func (s *sharedReadTestServer) AcquireReadSlot(ctx context.Context, mode omode.M
 	}
 }
 
+func (s *sharedReadTestServer) TryAcquireReadSlot(mode omode.Mode, _ string) (func(), bool) {
+	limiter := s.tailLimiter
+	if mode != omode.TailClient {
+		limiter = s.catLimiter
+	}
+	select {
+	case limiter <- struct{}{}:
+		return func() { <-limiter }, true
+	default:
+		return nil, false
+	}
+}
+
 func (s *sharedReadTestServer) SendReadMessage(ctx context.Context, _ uint64, message string) {
 	select {
 	case s.serverMessage <- message:

@@ -67,14 +67,42 @@ func (c *chunk) lineEnd(i int) position {
 	return position{offset: c.offsets[i], file: c.file}
 }
 
+// publisher delivers an item to every subscriber of a shared read, in
+// publication order: a follow entry or a one-shot group entry.
+type publisher interface {
+	publish(it item)
+}
+
+// readTracker is a publisher that wants to know how far its reader read
+// which file. Only the follow entry is one: it needs the reader's position
+// for a joining session's skip and for the descriptors its subscribers hold.
+// The one-shot group entry has no late joiners and holds no descriptors; its
+// cat or grep reader reports no positions anyway.
+type readTracker interface {
+	readUpTo(p position)
+}
+
+// warningSource is a publisher whose reader's long line warning the fan-out
+// publishes in order with the lines. Only the follow entry is one. The
+// one-shot group entry forwards its reader's warnings itself (see
+// groupEntry.forwardMessages).
+type warningSource interface {
+	warnings() <-chan string
+}
+
 // fanoutProcessor is the processor of an entry's reader. It packs the lines
 // it is fed, and where each ends in the file, into chunks and publishes them,
 // in order with the control items for truncation, to every subscriber. It
 // runs on the reader's goroutine and is fed through a filter that passes
 // every line, so each reported line end belongs to the line just added.
 type fanoutProcessor struct {
-	entry   *entry
-	pending *chunk
+	entry publisher
+	// tracker is entry when it is a readTracker, nil otherwise.
+	tracker readTracker
+	// messages is the long line warning channel of entry when it is a
+	// warningSource, nil otherwise, which publishWarning never receives from.
+	messages <-chan string
+	pending  *chunk
 }
 
 var (
@@ -84,8 +112,15 @@ var (
 	_ line.PositionObserver = (*fanoutProcessor)(nil)
 )
 
-func newFanoutProcessor(e *entry) *fanoutProcessor {
-	return &fanoutProcessor{entry: e}
+func newFanoutProcessor(e publisher) *fanoutProcessor {
+	p := &fanoutProcessor{entry: e}
+	if tracker, ok := e.(readTracker); ok {
+		p.tracker = tracker
+	}
+	if source, ok := e.(warningSource); ok {
+		p.messages = source.warnings()
+	}
+	return p
 }
 
 // ProcessRawLine adds a borrowed line to the pending chunk.
@@ -114,7 +149,9 @@ func (p *fanoutProcessor) LineEndsAt(offset int64, file os.FileInfo) {
 // ReadUpTo records how far the reader has read which file, so that a
 // session joining meanwhile can tell which published lines predate its join.
 func (p *fanoutProcessor) ReadUpTo(offset int64, file os.FileInfo) {
-	p.entry.readUpTo(position{offset: offset, file: file})
+	if p.tracker != nil {
+		p.tracker.readUpTo(position{offset: offset, file: file})
+	}
 }
 
 // Flush publishes the pending chunk; the reader flushes after every read.
@@ -155,7 +192,7 @@ func (p *fanoutProcessor) add(raw []byte) {
 // private reader would send it.
 func (p *fanoutProcessor) publishWarning() {
 	select {
-	case <-p.entry.messages:
+	case <-p.messages:
 		p.publishPending()
 		p.entry.publish(item{kind: longLineItem})
 	default:

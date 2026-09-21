@@ -349,7 +349,7 @@
         },
         "MaxConnections": {
           "type": "integer",
-          "description": "Maximum number of concurrent user connections.",
+          "description": "Maximum number of concurrent user connections, including connections still in their SSH handshake. Scheduled jobs that read the same files from this dserver only run together in groups of at most a quarter of it (at least one), divided by the number of servers of the jobs; scheduled jobs on other dservers, whose limits are unknown, run one at a time.",
           "minimum": 1,
           "default": 10
         },
@@ -372,7 +372,7 @@
         },
         "SharedReadsDisable": {
           "type": "boolean",
-          "description": "Turn shared follow reads off. By default, sessions that tail the same uncompressed file share one reader of it in dserver; every session still checks its own permissions, uses its own read slot, starts at the end of the file as of its join and filters and processes the lines on its own. A session that falls behind the shared reader moves to a reader of its own at the line where it stopped, so it does not delay the others; it does not rejoin the shared reader. When true, every session reads the file with a reader of its own.",
+          "description": "Turn shared reads off, both shared follow reads and the shared one-shot reads of scheduled job groups. By default, sessions that tail the same uncompressed file share one reader of it in dserver; every session still checks its own permissions, uses its own read slot, starts at the end of the file as of its join and filters and processes the lines on its own. A session that falls behind the shared reader moves to a reader of its own at the line where it stopped, so it does not delay the others; it does not rejoin the shared reader. Scheduled jobs that start together on the same files of this dserver read each file once for the group (at most MaxConcurrentCats members per group read). When true, every session reads the file with a reader of its own and the scheduler runs its jobs one at a time.",
           "default": false
         },
         "MaxLineLength": {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/clients/clientlog"
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -121,12 +122,18 @@ func (h *baseHandler) ReportServerError(message string) {
 // SendMessage to the server.
 func (h *baseHandler) SendMessage(command string) error {
 	encoded := base64.StdEncoding.EncodeToString([]byte(command))
-	h.log().Debug("Sending command", h.server, command, encoded)
+	// A scheduled job's read share stays out of the log, in the command and
+	// in its encoding.
+	loggedCommand, loggedEncoded := command, encoded
+	if redacted := config.RedactReadShare(command); redacted != command {
+		loggedCommand, loggedEncoded = redacted, "(redacted)"
+	}
+	h.log().Debug("Sending command", h.server, loggedCommand, loggedEncoded)
 
 	select {
 	case h.commands <- fmt.Sprintf("protocol %s base64 %v;", protocol.ProtocolCompat, encoded):
 	case <-time.After(time.Second * 5):
-		return fmt.Errorf("timed out sending command '%s' (base64: '%s')", command, encoded)
+		return fmt.Errorf("timed out sending command '%s' (base64: '%s')", loggedCommand, loggedEncoded)
 	case <-h.Done():
 		return nil
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -21,13 +20,21 @@ type scheduler struct {
 	cfg           config.RuntimeConfig
 	logger        logging.Logger
 	newMaprClient func(config.Args, clients.MaprClientMode) (backgroundClient, error)
+	// now is the clock the time ranges and the dates in file names and
+	// outfiles are evaluated with.
+	now func() time.Time
+	// thisDServer recognises the servers of jobs that reach the dserver
+	// running the scheduler.
+	thisDServer thisDServer
 }
 
 func newScheduler(cfg config.RuntimeConfig, loggers clients.LoggerDependencies, colorizers ...*brush.Brush) *scheduler {
 	colorizer := firstColorizer(colorizers)
 	return &scheduler{
-		cfg:    cfg,
-		logger: logging.OrNop(loggers.Server),
+		cfg:         cfg,
+		logger:      logging.OrNop(loggers.Server),
+		now:         time.Now,
+		thisDServer: newThisDServer(cfg),
 		newMaprClient: func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
 			return clients.NewMaprClient(args, cfg, mode, loggers, colorizer)
 		},
@@ -70,34 +77,60 @@ func wait(ctx context.Context, duration time.Duration) bool {
 	}
 }
 
+// runJobs runs the enabled jobs that are due, one group after another (see
+// nextGroup). Like the scheduler that ran every job on its own, it checks a
+// job's time range, fills the dates into its files and outfile and checks
+// that the outfile does not exist yet right before the job's group starts.
 func (s *scheduler) runJobs(ctx context.Context) {
+	var pending []*config.Scheduled
 	for i := range s.cfg.Server.Schedule {
 		job := &s.cfg.Server.Schedule[i]
 		if !job.Enable {
 			s.log().Debug(job.Name, "Not running job as not enabled")
 			continue
 		}
-		hour, err := strconv.Atoi(time.Now().Format("15"))
-		if err != nil {
-			s.log().Error(job.Name, "Unable to create job", err)
-			continue
+		pending = append(pending, job)
+	}
+	for len(pending) > 0 {
+		if ctx.Err() != nil {
+			return
 		}
-		if hour < job.TimeRange[0] || hour >= job.TimeRange[1] {
-			s.log().Debug(job.Name, "Not running job out of time range")
-			continue
+		var group []dueJob
+		group, pending = s.nextGroup(ctx, pending)
+		if len(group) > 0 {
+			s.runGroup(ctx, group)
 		}
-		s.runJob(ctx, job)
 	}
 }
 
+// runJob runs job now unless its outfile exists; it does not check the job's
+// time range.
 func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
-	files := fillDates(job.Files)
-	outfile := fillDates(job.Outfile)
+	if due, reason := s.prepare(job, s.now()); reason == "" {
+		s.runDueJob(ctx, due)
+	} else {
+		s.log().Debug(job.Name, reason)
+	}
+}
+
+// evaluate returns the client arguments of job at now, or why job is not due:
+// now is outside its time range, or its outfile already exists.
+func (s *scheduler) evaluate(job *config.Scheduled, now time.Time) (dueJob, string) {
+	if hour := now.Hour(); hour < job.TimeRange[0] || hour >= job.TimeRange[1] {
+		return dueJob{}, "Not running job out of time range"
+	}
+	return s.prepare(job, now)
+}
+
+// prepare returns the client arguments of job at now, or why job is not due:
+// its outfile already exists.
+func (s *scheduler) prepare(job *config.Scheduled, now time.Time) (dueJob, string) {
+	files := fillDatesAt(job.Files, now)
+	outfile := fillDatesAt(job.Outfile, now)
 
 	_, err := os.Stat(outfile)
 	if !os.IsNotExist(err) {
-		s.log().Debug(job.Name, "Not running job as outfile already exists", outfile)
-		return
+		return dueJob{}, "Not running job as outfile already exists: " + outfile
 	}
 
 	servers := strings.Join(job.Servers, ",")
@@ -118,7 +151,12 @@ func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
 
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(job.Name))
 	args.QueryStr = fmt.Sprintf("%s outfile %s", job.Query, outfile)
-	client, err := s.newMaprClient(args, clients.CumulativeMode)
+	return dueJob{job: job, args: args, outfile: outfile}, ""
+}
+
+func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
+	job := due.job
+	client, err := s.newMaprClient(due.args, clients.CumulativeMode)
 	if err != nil {
 		s.log().Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
 		return
@@ -129,7 +167,7 @@ func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
 
 	s.log().Info(fmt.Sprintf("Starting job %s", job.Name))
 	status := client.Start(jobCtx, make(chan string))
-	logMessage := fmt.Sprintf("Job exited with status %d", status)
+	logMessage := fmt.Sprintf("Job %s exited with status %d", job.Name, status)
 
 	if status != 0 {
 		s.log().Warn(logMessage)

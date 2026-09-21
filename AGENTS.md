@@ -376,6 +376,29 @@ the shared reader; it stays private until it ends, which costs the sharing but n
 burst (about 60 MiB written at once in the checks) can also evict sessions
 that are merely slower than the reader.
 
+**Shared one-shot reads of scheduled job groups (dserver):**
+The scheduler (`internal/jobs/schedulergroup.go`) starts due jobs that read
+the same files from the same servers, and do not write each other's outfiles
+or read files another writes, together as a group, when all their
+servers are this dserver (`internal/jobs/localserver.go`), in waves of at most
+`MaxConnections/4` (at least one) divided by the number of servers; other jobs,
+and all jobs when `Server.SharedReadsDisable` is set, run one at a time. Each
+job sends the option `share=<group>:<members>`; dserver honours it only for
+the scheduler's user `DTAIL-SCHEDULE` and ignores it elsewhere (older dservers
+ignore it too). The hub (`internal/io/fs/readhub/oneshot.go`) waits until the
+members joined or `GroupWait` (3 s) passed, takes a free cat slot per member
+without waiting for one while holding another, reads the file once from its
+beginning and delivers every line (with its newline, empty lines included) to
+every member, which numbers from 1 and filters on its own. This is a snapshot
+read: delivery blocks for a slow member instead of evicting it, there is no
+join skip and no held descriptor; a cancelled member leaves and releases the
+group. A member arriving after the read started, beyond `MaxConcurrentCats`
+members, without a free slot, or within 10 minutes after the group's read
+ended reads privately. The follow-only hub behaviour (eviction, join skip,
+held descriptors, read positions, in-order long line warnings) is wired
+through optional interfaces the fan-out processor type-asserts (`readTracker`,
+`warningSource`), which only the follow entry implements.
+
 **Best Practices for High-Concurrency MapReduce:**
 1. Increase MaxConcurrentCats in the server configuration to match workload
 2. Use server mode for large-scale MapReduce operations

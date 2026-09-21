@@ -13,7 +13,7 @@ import (
 // whose queue the test reads.
 func fanoutUnderTest(t *testing.T) (*fanoutProcessor, *subscriber) {
 	t.Helper()
-	e := &entry{}
+	e := &entry{messages: make(chan string, 1)}
 	sub := newSubscriber(Session{}, 64)
 	e.subscribers = []*subscriber{sub}
 	return newFanoutProcessor(e), sub
@@ -167,4 +167,32 @@ func fileInfo(t *testing.T) os.FileInfo {
 		t.Fatal(err)
 	}
 	return info
+}
+
+// The follow-only hooks are optional: a one-shot group entry is neither a
+// readTracker nor a warningSource, so the fan-out ignores reported read
+// positions for it and never waits for a warning channel of its own.
+func TestFanoutOfAGroupEntryHasNoFollowHooks(t *testing.T) {
+	member := &groupMember{subscriber: newSubscriber(Session{}, 64)}
+	e := &groupEntry{members: []*groupMember{member}}
+	fanout := newFanoutProcessor(e)
+	if fanout.tracker != nil || fanout.messages != nil {
+		t.Fatalf("group fan-out has follow hooks: tracker %v, messages %v", fanout.tracker, fanout.messages)
+	}
+	fanout.ReadUpTo(3, nil)
+	if err := fanout.ProcessRawLine([]byte("a\n"), 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := fanout.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	it := <-member.queue
+	if it.kind != chunkItem || !reflect.DeepEqual(chunkLines(it.chunk), []string{"a\n"}) {
+		t.Errorf("group member got %+v, want the chunk of line a", it)
+	}
+
+	follow := newFanoutProcessor(&entry{messages: make(chan string, 1)})
+	if follow.tracker == nil || follow.messages == nil {
+		t.Error("follow fan-out lacks its read tracker or warning channel")
+	}
 }

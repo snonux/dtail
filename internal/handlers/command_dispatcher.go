@@ -110,7 +110,7 @@ func applyCommandTimeout(ctx context.Context, args []string, argc int) (context.
 
 func (d *commandDispatcher) handleCommand(command string) {
 	h := d.handler
-	h.Logger().Debug(h.user, command)
+	h.Logger().Debug(h.user, commandForLog(command))
 
 	args, argc, add, err := d.codec.handleProtocolVersion(strings.Split(command, " "))
 	if err != nil {
@@ -147,6 +147,7 @@ func (d *commandDispatcher) dispatchCommand(ctx context.Context, args []string, 
 		}
 		d.handleOptions(options)
 		ltx = parsedContext
+		ctx = d.withReadShareOption(ctx, options[config.ReadShareOption])
 	}
 
 	if d.prepareCommandContextCb != nil {

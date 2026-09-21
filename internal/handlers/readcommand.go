@@ -38,6 +38,9 @@ type readCommand struct {
 	// followShared follows a file through the shared reader of dserver's read
 	// hub; nil when there is no hub and every read is private.
 	followShared func(context.Context, readhub.Session) error
+	// readGroup reads a file once for a group of sessions through dserver's
+	// read hub; nil when there is no hub.
+	readGroup groupReadFunc
 }
 
 type pendingInputReservationKeyType struct{}
@@ -157,6 +160,7 @@ func newReadCommandWithDependencies(dependencies readCommandDependencies, mode o
 		abort:         dependencies.abortAfterPanic,
 		serverless:    dependencies.serverless,
 		followShared:  followSharedFunc(dependencies.readHub),
+		readGroup:     groupReadFuncFor(dependencies.readHub),
 		aggregate:     aggregate,
 		mode:          mode,
 		shutdownCoordinator: newShutdownCoordinator(dependencies.lifecycle, dependencies.aggregates,
@@ -419,12 +423,6 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 
-	release, acquired := limiter(ctx, path)
-	if !acquired {
-		return
-	}
-	defer release()
-
 	// Output is the one and only read path. read() is only ever invoked for the
 	// cat/grep/tail command handlers (see makeReadCommandHandler), and MapReduce
 	// always builds a Aggregate for both server mode and serverless (see
@@ -438,6 +436,18 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	r.logger.Debug(r.logContext, "Selecting read mode",
 		"mode", r.mode, "hasAggregate", r.aggregate != nil)
 	r.logger.Info(r.logContext, "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
+	// A group member waits for the other members holding no cat slot; its
+	// group read takes the slot for it (see readWithGroup).
+	if group, ok := r.readShareGroup(ctx, target); ok && r.readWithGroup(ctx, ltx, re, readerOptions, group) {
+		return
+	}
+
+	release, acquired := limiter(ctx, path)
+	if !acquired {
+		return
+	}
+	defer release()
+
 	// The session's own PrepareReadTarget succeeded and it holds a read slot of
 	// its own, exactly as for a private read, before it may join a shared one.
 	if r.shouldShareRead(ltx, target, path) {

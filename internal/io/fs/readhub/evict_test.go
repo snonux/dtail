@@ -389,12 +389,12 @@ func TestLateJoinerStartsAtTheEndOfTheFile(t *testing.T) {
 
 func TestFanoutPublishesTheLongLineWarningBetweenItsLines(t *testing.T) {
 	fanout, sub := fanoutUnderTest(t)
-	fanout.entry.messages = make(chan string, 1)
+	messages := fanout.entry.(*entry).messages
 	if err := fanout.ProcessRawLine([]byte("before"), 0, ""); err != nil {
 		t.Fatal(err)
 	}
 	// The reader warns, then feeds the split line.
-	fanout.entry.messages <- "warning"
+	messages <- "warning"
 	if err := fanout.ProcessRawLine([]byte("split"), 0, ""); err != nil {
 		t.Fatal(err)
 	}

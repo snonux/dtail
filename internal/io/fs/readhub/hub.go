@@ -51,6 +51,19 @@ type Options struct {
 	// QueueChunks bounds each subscriber's queue; zero selects a default. A
 	// subscriber whose queue is full is evicted to a private reader.
 	QueueChunks int
+	// GroupWait bounds how long a one-shot group read waits for its members
+	// to join (see Hub.ReadOnce); zero selects DefaultGroupWait.
+	GroupWait time.Duration
+	// MaxGroupMembers bounds how many sessions share a one-shot group read;
+	// dserver sets it to its cat slots, as every member holds one during the
+	// read. Zero means no bound.
+	MaxGroupMembers int
+	// GroupMemory is how long the hub remembers a one-shot group read that
+	// ended; zero selects DefaultGroupMemory.
+	GroupMemory time.Duration
+	// MaxEndedGroups bounds how many ended one-shot group reads the hub
+	// remembers; zero selects DefaultMaxEndedGroups.
+	MaxEndedGroups int
 }
 
 // Session describes one session's follow read of a file.
@@ -86,6 +99,8 @@ type Hub struct {
 
 	mu      sync.Mutex
 	entries map[entryKey]*entry
+	// oneshot holds the one-shot group reads; see oneshot.go.
+	oneshot groupReads
 }
 
 // hubSeams are the reader operations an entry performs, replaceable in tests.

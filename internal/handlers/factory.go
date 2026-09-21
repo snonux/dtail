@@ -45,7 +45,8 @@ func NewForUser(ctx context.Context, user *user.User, dependencies Dependencies)
 }
 
 // NewReadHub returns the hub that lets dserver sessions tailing the same file
-// share one reader of it, configured like a session's private reader, or nil
+// share one reader of it, and the scheduled jobs of one group share one-shot
+// reads of the same file, configured like a session's private reader, or nil
 // when the configuration turns shared reads off.
 func NewReadHub(serverCfg *config.ServerConfig, logger logging.Logger) *readhub.Hub {
 	if serverCfg == nil || serverCfg.SharedReadsDisable {
@@ -56,5 +57,9 @@ func NewReadHub(serverCfg *config.ServerConfig, logger logging.Logger) *readhub.
 		Logger:        logger,
 		MaxLineLength: timings.maxLineLength,
 		RetryInterval: timings.readRetryInterval,
+		// Every member reading in a one-shot group read holds one of the
+		// server's cat slots during the read; members without a free slot
+		// when the read starts read on their own.
+		MaxGroupMembers: max(1, serverCfg.MaxConcurrentCats),
 	})
 }

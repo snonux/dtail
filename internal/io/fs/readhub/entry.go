@@ -63,6 +63,12 @@ type entry struct {
 	openedFile os.FileInfo
 }
 
+var (
+	_ publisher     = (*entry)(nil)
+	_ readTracker   = (*entry)(nil)
+	_ warningSource = (*entry)(nil)
+)
+
 // newEntry makes the shared follow read of creator's file, which starts at
 // start, the end of the file when creator joined.
 func newEntry(key entryKey, creator Session, start position, options Options, logger logging.Logger,
@@ -161,6 +167,11 @@ func (e *entry) isClosed() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.closed
+}
+
+// warnings returns the channel the reader sends its long line warning to.
+func (e *entry) warnings() <-chan string {
+	return e.messages
 }
 
 // readUpTo records how far the reader has read which file. When the reader
