@@ -735,7 +735,8 @@ the dmap scenarios (2.1-2.3x by median, the target of `15`, `25` and `35`),
 server dgrep high-match (2.8x) and the follow burst (4.6x). Serverless dcat
 (the target of `45`) improved by median, 1.28x on 1 GiB (1.87 s to 1.47 s,
 ranges clearly apart) and 1.31x on 100 MiB (0.237 s to 0.181 s, but the ranges
-overlap because of one slow pre-plan sample). The two dgrep low-match
+overlap because of one slow current sample, 0.273 s in iteration 1; the
+pre-plan run's iteration 1 was slow too, at 0.397 s). The two dgrep low-match
 scenarios show no measurable change: their before and after ranges overlap
 (serverless median 0.195 s before versus 0.210 s after, server 0.301 s versus
 0.308 s), which fits the workload: few lines match, and most of the plan's read-path
