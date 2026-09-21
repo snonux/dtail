@@ -349,7 +349,7 @@
         },
         "MaxConnections": {
           "type": "integer",
-          "description": "Maximum number of concurrent user connections.",
+          "description": "Maximum number of concurrent user connections, including connections still in their SSH handshake. Scheduled jobs that read the same files run together in groups of at most a quarter of it (at least one), divided by the number of servers of the jobs.",
           "minimum": 1,
           "default": 10
         },

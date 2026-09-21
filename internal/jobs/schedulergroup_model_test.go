@@ -159,7 +159,8 @@ func setUpModelDir(t *testing.T, dir string, rng *rand.Rand) {
 // and leave the same files, with the same contents, as when every job ran on
 // its own in the configured order, for random job lists: jobs reading and
 // writing the same files, outfiles named in different ways, outfiles that
-// exist, jobs out of their time range, disabled, failing or on other servers.
+// exist, jobs out of their time range, disabled, failing or on other servers,
+// and groups larger than their bound, which run in waves.
 func TestSchedulerGroupsGiveTheResultsOfJobsRunOneByOne(t *testing.T) {
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -183,8 +184,11 @@ func TestSchedulerGroupsGiveTheResultsOfJobsRunOneByOne(t *testing.T) {
 
 		setUpModelDir(t, filepath.Join(root, fmt.Sprintf("%d-grouped", iteration)), rand.New(rand.NewPCG(dirSeed, 1)))
 		got := &modelJobs{fails: fails}
+		// Bound the groups to 1 to 10 jobs, so that groups larger than the
+		// bound run in waves.
+		maxConnections := 4 * (1 + rng.IntN(10))
 		s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-			SSHBindAddress: "127.0.0.1", Schedule: jobs,
+			SSHBindAddress: "127.0.0.1", MaxConnections: maxConnections, Schedule: jobs,
 		}}, jobTestLoggers)
 		s.now = func() time.Time { return now }
 		s.newMaprClient = got.newClient
@@ -198,8 +202,8 @@ func TestSchedulerGroupsGiveTheResultsOfJobsRunOneByOne(t *testing.T) {
 				fmt.Fprintf(&config, "\n  %s enable=%v range=%v files=%q outfile=%q servers=%v fails=%v",
 					job.Name, job.Enable, job.TimeRange, job.Files, job.Outfile, job.Servers, fails[job.Name])
 			}
-			t.Fatalf("iteration %d, jobs:%s\nran %v, one by one %v\nfiles %v\none by one %v",
-				iteration, config.String(), got.ran, want.ran, gotFiles, wantFiles)
+			t.Fatalf("iteration %d, MaxConnections %d, jobs:%s\nran %v, one by one %v\nfiles %v\none by one %v",
+				iteration, maxConnections, config.String(), got.ran, want.ran, gotFiles, wantFiles)
 		}
 		if !slices.Equal(got.ran, want.ran) {
 			grouped++

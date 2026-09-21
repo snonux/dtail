@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/discovery"
 )
 
 // dueJob is a scheduled job that runs in the current scheduler run.
@@ -46,6 +47,10 @@ func (d dueJob) groupKey() jobGroupKey {
 // thus stays pending, runs after it and, as before, only if that job did not
 // write the outfile. dserver bounds how many members share a read by its own
 // cat slots; the other members read on their own.
+//
+// A group has at most groupLimit jobs; the other jobs that could join it stay
+// pending and form the next groups, each a wave of at most groupLimit jobs
+// sharing reads among themselves.
 func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.Scheduled) {
 	now := s.now()
 	first, reason := s.evaluate(pending[0], now)
@@ -55,6 +60,7 @@ func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.
 	}
 	group := []dueJob{first}
 	key := first.groupKey()
+	limit := s.groupLimit(first.args)
 	// before holds the footprints of the group's jobs and of the earlier
 	// jobs that stay pending: the jobs a later job must not conflict with to
 	// join the group.
@@ -63,7 +69,7 @@ func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.
 	for _, job := range pending[1:] {
 		footprint := footprintAt(job, now)
 		due, reason := s.evaluate(job, now)
-		if reason != "" || due.groupKey() != key || footprint.conflictsWithAny(before) {
+		if len(group) >= limit || reason != "" || due.groupKey() != key || footprint.conflictsWithAny(before) {
 			rest = append(rest, job)
 		} else {
 			group = append(group, due)
@@ -71,6 +77,37 @@ func (s *scheduler) nextGroup(pending []*config.Scheduled) ([]dueJob, []*config.
 		before = append(before, footprint)
 	}
 	return group, rest
+}
+
+// groupLimit returns how many jobs connecting to the servers of args may run
+// together: a quarter of the local dserver's MaxConnections, divided by the
+// number of servers each job connects to, and at least one.
+//
+// Every job of a group opens an SSH connection of its own to each of its
+// servers, and dserver counts connections still in their handshake against
+// MaxConnections too, and refuses the others; a scheduled job does not
+// retry, so a refused job would fail and, as its outfile then exists, not run
+// again until the dates in its outfile change. The quarter leaves the other
+// connections to interactive users and continuous jobs. Dividing by the
+// number of servers keeps the bound when several server names of a job reach
+// the same dserver. The limits of remote dservers are unknown to the
+// scheduler: the bound assumes they allow at least as many connections as the
+// local one. When the servers cannot be discovered, jobs run one at a time,
+// as the scheduler did before it grouped jobs.
+func (s *scheduler) groupLimit(args config.Args) int {
+	servers := 1
+	finder, err := discovery.New(args.Discovery, args.ServersStr, discovery.Shuffle, s.log())
+	if err == nil {
+		var list []string
+		if list, err = finder.ServerList(); err == nil {
+			servers = max(1, len(list))
+		}
+	}
+	if err != nil {
+		s.log().Warn("Running jobs one at a time as their servers can not be discovered", err)
+		return 1
+	}
+	return max(1, s.cfg.Server.MaxConnections/4/servers)
 }
 
 // jobFootprint is what a scheduled job reads and writes at a time: the

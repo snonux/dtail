@@ -44,6 +44,9 @@ type ServerConfig struct {
 	// The SSH server bind port.
 	SSHBindAddress string
 	// The max amount of concurrent user connection allowed to connect to the server.
+	// Connections still in their SSH handshake count too. The scheduler runs
+	// at most a quarter of it (at least one), divided by the number of
+	// servers of the jobs, of the scheduled jobs it groups at the same time.
 	MaxConnections int
 	// Rolling inactivity timeout for authenticated SSH sessions, in seconds.
 	// The close lags this value by two to three refresh intervals (see
