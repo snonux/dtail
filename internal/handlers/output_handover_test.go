@@ -499,7 +499,9 @@ func TestStaleGenerationDroppedUnderConcurrentReload(t *testing.T) {
 
 // update must publish the new generation before it cancels the previous
 // generation's context: a stale command that stops because of the
-// cancellation must already see its generation as stale.
+// cancellation must already see its generation as stale. The test wraps the
+// stored cancel func so the generation is read synchronously at the moment
+// update calls it, which makes a reordering fail deterministically.
 func TestSessionUpdatePublishesGenerationBeforeCancellingPrevious(t *testing.T) {
 	handler, recorder := newSessionDispatchTestHandler("session-generation-order-user")
 	readServerMessage(t, handler.serverMessages)
@@ -519,22 +521,29 @@ func TestSessionUpdatePublishesGenerationBeforeCancellingPrevious(t *testing.T) 
 	readServerMessage(t, handler.serverMessages)
 	first := recorder.waitForStart(t)
 
-	seen := make(chan uint64, 1)
-	go func() {
-		<-first.ctx.Done()
-		seen <- handler.sessionState.currentGeneration()
-	}()
+	// Read without taking mu: update may still hold it when it cancels.
+	var seen []uint64
+	handler.sessionState.mu.Lock()
+	previousCancel := handler.sessionState.cancel
+	handler.sessionState.cancel = func() {
+		seen = append(seen, handler.sessionState.currentGeneration())
+		previousCancel()
+	}
+	handler.sessionState.mu.Unlock()
+
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", "UPDATE", payload}, func() {})
 	readServerMessage(t, handler.serverMessages)
 	recorder.waitForStart(t)
 
-	select {
-	case generation := <-seen:
-		if generation != 2 {
-			t.Fatalf("generation seen after cancellation = %d, want 2", generation)
-		}
-	case <-time.After(time.Second):
+	// update has returned, so the wrapper ran on this goroutine if at all.
+	if len(seen) != 1 {
+		t.Fatalf("previous generation cancel called %d times, want 1", len(seen))
+	}
+	if seen[0] != 2 {
+		t.Fatalf("generation seen at cancellation = %d, want 2", seen[0])
+	}
+	if first.ctx.Err() == nil {
 		t.Fatal("previous generation context was not cancelled")
 	}
 }
