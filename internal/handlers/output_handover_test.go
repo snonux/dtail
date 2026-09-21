@@ -584,22 +584,36 @@ func TestOutputManagerAdoptedCapacityBackpressure(t *testing.T) {
 	}
 }
 
+// errTestBackpressure reports that the output queue refused a writer batch.
+var errTestBackpressure = errors.New("output queue full")
+
 // fillUntilBackpressure writes lines of lineLen bytes through a production
-// NetworkWriter into manager, which nobody drains, until the writer blocks on
-// the full queue. It returns the retained and payload bytes queued then.
+// NetworkWriter into manager, which nobody drains, until the queue refuses a
+// batch. It returns the retained and payload bytes queued then.
+//
+// Backpressure is detected from the queue's own admission decision
+// (tryEnqueueLocked, the step enqueue retries while it blocks), not from a
+// deadline: a wall-clock budget for the fill made the result depend on how
+// fast the machine formatted the lines, and under load it ended the fill
+// early with the queue far from full.
 func fillUntilBackpressure(t *testing.T, manager *outputManager, plain bool, lineLen int) (retained, buffered, entries int) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	writer := NewNetworkWriter(ctx, nil, nil, "testhost", plain, false, 1, nil, handlerTestLogger)
-	writer.enqueueOutput = manager.enqueue
+	writer := NewNetworkWriter(context.Background(), nil, nil, "testhost", plain, false, 1, nil, handlerTestLogger)
+	writer.enqueueOutput = func(_ context.Context, generation uint64, payload []byte, _ func() uint64) error {
+		manager.mu.Lock()
+		defer manager.mu.Unlock()
+		if !manager.tryEnqueueLocked(generation, payload, manager.resolvedBufferMaxBytes()) {
+			return errTestBackpressure
+		}
+		return nil
+	}
 	line := bytes.Repeat([]byte{'x'}, lineLen)
 	for i := 0; ; i++ {
 		if i > 1<<20 {
 			t.Fatal("writer never blocked on the full output queue")
 		}
 		if err := writer.WriteLineData(line, uint64(i), "app.log"); err != nil {
-			if !errors.Is(err, context.DeadlineExceeded) {
+			if !errors.Is(err, errTestBackpressure) {
 				t.Fatalf("WriteLineData: %v", err)
 			}
 			return managerAccounting(manager)
