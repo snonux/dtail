@@ -389,7 +389,7 @@ largest field count of any line of the batch just processed, each scratch is
 charged only for capacity beyond the larger of that and the default size, and
 a scratch over budget is shrunk to that size. A varying workload keeps the
 batch maximum near its own maximum, so its batches reuse every scratch (row
-below; `TestBatchScratchVaryingLineSizesAllocationFree` also covers random
+above; `TestBatchScratchVaryingLineSizesAllocationFree` also covers random
 field counts up to 300 and 1000, which the per-line algorithm answered with 79
 and 213 allocations per batch). Outlier recovery is unchanged: an outlier
 batch is followed by an ordinary batch with a small maximum, which trims the
