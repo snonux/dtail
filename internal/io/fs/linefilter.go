@@ -53,6 +53,18 @@ func (lf *LineFilter) Flush() error {
 	return lf.filter.processor.Flush()
 }
 
+// Reopen switches the filter to processor for a new read of the source, as a
+// private reader does when it opens the file again after it was rotated or
+// its read ended: max-count and local context start afresh, line numbering
+// carries on, and before-context lines still buffered are released. The
+// caller owns both processors; Reopen neither flushes nor closes the old one.
+func (lf *LineFilter) Reopen(processor line.Processor) {
+	old := lf.filter
+	old.resetGeneration()
+	lf.filter = newFilteringProcessor(old.ltx, processor, old.re, &lf.stats, old.globID)
+	lf.filter.recycle = old.recycle
+}
+
 // Restart handles an in-place truncation of the source, as a private follow
 // reader does when it rewinds: local context from the old content is
 // discarded, a line.SourceRestarter processor is told that its input starts

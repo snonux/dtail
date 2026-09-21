@@ -338,3 +338,81 @@ func TestLineFilterCloseReleasesBufferedContext(t *testing.T) {
 		t.Errorf("Close emitted lines %q, want none", processor.lines)
 	}
 }
+
+func TestLineFilterReopenMatchesPrivateReaderRestart(t *testing.T) {
+	// A private reader is started again on the same ReadFile when the read
+	// command retries, e.g. after a rotation: numbering carries on while the
+	// max-count and local context start afresh. Reopen must do the same.
+	contexts := []lcontext.LContext{
+		{},
+		{MaxCount: 1},
+		{BeforeContext: 1, AfterContext: 1},
+	}
+	filePath := writeProcessorTestFile(t, lineFilterTestContent)
+	tokens := snapshotTokens(t, lineFilterTestContent)
+	re := mustRegex(t, "ERROR")
+
+	for _, ltx := range contexts {
+		reader := newSnapshotReadFile(filePath, "glob", nil, defaultMaxLineLength, testLogger)
+		firstFilter := NewLineFilter(ltx, nil, re, "glob")
+
+		for round := 1; round <= 2; round++ {
+			private := &captureProcessor{}
+			if err := reader.Start(context.Background(), ltx, private, re); err != nil {
+				t.Fatalf("%+v round %d: private read error = %v", ltx, round, err)
+			}
+
+			shared := &captureProcessor{}
+			firstFilter.Reopen(shared)
+			for _, token := range tokens {
+				stop, err := firstFilter.ProcessLine(token)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stop {
+					break
+				}
+			}
+
+			if !reflect.DeepEqual(shared.lines, private.lines) ||
+				!reflect.DeepEqual(shared.lineNums, private.lineNums) {
+				t.Errorf("%+v round %d: got %q %v, want %q %v", ltx, round,
+					shared.lines, shared.lineNums, private.lines, private.lineNums)
+			}
+		}
+	}
+}
+
+func TestLineFilterReopenReleasesBufferedContext(t *testing.T) {
+	var recycled int
+	filter := NewLineFilter(lcontext.LContext{BeforeContext: 1}, &captureProcessor{},
+		mustRegex(t, "ERROR"), "glob")
+	filter.filter.recycle = func(buf *bytes.Buffer) {
+		recycled++
+		pool.RecycleBytesBuffer(buf)
+	}
+	if _, err := filter.ProcessLine([]byte("INFO buffered")); err != nil {
+		t.Fatal(err)
+	}
+
+	next := &captureProcessor{}
+	filter.Reopen(next)
+	if recycled != 1 {
+		t.Errorf("Reopen recycled %d buffered context lines, want 1", recycled)
+	}
+	// The before-context line of the previous read must not reappear.
+	if _, err := filter.ProcessLine([]byte("ERROR next")); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"ERROR next"}; !reflect.DeepEqual(next.lines, want) {
+		t.Errorf("lines after Reopen = %q, want %q", next.lines, want)
+	}
+	// The recycle seam survives Reopen.
+	if _, err := filter.ProcessLine([]byte("INFO again")); err != nil {
+		t.Fatal(err)
+	}
+	filter.Close()
+	if recycled != 2 {
+		t.Errorf("recycled %d lines in total, want 2", recycled)
+	}
+}

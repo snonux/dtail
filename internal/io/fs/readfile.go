@@ -35,13 +35,21 @@ type ReadOptions struct {
 	// StartOffset, when positive, positions the first successful open of the
 	// file at this byte offset instead of its start. It is meant for resuming a
 	// read where another reader of the same file stopped, so it must point at a
-	// line boundary. Later reopens, after rotation, start at the beginning as
-	// usual. If the file is shorter than the offset by then, a follow read
-	// treats it as truncated and rewinds. It cannot be combined with SeekEOF
-	// and is only supported for uncompressed files, not for the stdin pipe.
-	StartOffset   int64
-	MaxLineLength int
-	Logger        logging.Logger
+	// line boundary of the file StartOffsetFile describes, which is required
+	// with it. If the file opened is a different one (the path was rotated in
+	// between), the offset is ignored and the read starts at the beginning, as
+	// any read of a new file does. Later reopens start at the beginning as
+	// usual. If the file is shorter than the offset, a follow read treats it
+	// as truncated: it logs so, tells a line.SourceRestarter processor that
+	// its source starts over, and rewinds. StartOffset cannot be combined with
+	// SeekEOF and is only supported for uncompressed files, not for the stdin
+	// pipe.
+	StartOffset int64
+	// StartOffsetFile identifies the file StartOffset was measured in, as
+	// returned by os.File.Stat or os.Stat for it.
+	StartOffsetFile os.FileInfo
+	MaxLineLength   int
+	Logger          logging.Logger
 }
 
 // ReadFile reads and filters a local file or serverless pipe.
@@ -68,6 +76,8 @@ type ReadFile struct {
 	seekInitialEOF bool
 	// Byte offset for the first successful file open; zero means the start.
 	initialOffset int64
+	// The file initialOffset belongs to; the offset only applies to it.
+	initialOffsetFile os.FileInfo
 	// Warned already about a long line.
 	warnedAboutLongLine bool
 	// Maximum line length before a line is split.
@@ -106,17 +116,18 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 	}
 
 	return &ReadFile{
-		logger:          logging.OrNop(options.Logger),
-		filePath:        options.FilePath,
-		validatedTarget: target,
-		globID:          options.GlobID,
-		serverMessages:  options.ServerMessages,
-		retry:           retry,
-		canSkipLines:    canSkipLines,
-		follow:          follow,
-		seekInitialEOF:  options.SeekEOF,
-		initialOffset:   options.StartOffset,
-		maxLineLength:   options.MaxLineLength,
+		logger:            logging.OrNop(options.Logger),
+		filePath:          options.FilePath,
+		validatedTarget:   target,
+		globID:            options.GlobID,
+		serverMessages:    options.ServerMessages,
+		retry:             retry,
+		canSkipLines:      canSkipLines,
+		follow:            follow,
+		seekInitialEOF:    options.SeekEOF,
+		initialOffset:     options.StartOffset,
+		initialOffsetFile: options.StartOffsetFile,
+		maxLineLength:     options.MaxLineLength,
 	}, nil
 }
 
@@ -126,6 +137,8 @@ func validateStartOffset(options ReadOptions) error {
 		return nil
 	case options.StartOffset < 0:
 		return fmt.Errorf("negative read start offset %d", options.StartOffset)
+	case options.StartOffsetFile == nil:
+		return errors.New("read start offset needs the identity of the file it belongs to")
 	case options.SeekEOF:
 		return errors.New("read start offset and seek to EOF are mutually exclusive")
 	case options.FilePath == "" && options.GlobID == "-":
@@ -219,6 +232,7 @@ func (f *ReadFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompre
 		initialOffset := f.initialOffset
 		f.seekInitialEOF = false
 		f.initialOffset = 0
+		f.initialOffsetFile = nil
 		f.logger.Trace(f.filePath, f.globID, "Opened file reader", "seekInitialEOF", seekInitialEOF,
 			"initialOffset", initialOffset)
 	}
@@ -234,9 +248,24 @@ func (f *ReadFile) seekInitialPosition(fd *os.File) error {
 			return fmt.Errorf("seek to end of %s: %w", f.filePath, err)
 		}
 	case f.initialOffset > 0:
-		if _, err := fd.Seek(f.initialOffset, io.SeekStart); err != nil {
-			return fmt.Errorf("seek to offset %d of %s: %w", f.initialOffset, f.filePath, err)
-		}
+		return f.seekInitialOffset(fd)
+	}
+	return nil
+}
+
+// seekInitialOffset seeks to StartOffset, unless the open file is not the one
+// the offset was measured in.
+func (f *ReadFile) seekInitialOffset(fd *os.File) error {
+	info, err := fd.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s for start offset: %w", f.filePath, err)
+	}
+	if !os.SameFile(info, f.initialOffsetFile) {
+		f.logger.Info(f.filePath, "File changed since the start offset was taken, reading from beginning")
+		return nil
+	}
+	if _, err := fd.Seek(f.initialOffset, io.SeekStart); err != nil {
+		return fmt.Errorf("seek to offset %d of %s: %w", f.initialOffset, f.filePath, err)
 	}
 	return nil
 }

@@ -25,23 +25,34 @@ func writeStartOffsetTestFile(t *testing.T, name, content string) string {
 	return path
 }
 
+func statStartOffsetTestFile(t *testing.T, path string) os.FileInfo {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
 func TestNewReadFileValidatesStartOffset(t *testing.T) {
+	identity := statStartOffsetTestFile(t, writeStartOffsetTestFile(t, "id.log", "x\n"))
 	tests := []struct {
 		name    string
 		options ReadOptions
 		wantErr string
 	}{
 		{"zero offset", ReadOptions{FilePath: "/tmp/a.log"}, ""},
-		{"positive offset", ReadOptions{FilePath: "/tmp/a.log", StartOffset: 10}, ""},
+		{"positive offset", ReadOptions{FilePath: "/tmp/a.log", StartOffset: 10, StartOffsetFile: identity}, ""},
+		{"offset without file identity", ReadOptions{FilePath: "/tmp/a.log", StartOffset: 10}, "identity"},
 		{"zero offset with seek EOF", ReadOptions{FilePath: "/tmp/a.log", SeekEOF: true}, ""},
 		{"zero offset on a compressed file", ReadOptions{FilePath: "/tmp/a.log.gz"}, ""},
 		{"negative offset", ReadOptions{FilePath: "/tmp/a.log", StartOffset: -1}, "negative"},
-		{"offset with seek EOF", ReadOptions{FilePath: "/tmp/a.log", StartOffset: 10, SeekEOF: true},
+		{"offset with seek EOF", ReadOptions{FilePath: "/tmp/a.log", StartOffset: 10, SeekEOF: true, StartOffsetFile: identity},
 			"mutually exclusive"},
-		{"offset on the stdin pipe", ReadOptions{GlobID: "-", StartOffset: 10}, "stdin pipe"},
-		{"offset on a gz file", ReadOptions{FilePath: "/tmp/a.log.gz", StartOffset: 10}, "compressed"},
-		{"offset on a gzip file", ReadOptions{FilePath: "/tmp/a.log.gzip", StartOffset: 10}, "compressed"},
-		{"offset on a zst file", ReadOptions{FilePath: "/tmp/a.log.zst", StartOffset: 10}, "compressed"},
+		{"offset on the stdin pipe", ReadOptions{GlobID: "-", StartOffset: 10, StartOffsetFile: identity}, "stdin pipe"},
+		{"offset on a gz file", ReadOptions{FilePath: "/tmp/a.log.gz", StartOffset: 10, StartOffsetFile: identity}, "compressed"},
+		{"offset on a gzip file", ReadOptions{FilePath: "/tmp/a.log.gzip", StartOffset: 10, StartOffsetFile: identity}, "compressed"},
+		{"offset on a zst file", ReadOptions{FilePath: "/tmp/a.log.zst", StartOffset: 10, StartOffsetFile: identity}, "compressed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -67,11 +78,12 @@ func TestNewReadFileValidatesStartOffset(t *testing.T) {
 func TestStartOffsetSnapshotReadStartsAtOffset(t *testing.T) {
 	path := writeStartOffsetTestFile(t, "offset.log", "alpha\nbeta\ngamma\n")
 	reader := mustNewReadFile(ReadOptions{
-		Mode:        omode.CatClient,
-		FilePath:    path,
-		GlobID:      "glob",
-		StartOffset: int64(len("alpha\n")),
-		Logger:      testLogger,
+		Mode:            omode.CatClient,
+		FilePath:        path,
+		GlobID:          "glob",
+		StartOffset:     int64(len("alpha\n")),
+		StartOffsetFile: statStartOffsetTestFile(t, path),
+		Logger:          testLogger,
 	})
 	processor := &captureProcessor{}
 	if err := reader.Start(context.Background(), lcontext.LContext{}, processor, regex.NewNoop()); err != nil {
@@ -105,13 +117,16 @@ func readAllFromNewReader(t *testing.T, reader *ReadFile) string {
 }
 
 func TestStartOffsetAppliesToFirstSuccessfulOpenOnly(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "late.log")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "late.log")
+	staged := writeStartOffsetTestFile(t, "staged.log", "alpha\nbeta\n")
 	reader := mustNewReadFile(ReadOptions{
-		Mode:        omode.TailClient,
-		FilePath:    path,
-		GlobID:      "glob",
-		StartOffset: int64(len("alpha\n")),
-		Logger:      testLogger,
+		Mode:            omode.TailClient,
+		FilePath:        path,
+		GlobID:          "glob",
+		StartOffset:     int64(len("alpha\n")),
+		StartOffsetFile: statStartOffsetTestFile(t, staged),
+		Logger:          testLogger,
 	})
 
 	// A failed first open must keep the offset for the retry.
@@ -123,7 +138,8 @@ func TestStartOffsetAppliesToFirstSuccessfulOpenOnly(t *testing.T) {
 		t.Fatal("a failed open cleared the start offset")
 	}
 
-	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o600); err != nil {
+	// The file the offset was measured in appears at the path.
+	if err := os.Rename(staged, path); err != nil {
 		t.Fatal(err)
 	}
 	if got := readAllFromNewReader(t, reader); got != "beta\n" {
@@ -153,11 +169,12 @@ func (p *cancelOnLineProcessor) ProcessLine(lineContent *bytes.Buffer, lineNum u
 func TestStartOffsetBeyondFileSizeRewindsFollowRead(t *testing.T) {
 	path := writeStartOffsetTestFile(t, "short.log", "alpha\nbeta\n")
 	reader := mustNewReadFile(ReadOptions{
-		Mode:        omode.TailClient,
-		FilePath:    path,
-		GlobID:      "glob",
-		StartOffset: 1000,
-		Logger:      testLogger,
+		Mode:            omode.TailClient,
+		FilePath:        path,
+		GlobID:          "glob",
+		StartOffset:     1000,
+		StartOffsetFile: statStartOffsetTestFile(t, path),
+		Logger:          testLogger,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -171,5 +188,36 @@ func TestStartOffsetBeyondFileSizeRewindsFollowRead(t *testing.T) {
 	// truncated and reads it from the beginning.
 	if want := []string{"alpha", "beta"}; !reflect.DeepEqual(processor.lines, want) {
 		t.Errorf("lines = %q, want %q (context error %v)", processor.lines, want, ctx.Err())
+	}
+}
+
+func TestStartOffsetIsIgnoredForAnotherFile(t *testing.T) {
+	// The offset was taken in the old file, which was then rotated away and
+	// replaced by a new file at the same path.
+	path := writeStartOffsetTestFile(t, "rotated.log", "old1\nold2\n")
+	oldFile := statStartOffsetTestFile(t, path)
+	if err := os.Rename(path, path+".1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("new1\nnew2\nnew3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	reader := mustNewReadFile(ReadOptions{
+		Mode:            omode.CatClient,
+		FilePath:        path,
+		GlobID:          "glob",
+		StartOffset:     int64(len("old1\nold2\n")),
+		StartOffsetFile: oldFile,
+		Logger:          testLogger,
+	})
+	processor := &captureProcessor{}
+	if err := reader.Start(context.Background(), lcontext.LContext{}, processor, regex.NewNoop()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	// The new file is read from its beginning; no line of it is lost.
+	if want := []string{"new1\n", "new2\n", "new3\n"}; !reflect.DeepEqual(processor.lines, want) {
+		t.Errorf("lines = %q, want %q", processor.lines, want)
 	}
 }
