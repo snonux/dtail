@@ -94,8 +94,10 @@ func BindCommonClientFlags(fs *flag.FlagSet, args *config.Args) *ClientRunner {
 	fs.StringVar(&args.ControlTTYPath, "control-tty", "/dev/tty", "TTY device for interactive query control")
 	fs.StringVar(&args.Discovery, "discovery", "", "Server discovery method")
 	fs.StringVar(&args.HostnameOverride, "hostname-override", "", "Override the hostname used in logs and output")
-	fs.StringVar(&args.LogDir, "logDir", "~/log", "Log dir")
-	fs.StringVar(&args.Logger, "logger", config.DefaultClientLogger, "Logger name")
+	fs.StringVar(&args.LogDir, "logDir", "",
+		"Log dir (default: Common.LogDir from the config file, else "+config.DefaultClientLogDir+")")
+	fs.StringVar(&args.Logger, "logger", "",
+		"Logger name (default: Common.Logger from the config file, else "+config.DefaultClientLogger+")")
 	fs.StringVar(&args.LogLevel, "logLevel", config.DefaultLogLevel, "Log level")
 	BindAuthKeyFlags(fs, &runner.legacyAuthKeyPath, args)
 	fs.StringVar(&args.KnownHostsPath, "known-hosts-path", "", "OpenSSH known_hosts file path")

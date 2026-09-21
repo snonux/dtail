@@ -564,6 +564,10 @@ func TestSchemaAcceptsEveryDefaultField(t *testing.T) {
 	defaults.Server.Schedule = []Scheduled{{jobCommons: common, TimeRange: [2]int{0, 24}}}
 	defaults.Server.Continuous = []Continuous{{jobCommons: common, RestartOnDayChange: true}}
 	defaults.Common.HostnameOverride = "host"
+	// Logger and LogDir default to empty (the per-command default applies);
+	// the schema rejects an empty logger name, so set real values.
+	defaults.Common.Logger = DefaultServerLogger
+	defaults.Common.LogDir = DefaultServerLogDir
 	defaults.Common.ExperimentalFeaturesEnable = true
 	defaults.Client.KnownHostsPath = "known_hosts"
 	defaults.Client.AuthKeyPath = "id_rsa"

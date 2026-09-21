@@ -85,6 +85,7 @@ func (in *initializer) transformConfig(sourceProcess source.Source, args *Args,
 	additionalArgs []string) error {
 
 	in.processEnvVars(args)
+	in.applyLoggingDefaults(sourceProcess)
 
 	switch sourceProcess {
 	case source.Server:
@@ -96,6 +97,32 @@ func (in *initializer) transformConfig(sourceProcess source.Source, args *Args,
 	default:
 		return fmt.Errorf("unable to transform config, unknown source '%s'",
 			sourceProcess)
+	}
+}
+
+// applyLoggingDefaults fills the logger and log directory the config file left
+// unset with the per-command defaults. The --logger and --logDir flags default
+// to empty, so setupConfig applies them afterwards only when given, which
+// yields the precedence: explicit flag > config file > per-command default.
+func (in *initializer) applyLoggingDefaults(sourceProcess source.Source) {
+	logger, logDir := loggingDefaults(sourceProcess)
+	if in.Common.Logger == "" {
+		in.Common.Logger = logger
+	}
+	if in.Common.LogDir == "" {
+		in.Common.LogDir = logDir
+	}
+}
+
+// loggingDefaults returns the default logger and log directory of a command.
+func loggingDefaults(sourceProcess source.Source) (logger, logDir string) {
+	switch sourceProcess {
+	case source.Server:
+		return DefaultServerLogger, DefaultServerLogDir
+	case source.HealthCheck:
+		return DefaultHealthCheckLogger, DefaultServerLogDir
+	default:
+		return DefaultClientLogger, DefaultClientLogDir
 	}
 }
 
@@ -208,6 +235,8 @@ func (in *initializer) setupConfig(sourceCb transformCb, args *Args,
 		in.Client.AuthKeyDisable = true
 		args.NoAuthKey = true
 	}
+	// The logging flags default to empty: a non-empty value was given
+	// explicitly and wins over the config file and the per-command default.
 	if args.LogDir != "" {
 		in.Common.LogDir = args.LogDir
 	}

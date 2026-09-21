@@ -118,7 +118,6 @@
   },
   "Common": {
     "LogDir": "log",
-    "Logger": "Fout",
     "LogRotation": "Daily",
     "CacheDir": "cache",
     "SSHPort": 2222,

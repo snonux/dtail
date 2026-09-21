@@ -49,11 +49,21 @@ const (
 	// DefaultLogLevel specifies the default log level (obviously)
 	DefaultLogLevel string = "info"
 	// DefaultClientLogger specifies the default logger for the client commands.
+	// It applies only when neither --logger nor Common.Logger is set.
 	DefaultClientLogger string = "fout"
 	// DefaultServerLogger specifies the default logger for dtail server.
+	// It applies only when neither --logger nor Common.Logger is set.
 	DefaultServerLogger string = "file"
 	// DefaultHealthCheckLogger specifies the default logger used for health checks.
+	// It applies only when neither --logger nor Common.Logger is set.
 	DefaultHealthCheckLogger string = "none"
+	// DefaultClientLogDir specifies the default log directory for the client
+	// commands. It applies only when neither --logDir nor Common.LogDir is set.
+	DefaultClientLogDir string = "~/log"
+	// DefaultServerLogDir specifies the default log directory for dtail server
+	// and the health check. It applies only when neither --logDir nor
+	// Common.LogDir is set.
+	DefaultServerLogDir string = "log"
 )
 
 // Client holds DTail client configuration.

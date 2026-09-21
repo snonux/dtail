@@ -618,3 +618,57 @@ func writeTestConfig(t *testing.T, path, body string) {
 		t.Fatalf("write config failed: %v", err)
 	}
 }
+
+// TestSetupLoggingPrecedence checks that an explicitly given --logger or
+// --logDir wins over the config file, that the config file wins over the
+// per-command default, and that the per-command default applies otherwise.
+func TestSetupLoggingPrecedence(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configPath := filepath.Join(t.TempDir(), "dtail.json")
+	writeTestConfig(t, configPath, `{"Common":{"Logger":"stdout","LogDir":"/cfg/logs"}}`)
+	emptyConfigPath := filepath.Join(t.TempDir(), "empty.json")
+	writeTestConfig(t, emptyConfigPath, `{"Common":{}}`)
+
+	tests := []struct {
+		name       string
+		source     source.Source
+		configFile string
+		logger     string
+		logDir     string
+		wantLogger string
+		wantLogDir string
+	}{
+		{"client default", source.Client, emptyConfigPath, "", "", DefaultClientLogger, home + "/log"},
+		{"client no config file", source.Client, "none", "", "", DefaultClientLogger, home + "/log"},
+		{"client config", source.Client, configPath, "", "", "stdout", "/cfg/logs"},
+		{"client flag", source.Client, configPath, "none", "/flag/logs", "none", "/flag/logs"},
+		{"client flag equal to default", source.Client, configPath, DefaultClientLogger, "~/log",
+			DefaultClientLogger, home + "/log"},
+		{"server default", source.Server, emptyConfigPath, "", "", DefaultServerLogger, DefaultServerLogDir},
+		{"server config", source.Server, configPath, "", "", "stdout", "/cfg/logs"},
+		{"server flag", source.Server, configPath, "fout", "/flag/logs", "fout", "/flag/logs"},
+		{"health default", source.HealthCheck, emptyConfigPath, "", "", DefaultHealthCheckLogger, DefaultServerLogDir},
+		{"health config", source.HealthCheck, configPath, "", "", "stdout", "/cfg/logs"},
+		{"health flag", source.HealthCheck, configPath, "none", "", "none", "/cfg/logs"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := &Args{
+				ConfigFile:  tt.configFile,
+				LoggingArgs: LoggingArgs{Logger: tt.logger, LogDir: tt.logDir, LogLevel: DefaultLogLevel},
+				SSHArgs:     SSHArgs{NoAuthKey: true, SSHPort: DefaultSSHPort},
+			}
+			cfg, err := SetupRuntime(tt.source, args, nil)
+			if err != nil {
+				t.Fatalf("SetupRuntime: %v", err)
+			}
+			if cfg.Common.Logger != tt.wantLogger {
+				t.Errorf("Common.Logger = %q, want %q", cfg.Common.Logger, tt.wantLogger)
+			}
+			if cfg.Common.LogDir != tt.wantLogDir {
+				t.Errorf("Common.LogDir = %q, want %q", cfg.Common.LogDir, tt.wantLogDir)
+			}
+		})
+	}
+}

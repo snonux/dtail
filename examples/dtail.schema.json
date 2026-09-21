@@ -662,12 +662,11 @@
         },
         "LogDir": {
           "type": "string",
-          "description": "Log directory. dserver uses this value (default \"log\", relative to the working directory) unless --logDir is given. The client commands' --logDir flag defaults to ~/log and currently always replaces this value. Every \"~/\" in the path is replaced with the home directory.",
-          "default": "log"
+          "description": "Log directory. An explicit --logDir flag replaces this value. When neither is set, each command uses its own default: ~/log for the client commands, \"log\" (relative to the working directory) for dserver and dtailhealth. Every \"~/\" in the path is replaced with the home directory."
         },
         "Logger": {
           "$ref": "#/definitions/logger",
-          "description": "Logger implementation. Note: every command's --logger flag has a non-empty default (clients fout, dserver file, dtailhealth none) that currently replaces this value, so set the flag instead."
+          "description": "Logger implementation. An explicit --logger flag replaces this value. When neither is set, each command uses its own default: fout for the client commands, file for dserver, none for dtailhealth."
         },
         "LogLevel": {
           "$ref": "#/definitions/loglevel",
