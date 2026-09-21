@@ -30,6 +30,27 @@ type filteringProcessor struct {
 	maxReached bool
 }
 
+// newFilteringProcessor builds the filter for one reader or subscriber. stats
+// is the line counter the filter numbers lines from; processLine advances it.
+func newFilteringProcessor(ltx lcontext.LContext, processor line.Processor,
+	re regex.Regex, stats *stats, globID string) *filteringProcessor {
+
+	filterProcessor := &filteringProcessor{
+		processor: processor,
+		re:        re,
+		ltx:       ltx,
+		stats:     stats,
+		globID:    globID,
+	}
+	// The raw fast path is only valid without local context; ProcessFilteredRaw
+	// is not called in that case, but leave the field nil so the precondition
+	// does not rest on the callers alone.
+	if rawProcessor, ok := processor.(line.RawProcessor); ok && !ltx.Has() {
+		filterProcessor.rawProcessor = rawProcessor
+	}
+	return filterProcessor
+}
+
 func (f *ReadFile) recycleBytesBuffer(buf *bytes.Buffer) {
 	pool.RecycleBytesBuffer(buf)
 	if f.bufferRecycleObserver != nil {
@@ -66,6 +87,23 @@ func (fp *filteringProcessor) restartSource() {
 	if restarter, ok := fp.processor.(line.SourceRestarter); ok {
 		restarter.SourceRestarted()
 	}
+}
+
+// processLine counts data as the next line and filters it. data is borrowed
+// for the duration of the call only: without local context it takes the
+// zero-copy ProcessFilteredRaw path, otherwise it is copied into a pooled
+// buffer that ProcessFilteredLine takes ownership of. Every reader and
+// subscriber feeds its lines through here, so line numbering and filtering
+// cannot diverge between them.
+func (fp *filteringProcessor) processLine(data []byte) error {
+	fp.stats.updatePosition()
+	if !fp.ltx.Has() {
+		return fp.ProcessFilteredRaw(data)
+	}
+
+	lineBuf := pool.BytesBuffer.Get().(*bytes.Buffer)
+	lineBuf.Write(data)
+	return fp.ProcessFilteredLine(lineBuf)
 }
 
 // ProcessFilteredLine applies regex filtering before passing to the underlying processor

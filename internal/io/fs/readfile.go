@@ -32,8 +32,16 @@ type ReadOptions struct {
 	GlobID         string
 	ServerMessages chan<- string
 	SeekEOF        bool
-	MaxLineLength  int
-	Logger         logging.Logger
+	// StartOffset, when positive, positions the first successful open of the
+	// file at this byte offset instead of its start. It is meant for resuming a
+	// read where another reader of the same file stopped, so it must point at a
+	// line boundary. Later reopens, after rotation, start at the beginning as
+	// usual. If the file is shorter than the offset by then, a follow read
+	// treats it as truncated and rewinds. It cannot be combined with SeekEOF
+	// and is only supported for uncompressed files, not for the stdin pipe.
+	StartOffset   int64
+	MaxLineLength int
+	Logger        logging.Logger
 }
 
 // ReadFile reads and filters a local file or serverless pipe.
@@ -58,6 +66,8 @@ type ReadFile struct {
 	follow bool
 	// Seek past existing data on the first successful file open?
 	seekInitialEOF bool
+	// Byte offset for the first successful file open; zero means the start.
+	initialOffset int64
 	// Warned already about a long line.
 	warnedAboutLongLine bool
 	// Maximum line length before a line is split.
@@ -82,6 +92,10 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 		return nil, err
 	}
 
+	if err := validateStartOffset(options); err != nil {
+		return nil, err
+	}
+
 	var target *ValidatedReadTarget
 	if options.Target != nil {
 		if options.Target.Kind != FileKind {
@@ -101,8 +115,26 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 		canSkipLines:    canSkipLines,
 		follow:          follow,
 		seekInitialEOF:  options.SeekEOF,
+		initialOffset:   options.StartOffset,
 		maxLineLength:   options.MaxLineLength,
 	}, nil
+}
+
+func validateStartOffset(options ReadOptions) error {
+	switch {
+	case options.StartOffset == 0:
+		return nil
+	case options.StartOffset < 0:
+		return fmt.Errorf("negative read start offset %d", options.StartOffset)
+	case options.SeekEOF:
+		return errors.New("read start offset and seek to EOF are mutually exclusive")
+	case options.FilePath == "" && options.GlobID == "-":
+		return errors.New("read start offset is not supported for the stdin pipe")
+	case compressionFormat(options.FilePath) != "":
+		return fmt.Errorf("read start offset is not supported for compressed file %s",
+			options.FilePath)
+	}
+	return nil
 }
 
 func readBehavior(mode omode.Mode) (retry, canSkipLines, follow bool, err error) {
@@ -178,18 +210,35 @@ func (f *ReadFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompre
 		return
 	}
 
-	if f.seekInitialEOF {
-		if _, err = fd.Seek(0, io.SeekEnd); err != nil {
-			return
-		}
+	if err = f.seekInitialPosition(fd); err != nil {
+		return
 	}
 
 	reader, decompressor, err = f.makeCompressedFileReader(fd)
 	if err == nil {
+		initialOffset := f.initialOffset
 		f.seekInitialEOF = false
-		f.logger.Trace(f.filePath, f.globID, "Opened file reader", "seekInitialEOF", seekInitialEOF)
+		f.initialOffset = 0
+		f.logger.Trace(f.filePath, f.globID, "Opened file reader", "seekInitialEOF", seekInitialEOF,
+			"initialOffset", initialOffset)
 	}
 	return
+}
+
+// seekInitialPosition applies SeekEOF or StartOffset. Both are cleared only once
+// a reader was made, so a failed first open keeps them for the retry.
+func (f *ReadFile) seekInitialPosition(fd *os.File) error {
+	switch {
+	case f.seekInitialEOF:
+		if _, err := fd.Seek(0, io.SeekEnd); err != nil {
+			return fmt.Errorf("seek to end of %s: %w", f.filePath, err)
+		}
+	case f.initialOffset > 0:
+		if _, err := fd.Seek(f.initialOffset, io.SeekStart); err != nil {
+			return fmt.Errorf("seek to offset %d of %s: %w", f.initialOffset, f.filePath, err)
+		}
+	}
+	return nil
 }
 
 func (f *ReadFile) openFile() (*os.File, error) {
@@ -251,11 +300,22 @@ func (f *ReadFile) startPeriodicTruncateCheck(ctx context.Context, cancel contex
 	return done
 }
 
-func (f *ReadFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {
+// compressionFormat names the decompressor a path is read through, by its
+// suffix, or returns "" for an uncompressed file.
+func compressionFormat(path string) string {
 	switch {
-	case strings.HasSuffix(f.FilePath(), ".gz"):
-		fallthrough
-	case strings.HasSuffix(f.FilePath(), ".gzip"):
+	case strings.HasSuffix(path, ".gz"), strings.HasSuffix(path, ".gzip"):
+		return "gzip"
+	case strings.HasSuffix(path, ".zst"):
+		return "zstd"
+	default:
+		return ""
+	}
+}
+
+func (f *ReadFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {
+	switch compressionFormat(f.FilePath()) {
+	case "gzip":
 		f.logger.Info(f.FilePath(), "Detected gzip compression format")
 		var gzipReader *gzip.Reader
 		gzipReader, err = gzip.NewReader(fd)
@@ -264,7 +324,7 @@ func (f *ReadFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, 
 		}
 		decompressor = gzipReader
 		reader = bufio.NewReader(gzipReader)
-	case strings.HasSuffix(f.FilePath(), ".zst"):
+	case "zstd":
 		return f.makeZstdReader(fd)
 	default:
 		reader = bufio.NewReader(fd)

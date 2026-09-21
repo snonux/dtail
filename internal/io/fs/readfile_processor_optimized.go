@@ -23,7 +23,6 @@ type followLineProcessor struct {
 	file        *ReadFile
 	filter      *filteringProcessor
 	partialLine *bytes.Buffer
-	hasContext  bool
 }
 
 // readWithProcessorOptimized reads from the file using buffered line reading
@@ -34,7 +33,6 @@ func (f *ReadFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 	filterProcessor := f.newFilteringProcessor(ltx, processor, re)
 	defer filterProcessor.resetGeneration()
 
-	hasContext := ltx.Has()
 	scanner := bufio.NewScanner(reader)
 	bufPtr := pool.GetScannerBuffer()
 	defer pool.PutScannerBuffer(bufPtr)
@@ -53,7 +51,7 @@ func (f *ReadFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		if err := f.checkSnapshotTruncation(fd, truncate); err != nil {
 			return err
 		}
-		if err := f.processSnapshotLine(filterProcessor, hasContext, scanner.Bytes()); err != nil {
+		if err := filterProcessor.processLine(scanner.Bytes()); err != nil {
 			if isEarlyStop(err) {
 				return nil
 			}
@@ -74,19 +72,7 @@ func (f *ReadFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 func (f *ReadFile) newFilteringProcessor(ltx lcontext.LContext,
 	processor line.Processor, re regex.Regex) *filteringProcessor {
 
-	filterProcessor := &filteringProcessor{
-		processor: processor,
-		re:        re,
-		ltx:       ltx,
-		stats:     &f.stats,
-		globID:    f.globID,
-	}
-	// The raw fast path is only valid without local context; ProcessFilteredRaw
-	// is not called in that case, but leave the field nil so the precondition
-	// does not rest on the callers alone.
-	if rawProcessor, ok := processor.(line.RawProcessor); ok && !ltx.Has() {
-		filterProcessor.rawProcessor = rawProcessor
-	}
+	filterProcessor := newFilteringProcessor(ltx, processor, re, &f.stats, f.globID)
 	if f.bufferRecycleObserver != nil {
 		filterProcessor.recycle = f.recycleBytesBuffer
 	}
@@ -104,19 +90,6 @@ func (f *ReadFile) checkSnapshotTruncation(fd *os.File, truncate <-chan struct{}
 	default:
 	}
 	return nil
-}
-
-func (f *ReadFile) processSnapshotLine(filterProcessor *filteringProcessor,
-	hasContext bool, data []byte) error {
-
-	f.updatePosition()
-	if !hasContext {
-		return filterProcessor.ProcessFilteredRaw(data)
-	}
-
-	lineBuf := pool.BytesBuffer.Get().(*bytes.Buffer)
-	lineBuf.Write(data)
-	return filterProcessor.ProcessFilteredLine(lineBuf)
 }
 
 // isEarlyStop reports whether err is the io.EOF sentinel that filteringProcessor
@@ -250,7 +223,6 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		file:        f,
 		filter:      filterProcessor,
 		partialLine: partialLine,
-		hasContext:  ltx.Has(),
 	}
 
 	bufPtr := pool.GetMediumBuffer()
@@ -326,14 +298,7 @@ func (p *followLineProcessor) processFragment(ctx context.Context, data []byte) 
 }
 
 func (p *followLineProcessor) processPartialLine() error {
-	p.file.updatePosition()
-	if !p.hasContext {
-		return p.filter.ProcessFilteredRaw(p.partialLine.Bytes())
-	}
-
-	lineBuf := pool.BytesBuffer.Get().(*bytes.Buffer)
-	lineBuf.Write(p.partialLine.Bytes())
-	return p.filter.ProcessFilteredLine(lineBuf)
+	return p.filter.processLine(p.partialLine.Bytes())
 }
 
 func (p *followLineProcessor) handleReadError(ctx context.Context, fd *os.File,
