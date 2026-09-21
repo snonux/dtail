@@ -15,8 +15,13 @@ import (
 )
 
 const (
-	defaultOutputBufferMaxBytes    = config.DefaultOutputBufferMaxBytes
-	outputQueueEntryBudgetBytes    = 64
+	defaultOutputBufferMaxBytes = config.DefaultOutputBufferMaxBytes
+	outputQueueEntryBudgetBytes = 64
+	// outputAdoptMinBytes is the payload size from which enqueue adopts the
+	// caller's backing allocation instead of copying it. Writer batches of
+	// half a NetworkWriter buffer or more are adopted; smaller payloads are
+	// copied, which keeps coalescing many tiny writes into one descriptor.
+	outputAdoptMinBytes            = networkWriterBufferSize / 2
 	defaultOutputFlushTimeout      = 2 * time.Second
 	defaultOutputReadRetryInterval = time.Millisecond
 	// Generation changes normally cancel their command context. Keep a bounded
@@ -340,6 +345,11 @@ func (t *outputManager) waitForEOFAck(ctx context.Context, timeout time.Duration
 // partially-read payload bytes to exceed the configured limit. Admission is
 // atomic per logical writer payload: an oversized payload is rejected before
 // any prefix can reach the client.
+//
+// Ownership of payload, including its spare capacity up to cap(payload),
+// passes to the output manager when enqueue is called, whatever the result: a
+// large payload is queued without copying (see tryEnqueueLocked), so the caller
+// must neither modify nor reuse payload afterwards.
 func (t *outputManager) enqueue(ctx context.Context, generation uint64, payload []byte,
 	activeGeneration func() uint64) error {
 
@@ -400,55 +410,77 @@ func (t *outputManager) enqueue(ctx context.Context, generation uint64, payload 
 
 // tryEnqueueLocked admits a complete logical payload while bounding both the
 // unread bytes and the payload backing allocations retained by queue/buffer.
-// Adjacent payloads from the same generation share a descriptor. Geometric
-// growth avoids copying every preceding tiny write, and all spare capacity is
-// charged immediately.
+//
+// A small payload (below outputAdoptMinBytes) is copied: into the last
+// descriptor when that has the same generation, so many tiny writes share one
+// descriptor, otherwise into a new exact-size one. A large payload (a writer
+// batch) gets a descriptor of its own and is adopted without copying when its
+// backing allocation fits the budget; the whole capacity is charged, because
+// the queue retains all of it. When only the exact length fits, it is copied
+// instead, so a payload that is admissible by length is never stranded by its
+// spare capacity.
 func (t *outputManager) tryEnqueueLocked(generation uint64, payload []byte, maxBytes int) bool {
-	last := len(t.queue) - 1
-	if last >= 0 && t.queue[last].generation == generation {
-		entry := &t.queue[last]
-		neededLength := len(entry.payload) + len(payload)
-		if neededLength > entry.retainedBytes {
-			available := maxBytes - t.retainedBytes
-			minimumGrowth := neededLength - entry.retainedBytes
-			if minimumGrowth > available {
-				return false
-			}
-
-			targetCapacity := entry.retainedBytes * 2
-			if targetCapacity < neededLength {
-				targetCapacity = neededLength
-			}
-			if maximumCapacity := entry.retainedBytes + available; targetCapacity > maximumCapacity {
-				targetCapacity = maximumCapacity
-			}
-			grown := make([]byte, len(entry.payload), targetCapacity)
-			copy(grown, entry.payload)
-			entry.payload = grown
-			t.retainedBytes += targetCapacity - entry.retainedBytes
-			entry.retainedBytes = targetCapacity
+	if len(payload) < outputAdoptMinBytes {
+		last := len(t.queue) - 1
+		if last >= 0 && t.queue[last].generation == generation {
+			return t.tryAppendLocked(&t.queue[last], payload, maxBytes)
 		}
-		entry.payload = append(entry.payload, payload...)
-		t.markNotDrainedLocked()
-		t.bufferedBytes += len(payload)
-		t.signalStateChangedLocked()
-		return true
 	}
-
-	if t.bufferedEntries >= t.resolvedMaxQueueEntries() || t.retainedBytes+len(payload) > maxBytes {
+	if t.bufferedEntries >= t.resolvedMaxQueueEntries() {
 		return false
 	}
-	queuedPayload := make([]byte, len(payload))
-	copy(queuedPayload, payload)
+
+	queued := payload
+	switch {
+	case len(payload) >= outputAdoptMinBytes && t.retainedBytes+cap(payload) <= maxBytes:
+		// Adopt: the caller handed its backing over, nothing is copied.
+	case t.retainedBytes+len(payload) <= maxBytes:
+		queued = make([]byte, len(payload))
+		copy(queued, payload)
+	default:
+		return false
+	}
 	t.queue = append(t.queue, generatedOutput{
 		generation:    generation,
-		payload:       queuedPayload,
-		retainedBytes: len(queuedPayload),
+		payload:       queued,
+		retainedBytes: cap(queued),
 	})
 	t.markNotDrainedLocked()
-	t.bufferedBytes += len(payload)
-	t.retainedBytes += len(queuedPayload)
+	t.bufferedBytes += len(queued)
+	t.retainedBytes += cap(queued)
 	t.bufferedEntries++
+	t.signalStateChangedLocked()
+	return true
+}
+
+// tryAppendLocked coalesces a small payload into entry, growing the entry's
+// backing allocation geometrically within the remaining budget. All spare
+// capacity is charged immediately.
+func (t *outputManager) tryAppendLocked(entry *generatedOutput, payload []byte, maxBytes int) bool {
+	neededLength := len(entry.payload) + len(payload)
+	if neededLength > entry.retainedBytes {
+		available := maxBytes - t.retainedBytes
+		minimumGrowth := neededLength - entry.retainedBytes
+		if minimumGrowth > available {
+			return false
+		}
+
+		targetCapacity := entry.retainedBytes * 2
+		if targetCapacity < neededLength {
+			targetCapacity = neededLength
+		}
+		if maximumCapacity := entry.retainedBytes + available; targetCapacity > maximumCapacity {
+			targetCapacity = maximumCapacity
+		}
+		grown := make([]byte, len(entry.payload), targetCapacity)
+		copy(grown, entry.payload)
+		entry.payload = grown
+		t.retainedBytes += targetCapacity - entry.retainedBytes
+		entry.retainedBytes = targetCapacity
+	}
+	entry.payload = append(entry.payload, payload...)
+	t.markNotDrainedLocked()
+	t.bufferedBytes += len(payload)
 	t.signalStateChangedLocked()
 	return true
 }
@@ -599,10 +631,11 @@ func (t *outputManager) flush(ctx context.Context, user *user.User) error {
 // observe torn state.
 //
 // Lock ordering: the shouldDropGeneration callback is invoked (via
-// consumeLocked) while t.mu is held and itself acquires sessionState.mu
-// (sessionCommandState.currentGeneration), establishing the ordering
-// output.mu -> sessionState.mu. Nothing may call into outputManager while
-// holding sessionState.mu, or it would deadlock.
+// consumeLocked) while t.mu is held. In production it reads the session
+// generation with an atomic load (sessionCommandState.currentGeneration) and
+// takes no lock, so it adds no lock-ordering edge. A callback must never call
+// back into outputManager, and it must not take a lock that is held by code
+// which calls into outputManager.
 func (t *outputManager) tryRead(p []byte, user *user.User, shouldDropGeneration func(uint64) bool) (n int, handled bool) {
 	// tryRead runs on the session output goroutine once per Read (i.e. per output
 	// payload / ~64KB in server mode). Decide trace state once, before taking

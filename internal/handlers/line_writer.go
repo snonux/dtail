@@ -214,8 +214,10 @@ func (w *DirectWriter) Stats() (linesWritten, bytesWritten uint64) {
 
 // NetworkWriter writes directly to the network connection bypassing channels
 type NetworkWriter struct {
-	logger        logging.Logger
-	outputLines   chan<- []byte
+	logger      logging.Logger
+	outputLines chan<- []byte
+	// enqueueOutput, when set, receives each batch instead of outputLines and
+	// takes ownership of the batch slice (see outputManager.enqueue).
 	enqueueOutput func(context.Context, uint64, []byte, func() uint64) error
 	lineFormatter lineFormatter
 	messageSink   serverMessageSink
@@ -323,6 +325,7 @@ func (w *NetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, source
 	// line's formatted bytes, not the whole buffered backlog again.
 	bufLenBefore := w.writeBuf.Len()
 
+	w.reserveBatchLocked()
 	w.lineFormatter(&w.writeBuf, lineContent, lineNum, sourceID)
 
 	// Update stats: add only the delta appended for this line.
@@ -338,12 +341,50 @@ func (w *NetworkWriter) WriteLineData(lineContent []byte, lineNum uint64, source
 		return nil
 	}
 
-	data := append([]byte(nil), w.writeBuf.Bytes()...)
-	w.writeBuf.Reset()
+	data := w.takeBatchLocked()
 	w.markSendingLocked()
 	w.mutex.Unlock()
 
 	return w.sendBufferedData(data)
+}
+
+// reserveBatchLocked gives an empty writeBuf, whose previous backing was handed
+// over by takeBatchLocked, a fresh allocation large enough for a whole batch,
+// so filling it does not regrow and copy it. The caller must hold w.mutex.
+func (w *NetworkWriter) reserveBatchLocked() {
+	if w.writeBuf.Cap() == 0 {
+		w.writeBuf.Grow(networkWriterBatchCapacity(w.bufSize))
+	}
+}
+
+// takeBatchLocked removes the buffered batch from writeBuf and returns it for
+// sending. The caller must hold w.mutex, and ownership of the returned slice
+// passes to the caller, which hands it on to the output queue.
+//
+// A batch of at least outputAdoptMinBytes, which the output manager adopts
+// without copying, is handed over together with its backing allocation:
+// writeBuf is left without one, so the next batch cannot overwrite the handed
+// over bytes, and reserveBatchLocked allocates a new one on the next write. A
+// smaller batch, such as a partial follow-mode Flush, is copied and writeBuf
+// keeps its allocation, so frequent small flushes do not allocate a whole
+// batch buffer each.
+func (w *NetworkWriter) takeBatchLocked() []byte {
+	data := w.writeBuf.Bytes()
+	if len(data) >= outputAdoptMinBytes {
+		w.writeBuf = bytes.Buffer{}
+		return data
+	}
+	data = append([]byte(nil), data...)
+	w.writeBuf.Reset()
+	return data
+}
+
+// networkWriterBatchCapacity is the allocation of a fresh batch buffer: the
+// flush threshold plus an eighth of headroom, so the line that crosses the
+// threshold usually still fits without regrowing the buffer. For the 64 KiB
+// production threshold that is 72 KiB, a whole number of 8 KiB runtime pages.
+func networkWriterBatchCapacity(bufSize int) int {
+	return bufSize + bufSize/8
 }
 
 // sendBufferedData sends buffered data to the output channel while tracking the
@@ -506,8 +547,7 @@ func (w *NetworkWriter) Flush() error {
 
 		writerTrace(w.log(), "NetworkWriter.Flush", "flushing buffered data", "bufSize", w.writeBuf.Len())
 
-		data := append([]byte(nil), w.writeBuf.Bytes()...)
-		w.writeBuf.Reset()
+		data := w.takeBatchLocked()
 		w.markSendingLocked()
 		w.mutex.Unlock()
 

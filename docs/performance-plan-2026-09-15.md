@@ -159,6 +159,11 @@ baseline, and note the commit.
 | `45` | parent `c47e93f` | serverless, 100 MiB normal log (10 interleaved rounds, median user time) | dcat 0.13 s, dgrep INFO 0.14 s, dgrep ERROR 0.07 s | dcat 0.09 s, dgrep INFO 0.10 s, dgrep ERROR 0.07 s | yes, `cmp` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `45` | parent `c47e93f` | server mode, 100 MiB normal log, `--logger stdout` (8 interleaved rounds; client elapsed, dserver CPU from `/proc`) | dcat 0.73-0.93 s, server 1.05-1.17 s; dgrep ERROR 0.22-0.28 s, server 0.21-0.35 s | dcat 0.74-0.95 s, server 1.01-1.13 s; dgrep ERROR 0.21-0.27 s, server 0.23-0.34 s (no measurable change) | yes, `cmp` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `45` | parent `c47e93f` | `BenchmarkDirectLineProcessorLinePath` (new), 128-byte line into a plain serverless `DirectWriter` on `io.Discard`, 6 runs | `buffer` 61.4-61.8 ns/op, 0 allocs/op | `raw` 36.2-36.3 ns/op, 0 allocs/op | n/a (unit test compares both paths byte for byte for six writer formats) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` | parent `f290a31` | dcat server mode, 100 MiB normal log, `--logger stdout` (8 interleaved rounds; client elapsed / user / sys, dserver CPU from `/proc`) | 0.77-0.88 s / 0.33-0.39 s / 0.41-0.45 s, server 0.99-1.22 s | 0.63-0.76 s / 0.30-0.39 s / 0.41-0.49 s, server 0.75-0.87 s | yes, `cmp` against input every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` | parent `f290a31` | dgrep `--regex ERROR` server mode, same log and runs | 0.21-0.26 s elapsed, server 0.23-0.32 s | 0.19-0.23 s elapsed, server 0.20-0.26 s (ranges overlap) | yes, `cmp` against `grep ERROR` every run | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` | parent `f290a31` | dmap aggregate server mode, 100 MiB stats log, same runs | 0.85-0.86 s elapsed, server 0.80-0.82 s | 0.84-0.85 s elapsed, server 0.79-0.82 s (no change) | yes, canonicalized table identical to the before client every round | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
+| `55` | parent `f290a31` | dcat server mode, dserver with only the atomic generation change vs `f290a31` (5 interleaved rounds after one cold round) | server 1.00-1.09 s | server 1.00-1.09 s (no measurable change) | yes, `cmp` every run | n/a (measurement build only) |
+| `55` | parent `f290a31` | `BenchmarkNetworkWriterToOutputManager` (new), 128-byte lines through writer, queue and reader, 6 runs | 258-284 ns/op, 256 B/op | 153-159 ns/op, 144 B/op | n/a (unit tests compare the bytes read with the bytes written) | yes: make clean && make build && make test && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test && make vet && make lint |
 | `65` | parent `b3a84a9` | dtail follow, 8 sessions on one dserver, single-line latency on session 0 (40 probes per run, 2 interleaved rounds per variant pair; S100/C100 ranges span the 4 runs of both pairings; mean / p95), server EOF poll S and client stdout flush C | S100/C100 (current): 97-107 ms / 160-172 ms | S50/C50: 49-52 ms / 80-89 ms; S20/C20: 17-20 ms / 29-37 ms; S20/C100: 61-66 ms; S100/C20: 57-62 ms; S50/C100: 65-72 ms; S100/C50: 72-79 ms | n/a (intervals only) | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dserver CPU with 8 idle follow sessions (20 s, utime+stime from `/proc`, % of one core), same runs | S100: 6.2-9.2% | S50: 12.1-14.6%; S20: 20.3-27.6% | n/a | `make clean && make build` only (docs-only change, no code kept) |
 | `65` | parent `b3a84a9` | dtail client CPU per idle follow session, same runs | C100: 0.89-0.97% | C50: 1.77-2.03%; C20: 4.33-4.45% | n/a | `make clean && make build` only (docs-only change, no code kept) |
@@ -494,6 +499,32 @@ ranges overlap in every scenario. dcat and dgrep colored (non-`--plain`)
 serverless output of the before and after binaries was also compared on the
 first 20,000 lines and is identical. Not measured: follow mode (covered by
 `TestTailUsesRawProcessorFastPath` for correctness only).
+
+`55` notes: before binaries were built with `go build` from `f290a31`, the
+after binaries by `make build` from the change; a before and an after dserver
+(`--cfg none --logger stdout`) ran side by side, and each round ran every
+scenario with both, alternating which went first. dserver CPU is utime+stime
+from `/proc/<pid>/stat` around each client run. The server-side copies are
+gone: a full `NetworkWriter` batch (64 KiB threshold) used to be copied once
+into a fresh slice and a second time into the output queue, where same-generation
+batches were coalesced into one entry that was regrown geometrically (up to
+the 2 MiB cap) by copying. Now the writer hands its batch buffer over and
+reserves a new one (72 KiB, so a line of up to 8 KiB that crosses the
+threshold fits without regrowing), and the queue adopts any payload of at least 32 KiB as
+its own entry without copying. Retained-bytes accounting charges the adopted
+slice's full capacity against `OutputBufferMaxBytes`; when that capacity does
+not fit but the length does, the payload is copied at exact size as before,
+so an admissible payload is never stranded by its spare capacity. Payloads
+under 32 KiB (partial follow-mode `Flush` batches) are still copied by the
+writer, which keeps and reuses its buffer, and still coalesce in the queue.
+One consequence: an adopted 64 KiB batch is charged its 72 KiB allocation,
+so the default 2 MiB cap now holds 28 full batches before backpressure, where
+before it could fill up with 2 MiB of payload (about 31 batches). The session generation is now an
+`atomic.Uint64`, still written under the session mutex and read per line
+without a lock; its own row above shows no measurable effect end to end, so
+the dcat gain comes from removing the copies. The atomic read also removes the
+output-lock to session-lock ordering edge that `tryRead` had. Not measured:
+follow mode and the 1 GiB input.
 
 `65` notes (decision: no change). Both intervals stay at 100 ms: the server
 EOF poll in `followLineProcessor.handleReadError` and
