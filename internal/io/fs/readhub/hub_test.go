@@ -670,8 +670,8 @@ func TestFollowSurvivesAReaderPanic(t *testing.T) {
 				select {
 				case err := <-f.done:
 					f.done <- err
-					if !errors.Is(err, fs.ErrReaderWorkerPanic) {
-						t.Errorf("Follow() = %v, want an error wrapping fs.ErrReaderWorkerPanic", err)
+					if !errors.Is(err, ErrReaderFailed) || !errors.Is(err, fs.ErrReaderWorkerPanic) {
+						t.Errorf("Follow() = %v, want an error wrapping ErrReaderFailed and fs.ErrReaderWorkerPanic", err)
 					}
 				case <-time.After(waitTimeout):
 					t.Fatal("Follow did not return after the reader failed")
@@ -849,5 +849,35 @@ func TestFailedReadIsForgottenWhileSessionsAreStillSubscribed(t *testing.T) {
 	case it := <-sub.queue:
 		t.Errorf("a second failure was queued: %+v", it)
 	default:
+	}
+}
+
+func TestFailedHandOverEndsTheReadWithoutAPanicError(t *testing.T) {
+	hub := newTestHub()
+	file := newTestFile(t)
+	hub.seams.replaceTarget = func(*fs.ReadFile, fs.ValidatedReadTarget) error {
+		return errors.New("injected hand-over failure")
+	}
+	owner := syncReader(t, hub, file)
+	other := startFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), "other")
+	waitFor(t, "second session to join", func() bool { return subscriberCount(hub, file.path) == 2 })
+	failed := hub.entryFor(file.path)
+
+	if err := owner.stop(t); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-other.done:
+		other.done <- err
+		if !errors.Is(err, ErrReaderFailed) || errors.Is(err, fs.ErrReaderWorkerPanic) {
+			t.Errorf("Follow() = %v, want ErrReaderFailed without fs.ErrReaderWorkerPanic", err)
+		}
+	case <-time.After(waitTimeout):
+		t.Fatal("the remaining session did not end after the hand-over failed")
+	}
+	select {
+	case <-failed.done:
+	case <-time.After(waitTimeout):
+		t.Fatal("the reader did not stop after the hand-over failed")
 	}
 }

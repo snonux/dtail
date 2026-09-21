@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sync"
 
 	"github.com/mimecast/dtail/internal/ctxutil"
@@ -140,19 +141,21 @@ func (e *entry) handOver(next *subscriber) {
 		// session's target. fail takes the hub's and the entry's locks,
 		// which the caller holds.
 		e.cancel()
-		go e.fail(fmt.Errorf("%w: hand over the shared read target: %w", fs.ErrReaderWorkerPanic, err))
+		go e.fail(fmt.Errorf("hand over the shared read target: %w", err))
 		return
 	}
 	e.owner = next
 }
 
 // fail ends the shared read for good: the hub forgets the entry, so the next
-// session starts a new reader, and every subscriber's Follow returns err. err
-// wraps fs.ErrReaderWorkerPanic, which a private read reports for a reader
-// that panicked, so callers handle both alike.
-func (e *entry) fail(err error) {
+// session starts a new reader, and every subscriber's Follow returns cause
+// wrapped in ErrReaderFailed. A cause that wraps fs.ErrReaderWorkerPanic, as
+// a panic does, keeps doing so, so callers handle a shared reader's panic like
+// a private reader's.
+func (e *entry) fail(cause error, logArgs ...any) {
 	e.failOnce.Do(func() {
-		e.logger.Error(e.path, err)
+		err := fmt.Errorf("%w: %w", ErrReaderFailed, cause)
+		e.logger.Error(append([]any{e.path, err}, logArgs...)...)
 		e.onFailure(e)
 		e.cancel()
 		e.publish(item{kind: failedItem, err: err})
@@ -164,7 +167,8 @@ func (e *entry) fail(err error) {
 // panic ends that session only, so a shared one must not crash dserver.
 func (e *entry) recoverPanic(where string) {
 	if recovered := recover(); recovered != nil {
-		e.fail(fmt.Errorf("%w: shared %s: %v", fs.ErrReaderWorkerPanic, where, recovered))
+		e.fail(fmt.Errorf("%w: shared %s: %v", fs.ErrReaderWorkerPanic, where, recovered),
+			"stack", string(debug.Stack()))
 	}
 }
 

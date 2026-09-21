@@ -31,6 +31,11 @@ const defaultQueueChunks = 64
 // cannot do that for one session, so it hands the read back to the caller.
 var ErrStopped = errors.New("shared read stopped by the session's max-count limit")
 
+// ErrReaderFailed reports that the shared reader failed for good, so the
+// session's read ended. If the reader panicked, the error also wraps
+// fs.ErrReaderWorkerPanic, as a private reader's worker panic does.
+var ErrReaderFailed = errors.New("shared reader failed")
+
 // Options configures a Hub.
 type Options struct {
 	// Logger receives the hub's diagnostics.
@@ -119,7 +124,7 @@ func New(options Options) *Hub {
 // the file's shared reader, which it starts if no other session follows the
 // file. It blocks like a private follow read and returns nil once ctx ends,
 // ErrStopped when the session's max-count limit ended the read, and a
-// processor or reader error otherwise; an error wrapping
+// processor error or ErrReaderFailed otherwise; ErrReaderFailed together with
 // fs.ErrReaderWorkerPanic means the shared reader panicked. After ErrStopped
 // or an error, a private reader would start over; the caller decides how to
 // continue.
