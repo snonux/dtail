@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/mimecast/dtail/internal/logging"
@@ -60,8 +61,9 @@ type ReadFile struct {
 	stats
 	// Path of log file to tail.
 	filePath string
-	// Rooted target used for validated server-side re-opens.
-	validatedTarget *ValidatedReadTarget
+	// Rooted target used for validated server-side re-opens. It is an atomic
+	// pointer so that ReplaceTarget can hand it over while a read runs.
+	validatedTarget atomic.Pointer[ValidatedReadTarget]
 	// The glob identifier of the file.
 	globID string
 	// Channel to send a server message to the dtail client
@@ -115,10 +117,9 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 		target = &targetCopy
 	}
 
-	return &ReadFile{
+	readFile := &ReadFile{
 		logger:            logging.OrNop(options.Logger),
 		filePath:          options.FilePath,
-		validatedTarget:   target,
 		globID:            options.GlobID,
 		serverMessages:    options.ServerMessages,
 		retry:             retry,
@@ -128,7 +129,9 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 		initialOffset:     options.StartOffset,
 		initialOffsetFile: options.StartOffsetFile,
 		maxLineLength:     options.MaxLineLength,
-	}, nil
+	}
+	readFile.validatedTarget.Store(target)
+	return readFile, nil
 }
 
 func validateStartOffset(options ReadOptions) error {
@@ -143,7 +146,7 @@ func validateStartOffset(options ReadOptions) error {
 		return errors.New("read start offset and seek to EOF are mutually exclusive")
 	case options.FilePath == "" && options.GlobID == "-":
 		return errors.New("read start offset is not supported for the stdin pipe")
-	case compressionFormat(options.FilePath) != "":
+	case CompressionFormat(options.FilePath) != "":
 		return fmt.Errorf("read start offset is not supported for compressed file %s",
 			options.FilePath)
 	}
@@ -171,6 +174,25 @@ func (f *ReadFile) String() string {
 		f.canSkipLines,
 		f.follow,
 		f.seekInitialEOF)
+}
+
+// ReplaceTarget makes the reader open, reopen and check the file through
+// target from now on, for example when the session whose target a shared
+// reader used leaves. target must name the same resolved file as the current
+// one, which must exist; a reader built without a target keeps none.
+func (f *ReadFile) ReplaceTarget(target ValidatedReadTarget) error {
+	current := f.validatedTarget.Load()
+	switch {
+	case current == nil:
+		return errors.New("replace read target: reader has no validated target")
+	case target.Kind != FileKind:
+		return fmt.Errorf("replace read target: requires target kind %d, got %d", FileKind, target.Kind)
+	case target.resolvedPath != current.resolvedPath:
+		return fmt.Errorf("replace read target: %s does not match %s",
+			target.resolvedPath, current.resolvedPath)
+	}
+	f.validatedTarget.Store(&target)
+	return nil
 }
 
 // FilePath returns the full file path.
@@ -271,8 +293,8 @@ func (f *ReadFile) seekInitialOffset(fd *os.File) error {
 }
 
 func (f *ReadFile) openFile() (*os.File, error) {
-	if f.validatedTarget != nil {
-		return f.validatedTarget.Open()
+	if target := f.validatedTarget.Load(); target != nil {
+		return target.Open()
 	}
 	return os.Open(f.filePath)
 }
@@ -329,9 +351,9 @@ func (f *ReadFile) startPeriodicTruncateCheck(ctx context.Context, cancel contex
 	return done
 }
 
-// compressionFormat names the decompressor a path is read through, by its
-// suffix, or returns "" for an uncompressed file.
-func compressionFormat(path string) string {
+// CompressionFormat names the decompressor a path is read through, by its
+// suffix ("gzip" or "zstd"), or returns "" for an uncompressed file.
+func CompressionFormat(path string) string {
 	switch {
 	case strings.HasSuffix(path, ".gz"), strings.HasSuffix(path, ".gzip"):
 		return "gzip"
@@ -343,7 +365,7 @@ func compressionFormat(path string) string {
 }
 
 func (f *ReadFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {
-	switch compressionFormat(f.FilePath()) {
+	switch CompressionFormat(f.FilePath()) {
 	case "gzip":
 		f.logger.Info(f.FilePath(), "Detected gzip compression format")
 		var gzipReader *gzip.Reader
@@ -400,7 +422,8 @@ func (f *ReadFile) truncated(fd *os.File) (bool, error) {
 }
 
 func (f *ReadFile) pathInfo() (os.FileInfo, error) {
-	if f.validatedTarget == nil {
+	target := f.validatedTarget.Load()
+	if target == nil {
 		info, err := os.Stat(f.filePath)
 		if err != nil {
 			return nil, fmt.Errorf("stat read path %s: %w", f.filePath, err)
@@ -408,14 +431,14 @@ func (f *ReadFile) pathInfo() (os.FileInfo, error) {
 		return info, nil
 	}
 
-	info, err := os.Lstat(f.validatedTarget.resolvedPath)
+	info, err := os.Lstat(target.resolvedPath)
 	if err != nil {
 		return nil, fmt.Errorf("lstat validated read path %s: %w",
-			f.validatedTarget.resolvedPath, err)
+			target.resolvedPath, err)
 	}
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("validated read target is no longer a regular file: %s",
-			f.validatedTarget.resolvedPath)
+			target.resolvedPath)
 	}
 	return info, nil
 }

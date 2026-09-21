@@ -225,6 +225,11 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		partialLine: partialLine,
 	}
 
+	positions, positionsErr := f.newPositionReporter(fd, reader, processor)
+	if positionsErr != nil {
+		return positionsErr
+	}
+
 	bufPtr := pool.GetMediumBuffer()
 	defer pool.PutMediumBuffer(bufPtr)
 
@@ -239,6 +244,9 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 			}
 			if stop {
 				return nil
+			}
+			if reportErr := positions.report(partialLine.Len()); reportErr != nil {
+				return reportErr
 			}
 			if flushErr := processor.Flush(); flushErr != nil {
 				return flushErr
@@ -361,4 +369,45 @@ func stopForProcessingError(err error) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+// positionReporter tells a line.PositionObserver processor where the lines it
+// was fed end. A nil reporter reports nothing, which is the case for every
+// other processor, for compressed files and for the stdin pipe.
+type positionReporter struct {
+	observer line.PositionObserver
+	fd       *os.File
+	reader   *bufio.Reader
+	file     os.FileInfo
+}
+
+// newPositionReporter stats the open file once: its identity does not change
+// while one reader runs, because a rotation ends the read.
+func (f *ReadFile) newPositionReporter(fd *os.File, reader *bufio.Reader,
+	processor line.Processor) (*positionReporter, error) {
+
+	observer, ok := processor.(line.PositionObserver)
+	if !ok || fd == nil || CompressionFormat(f.FilePath()) != "" {
+		return nil, nil
+	}
+	file, err := fd.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat %s for line positions: %w", f.filePath, err)
+	}
+	return &positionReporter{observer: observer, fd: fd, reader: reader, file: file}, nil
+}
+
+// report passes on the offset just past the last complete line fed: the
+// descriptor's position minus what the buffered reader still holds and minus
+// the unfinished line the follow reader keeps back.
+func (r *positionReporter) report(pendingLineLen int) error {
+	if r == nil {
+		return nil
+	}
+	position, err := r.fd.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("read position of %s: %w", r.fd.Name(), err)
+	}
+	r.observer.LinesEndAt(position-int64(r.reader.Buffered())-int64(pendingLineLen), r.file)
+	return nil
 }

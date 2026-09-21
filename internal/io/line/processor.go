@@ -2,6 +2,7 @@ package line
 
 import (
 	"bytes"
+	"os"
 )
 
 // Processor defines an interface for processing lines read from files.
@@ -50,4 +51,17 @@ type RawProcessor interface {
 // Processor (rotation), because that Processor starts with fresh state anyway.
 type SourceRestarter interface {
 	SourceRestarted()
+}
+
+// PositionObserver is an optional extension of Processor for processors that
+// must know where in the source file the lines they were fed end, for example
+// so that a consumer can later resume the read with a reader of its own.
+//
+// A follow-mode reader of an uncompressed file calls LinesEndAt from the
+// goroutine that calls ProcessLine, before every Flush, with the byte offset
+// just past the last complete line it fed and the identity of the open file.
+// The offset excludes a trailing line the reader has not finished yet.
+// Readers of compressed files and snapshot readers never call it.
+type PositionObserver interface {
+	LinesEndAt(offset int64, file os.FileInfo)
 }

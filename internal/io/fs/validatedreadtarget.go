@@ -90,6 +90,12 @@ func validateJournalSpec(spec string) error {
 	return nil
 }
 
+// ResolvedPath returns the absolute path the target was validated for. Two
+// targets with the same resolved path open the same file.
+func (t ValidatedReadTarget) ResolvedPath() string {
+	return t.resolvedPath
+}
+
 // Open re-opens the validated file beneath its resolved parent directory.
 func (t ValidatedReadTarget) Open() (*os.File, error) {
 	if t.Kind != FileKind {
