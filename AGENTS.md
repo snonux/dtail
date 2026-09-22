@@ -399,53 +399,85 @@ held descriptors, read positions, in-order long line warnings) is wired
 through optional interfaces the fan-out processor type-asserts (`readTracker`,
 `warningSource`), which only the follow entry implements.
 
-**Failed scheduled jobs leave no outfile (dserver):**
+**Failed scheduled jobs: strict until the TimeRange ends (dserver):**
 The scheduler skips a job for the rest of its date period once its outfile
-exists, so a scheduled job (`clients.ScheduledMode`) writes its outfile and
-`.query` file (both via `.tmp` and rename) only when the query completed on
-every server, and never a partial result. It writes no interim results. The
-query completed when all of this holds:
-- there was at least one server connection, and every one ended with status 0
-  (a refused connection, failed SSH handshake or rejected session sets 1);
-- the job's context was not canceled (e.g. by the scheduling dserver's own
-  shutdown);
-- every session ended with the server's close handshake (`.syn close
-  connection`), which a server sends only after all of the session's output.
-  A session cut short without it (remote dserver killed with SIGKILL, stopped
-  with SIGTERM/SIGINT, crashed, connection lost) failed;
-- no server reported a failed command. dservers advertising capability
-  `command-failure-v1` send the hidden message `.syn command failed <reason>`
-  (fixed reasons, no paths or error details; those stay in the server log)
-  before the close handshake when a read found no file after its glob
-  retries ("No such file(s) to read" / "Giving up to read file(s)"), was
-  denied by the read permissions, could not create its reader or open/read a
-  file (e.g. permission denied), matched more files than `MaxGlobTargets`
-  (only part of them is read), or its command could not be parsed; and when
-  a `map` query was invalid, a command could not be decoded, was rejected by
-  dispatch or was unknown. A file of the job that does not exist yet (e.g.
-  `$today`'s log before its first line) is therefore a failure, and the job
-  is retried until it exists.
+exists, so a scheduled job writes its outfile and `.query` file (both via
+`.tmp` and rename, no interim results) only as described here. Two kinds of
+failure are told apart:
+- **Transport failures** never write an outfile, not even after the job's
+  TimeRange ended: no server connection at all; a connection that ended with
+  a non-zero status (refused connection, failed SSH handshake, rejected
+  session); the job's context canceled (e.g. the scheduling dserver's own
+  shutdown); a session that ended without the server's close handshake
+  (`.syn close connection`, sent only after all of the session's output),
+  e.g. a remote dserver killed with SIGKILL, stopped with SIGTERM/SIGINT,
+  crashed, or a lost connection; and a failed command that is no file read
+  failure (`command: unable to decode command`, `command: rejected`,
+  `command: unknown command`, `map: invalid query`, `read: unable to parse
+  command`, or a reason the client does not know).
+- **File read failures**, reported by dservers advertising capability
+  `command-failure-v1` with the hidden message `.syn command failed <reason>`
+  (fixed reasons from `internal/protocol/session.go`, no paths or error
+  details; those stay in the server log), sent before the close handshake
+  (`protocol.IsFileReadFailure`): `read: no file to read` (a glob matched no
+  file after its retries, a file vanished or is a dangling symlink, or every
+  path a glob matched is no regular file), `read: no permission to read file`
+  (denied by the read permissions), `read: unable to create file reader`,
+  `read: unable to read file` (open/read error, e.g. permission denied on the
+  file system) and `read: more files than the server reads` (the glob matched
+  more than `MaxGlobTargets`; only the first ones are read). This covers a
+  file of the job that does not exist yet (e.g. `$today`'s log), a
+  comma-separated `Files` list with a file that never appears, a glob matching
+  no file, and a multi-server job whose file is missing on one host.
+
+Directories and other non-regular files a glob matches are skipped silently
+(server log at INFO, no client warning, no failure), unless the glob matched
+nothing else (then `read: no file to read`). Read permissions are checked
+before this, so a denied path reports `no permission` whatever it is.
+
+Within the job's TimeRange (`clients.ScheduledMode`) any failure blocks the
+outfile: the job writes nothing, keeps an outfile of an earlier run untouched,
+and logs `Job <name> failed and wrote no outfile <path> (failure <n> in a
+row), it runs again from about <time>`; the client logs why (`Not writing the
+mapreduce result as the query did not complete` for transport failures, `Not
+writing the mapreduce result as files could not be read ...` with
+`<server>: <reason>` entries for file read failures). The job is backed off in
+memory (`internal/jobs/backoff.go`, keyed by job and filled-in outfile): it
+runs again 1, 2, 4, 8, 16, 32 and then every 60 minutes after the start of
+its last failed run, but at least half that time after the run's end (a job
+running longer than its backoff does not run back to back), on the first
+scheduler run (every minute) from then on, with 5 seconds of slack for
+scheduler drift. Runs skipped by the backoff are logged at DEBUG only.
+
+Once the TimeRange of a failed run has ended (its end hour on the day of the
+run; for `[0, 24]` that is the next midnight, when the `$today` period of the
+outfile has passed; a job with no or an empty TimeRange never runs at all),
+the scheduler runs **final runs** (`clients.ScheduledPartialMode`) with the
+files and outfile (dates filled in) of the failed run, one at a time, before
+the scheduler run's other jobs: the first at the first scheduler run from the
+range end on (ignoring the backoff), later ones after the backoff, which goes
+on counting. A final run logs `Starting final run of job <name> for outfile
+<path> after its TimeRange ended at <time>, ...`. If its only failures are
+file read failures, it writes what it could read (the pre-d9 behaviour) and
+the client logs `Writing partial mapreduce result after the job's TimeRange
+ended|<server>: <reason>; ...`; if every file could be read by then, it writes
+the complete result. A transport failure still writes nothing and the final
+runs go on after the backoff. The scheduler gives up on an outfile 24 hours
+after its TimeRange ended (`Giving up job <name> after <n> failures in a row:
+it wrote no outfile <path> within 24h0m0s ...`), and skips (and forgets) a
+final run whose outfile exists by then. For an outfile without dates, the next
+day's TimeRange takes over: runs within it are strict again and move the range
+end. Failures are forgotten when the job writes the outfile and with a dserver
+restart: after a restart within the TimeRange the job runs strictly again, but
+a dserver restarted after the TimeRange ended does not know the failed run and
+writes no outfile for that period.
 
 Compatibility: older clients ignore the unknown hidden message (and a client
 of another protocol version never gets it). A current scheduler reading from
 an older dserver (no `command-failure-v1`) only has the close handshake:
 killed or shut down servers and lost connections are still detected, failed
 reads on such a server are not (they still give a header-only or partial
-outfile, as before).
-
-A failed job writes nothing, keeps an outfile of an earlier run untouched,
-and logs `Job <name> failed and wrote no outfile <path> (failure <n> in a
-row), it runs again from about <time>`. The scheduler then backs the job off,
-in memory (`internal/jobs/backoff.go`): it runs it again 1, 2, 4, 8, 16, 32
-and then every 60 minutes after the start of its last failed run, but at
-least half that time after the run's end (so a job running longer than its
-backoff does not run back to back), on the first scheduler run (every minute,
-within `TimeRange`) from then on, with 5 seconds of slack for scheduler drift.
-The backoff ends when the job succeeds, when its outfile path changes (the
-dates filled into it moved to a new period), and with a dserver restart.
-Runs skipped by the backoff are logged at DEBUG only, so a permanently
-failing job logs its failure lines once per run: at most once an hour after
-its first hour of failures. Continuous jobs and interactive `dmap` with an outfile
+outfile, as before). Continuous jobs and interactive `dmap` with an outfile
 keep writing interim and final results whatever the exit status.
 
 **Best Practices for High-Concurrency MapReduce:**

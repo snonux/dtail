@@ -18,6 +18,11 @@ type dueJob struct {
 	job     *config.Scheduled
 	args    config.Args
 	outfile string
+	// rangeEnd is when the job's TimeRange that the run is in ends.
+	rangeEnd time.Time
+	// final is set for a run after the TimeRange of a failed run ended
+	// (see jobBackoff): it writes what it could read.
+	final bool
 }
 
 // jobGroupKey identifies the jobs that read the same files from the same

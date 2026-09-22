@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -196,7 +197,7 @@ func TestDServerScheduledRemoteReadFailures(t *testing.T) {
 	output = runScheduledDServer(ctx, t, cfgFileA, portA, 12)
 	killB()
 	<-b
-	if !strings.Contains(output, "reported a failed command: read: no file to read") ||
+	if !strings.Contains(output, "files could not be read") || !strings.Contains(output, ": read: no file to read") ||
 		!strings.Contains(output, "Job "+name+" failed and wrote no outfile") {
 		t.Errorf("run without the file did not log the failed read, output:\n%s", output)
 	}
@@ -267,4 +268,81 @@ func startServerB(ctx context.Context, t *testing.T, cfgFile string, port int, k
 		}
 	}()
 	return exited
+}
+
+// TestDServerScheduledGlobWithSubdirectoryAndMissingFile runs two scheduled
+// jobs within their TimeRange with one dserver that is their server:
+//   - "dirglob" reads a glob that matches the test data and a directory. The
+//     directory is not read and is no failure: the job writes the same outfile
+//     as a job reading the test data alone (dserver1.csv.expected).
+//   - "mixlist" reads a list of the test data and a file that does not exist.
+//     Within its TimeRange the job writes no outfile at all.
+func TestDServerScheduledGlobWithSubdirectoryAndMissingFile(t *testing.T) {
+	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
+		t.Log("Skipping")
+		return
+	}
+	cleanupTmpFiles(t)
+	testLogger := NewTestLogger("TestDServerScheduledGlobWithSubdirectoryAndMissingFile")
+	defer writeLogFileIgnoringError(testLogger)
+
+	baseCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := WithTestLogger(baseCtx, testLogger)
+
+	const (
+		cfgFile = "dserver6.cfg.tmp"
+		dirCSV  = "dserver6-dirglob.csv.tmp"
+		listCSV = "dserver6-mixlist.csv.tmp"
+		query   = "from STATS select count($line),last($time),avg($goroutines)," +
+			"min(concurrentConnections),max(lifetimeConnections) group by $hostname"
+	)
+	dataDir := t.TempDir()
+	data, err := os.ReadFile("mapr_testdata.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "mapr_testdata.log"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dataDir, "archive"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	port := getUniquePortNumber()
+	job := func(name, files, outfile string) string {
+		return fmt.Sprintf(`{"Name": %q, "Enable": true, "AllowFrom": ["localhost"], "TimeRange": [0, 24],
+  "Files": %q, "Query": %q, "Outfile": "./%s"}`, name, files, query, outfile)
+	}
+	cfg := fmt.Sprintf(`{"Server": {"Schedule": [%s, %s]}}`,
+		job("dirglob", filepath.Join(dataDir, "*"), dirCSV),
+		job("mixlist", "./mapr_testdata.log,"+filepath.Join(dataDir, "missing.log"), listCSV))
+	if err := os.WriteFile(cfgFile, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{dirCSV + ".query", listCSV + ".query"} {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+	}
+
+	output := runScheduledDServer(ctx, t, cfgFile, port, 12)
+
+	if strings.Contains(output, "Job dirglob failed") {
+		t.Errorf("the job reading a glob with a directory failed, output:\n%s", output)
+	}
+	if err := compareFilesWithContext(ctx, t, dirCSV, "dserver1.csv.expected"); err != nil {
+		t.Error(err)
+	}
+	if err := os.Remove(dirCSV + ".query"); err != nil {
+		t.Error(err)
+	}
+	if !strings.Contains(output, "Job mixlist failed and wrote no outfile") ||
+		!strings.Contains(output, ": read: no file to read") {
+		t.Errorf("the job reading a missing file did not log its failure, output:\n%s", output)
+	}
+	for _, path := range []string{listCSV, listCSV + ".query", listCSV + ".tmp", listCSV + ".query.tmp"} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the job reading a missing file left %s (stat error %v)", path, err)
+		}
+	}
 }

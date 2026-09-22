@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/clients/handlers"
+	"github.com/mimecast/dtail/internal/protocol"
 )
 
 func TestIncompleteQueryReason(t *testing.T) {
@@ -55,7 +60,15 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 	const previous = "previous result\n"
 	completed := handlers.SessionOutcome{Completed: true}
 	cutShort := handlers.SessionOutcome{}
-	failedRead := handlers.SessionOutcome{Completed: true, Failure: "read: no file to read"}
+	failedRead := handlers.SessionOutcome{Completed: true, Failures: []string{protocol.CommandFailureNoFile}}
+	unreadable := handlers.SessionOutcome{Completed: true, Failures: []string{
+		protocol.CommandFailurePermission, protocol.CommandFailureReadingFile, protocol.CommandFailureReader,
+		protocol.CommandFailureGlobCapped}}
+	denied := handlers.SessionOutcome{Completed: true, Failures: []string{protocol.CommandFailurePermission}}
+	failedQuery := handlers.SessionOutcome{Completed: true, Failures: []string{protocol.CommandFailureMapQuery}}
+	failedReadAndQuery := handlers.SessionOutcome{Completed: true, Failures: []string{
+		protocol.CommandFailureNoFile, protocol.CommandFailureRejected}}
+	failedReadCutShort := handlers.SessionOutcome{Failures: []string{protocol.CommandFailureNoFile}}
 	tests := []struct {
 		name       string
 		mode       MaprClientMode
@@ -67,6 +80,9 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 		badDir     bool
 		wantStatus int
 		wantResult bool
+		// wantLog is a warning the client must log, its arguments joined
+		// with "|".
+		wantLog string
 	}{
 		{name: "scheduled completed", mode: ScheduledMode, wantResult: true},
 		{name: "scheduled completed replaces earlier outfile", mode: ScheduledMode, existing: true, wantResult: true},
@@ -92,6 +108,48 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 		{name: "scheduled without servers", mode: ScheduledMode, outcomes: []handlers.SessionOutcome{},
 			wantStatus: 1},
 		{name: "scheduled handler without outcome", mode: ScheduledMode, noOutcome: true, wantStatus: 1},
+		{name: "scheduled unreadable files", mode: ScheduledMode, outcomes: []handlers.SessionOutcome{unreadable},
+			wantStatus: 1},
+		{name: "scheduled failed read keeps earlier outfile", mode: ScheduledMode,
+			outcomes: []handlers.SessionOutcome{failedRead}, existing: true, wantStatus: 1},
+
+		// After the job's TimeRange ended: file read failures write the
+		// partial result, everything else still writes nothing.
+		{name: "partial completed", mode: ScheduledPartialMode, wantResult: true},
+		{name: "partial failed read", mode: ScheduledPartialMode, outcomes: []handlers.SessionOutcome{failedRead},
+			wantResult: true, wantLog: "Writing partial mapreduce result after the job's TimeRange ended" +
+				"|srv1: " + protocol.CommandFailureNoFile},
+		{name: "partial unreadable files", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{unreadable}, wantResult: true},
+		{name: "partial failed read on second server", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{completed, failedRead}, wantResult: true,
+			wantLog: "Writing partial mapreduce result after the job's TimeRange ended|srv2: " +
+				protocol.CommandFailureNoFile},
+		{name: "partial failed reads on both servers", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{failedRead, denied}, wantResult: true,
+			wantLog: "Writing partial mapreduce result after the job's TimeRange ended|srv1: " +
+				protocol.CommandFailureNoFile + "; srv2: " + protocol.CommandFailurePermission},
+		{name: "partial failed read replaces earlier outfile", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{failedRead}, existing: true, wantResult: true},
+		{name: "partial failed connection", mode: ScheduledPartialMode, status: 1, wantStatus: 1},
+		{name: "partial failed connection and failed read", mode: ScheduledPartialMode, status: 1,
+			outcomes: []handlers.SessionOutcome{failedRead}, wantStatus: 1},
+		{name: "partial canceled", mode: ScheduledPartialMode, ctxErr: context.Canceled,
+			outcomes: []handlers.SessionOutcome{failedRead}, wantStatus: 1},
+		{name: "partial session cut short", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{cutShort}, wantStatus: 1},
+		{name: "partial failed read on a session cut short", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{failedReadCutShort}, wantStatus: 1},
+		{name: "partial failed read and a server cut short", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{failedRead, cutShort}, existing: true, wantStatus: 1},
+		{name: "partial invalid query", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{failedQuery}, wantStatus: 1},
+		{name: "partial failed read and rejected command", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{failedReadAndQuery}, wantStatus: 1},
+		{name: "partial without servers", mode: ScheduledPartialMode, outcomes: []handlers.SessionOutcome{},
+			wantStatus: 1},
+		{name: "partial write error", mode: ScheduledPartialMode, outcomes: []handlers.SessionOutcome{failedRead},
+			badDir: true, wantStatus: 1},
 		{name: "cumulative session cut short still writes", mode: CumulativeMode,
 			outcomes: []handlers.SessionOutcome{cutShort}, wantResult: true},
 		{name: "cumulative failed read still writes", mode: CumulativeMode,
@@ -117,6 +175,8 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 			}
 			query := outfileTestQuery(t, outfile, false)
 			client := newOutfileTestClient(query, tt.mode)
+			logger := &warnRecorder{}
+			client.loggers.Client = logger
 			mergeOutfileTestRow(t, client.session.Snapshot(), 7)
 			outcomes := tt.outcomes
 			if outcomes == nil {
@@ -146,6 +206,9 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 			assertScheduledTestFile(t, outfile+".query", wantQuery)
 			assertScheduledTestFile(t, outfile+".tmp", "")
 			assertScheduledTestFile(t, outfile+".query.tmp", "")
+			if tt.wantLog != "" && !slices.Contains(logger.warnings(), tt.wantLog) {
+				t.Fatalf("warnings = %q, want %q", logger.warnings(), tt.wantLog)
+			}
 		})
 	}
 }
@@ -223,34 +286,69 @@ func (h *statusTestHandler) Status() int { return h.status }
 
 func (h *statusTestHandler) Outcome() handlers.SessionOutcome { return h.outcome }
 
-// TestSessionIncompleteReason covers when a scheduled query takes a server's
-// session as complete.
-func TestSessionIncompleteReason(t *testing.T) {
+// TestSessionOutcome covers when a scheduled query takes a server's session
+// as complete, and which failures it may write a partial result for.
+func TestSessionOutcome(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		handler  handlers.Handler
-		complete bool
+		name         string
+		handler      handlers.Handler
+		complete     bool
+		fileFailures []string
 	}{
 		{name: "closed by the server", handler: &statusTestHandler{outcome: handlers.SessionOutcome{Completed: true}},
 			complete: true},
 		{name: "cut short", handler: &statusTestHandler{}},
-		{name: "failed command", handler: &statusTestHandler{
-			outcome: handlers.SessionOutcome{Completed: true, Failure: "read: no file to read"}}},
-		{name: "failed command and cut short", handler: &statusTestHandler{
-			outcome: handlers.SessionOutcome{Failure: "read: no file to read"}}},
+		{name: "file read failures", handler: &statusTestHandler{outcome: handlers.SessionOutcome{Completed: true,
+			Failures: []string{protocol.CommandFailureNoFile, protocol.CommandFailurePermission}}},
+			complete: true, fileFailures: []string{"srv1: " + protocol.CommandFailureNoFile,
+				"srv1: " + protocol.CommandFailurePermission}},
+		{name: "unparsable read command", handler: &statusTestHandler{outcome: handlers.SessionOutcome{
+			Completed: true, Failures: []string{protocol.CommandFailureReadCommand}}}},
+		{name: "unknown failure", handler: &statusTestHandler{outcome: handlers.SessionOutcome{
+			Completed: true, Failures: []string{"read: something new"}}}},
+		{name: "file read failure and cut short", handler: &statusTestHandler{
+			outcome: handlers.SessionOutcome{Failures: []string{protocol.CommandFailureNoFile}}}},
 		{name: "no outcome", handler: &retryTestHandler{}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			reason := sessionIncompleteReason("srv1", tt.handler)
-			if (reason == "") != tt.complete {
-				t.Fatalf("sessionIncompleteReason() = %q, want complete=%v", reason, tt.complete)
+			incomplete, fileFailures := sessionOutcome("srv1", tt.handler)
+			if (incomplete == "") != tt.complete {
+				t.Fatalf("sessionOutcome() incomplete = %q, want complete=%v", incomplete, tt.complete)
+			}
+			if !slices.Equal(fileFailures, tt.fileFailures) {
+				t.Fatalf("sessionOutcome() file failures = %q, want %q", fileFailures, tt.fileFailures)
 			}
 		})
 	}
+}
+
+// warnRecorder records the client's warnings, each with its arguments joined
+// with "|".
+type warnRecorder struct {
+	clientlog.NopLogger
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *warnRecorder) Warn(args ...any) string {
+	parts := make([]string, len(args))
+	for i, arg := range args {
+		parts[i] = fmt.Sprint(arg)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, strings.Join(parts, "|"))
+	return ""
+}
+
+func (l *warnRecorder) warnings() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.lines)
 }
 
 func writeScheduledTestFile(t *testing.T, path, content string) {

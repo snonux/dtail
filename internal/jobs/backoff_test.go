@@ -34,7 +34,9 @@ type backoffTestScheduler struct {
 	now      time.Time
 	statuses []int
 	runs     []time.Time
-	logger   *exitLogger
+	// modes are the client modes of the runs.
+	modes  []clients.MaprClientMode
+	logger *exitLogger
 	// runTime is how long every run of the job takes on the fake clock.
 	runTime time.Duration
 }
@@ -65,13 +67,14 @@ func newBackoffTestScheduler(t *testing.T, outfile string, start time.Time) *bac
 	b := &backoffTestScheduler{scheduler: newScheduler(cfg, jobTestLoggers), now: start, logger: &exitLogger{}}
 	b.scheduler.logger = b.logger
 	b.scheduler.now = func() time.Time { return b.now }
-	b.newMaprClient = func(config.Args, clients.MaprClientMode) (backgroundClient, error) {
+	b.newMaprClient = func(_ config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
 		if len(b.statuses) == 0 {
 			t.Fatal("job ran more often than expected")
 		}
 		status := b.statuses[0]
 		b.statuses = b.statuses[1:]
 		b.runs = append(b.runs, b.now)
+		b.modes = append(b.modes, mode)
 		return backoffTestClient{b: b, status: status}, nil
 	}
 	return b
@@ -145,20 +148,28 @@ func TestSchedulerBackoffEndsWhenTheJobSucceeds(t *testing.T) {
 
 // TestSchedulerBackoffEndsWhenTheOutfileChanges checks that a failing job
 // whose outfile has the date in it runs at once when the date changes, as
-// that is another result.
+// that is another result; the TimeRange [0, 24) of the failed runs of the
+// day before ends then too, so a final run for the outfile of the day before
+// comes first, and then backs off on its own.
 func TestSchedulerBackoffEndsWhenTheOutfileChanges(t *testing.T) {
 	start := time.Date(2026, 9, 22, 23, 0, 0, 0, time.Local)
 	b := newBackoffTestScheduler(t, filepath.Join(t.TempDir(), "result-$today.csv"), start)
-	b.statuses = slices.Repeat([]int{1}, 11)
+	b.statuses = slices.Repeat([]int{1}, 15)
 
-	b.runEveryMinute(90)
+	b.runEveryMinute(125)
 
-	// 0, 1, 3, 7, 15, 31 fail on the 22nd; the backoff until 63 ends at
-	// midnight (minute 60), when the outfile is the one of the 23rd, whose
+	// 0, 1, 3, 7, 15, 31 fail on the 22nd; at midnight (minute 60) its
+	// final run fails too (its 7th failure: an hour of backoff, so its next
+	// final run is at 120), and the outfile is the one of the 23rd, whose
 	// runs back off from 1 minute again.
-	want := []int{0, 1, 3, 7, 15, 31, 60, 61, 63, 67, 75}
+	want := []int{0, 1, 3, 7, 15, 31, 60, 60, 61, 63, 67, 75, 91, 120, 123}
 	if got := b.minutesOfRuns(start); !slices.Equal(got, want) {
 		t.Fatalf("job ran at minutes %v, want %v", got, want)
+	}
+	s, p := clients.ScheduledMode, clients.ScheduledPartialMode
+	wantModes := []clients.MaprClientMode{s, s, s, s, s, s, p, s, s, s, s, s, s, p, s}
+	if !slices.Equal(b.modes, wantModes) {
+		t.Fatalf("job ran with modes %v, want %v", b.modes, wantModes)
 	}
 }
 

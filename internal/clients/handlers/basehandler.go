@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -58,9 +59,14 @@ type baseHandler struct {
 	// handshake, i.e. the session ended normally (see Outcome).
 	closeReceived atomic.Bool
 	failureMu     sync.Mutex
-	// failure is the reason of the first failed command the server reported.
-	failure string
+	// failures are the distinct reasons of the failed commands the server
+	// reported, in the order of their first report.
+	failures []string
 }
+
+// maxReportedFailures bounds how many distinct failure reasons a session
+// keeps; servers send a few fixed ones.
+const maxReportedFailures = 16
 
 // SessionOutcome is how the server ended a session, as far as the client
 // knows.
@@ -70,10 +76,11 @@ type SessionOutcome struct {
 	// that ended otherwise (connection lost, server killed or shut down, the
 	// client canceled it) is incomplete.
 	Completed bool
-	// Failure is the reason of the first command the server reported as
-	// failed (protocol.HiddenCommandFailedPrefix), or empty. Only servers
-	// advertising protocol.CapabilityCommandFailureV1 report failures.
-	Failure string
+	// Failures are the distinct reasons of the commands the server reported
+	// as failed (protocol.HiddenCommandFailedPrefix), in the order of their
+	// first report. Only servers advertising
+	// protocol.CapabilityCommandFailureV1 report failures.
+	Failures []string
 }
 
 // SessionAck is a parsed hidden acknowledgement for SESSION START/UPDATE requests.
@@ -133,7 +140,7 @@ func (h *baseHandler) HasCapability(name string) bool {
 func (h *baseHandler) Outcome() SessionOutcome {
 	h.failureMu.Lock()
 	defer h.failureMu.Unlock()
-	return SessionOutcome{Completed: h.closeReceived.Load(), Failure: h.failure}
+	return SessionOutcome{Completed: h.closeReceived.Load(), Failures: slices.Clone(h.failures)}
 }
 
 func (h *baseHandler) ReportServerError(message string) {
@@ -378,8 +385,8 @@ func (h *baseHandler) handleCommandFailedMessage(message string) {
 	h.log().Debug(h.server, "Server reported a failed command", reason)
 	h.failureMu.Lock()
 	defer h.failureMu.Unlock()
-	if h.failure == "" {
-		h.failure = reason
+	if len(h.failures) < maxReportedFailures && !slices.Contains(h.failures, reason) {
+		h.failures = append(h.failures, reason)
 	}
 }
 

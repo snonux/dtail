@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -35,6 +36,11 @@ const (
 	// is written once, after the query completed on every server, and never
 	// when it failed or was canceled (see Start).
 	ScheduledMode MaprClientMode = iota
+	// ScheduledPartialMode is ScheduledMode for the run of a scheduled job
+	// after its TimeRange ended: it also writes the result when the only
+	// failures were files that were missing, not permitted or unreadable
+	// (see Start).
+	ScheduledPartialMode MaprClientMode = iota
 )
 
 // MaprClient is used for running mapreduce aggregations on remote files.
@@ -101,20 +107,27 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 
 // Start starts the mapreduce client.
 //
-// In ScheduledMode no interim result is written, and the final result is
-// written only when the query completed (see scheduledQueryIncomplete): ctx
+// In the scheduled modes no interim result is written, and the final result
+// is written only when the query completed (see scheduledQueryOutcome): ctx
 // was not canceled and on every server the session ended with status 0, with
-// the server's close handshake and without a failed command. Start then
+// the server's close handshake and without a failed command. In
+// ScheduledPartialMode a query whose only failures are file read failures
+// (protocol.IsFileReadFailure) writes the result it has too. Start then
 // returns 0 if and only if the final result was written, so a failed
 // scheduled job leaves no outfile (and no .query file) and the scheduler runs
 // it again later. An outfile from an earlier run is left untouched.
 func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
-	if c.mode != ScheduledMode {
+	if !c.mode.scheduled() {
 		go c.periodicReportResults(ctx)
 	}
 
 	status = c.baseClient.Start(ctx, statsCh)
 	return c.finish(ctx.Err(), status)
+}
+
+// scheduled reports whether mode is one of dserver's scheduled job modes.
+func (mode MaprClientMode) scheduled() bool {
+	return mode == ScheduledMode || mode == ScheduledPartialMode
 }
 
 // finish writes the final result of a cumulative query after the connections
@@ -124,7 +137,7 @@ func (c *MaprClient) finish(ctxErr error, status int) int {
 	if snapshot := c.session.Snapshot(); !c.isCumulative(snapshot.Query) {
 		return status
 	}
-	if c.mode == ScheduledMode {
+	if c.mode.scheduled() {
 		return c.finishScheduled(ctxErr, status)
 	}
 
@@ -138,9 +151,18 @@ func (c *MaprClient) finish(ctxErr error, status int) int {
 }
 
 func (c *MaprClient) finishScheduled(ctxErr error, status int) int {
-	if reason := c.scheduledQueryIncomplete(ctxErr, status); reason != "" {
-		c.clientLogger().Warn("Not writing the mapreduce result as the query did not complete", reason)
+	outcome := c.scheduledQueryOutcome(ctxErr, status)
+	failures := strings.Join(outcome.fileFailures, "; ")
+	switch {
+	case outcome.incomplete != "":
+		c.clientLogger().Warn("Not writing the mapreduce result as the query did not complete", outcome.incomplete)
 		return max(status, 1)
+	case failures != "" && c.mode != ScheduledPartialMode:
+		c.clientLogger().Warn("Not writing the mapreduce result as files could not be read "+
+			"(a run after the job's TimeRange ended writes what it could read)", failures)
+		return max(status, 1)
+	case failures != "":
+		c.clientLogger().Warn("Writing partial mapreduce result after the job's TimeRange ended", failures)
 	}
 	c.clientLogger().Debug("Writing final mapreduce result")
 	if err := c.reportResults(true); err != nil {
@@ -151,28 +173,44 @@ func (c *MaprClient) finishScheduled(ctxErr error, status int) int {
 	return status
 }
 
-// scheduledQueryIncomplete returns why the scheduled query did not complete,
-// or "" if it did: the connections ended with status 0, ctxErr (the error of
+// scheduledOutcome is how a scheduled query ended.
+type scheduledOutcome struct {
+	// incomplete is why the query did not complete, or "" if it did: a
+	// connection failed or was canceled, a session was cut short, or a server
+	// reported a failed command that is no file read failure. Such a query
+	// never writes a result.
+	incomplete string
+	// fileFailures are the file read failures (protocol.IsFileReadFailure)
+	// the servers reported, each as "<server>: <reason>": files that were
+	// missing, not permitted or unreadable, so the result lacks their data.
+	fileFailures []string
+}
+
+// scheduledQueryOutcome returns how the scheduled query ended: it did not
+// complete unless the connections ended with status 0, ctxErr (the error of
 // the client's context by then) is nil, there was a connection at all, and
-// every session completed (see sessionIncompleteReason).
-func (c *MaprClient) scheduledQueryIncomplete(ctxErr error, status int) string {
+// every session completed (see sessionOutcome).
+func (c *MaprClient) scheduledQueryOutcome(ctxErr error, status int) scheduledOutcome {
 	if reason := incompleteQueryReason(ctxErr, status); reason != "" {
-		return reason
+		return scheduledOutcome{incomplete: reason}
 	}
 	connections := c.snapshotConnections()
 	if len(connections) == 0 {
-		return "there was no server to run the query on"
+		return scheduledOutcome{incomplete: "there was no server to run the query on"}
 	}
+	var outcome scheduledOutcome
 	for _, conn := range connections {
-		if reason := sessionIncompleteReason(conn.Server(), conn.Handler()); reason != "" {
-			return reason
+		incomplete, fileFailures := sessionOutcome(conn.Server(), conn.Handler())
+		if incomplete != "" {
+			return scheduledOutcome{incomplete: incomplete}
 		}
+		outcome.fileFailures = append(outcome.fileFailures, fileFailures...)
 		if !conn.Handler().HasCapability(protocol.CapabilityCommandFailureV1) {
 			c.clientLogger().Debug(conn.Server(), "Server does not report failed commands, "+
 				"only an incomplete session fails the query", protocol.CapabilityCommandFailureV1)
 		}
 	}
-	return ""
+	return outcome
 }
 
 // sessionOutcomeReporter is a client handler that knows how its session
@@ -181,27 +219,30 @@ type sessionOutcomeReporter interface {
 	Outcome() handlers.SessionOutcome
 }
 
-// sessionIncompleteReason returns why the session of handler with server did
-// not complete, or "" if it did: the server ended it with its close handshake
-// (so the session was not cut short, e.g. by a killed or shut down server or
-// a lost connection) and reported no failed command (e.g. a file that does
-// not exist or can not be read). A server not advertising
-// protocol.CapabilityCommandFailureV1 reports no failed commands, so for it
-// only the close handshake counts.
-func sessionIncompleteReason(server string, handler handlers.Handler) string {
+// sessionOutcome returns why the session of handler with server did not
+// complete, or "" if it did, and the file read failures (see
+// protocol.IsFileReadFailure) the server reported, each as "<server>:
+// <reason>". The session completed when the server ended it with its close
+// handshake (so it was not cut short, e.g. by a killed or shut down server or
+// a lost connection) and reported no failed command other than file read
+// failures. A server not advertising protocol.CapabilityCommandFailureV1
+// reports no failed commands, so for it only the close handshake counts.
+func sessionOutcome(server string, handler handlers.Handler) (incomplete string, fileFailures []string) {
 	reporter, ok := handler.(sessionOutcomeReporter)
 	if !ok {
-		return fmt.Sprintf("the session with %s reports no outcome", server)
+		return fmt.Sprintf("the session with %s reports no outcome", server), nil
 	}
 	outcome := reporter.Outcome()
-	switch {
-	case !outcome.Completed:
-		return fmt.Sprintf("the session with %s ended before the server completed it", server)
-	case outcome.Failure != "":
-		return fmt.Sprintf("%s reported a failed command: %s", server, outcome.Failure)
-	default:
-		return ""
+	if !outcome.Completed {
+		return fmt.Sprintf("the session with %s ended before the server completed it", server), nil
 	}
+	for _, reason := range outcome.Failures {
+		if !protocol.IsFileReadFailure(reason) {
+			return fmt.Sprintf("%s reported a failed command: %s", server, reason), nil
+		}
+		fileFailures = append(fileFailures, server+": "+reason)
+	}
+	return "", fileFailures
 }
 
 // incompleteQueryReason returns why a query whose connections ended with
@@ -396,7 +437,7 @@ func (c *MaprClient) commitSessionSpec(spec SessionSpec, generation uint64) erro
 
 func (c *MaprClient) isCumulative(query *mapr.Query) bool {
 	switch c.mode {
-	case CumulativeMode, ScheduledMode:
+	case CumulativeMode, ScheduledMode, ScheduledPartialMode:
 		return true
 	case NonCumulativeMode:
 		return false

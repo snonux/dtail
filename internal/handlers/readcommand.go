@@ -19,6 +19,7 @@ import (
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
+	user "github.com/mimecast/dtail/internal/sessionuser"
 )
 
 type readCommand struct {
@@ -52,12 +53,12 @@ type readCommand struct {
 // server-side error: those are in the server log only, like the warnings the
 // client gets ("check server logs").
 const (
-	readFailureCommand     = "read: unable to parse command"
-	readFailureNoFile      = "read: no file to read"
-	readFailureGlobCapped  = "read: more files than the server reads"
-	readFailurePermission  = "read: no permission to read file"
-	readFailureReader      = "read: unable to create file reader"
-	readFailureReadingFile = "read: unable to read file"
+	readFailureCommand     = protocol.CommandFailureReadCommand
+	readFailureNoFile      = protocol.CommandFailureNoFile
+	readFailureGlobCapped  = protocol.CommandFailureGlobCapped
+	readFailurePermission  = protocol.CommandFailurePermission
+	readFailureReader      = protocol.CommandFailureReader
+	readFailureReadingFile = protocol.CommandFailureReadingFile
 )
 
 type pendingInputReservationKeyType struct{}
@@ -346,9 +347,14 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	r.logger.Info(r.logContext, "Added pending files", "count", len(paths), "totalPending", totalPending)
 
 	var wg sync.WaitGroup
+	var skipped atomic.Int32
 	wg.Add(len(paths))
 	for _, path := range paths {
-		go r.readFileIfPermissions(ctx, ltx, &wg, path, glob, re)
+		go func() {
+			if r.readFileIfPermissions(ctx, ltx, &wg, path, glob, re) {
+				skipped.Add(1)
+			}
+		}()
 	}
 	wg.Wait()
 
@@ -358,6 +364,15 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	case <-ctx.Done():
 		return
 	default:
+	}
+
+	// A glob that matched only paths that are no regular files (e.g. only
+	// directories) read nothing, like a glob that matched no path.
+	if int(skipped.Load()) == len(paths) {
+		r.logger.Error(r.logContext, "No regular file(s) to read", glob)
+		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+			"Unable to read file(s), check server logs"))
+		r.reportFailure(ctx, readFailureNoFile)
 	}
 
 	// The handler owns output draining and the epoch-protected EOF handshake.
@@ -394,8 +409,12 @@ func (r *readCommand) releasePendingInputReservation(ctx context.Context) {
 	r.shutdownCoordinator.onFileProcessed(ctx, "unresolved read command")
 }
 
+// readFileIfPermissions reads path if the session may read it. It reports
+// true when it skipped path as it is no regular file (e.g. a directory a glob
+// matched), which is not a failure: such a path is skipped silently, as it
+// has no lines to read.
 func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LContext,
-	wg *sync.WaitGroup, path, glob string, re regex.Regex) {
+	wg *sync.WaitGroup, path, glob string, re regex.Regex) (skipped bool) {
 
 	defer recoverHandlerPanic(r.logger, r.logContext, "file read cleanup", r.abortAfterPanic)
 	defer wg.Done()
@@ -405,15 +424,31 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 	defer recoverHandlerPanic(r.logger, r.logContext, "file read", r.abortAfterPanic)
 
 	globID := r.makeGlobID(ctx, path, glob)
-	target, ok := r.server.PrepareReadTarget(path)
-	if !ok {
+	target, err := r.server.PrepareReadTarget(path)
+	switch {
+	case err == nil:
+		r.read(ctx, ltx, path, &target, globID, re)
+		return false
+	case errors.Is(err, fs.ErrNotRegularFile):
+		r.logger.Info(r.logContext, "Skipping path that is not a regular file", path, globID)
+		return true
+	case errors.Is(err, os.ErrNotExist):
+		r.logger.Error(r.logContext, "File to read does not exist (anymore)", path, globID, err)
+		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+			"Unable to read file(s), check server logs"))
+		r.reportFailure(ctx, readFailureNoFile)
+	case errors.Is(err, user.ErrReadPermissionDenied):
 		r.logger.Error(r.logContext, "No permission to read file", path, globID)
 		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 			"Unable to read file(s), check server logs"))
 		r.reportFailure(ctx, readFailurePermission)
-		return
+	default:
+		r.logger.Error(r.logContext, "Unable to read file", path, globID, err)
+		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+			"Unable to read file(s), check server logs"))
+		r.reportFailure(ctx, readFailureReadingFile)
 	}
-	r.read(ctx, ltx, path, &target, globID, re)
+	return false
 }
 
 func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,

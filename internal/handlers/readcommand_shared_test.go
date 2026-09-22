@@ -21,6 +21,7 @@ import (
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/regex"
+	user "github.com/mimecast/dtail/internal/sessionuser"
 )
 
 const sharedReadTimeout = 10 * time.Second
@@ -79,12 +80,11 @@ func (s *sharedReadTestServer) received() string {
 	return s.output.String()
 }
 
-func (s *sharedReadTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool) {
+func (s *sharedReadTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarget, error) {
 	if s.denied[path] {
-		return fs.ValidatedReadTarget{}, false
+		return fs.ValidatedReadTarget{}, user.ErrReadPermissionDenied
 	}
-	target, err := fs.NewValidatedReadTarget(path)
-	return target, err == nil
+	return fs.NewValidatedReadTarget(path)
 }
 
 func (s *sharedReadTestServer) readCommandDependencies() readCommandDependencies {
@@ -219,8 +219,8 @@ func waitForShared(t *testing.T, what string, condition func() bool) {
 func startTailRead(t *testing.T, server *sharedReadTestServer, path string) (context.CancelFunc, <-chan struct{}) {
 	t.Helper()
 	cmd := newReadCommandWithDependencies(server.readCommandDependencies(), omode.TailClient, nil)
-	target, ok := server.PrepareReadTarget(path)
-	if !ok {
+	target, err := server.PrepareReadTarget(path)
+	if err != nil {
 		t.Fatalf("test setup: no target for %s", path)
 	}
 	ctx, cancel := context.WithCancel(context.Background())

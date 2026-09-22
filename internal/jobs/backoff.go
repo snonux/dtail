@@ -1,7 +1,9 @@
 package jobs
 
 import (
+	"cmp"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,28 +22,60 @@ const (
 	// slack keeps a job from missing the scheduler run one backoff after
 	// its failed run by that little and waiting a whole minute longer.
 	failedJobBackoffSlack = 5 * time.Second
+	// failedJobFinalRunWindow is how long after the end of its TimeRange the
+	// scheduler keeps running a failed job for its final result (see
+	// jobBackoff), before it gives up on that outfile.
+	failedJobFinalRunWindow = 24 * time.Hour
 )
 
-// jobBackoff holds, in memory, the scheduled jobs whose last run failed and
-// when the scheduler may run each again. A failed job wrote no outfile, so
-// the scheduler would otherwise run it again every minute, and a job that
-// fails for good (e.g. one of its servers is gone) would read the files of
-// all its other servers every minute. The backoff of a job ends when it
-// succeeds, and when its outfile changes (the dates filled into it moved on
-// to a new period), as that is another result.
+// jobBackoff holds, in memory, the scheduled jobs whose last run for an
+// outfile failed, when the scheduler may run each again, and until when a
+// run must read every file (the end of the job's TimeRange).
+//
+// A failed job wrote no outfile, so the scheduler would otherwise run it
+// again every minute, and a job that fails for good (e.g. one of its servers
+// is gone) would read the files of all its other servers every minute. The
+// failures of a job end when it writes its outfile.
+//
+// Within its TimeRange a job writes its outfile only once it read every file
+// (clients.ScheduledMode). Once the TimeRange in which a job's run for an
+// outfile failed ended, the scheduler runs the job for that outfile again, at
+// its first run from then on and then after its backoff, with the files and
+// the outfile of the failed run; those final runs write what they could read
+// if files were missing or unreadable (clients.ScheduledPartialMode), but
+// still nothing when a server could not be reached or its session was cut
+// short. It gives up on the outfile failedJobFinalRunWindow after the end of
+// the TimeRange.
 type jobBackoff struct {
 	mu     sync.Mutex
-	failed map[*config.Scheduled]failedJob
+	failed map[failedJobKey]failedJob
 }
 
-// failedJob is a job whose runs failed failures times in a row for outfile.
+// failedJobKey is a job's result: its outfile, with its dates filled in.
+type failedJobKey struct {
+	job     *config.Scheduled
+	outfile string
+}
+
+// failedJob is a job whose runs for an outfile failed failures times in a row.
 type failedJob struct {
-	outfile  string
+	// due is the job's run that failed first: its files and outfile have the
+	// dates of that run filled in.
+	due      dueJob
 	failures int
 	// retryAt is when the job may run again: the backoff after the start of
 	// its last failed run, but at least half the backoff after its end, so
 	// that a job running longer than its backoff does not run back to back.
 	retryAt time.Time
+	// rangeEnd is when the TimeRange of the job's last failed run within its
+	// TimeRange ended; its runs from then on are final runs.
+	rangeEnd time.Time
+	// finalRuns is how many final runs failed.
+	finalRuns int
+}
+
+func (f failedJob) key() failedJobKey {
+	return failedJobKey{job: f.due.job, outfile: f.due.outfile}
 }
 
 // backoffDelay returns how long the scheduler waits before it runs a job
@@ -55,17 +89,18 @@ func backoffDelay(failures int) time.Duration {
 	return min(delay, failedJobMaxBackoff)
 }
 
-// wait returns why job, due at now with outfile, must not run yet, or "" if
-// it may run. It forgets the job's failures once its outfile changed.
+// timeRangeEnd returns when the TimeRange of job that now is in ends.
+func timeRangeEnd(job *config.Scheduled, now time.Time) time.Time {
+	return time.Date(now.Year(), now.Month(), now.Day(), job.TimeRange[1], 0, 0, 0, now.Location())
+}
+
+// wait returns why job, due within its TimeRange at now with outfile, must
+// not run yet, or "" if it may run.
 func (b *jobBackoff) wait(job *config.Scheduled, outfile string, now time.Time) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	state, ok := b.failed[job]
+	state, ok := b.failed[failedJobKey{job: job, outfile: outfile}]
 	if !ok {
-		return ""
-	}
-	if state.outfile != outfile {
-		delete(b.failed, job)
 		return ""
 	}
 	if now.Add(failedJobBackoffSlack).Before(state.retryAt) {
@@ -75,32 +110,77 @@ func (b *jobBackoff) wait(job *config.Scheduled, outfile string, now time.Time) 
 	return ""
 }
 
-// fail records that the run of job with outfile, which started at started,
-// failed and ended at ended. It returns how often the job failed in a row now
-// and when it may run again.
-func (b *jobBackoff) fail(job *config.Scheduled, outfile string, started, ended time.Time) failedJob {
+// fail records that the run due, which started at started, failed and ended
+// at ended. final tells whether it was a final run, otherwise it ran within
+// the job's TimeRange, which ends at rangeEnd. It returns the job's failures
+// for due's outfile now.
+func (b *jobBackoff) fail(due dueJob, final bool, started, ended, rangeEnd time.Time) failedJob {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.failed == nil {
-		b.failed = make(map[*config.Scheduled]failedJob)
+		b.failed = make(map[failedJobKey]failedJob)
 	}
-	state := b.failed[job]
-	if state.outfile != outfile {
-		state = failedJob{outfile: outfile}
+	key := failedJobKey{job: due.job, outfile: due.outfile}
+	state, ok := b.failed[key]
+	if !ok {
+		state = failedJob{due: due}
 	}
+	// A final run runs alone.
+	state.due.args.ReadShare = config.ReadShare{}
 	state.failures++
+	if final {
+		state.finalRuns++
+	} else {
+		state.rangeEnd = rangeEnd
+	}
 	delay := backoffDelay(state.failures)
 	state.retryAt = started.Add(delay)
 	if afterEnd := ended.Add(delay / 2); afterEnd.After(state.retryAt) {
 		state.retryAt = afterEnd
 	}
-	b.failed[job] = state
+	b.failed[key] = state
 	return state
 }
 
-// succeed forgets the failures of job.
-func (b *jobBackoff) succeed(job *config.Scheduled) {
+// succeed forgets the failures of job for outfile.
+func (b *jobBackoff) succeed(job *config.Scheduled, outfile string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	delete(b.failed, job)
+	delete(b.failed, failedJobKey{job: job, outfile: outfile})
+}
+
+// forget forgets state.
+func (b *jobBackoff) forget(state failedJob) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.failed, state.key())
+}
+
+// finalRunsDue returns the failed jobs whose TimeRange ended by now and that
+// may run their final run at now: the first one at once, the others after
+// their backoff. It leaves out the jobs inRange reports as running within
+// their TimeRange again at now for the same outfile (possible for an outfile
+// without dates): those runs must read every file again. It forgets, and
+// returns as expired, the jobs whose final runs failed for
+// failedJobFinalRunWindow after the end of their TimeRange. Both are sorted
+// by job name and outfile.
+func (b *jobBackoff) finalRunsDue(now time.Time, inRange func(failedJob) bool) (due, expired []failedJob) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for key, state := range b.failed {
+		switch {
+		case now.Before(state.rangeEnd) || inRange(state):
+		case !now.Before(state.rangeEnd.Add(failedJobFinalRunWindow)):
+			delete(b.failed, key)
+			expired = append(expired, state)
+		case state.finalRuns == 0 || !now.Add(failedJobBackoffSlack).Before(state.retryAt):
+			due = append(due, state)
+		}
+	}
+	byJob := func(a, b failedJob) int {
+		return cmp.Or(cmp.Compare(a.due.job.Name, b.due.job.Name), cmp.Compare(a.due.outfile, b.due.outfile))
+	}
+	slices.SortFunc(due, byJob)
+	slices.SortFunc(expired, byJob)
+	return due, expired
 }

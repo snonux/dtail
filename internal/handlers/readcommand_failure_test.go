@@ -2,31 +2,45 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/fs"
+	"github.com/mimecast/dtail/internal/io/fs/readhub"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
+	"github.com/mimecast/dtail/internal/regex"
+	user "github.com/mimecast/dtail/internal/sessionuser"
 )
 
-// failureTestServer is a globCapTestServer whose read targets are real,
-// validated files, except for the denied paths.
+// failureTestServer is a globCapTestServer whose read targets are resolved
+// like those of a scheduled job's session, except for the denied paths and
+// those with a target no reader can be created for (badKind).
 type failureTestServer struct {
 	*globCapTestServer
-	denied map[string]bool
+	denied  map[string]bool
+	badKind map[string]bool
 }
 
-func (s *failureTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool) {
-	if s.denied[path] {
-		return fs.ValidatedReadTarget{}, false
+func newFailureTestServer(maxTargets int) *failureTestServer {
+	return &failureTestServer{globCapTestServer: newGlobCapTestServer(maxTargets),
+		denied: map[string]bool{}, badKind: map[string]bool{}}
+}
+
+func (s *failureTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarget, error) {
+	switch {
+	case s.denied[path]:
+		return fs.ValidatedReadTarget{}, user.ErrReadPermissionDenied
+	case s.badKind[path]:
+		return fs.ValidatedReadTarget{Kind: fs.ReadTargetKind(99)}, nil
 	}
-	target, err := fs.NewValidatedReadTarget(path)
-	return target, err == nil
+	return (&user.User{Name: config.ScheduleUser}).ResolveReadTarget(path, "readfiles")
 }
 
 func (s *failureTestServer) readCommandDependencies() readCommandDependencies {
@@ -47,7 +61,10 @@ func TestReadCommandReportsFailedReads(t *testing.T) {
 		setup      func(t *testing.T, dir string) (glob string, denied []string)
 		args       func(glob string) []string
 		maxTargets int
-		want       string
+		// badKind are the files of dir that get a target no reader can be
+		// created for.
+		badKind []string
+		want    string
 	}{
 		{
 			name: "all files read",
@@ -56,6 +73,49 @@ func TestReadCommandReportsFailedReads(t *testing.T) {
 				writeFailureTestFile(t, filepath.Join(dir, "b.log"), 0o600)
 				return filepath.Join(dir, "*.log"), nil
 			},
+		},
+		{
+			name: "glob matches a directory besides the files",
+			setup: func(t *testing.T, dir string) (string, []string) {
+				writeFailureTestFile(t, filepath.Join(dir, "a.log"), 0o600)
+				if err := os.Mkdir(filepath.Join(dir, "archive"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(dir, "*"), nil
+			},
+		},
+		{
+			name: "glob matches only directories",
+			setup: func(t *testing.T, dir string) (string, []string) {
+				for _, name := range []string{"archive", "old"} {
+					if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return filepath.Join(dir, "*"), nil
+			},
+			want: readFailureNoFile,
+		},
+		{
+			name: "glob matches a dangling symlink",
+			setup: func(t *testing.T, dir string) (string, []string) {
+				writeFailureTestFile(t, filepath.Join(dir, "a.log"), 0o600)
+				if err := os.Symlink(filepath.Join(dir, "gone.txt"), filepath.Join(dir, "current.log")); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(dir, "*.log"), nil
+			},
+			want: readFailureNoFile,
+		},
+		{
+			name: "no reader for a file",
+			setup: func(t *testing.T, dir string) (string, []string) {
+				writeFailureTestFile(t, filepath.Join(dir, "a.log"), 0o600)
+				writeFailureTestFile(t, filepath.Join(dir, "b.log"), 0o600)
+				return filepath.Join(dir, "*.log"), nil
+			},
+			badKind: []string{"b.log"},
+			want:    readFailureReader,
 		},
 		{
 			name: "no file matches",
@@ -123,9 +183,12 @@ func TestReadCommandReportsFailedReads(t *testing.T) {
 			if maxTargets == 0 {
 				maxTargets = 100
 			}
-			srv := &failureTestServer{globCapTestServer: newGlobCapTestServer(maxTargets), denied: map[string]bool{}}
+			srv := newFailureTestServer(maxTargets)
 			for _, path := range denied {
 				srv.denied[path] = true
+			}
+			for _, name := range tt.badKind {
+				srv.badKind[filepath.Join(dir, name)] = true
 			}
 			args := []string{"cat", glob, "."}
 			if tt.args != nil {
@@ -150,7 +213,7 @@ func TestReadCommandReportsFailedReads(t *testing.T) {
 // with its session sends no failure: the session ends without its close
 // handshake then, which the client already takes as incomplete.
 func TestReadCommandReportsNoFailureOnceCanceled(t *testing.T) {
-	srv := &failureTestServer{globCapTestServer: newGlobCapTestServer(100), denied: map[string]bool{}}
+	srv := newFailureTestServer(100)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	command := newReadCommand(srv, omode.CatClient)
@@ -183,5 +246,49 @@ func writeFailureTestFile(t *testing.T, path string, perm os.FileMode) {
 	}
 	if err := os.Chmod(path, perm); err != nil {
 		t.Fatalf("chmod %s: %v", path, err)
+	}
+}
+
+// TestGroupReadReportsFailedReads checks that a read through its group's
+// one-shot read reports a failed group read, and nothing when the group read
+// succeeded or had already started (the session then reads privately).
+func TestGroupReadReportsFailedReads(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{name: "group read succeeded"},
+		{name: "group read already started", err: readhub.ErrGroupReadStarted},
+		{name: "group read failed", err: errors.New("read failed"),
+			want: []string{protocol.HiddenCommandFailedPrefix + readFailureReadingFile + "\n"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "a.log")
+			writeFailureTestFile(t, path, 0o600)
+			srv := newFailureTestServer(100)
+			command := newReadCommandWithDependencies(srv.readCommandDependencies(), omode.CatClient, nil)
+			groupReads := 0
+			command.readGroup = func(context.Context, omode.Mode, readhub.Session, readhub.Group,
+				readhub.SlotAcquirer) error {
+				groupReads++
+				return tt.err
+			}
+			target, err := srv.PrepareReadTarget(path)
+			if err != nil {
+				t.Fatalf("test setup: no target for %s: %v", path, err)
+			}
+
+			command.read(withReadShareOption(context.Background(), "g:2"), lcontext.LContext{}, path, &target,
+				"glob", regex.NewNoop())
+
+			if groupReads != 1 {
+				t.Fatalf("group reads = %d, want 1", groupReads)
+			}
+			if got := failedCommandMessages(srv.serverMessage); !slices.Equal(got, tt.want) {
+				t.Fatalf("failed command messages = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

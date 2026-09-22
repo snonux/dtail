@@ -177,10 +177,10 @@ func (h *baseHandler) shutdown(ctx context.Context) {
 // Reasons a session command reports with reportCommandFailure; the read
 // command has its own (see readCommand.reportFailure).
 const (
-	commandFailureProtocol = "command: unable to decode command"
-	commandFailureRejected = "command: rejected"
-	commandFailureUnknown  = "command: unknown command"
-	commandFailureMapQuery = "map: invalid query"
+	commandFailureProtocol = protocol.CommandFailureDecode
+	commandFailureRejected = protocol.CommandFailureRejected
+	commandFailureUnknown  = protocol.CommandFailureUnknown
+	commandFailureMapQuery = protocol.CommandFailureMapQuery
 )
 
 // reportCommandFailure tells the client that a command of the session failed

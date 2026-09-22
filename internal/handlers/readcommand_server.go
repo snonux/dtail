@@ -60,7 +60,9 @@ type readCommandLifecycle interface {
 // drives directly. Logging, aggregate completion, writer creation, and timing
 // are injected as separate values or focused collaborators.
 type readCommandServer interface {
-	PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool)
+	// PrepareReadTarget validates the session's access to path (see
+	// sessionuser.User.ResolveReadTarget for its errors).
+	PrepareReadTarget(path string) (fs.ValidatedReadTarget, error)
 	AcquireReadSlot(context.Context, omode.Mode, string) (release func(), acquired bool)
 	TryAcquireReadSlot(omode.Mode, string) (release func(), acquired bool)
 	SendReadMessage(context.Context, uint64, string)
@@ -126,8 +128,8 @@ func (t readTimings) withDefaults() readTimings {
 }
 
 // PrepareReadTarget validates the current user's access to the given path.
-func (h *ServerHandler) PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool) {
-	return h.user.ValidateReadTarget(path, "readfiles")
+func (h *ServerHandler) PrepareReadTarget(path string) (fs.ValidatedReadTarget, error) {
+	return h.user.ResolveReadTarget(path, "readfiles")
 }
 
 // ServerlessOutput returns the configured in-process output destination.

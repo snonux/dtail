@@ -84,6 +84,7 @@ func wait(ctx context.Context, duration time.Duration) bool {
 // job's time range, fills the dates into its files and outfile and checks
 // that the outfile does not exist yet right before the job's group starts.
 func (s *scheduler) runJobs(ctx context.Context) {
+	s.runFinalJobs(ctx)
 	var pending []*config.Scheduled
 	for i := range s.cfg.Server.Schedule {
 		job := &s.cfg.Server.Schedule[i]
@@ -161,16 +162,54 @@ func (s *scheduler) prepare(job *config.Scheduled, now time.Time) (dueJob, strin
 
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(job.Name))
 	args.QueryStr = fmt.Sprintf("%s outfile %s", job.Query, outfile)
-	return dueJob{job: job, args: args, outfile: outfile}, ""
+	return dueJob{job: job, args: args, outfile: outfile, rangeEnd: timeRangeEnd(job, now)}, ""
+}
+
+// runFinalJobs runs, one after another, the final runs of the jobs whose runs
+// failed and whose TimeRange ended since (see jobBackoff): they write what
+// they could read, unless their outfile exists by now.
+func (s *scheduler) runFinalJobs(ctx context.Context) {
+	now := s.now()
+	due, expired := s.backoff.finalRunsDue(now, func(state failedJob) bool {
+		job := state.due.job
+		hour := now.Hour()
+		return hour >= job.TimeRange[0] && hour < job.TimeRange[1] && fillDatesAt(job.Outfile, now) == state.due.outfile
+	})
+	for _, state := range expired {
+		s.log().Warn(fmt.Sprintf("Giving up job %s after %d failures in a row: it wrote no outfile %s "+
+			"within %v after its TimeRange ended at %s", state.due.job.Name, state.failures, state.due.outfile,
+			failedJobFinalRunWindow, state.rangeEnd.Format(time.DateTime)))
+	}
+	for _, state := range due {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := os.Stat(state.due.outfile); !os.IsNotExist(err) {
+			s.log().Debug(state.due.job.Name, "Not running final run as outfile already exists: "+state.due.outfile)
+			s.backoff.forget(state)
+			continue
+		}
+		final := state.due
+		final.final = true
+		final.rangeEnd = state.rangeEnd
+		s.log().Info(fmt.Sprintf("Starting final run of job %s for outfile %s after its TimeRange ended at %s, "+
+			"it writes what it can read unless a server fails", final.job.Name, final.outfile,
+			state.rangeEnd.Format(time.DateTime)))
+		s.runDueJob(ctx, final)
+	}
 }
 
 func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
 	job := due.job
-	client, err := s.newMaprClient(due.args, clients.ScheduledMode)
+	mode := clients.ScheduledMode
+	if due.final {
+		mode = clients.ScheduledPartialMode
+	}
+	client, err := s.newMaprClient(due.args, mode)
 	if err != nil {
 		s.log().Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
 		now := s.now()
-		s.logFailure(due, s.backoff.fail(job, due.outfile, now, now))
+		s.logFailure(due, s.backoff.fail(due, due.final, now, now, due.rangeEnd))
 		return
 	}
 
@@ -186,19 +225,23 @@ func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
 		// A scheduled mapreduce client writes the outfile only when it
 		// returns status 0, and the outfile did not exist when the job
 		// started: a later run finds none and runs the job again, once the
-		// job's backoff ended.
+		// job's backoff ended, or once its TimeRange ended (a final run).
 		s.log().Warn(logMessage)
-		s.logFailure(due, s.backoff.fail(job, due.outfile, started, s.now()))
+		s.logFailure(due, s.backoff.fail(due, due.final, started, s.now(), due.rangeEnd))
 		return
 	}
 
-	s.backoff.succeed(job)
+	s.backoff.succeed(job, due.outfile)
 	s.log().Info(logMessage)
 }
 
 // logFailure logs that the run of due failed, which makes state its failures
 // in a row. The backoff bounds how often a job fails and so logs this.
 func (s *scheduler) logFailure(due dueJob, state failedJob) {
+	next := state.retryAt
+	if !due.final && state.rangeEnd.Before(next) {
+		next = state.rangeEnd
+	}
 	s.log().Warn(fmt.Sprintf("Job %s failed and wrote no outfile %s (failure %d in a row), it runs again "+
-		"from about %s", due.job.Name, due.outfile, state.failures, state.retryAt.Format(time.DateTime)))
+		"from about %s", due.job.Name, due.outfile, state.failures, next.Format(time.DateTime)))
 }
