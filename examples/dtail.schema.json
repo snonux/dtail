@@ -349,7 +349,7 @@
         },
         "MaxConnections": {
           "type": "integer",
-          "description": "Maximum number of concurrent user connections, including connections still in their SSH handshake. Scheduled jobs that read the same files from this dserver only run together in groups of at most a quarter of it (at least one), divided by the number of servers of the jobs; scheduled jobs on other dservers, whose limits are unknown, run one at a time.",
+          "description": "Maximum number of concurrent user connections, including connections still in their SSH handshake. Scheduled jobs that read the same files from this dserver only run together in groups of at most the smaller of a quarter of it and MaxConcurrentCats, divided by the number of servers of the jobs, and of at least one job; scheduled jobs on other dservers, whose limits are unknown, run one at a time.",
           "minimum": 1,
           "default": 10
         },
@@ -360,7 +360,7 @@
         },
         "MaxConcurrentCats": {
           "type": "integer",
-          "description": "Maximum number of concurrent cat/grep/MapReduce reads per server.",
+          "description": "Maximum number of concurrent cat/grep/MapReduce reads per server. It also bounds how many scheduled jobs run together, as dserver shares the read of a scheduled job group among at most this many members, each holding one of these slots during the read, and the jobs beyond that would queue for the same slots while holding their connections. With MaxConnections 50 and MaxConcurrentCats 2, at most 2 jobs run together instead of the 12 a quarter of MaxConnections alone would allow; raise it to let larger job groups share a read.",
           "minimum": 1,
           "default": 2
         },

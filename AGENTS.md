@@ -442,12 +442,13 @@ The scheduler (`internal/jobs/schedulergroup.go`) starts due jobs that read
 the same files from the same servers, and do not write each other's outfiles
 or read files another writes, together as a group, when all their servers are
 this dserver (`internal/jobs/localserver.go`), in waves of at most
-`min(MaxConnections/4, MaxConcurrentCats)` (at least one) divided by the
-number of servers, so that a wave is no larger than the group read the hub
-shares among at most `MaxConcurrentCats` members; other
-jobs, and all jobs when `Server.SharedReadsDisable` is set, run one at a time.
-The servers of the jobs are discovered and resolved once per scheduler run,
-not once per group.
+`min(MaxConnections/4, MaxConcurrentCats)` divided by the number of servers,
+and of at least one job, so that a wave is no larger than the group read the
+hub shares among at most `MaxConcurrentCats` members; other jobs, and all
+jobs when `Server.SharedReadsDisable` is set, run one at a time. Each set of
+servers (a job's `Servers` and `Discovery`) is discovered and resolved once
+per scheduler run, not once per group that run forms, and a run that starts
+a single job needs neither, as it has nothing to group with.
 Each job sends the option `share=<group>:<members>`; dserver honours it only
 for the scheduler's user `DTAIL-SCHEDULE` and ignores it elsewhere (older
 dservers ignore it too). Each member passes its own permission check and joins

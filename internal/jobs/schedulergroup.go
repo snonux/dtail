@@ -105,6 +105,10 @@ type serversKey struct {
 // discovers the servers of a job and resolves their names (see
 // thisDServer.reaches, with its lookupTimeout) again for every group it forms,
 // also for the jobs on other dservers that run one at a time.
+//
+// It is not safe for concurrent use. Only the scheduler's own goroutine
+// reaches it, while it forms the next group; the goroutines that runGroup
+// starts for the jobs of a group run no group formation and never touch it.
 type groupLimits struct {
 	limits  map[serversKey]int
 	reaches map[string]bool
@@ -253,6 +257,11 @@ func (s *scheduler) discoverGroupLimit(ctx context.Context, args config.Args, li
 
 // reachesThisDServer reports whether server reaches this dserver (see
 // thisDServer.reaches), looking it up once per scheduler run.
+//
+// A failed lookup answers false and is memoised like a successful one: a
+// transient DNS failure makes every group of that scheduler run that has
+// this server sequential, until the next run a minute later looks it up
+// again.
 func (s *scheduler) reachesThisDServer(ctx context.Context, server string, limits *groupLimits) bool {
 	if reaches, ok := limits.reaches[server]; ok {
 		return reaches
