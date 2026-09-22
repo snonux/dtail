@@ -104,6 +104,12 @@ func (b *jobBackoff) wait(job *config.Scheduled, outfile string, now time.Time) 
 	if !ok {
 		return ""
 	}
+	if !timeRangeEnd(job, now).Equal(state.rangeEnd) {
+		// A run in a new TimeRange (the next day's, for an outfile without
+		// dates) starts over: the previous range's backoff must not hold it
+		// back, or a short range could pass without any run.
+		return ""
+	}
 	if now.Add(failedJobBackoffSlack).Before(state.retryAt) {
 		return fmt.Sprintf("Not running job after failure %d in a row before about %s",
 			state.failures, state.retryAt.Format(time.DateTime))

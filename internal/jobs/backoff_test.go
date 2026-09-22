@@ -247,6 +247,14 @@ func TestBackoffStartsOverInANewTimeRange(t *testing.T) {
 	for minute := 0; minute < 8; minute++ {
 		backoff.fail(due, true, at(day1, 2, minute), at(day1, 2, minute), at(day1, 2, 0))
 	}
+	// Day 1's hour-long backoff must not hold back day 2's first run.
+	if reason := backoff.wait(job, due.outfile, at(day2, 1, 0)); reason != "" {
+		t.Fatalf("day 2's first run was held back by day 1's backoff: %s", reason)
+	}
+	// Within one range the backoff still applies.
+	if reason := backoff.wait(job, due.outfile, at(day1, 1, 45)); reason == "" {
+		t.Fatal("a retry within the failed run's TimeRange was not held back")
+	}
 	state := backoff.fail(due, false, at(day2, 1, 10), at(day2, 1, 10), at(day2, 2, 0))
 	if state.failures != 1 || state.finalRuns != 0 {
 		t.Fatalf("after the new range's failure: failures = %d, finalRuns = %d, want 1 and 0",
