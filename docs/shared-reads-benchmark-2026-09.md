@@ -64,8 +64,10 @@ benchmarks/shared_read_bench.sh -n 4 -r 3 -q 900 -o results.csv follow
 benchmarks/shared_read_bench.sh -n 4 -r 3 -q 900 -o results.csv follow-paced
 benchmarks/shared_read_bench.sh -n 4 -r 3 -q 900 -o results.csv scheduled
 benchmarks/shared_read_bench.sh -n 4 -r 3 -q 900 -o results.csv scheduled-gz
-# read syscalls:
+# read syscalls, one run per scenario:
 benchmarks/shared_read_bench.sh -n 4 -r 1 -s -o results.csv scheduled
+benchmarks/shared_read_bench.sh -n 4 -r 1 -s -o results.csv scheduled-gz
+benchmarks/shared_read_bench.sh -n 4 -r 1 -s -o results.csv follow
 # quick check that the script works, with 1 MiB inputs:
 benchmarks/shared_read_bench.sh -n 2 -r 1 -b 1048576 scheduled
 ```
@@ -118,8 +120,8 @@ What the numbers show:
 - **Follow burst:** the 100 MiB burst evicts all four sessions in every run
   (four `evicted a slow subscriber` lines), which read the burst privately,
   so reads, CPU and time are those of sharing off. In each of the three
-  runs whose dserver log was kept (a later run reused the fourth one's
-  directory), all four rejoined the shared reader afterwards (four
+  runs whose dserver log was kept (the separately run pair reused the first
+  run's directory and overwrote its log), all four rejoined the shared reader afterwards (four
   `rejoined` lines, after a second shared read started), so later appends
   are shared again.
 - **Follow paced** (about 10 MiB/s): no evictions; elapsed about 8% lower,

@@ -358,11 +358,11 @@ costs one descriptor per session, as a private reader does. The one
 remaining gap: if the path is rotated in the moment between the shared
 reader opening a file and a session opening its descriptor, that session has
 none, and if it is later evicted with lines of the old file unread, it reads
-the new file from its beginning and logs a warning. Follow reads of
-compressed files and max-count (`--max`) follow reads read privately, as do
-journal targets, stdin and serverless mode; one-shot reads (`dcat`, `dgrep`,
-`dmap`) read privately unless they belong to a scheduled job group (below),
-whose shared read also covers compressed files.
+the new file from its beginning and logs a warning. Follow reads of compressed
+files and max-count (`--max`) follow reads read privately, as do journal
+targets, stdin and serverless mode; one-shot reads (`dcat`, `dgrep`, `dmap`)
+read privately unless they belong to a scheduled job group (below), whose
+shared read also covers compressed files.
 
 At a rotation, every follow read, shared or private
 (`internal/io/fs/readfile_processor_optimized.go`), reads the old file to its
@@ -407,8 +407,8 @@ instead of about 380 MiB without rejoin (CPU time differences were within
 noise), and every output equalled sharing off.
 
 Measured costs (N=4, 100 MiB, `docs/shared-reads-benchmark-2026-09.md`):
-scheduled groups read the file once and finish about 3.7 times sooner, at
-about the same dserver CPU; a 100 MiB follow burst evicts every session, so
+scheduled groups read the file once and finish about 3.7 times sooner, at a
+slightly higher dserver CPU (about 6-8%); a 100 MiB follow burst evicts every session, so
 it costs what sharing off does; a paced follow (10 MiB/s) used about 14% more
 dserver CPU with sharing on than off.
 
