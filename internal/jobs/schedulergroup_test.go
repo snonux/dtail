@@ -361,17 +361,32 @@ func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 
 // The scheduler discovers the servers of its jobs and resolves their names
 // once per scheduler run, not once per group it forms: the runs of one job
-// list on the same servers share the lookup, and a run that has nothing to
-// group with needs none at all.
+// list on the same servers share the lookup. A run that is the only one left
+// pending needs no lookup, as it has nothing to group with, and the runs
+// before the first due run of a scheduler run need none either: a run that is
+// not due leaves the group formation before the servers are looked up.
 func TestSchedulerLooksUpTheServersOncePerRun(t *testing.T) {
 	tests := []struct {
-		name        string
-		jobs        int
+		name string
+		jobs int
+		// notDue names the jobs whose outfile exists when the scheduler runs.
+		notDue []string
+		// wantWaves is checked when every job is due.
 		wantWaves   []int
+		wantStarted int
 		wantLookups int
 	}{
-		{name: "three waves of two jobs", jobs: 6, wantWaves: []int{2, 2, 2}, wantLookups: 1},
-		{name: "a single job", jobs: 1, wantWaves: []int{1}, wantLookups: 0},
+		{name: "three waves of two jobs", jobs: 6, wantWaves: []int{2, 2, 2}, wantStarted: 6,
+			wantLookups: 1},
+		{name: "a single job", jobs: 1, wantWaves: []int{1}, wantStarted: 1, wantLookups: 0},
+		{name: "only the first job is due", jobs: 3, notDue: []string{"j1", "j2"}, wantStarted: 1,
+			wantLookups: 1},
+		{name: "only the middle job is due", jobs: 3, notDue: []string{"j0", "j2"}, wantStarted: 1,
+			wantLookups: 1},
+		// The two runs before it are not due and leave before the lookup, so
+		// the due run is the only one left pending and needs none either.
+		{name: "only the last job is due", jobs: 3, notDue: []string{"j0", "j1"}, wantStarted: 1,
+			wantLookups: 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -381,6 +396,11 @@ func TestSchedulerLooksUpTheServersOncePerRun(t *testing.T) {
 				name := fmt.Sprintf("j%d", i)
 				schedule = append(schedule,
 					scheduledJob(t, name, "/a.log", filepath.Join(dir, name), "myhost"))
+			}
+			for _, name := range tt.notDue {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("done"), 0o600); err != nil {
+					t.Fatal(err)
+				}
 			}
 			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
 				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: 40, Schedule: schedule,
@@ -398,9 +418,71 @@ func TestSchedulerLooksUpTheServersOncePerRun(t *testing.T) {
 			s.newMaprClient = recorder.newClient
 			s.runJobs(context.Background())
 
-			recorder.assertWaves(t, tt.jobs, tt.wantWaves)
+			if len(tt.notDue) == 0 {
+				recorder.assertWaves(t, tt.jobs, tt.wantWaves)
+			}
+			if got := len(recorder.shares); got != tt.wantStarted {
+				t.Errorf("jobs started = %d, want %d", got, tt.wantStarted)
+			}
 			if lookups != tt.wantLookups {
 				t.Errorf("server name lookups = %d, want %d", lookups, tt.wantLookups)
+			}
+		})
+	}
+}
+
+// A FILE list is read again when the next wave forms, just as each job's
+// client reads it again when it connects. Reusing the first wave's limit
+// could start jobs together after the file points to another dserver.
+func TestSchedulerRechecksFileDiscoveryBetweenWaves(t *testing.T) {
+	for _, method := range []string{"", "file"} {
+		t.Run("discovery="+method, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "servers")
+			writeServers := func(content string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writeServers("127.0.0.1\n")
+			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
+				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: 40,
+			}}, jobTestLoggers)
+			args := config.Args{Discovery: method, ServersStr: path}
+			limits := newGroupLimits()
+			if got := s.groupLimit(context.Background(), args, limits); got != 2 {
+				t.Fatalf("first wave limit = %d, want 2", got)
+			}
+			writeServers("192.0.2.1\n")
+			if got := s.groupLimit(context.Background(), args, limits); got != 1 {
+				t.Errorf("remote server second wave limit = %d, want 1", got)
+			}
+			writeServers("127.0.0.1\n127.0.0.1:2222\n")
+			if got := s.groupLimit(context.Background(), args, limits); got != 1 {
+				t.Errorf("two local servers third wave limit = %d, want 1", got)
+			}
+			// Even when the file keeps the same hostname, its DNS answer may
+			// change between waves. The reachability memo must be fresh too.
+			writeServers("myhost\n")
+			lookups := 0
+			s.thisDServer.lookup = func(_ context.Context, host string) ([]netip.Addr, error) {
+				if host != "myhost" {
+					t.Errorf("looked up unexpected host %q", host)
+				}
+				lookups++
+				if lookups == 1 {
+					return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+				}
+				return []netip.Addr{netip.MustParseAddr("192.0.2.1")}, nil
+			}
+			if got := s.groupLimit(context.Background(), args, limits); got != 2 {
+				t.Errorf("local hostname wave limit = %d, want 2", got)
+			}
+			if got := s.groupLimit(context.Background(), args, limits); got != 1 {
+				t.Errorf("remote hostname next wave limit = %d, want 1", got)
+			}
+			if lookups != 2 {
+				t.Errorf("hostname lookups = %d, want one per wave", lookups)
 			}
 		})
 	}

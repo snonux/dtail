@@ -99,9 +99,11 @@ type serversKey struct {
 	discovery string
 }
 
-// groupLimits memoises, for one scheduler run, what discovering and resolving
-// the servers of its jobs found: the group limit of each set of servers and
-// whether a server address reaches this dserver. Without it, one scheduler run
+// groupLimits memoises, for one scheduler run, what discovering static server
+// lists and resolving server addresses found: the group limit of each static
+// set of servers and whether an address reaches this dserver. File-based
+// lists and their hostnames are rediscovered for each wave because either
+// may change. Without the memo, one scheduler run
 // discovers the servers of a job and resolves their names (see
 // thisDServer.reaches, with its lookupTimeout) again for every group it forms,
 // also for the jobs on other dservers that run one at a time.
@@ -193,8 +195,9 @@ func (s *scheduler) runPending(ctx context.Context, pending []pendingRun, limits
 }
 
 // groupLimit returns how many jobs connecting to the servers of args may run
-// together. It answers from limits, the memo of the current scheduler run,
-// when it discovered and resolved the same servers already.
+// together. Static server lists use the memo of the current scheduler run.
+// File-based lists are read again for each wave because clients also read
+// them anew when they connect, and the file may change between waves.
 //
 // Jobs run together only when every server of args reaches the dserver
 // running the scheduler (see thisDServer.reaches), whose MaxConnections and
@@ -222,12 +225,32 @@ func (s *scheduler) groupLimit(ctx context.Context, args config.Args, limits *gr
 		return 1
 	}
 	key := serversKey{servers: args.ServersStr, discovery: args.Discovery}
-	if limit, ok := limits.limits[key]; ok {
+	if !dynamicServerList(args) {
+		if limit, ok := limits.limits[key]; ok {
+			return limit
+		}
+		limit := s.discoverGroupLimit(ctx, args, limits)
+		limits.limits[key] = limit
 		return limit
 	}
-	limit := s.discoverGroupLimit(ctx, args, limits)
-	limits.limits[key] = limit
-	return limit
+	// A FILE may keep the same hostname while its DNS answer changes. Use a
+	// fresh reachability memo as well as a fresh server list for this wave.
+	return s.discoverGroupLimit(ctx, args, newGroupLimits())
+}
+
+// dynamicServerList mirrors discovery's implicit file selection as well as
+// its explicit FILE module. Checking the path on every wave also notices a
+// file that appears after the first wave.
+func dynamicServerList(args config.Args) bool {
+	method, _, _ := strings.Cut(args.Discovery, ":")
+	if strings.EqualFold(method, "file") {
+		return true
+	}
+	if method != "" {
+		return false
+	}
+	_, err := os.Stat(args.ServersStr)
+	return err == nil
 }
 
 // discoverGroupLimit discovers the servers of args and returns the group
@@ -258,10 +281,11 @@ func (s *scheduler) discoverGroupLimit(ctx context.Context, args config.Args, li
 // reachesThisDServer reports whether server reaches this dserver (see
 // thisDServer.reaches), looking it up once per scheduler run.
 //
-// A failed lookup answers false and is memoised like a successful one: a
-// transient DNS failure makes every group of that scheduler run that has
-// this server sequential, until the next run a minute later looks it up
-// again.
+// A successful or failed lookup of a static server list is kept for this
+// scheduler run, including its DNS answer. A transient DNS failure makes
+// every group using that server sequential until the next run a minute
+// later. FILE discovery passes a fresh memo for each wave because its
+// contents and DNS answers may change between waves.
 func (s *scheduler) reachesThisDServer(ctx context.Context, server string, limits *groupLimits) bool {
 	if reaches, ok := limits.reaches[server]; ok {
 		return reaches

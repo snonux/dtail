@@ -447,11 +447,18 @@ and of at least one job, so that a wave is no larger than the group read the
 hub shares among at most `MaxConcurrentCats` members; other jobs, and all
 jobs when `Server.SharedReadsDisable` is set, run one at a time. Each set of
 servers (a job's `Servers` and `Discovery`) is discovered and resolved once
-per scheduler run, not once per group that run forms, and not at all while
-only one run is left pending, as there is nothing left to group it with. A
-run that is not due is only found out about while its group forms, so a
-scheduler run with several pending runs discovers and resolves their servers
-even when one job turns out to be due.
+per scheduler run for static server lists, not once per group that run forms,
+and not at all while only one run is left pending, as there is nothing left
+to group it with. For a static hostname the DNS answer is kept for that one
+run; the next scheduler run refreshes it. FILE discovery (explicit or inferred
+from a file path) and its hostname lookups run again for every wave because
+each job's client reads
+the file at connection time, and the file or DNS answer may change between
+waves. A
+scheduler run looks the servers up as soon as a due run is evaluated with
+other runs still pending, even when those all turn out not to be due; a run
+that is not due leaves the group formation before the lookup, so a scheduler
+run whose only due run comes after the others needs no lookup at all.
 Each job sends the option `share=<group>:<members>`; dserver honours it only
 for the scheduler's user `DTAIL-SCHEDULE` and ignores it elsewhere (older
 dservers ignore it too). Each member passes its own permission check and joins
