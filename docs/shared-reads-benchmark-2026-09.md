@@ -1,9 +1,8 @@
 # Shared reads: sharing on vs off benchmark (2026-09)
 
-Status: **no timing results yet.** The benchmark script exists and was
-checked to work, but this machine was never quiet while it was written
-(see "Conditions"), so no CPU or elapsed time numbers are recorded here.
-Run it on a quiet machine and fill in the tables below.
+Results of `benchmarks/shared_read_bench.sh` with N=4 sessions or jobs and
+100 MiB inputs, on master at 1a1fc0f (d9 merged, rejoin from c9 and the
+rotation drain from f9 included), run on 2026-09-22.
 
 ## What is measured
 
@@ -71,57 +70,55 @@ benchmarks/shared_read_bench.sh -n 4 -r 1 -s -o results.csv scheduled
 benchmarks/shared_read_bench.sh -n 2 -r 1 -b 1048576 scheduled
 ```
 
-## Conditions (2026-09-22)
+## Conditions (2026-09-22, 15:30-16:45)
 
 Host: Rocky 9 bhyve guest, 4 vCPUs, the dev host of
-`performance-plan-2026-09-15.md`. Two other agents ran test suites and
-stress scripts in parallel the whole time. The script's quiet check
-(1-minute load below 1.0 and no other dserver, make or go test process)
-was polled every 60 s for about 85 minutes (03:37-03:53 and 09:19-10:25)
-and never passed: at every check the 1-minute load was at least 1.0 (up
-to 15) or another `go test`, `make` or `dserver` process was running,
-mostly both.
-
-## Functional check on the loaded machine (not results)
-
-Single smoke runs with N=4 (one follow burst run with N=2), load average
-2.2-4.5 at the start of each run, were used only to check that the script
-works. The CPU and elapsed times
-of these runs are not reported, as the load of the other agents distorts
-them. Two observations from them do not depend on timing, or show
-behaviour rather than cost:
-
-- Every run had `output_ok=yes`: with sharing on, the four follow clients
-  printed the same lines as with sharing off, and the four scheduled jobs
-  wrote the same outfiles.
-- Read syscalls on the input file, one run each (strace):
-
-  | Scenario | Sharing on | Sharing off |
-  |---|---:|---:|
-  | `scheduled` (plain) | 102 | 408 |
-  | `follow` (burst) | 6,200 | 6,430 |
-
-  The group read reads the plain file once instead of four times. In the
-  follow burst run all four sessions were evicted from the shared reader
-  (four `evicted a slow subscriber` lines) and went on with private
-  readers, so the reads were nearly as many as without sharing. In the two
-  burst runs without strace (N=2 and N=4) every session was evicted too.
-  This matches the known limitation in `AGENTS.md` (a large burst can evict sessions that are only
-  slower than the reader; they do not rejoin, task c9). How often this
-  happens on a quiet machine is still to be measured; in the one paced run
-  no session was evicted.
+`performance-plan-2026-09-15.md`. No other agent, test suite or dserver ran.
+Every run waited for the script's quiet check (1-minute load below 1.0, no
+other dserver, make or go test process), except the strace runs (`-s`, no
+`-q`), which started at a load of 0.56-1.94. The fourth `follow` pair was run
+separately because the machine did not become quiet within 900 s before the
+third `off` run of the first series; its `on` run is included below.
 
 ## Results
 
-To be filled in from a run on a quiet machine.
+Medians over the runs; every run had `output_ok=yes`: with sharing on the
+follow clients printed the same lines and the scheduled jobs wrote the same
+outfiles as with sharing off. File reads are read syscalls on the input file
+from one strace run per mode.
 
 | Scenario | Mode | Runs | Elapsed (s) | dserver CPU (s) | File reads | Evictions |
 |---|---|---:|---:|---:|---:|---:|
-| follow | on | | | | | |
-| follow | off | | | | | |
-| follow-paced | on | | | | | |
-| follow-paced | off | | | | | |
-| scheduled | on | | | | | |
-| scheduled | off | | | | | |
-| scheduled-gz | on | | | | | |
-| scheduled-gz | off | | | | | |
+| follow (burst) | on | 4 | 4.84 | 17.01 | 6,210 | 4 per run |
+| follow (burst) | off | 3 | 4.76 | 16.93 | 6,435 | - |
+| follow-paced | on | 3 | 11.32 | 28.99 | | 0 |
+| follow-paced | off | 3 | 12.27 | 25.50 | | - |
+| scheduled | on | 3 | 0.89 | 3.44 | 102 | 0 |
+| scheduled | off | 3 | 3.29 | 3.24 | 408 | - |
+| scheduled-gz | on | 3 | 0.94 | 3.76 | 623 | 0 |
+| scheduled-gz | off | 3 | 3.49 | 3.48 | 2,492 | - |
+
+Ranges: follow on 4.75-4.89 s / 16.96-17.25 s CPU, off 4.69-8.49 s (one
+outlier; the others 4.69 and 4.76) / 16.84-18.64 s CPU; follow-paced on
+11.29-11.48 s / 28.55-29.33 s, off 12.17-12.28 s / 25.24-25.55 s;
+scheduled on 0.88-0.95 s / 3.34-3.62 s, off 3.20-3.33 s / 3.21-3.32 s;
+scheduled-gz on 0.88-1.80 s / 3.35-5.13 s, off 3.39-3.63 s / 3.41-3.52 s.
+
+What the numbers show:
+
+- **Scheduled groups** read the file once instead of once per job (102
+  instead of 408 reads plain, 623 instead of 2,492 gzip) and finish about
+  3.7 times sooner, because the grouped jobs run together while without
+  sharing they run one at a time. dserver CPU does not drop; it is about 6%
+  (plain) and 8% (gzip) higher: the MapReduce work of each job, not the file
+  read, dominates it.
+- **Follow burst:** the 100 MiB burst evicts all four sessions in every run
+  (four `evicted a slow subscriber` lines), which read the burst privately,
+  so reads, CPU and time are those of sharing off. All four rejoined the
+  shared reader afterwards in every run (four `rejoined` lines, and a second
+  shared read started), so later appends are shared again.
+- **Follow paced** (about 10 MiB/s): no evictions; elapsed about 8% lower,
+  but dserver CPU about 14% **higher** with sharing on (28.99 s against
+  25.50 s, the ranges do not overlap). Sharing a follow read of a busy log
+  therefore does not save dserver CPU at N=4 on this host; the cause is not
+  yet known.

@@ -359,8 +359,17 @@ remaining gap: if the path is rotated in the moment between the shared
 reader opening a file and a session opening its descriptor, that session has
 none, and if it is later evicted with lines of the old file unread, it reads
 the new file from its beginning and logs a warning. Compressed files,
-max-count (`--max`) reads, journal targets and serverless mode always read
-privately.
+max-count (`--max`) reads, journal targets, stdin and serverless mode always
+read privately; so do one-shot reads (`dcat`, `dgrep`, `dmap`) unless they
+belong to a scheduled job group (below).
+
+At a rotation, every follow read, shared or private
+(`internal/io/fs/readfile_processor_optimized.go`), reads the old file to its
+end, then polls it again 100 ms later, and after every poll that found more
+lines, at most 10 times, for lines a writer that has not reopened the path yet
+still appends, before it moves on to the new file. Those lines keep their
+order and numbering. A last line of the old file that is still unfinished when
+the draining ends is dropped, as a follow read always dropped it.
 
 Output with sharing on equals output with sharing off, checked with
 SIGSTOPped, context, late-joining (also right after a rotation or
@@ -395,6 +404,12 @@ the reader; they rejoin afterwards. In a check with 10 sessions after a
 300,000-line burst, dserver read about 40 MiB for the next 200,000 lines
 instead of about 380 MiB without rejoin (CPU time differences were within
 noise), and every output equalled sharing off.
+
+Measured costs (N=4, 100 MiB, `docs/shared-reads-benchmark-2026-09.md`):
+scheduled groups read the file once and finish about 3.7 times sooner, at
+about the same dserver CPU; a 100 MiB follow burst evicts every session, so
+it costs what sharing off does; a paced follow (10 MiB/s) used about 14% more
+dserver CPU with sharing on than off.
 
 **Shared one-shot reads of scheduled job groups (dserver):**
 The scheduler (`internal/jobs/schedulergroup.go`) starts due jobs that read
