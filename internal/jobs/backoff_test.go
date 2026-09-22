@@ -225,3 +225,38 @@ func countLines(lines []string, prefix string) int {
 	}
 	return count
 }
+
+// TestBackoffStartsOverInANewTimeRange covers an outfile without dates whose
+// final runs failed on one day and whose job fails again in the next day's
+// TimeRange: the new range's failure starts over, so that its first final run
+// comes at once after the range ends instead of after the previous range's
+// hour-long backoff.
+func TestBackoffStartsOverInANewTimeRange(t *testing.T) {
+	job := &config.Scheduled{TimeRange: [2]int{1, 2}}
+	job.Name = "dateless"
+	due := dueJob{job: job, outfile: "latest.csv"}
+	day1 := time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC)
+	day2 := day1.AddDate(0, 0, 1)
+	at := func(day time.Time, hour, minute int) time.Time {
+		return day.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+	}
+	var backoff jobBackoff
+
+	backoff.fail(due, false, at(day1, 1, 30), at(day1, 1, 30), at(day1, 2, 0))
+	// Day 1's final runs keep failing until the backoff is an hour long.
+	for minute := 0; minute < 8; minute++ {
+		backoff.fail(due, true, at(day1, 2, minute), at(day1, 2, minute), at(day1, 2, 0))
+	}
+	state := backoff.fail(due, false, at(day2, 1, 10), at(day2, 1, 10), at(day2, 2, 0))
+	if state.failures != 1 || state.finalRuns != 0 {
+		t.Fatalf("after the new range's failure: failures = %d, finalRuns = %d, want 1 and 0",
+			state.failures, state.finalRuns)
+	}
+	if want := at(day2, 1, 11); !state.retryAt.Equal(want) {
+		t.Errorf("retryAt = %s, want %s (the first failure's backoff)", state.retryAt, want)
+	}
+	due2, _ := backoff.finalRunsDue(at(day2, 2, 0), func(failedJob) bool { return false })
+	if len(due2) != 1 {
+		t.Fatalf("final runs due when day 2's range ends = %d, want 1", len(due2))
+	}
+}

@@ -123,6 +123,14 @@ func (b *jobBackoff) fail(due dueJob, final bool, started, ended, rangeEnd time.
 	}
 	key := failedJobKey{job: due.job, outfile: due.outfile}
 	state, ok := b.failed[key]
+	if ok && !final && !state.rangeEnd.Equal(rangeEnd) {
+		// The failure opens a new TimeRange (e.g. the next day's, for an
+		// outfile without dates): it starts over, so that its backoff does
+		// not carry the previous range's, and its first final run comes at
+		// once after the new range ends.
+		state.failures = 0
+		state.finalRuns = 0
+	}
 	if !ok || !final {
 		// A later run within the TimeRange, e.g. the next day's for an
 		// outfile without dates, may read other files: the final runs read
