@@ -12,9 +12,9 @@ import (
 // An evicted session reads privately only until it caught up: whenever its
 // private reader reaches the end of the file at the start of a line, at
 // offset P of file F, the session rejoins the shared reader of its file if
-// that reader has F open and has not published a line ending past P yet (see
-// entry.rejoin), or starts a new shared reader at P when there is none. The
-// private reader then stops without reading past P, and the session skips the
+// that reader has F open and has neither read past P nor published a line
+// ending past P yet (see entry.rejoin), or starts a new shared reader at P
+// when there is none. The private reader then stops without reading past P, and the session skips the
 // published lines that end at or before P, so it gets every line of the file
 // once, with the same filter and processor, like one private read. Otherwise
 // it goes on privately and tries again at a later end of the file, after a
@@ -155,7 +155,7 @@ func openTarget(target fs.ValidatedReadTarget) (*os.File, error) {
 // rejoin adds sub, an evicted session whose private read got to at, back to
 // the running entry, holding fd, a descriptor of at's file, if the entry
 // feeds it every line of that file ending past at: the reader has that file
-// open and has not published such a line yet. sub then skips the published
+// open, has not read past at and has not published such a line yet. sub then skips the published
 // lines ending at or before at. Nothing is published meanwhile, so no line is
 // lost and none delivered twice.
 func (e *entry) rejoin(sub *subscriber, at position, fd *os.File) bool {
@@ -174,8 +174,8 @@ func (e *entry) rejoin(sub *subscriber, at position, fd *os.File) bool {
 }
 
 // feedsPast reports whether the reader is going to publish every line of at's
-// file that ends past at, and none of them was published yet. The caller
-// holds e.publishMu.
+// file that ends past at, and none of them was published yet, and it has not
+// read past at either. The caller holds e.publishMu.
 func (e *entry) feedsPast(at position) bool {
 	switch {
 	case at.file == nil || at.offset < 0:
@@ -183,6 +183,15 @@ func (e *entry) feedsPast(at position) bool {
 	case !e.published.known() || e.published.file == nil || !os.SameFile(e.published.file, at.file):
 		// Between two reads, or reading another file: the published
 		// position is that of the file the reader has open.
+		return false
+	case e.readPos.file != nil && os.SameFile(e.readPos.file, at.file) && e.readPos.offset > at.offset:
+		// The reader read bytes past at it has not published, e.g. an
+		// unfinished line. Should the file be truncated to a size between
+		// at and them, the reader rewinds and publishes a restart, and
+		// sub, whose private read took the rewritten bytes up to at as
+		// the continuation of the file, would get them again. The session
+		// tries again at a later end of the file, when the reader has
+		// published what it read.
 		return false
 	}
 	return e.published.offset <= at.offset

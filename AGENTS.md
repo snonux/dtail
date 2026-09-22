@@ -375,16 +375,18 @@ An evicted session rejoins the shared reader once it caught up
 (`internal/io/fs/readhub/rejoin.go`): whenever its private reader reaches the
 end of the file at the start of a line, at offset P of file F, it asks
 (`fs.ReadOptions.HandOverAtEOF`) to hand over. Under the entry's `publishMu`
-the session is added back if the shared reader has F open and has not
-published a line ending past P; it then skips published lines ending at or
-before P, so the hand-over loses and repeats no line, and keeps its filter
-(numbering, context, max-count state), processor and a held descriptor of F.
-If no shared reader exists (every session was evicted), the session starts a
-new one at P, reading from a descriptor of F opened through its own target.
-Otherwise (reader ahead of P, on another file, between reads, failed) it stays
-private and tries again at a later end of the file; a declined attempt, or an
-eviction within 30 s of a rejoin, pauses the attempts for 1 s doubling up to
-30 s. Each rejoin is logged at INFO ("Evicted subscriber rejoined the shared
+the session is added back if the shared reader has F open and has neither
+read past P (e.g. an unfinished line: should F then be truncated to a size
+between P and it, the reader would restart and publish the rewritten lines up
+to P again) nor published a line ending past P; it then skips published lines
+ending at or before P, so the hand-over loses and repeats no line, and keeps
+its filter (numbering, context, max-count state), processor and a held
+descriptor of F. If no shared reader exists (every session was evicted), the
+session starts a new one at P, reading from a descriptor of F opened through
+its own target. Otherwise (reader read or published past P, on another file,
+between reads, failed) it stays private and tries again at a later end of the
+file; a declined attempt, or an eviction within 30 s of a rejoin, pauses the
+attempts for 1 s doubling up to 30 s. Each rejoin is logged at INFO ("Evicted subscriber rejoined the shared
 follow read", with the subscriber count). A large burst (about 55-60 MiB
 written at once in the checks) can evict sessions that are merely slower than
 the reader; they rejoin afterwards. In a check with 10 sessions after a

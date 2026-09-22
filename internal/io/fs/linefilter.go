@@ -81,8 +81,10 @@ func (lf *LineFilter) Restart() {
 // its own: line numbering, max-count and local context carry on from the lines
 // fed to lf before, for example when a session that was fed by a shared reader
 // goes on with a private one. Like Start, it flushes the processor when the
-// read ends and releases before-context lines still buffered; the reader's own
-// line statistics are not used. lf must not be fed from elsewhere meanwhile.
+// read ends and releases before-context lines still buffered, except when the
+// read ends with ErrHandedOver: lf then keeps its local context for whoever
+// goes on feeding it. The reader's own line statistics are not used. lf must
+// not be fed from elsewhere meanwhile.
 func (f *ReadFile) StartFiltered(ctx context.Context, lf *LineFilter) error {
 	return f.start(ctx, lf.filter)
 }
