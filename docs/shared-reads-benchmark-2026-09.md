@@ -118,12 +118,12 @@ What the numbers show:
   1.80 s elapsed. The MapReduce work of each job, not the file read,
   dominates it.
 - **Follow burst:** the 100 MiB burst evicts all four sessions in every run
-  (four `evicted a slow subscriber` lines), which read the burst privately,
-  so reads, CPU and time are those of sharing off. In each of the three
-  runs whose dserver log was kept (the separately run pair reused the first
-  run's directory and overwrote its log), all four rejoined the shared reader afterwards (four
-  `rejoined` lines, after a second shared read started), so later appends
-  are shared again.
+  (four `evicted a slow subscriber` lines), which read the burst privately, so
+  reads, CPU and time are those of sharing off. In each of the three runs
+  whose dserver log was kept (the strace `follow` run and then the separately
+  run pair reused the run-1 directories and overwrote their logs), all four
+  rejoined the shared reader afterwards (four `rejoined` lines, after a second
+  shared read started), so later appends are shared again.
 - **Follow paced** (about 10 MiB/s): no evictions; elapsed about 8% lower,
   but dserver CPU about 14% **higher** with sharing on (28.99 s against
   25.50 s, the ranges do not overlap). Sharing a follow read of a busy log
