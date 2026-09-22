@@ -49,12 +49,13 @@ func (d *commandDispatcher) withReadShareOption(ctx context.Context, value strin
 		}
 		return ctx
 	}
-	return withReadShareOption(ctx, value)
+	return contextWithReadShare(ctx, value)
 }
 
-// withReadShareOption keeps the value of a command's config.ReadShareOption
-// for the read it starts.
-func withReadShareOption(ctx context.Context, value string) context.Context {
+// contextWithReadShare keeps value, a command's config.ReadShareOption, in
+// ctx for the read it starts, without checking the session's user: only the
+// dispatcher's withReadShareOption, and the tests, may call it.
+func contextWithReadShare(ctx context.Context, value string) context.Context {
 	if value == "" {
 		return ctx
 	}

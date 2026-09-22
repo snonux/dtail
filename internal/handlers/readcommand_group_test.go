@@ -89,7 +89,7 @@ func TestReadShareGroup(t *testing.T) {
 			if tt.mutate != nil {
 				tt.mutate(r, &target)
 			}
-			group, ok := r.readShareGroup(withReadShareOption(context.Background(), tt.option), target)
+			group, ok := r.readShareGroup(contextWithReadShare(context.Background(), tt.option), target)
 			if ok != tt.want {
 				t.Fatalf("readShareGroup() = %+v, %v, want %v", group, ok, tt.want)
 			}
@@ -131,7 +131,7 @@ func runRead(t *testing.T, server *sharedReadTestServer, rc groupReadCase, path,
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.read(withReadShareOption(context.Background(), share), rc.ltx, path, &target, "glob", re)
+	cmd.read(contextWithReadShare(context.Background(), share), rc.ltx, path, &target, "glob", re)
 }
 
 func TestGroupReadOutputEqualsPrivateReadOutput(t *testing.T) {
@@ -228,7 +228,7 @@ func TestGroupReadEndings(t *testing.T) {
 			var recovered any
 			func() {
 				defer func() { recovered = recover() }()
-				cmd.read(withReadShareOption(context.Background(), "g:2"), lcontext.LContext{}, path,
+				cmd.read(contextWithReadShare(context.Background(), "g:2"), lcontext.LContext{}, path,
 					&target, "glob", regex.NewNoop())
 			}()
 

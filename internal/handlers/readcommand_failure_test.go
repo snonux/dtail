@@ -280,7 +280,7 @@ func TestGroupReadReportsFailedReads(t *testing.T) {
 				t.Fatalf("test setup: no target for %s: %v", path, err)
 			}
 
-			command.read(withReadShareOption(context.Background(), "g:2"), lcontext.LContext{}, path, &target,
+			command.read(contextWithReadShare(context.Background(), "g:2"), lcontext.LContext{}, path, &target,
 				"glob", regex.NewNoop())
 
 			if groupReads != 1 {

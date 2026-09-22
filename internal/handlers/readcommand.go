@@ -470,17 +470,6 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		maxLineLength:  r.timings.maxLineLength,
 		logger:         r.readerLogger,
 	}
-	reader, limiter, err := factory(readerOptions)
-	if err != nil {
-		message := "Unable to create file reader"
-		if target != nil && target.Kind == fs.JournalKind {
-			message = "Unable to read journal"
-		}
-		r.sendServerMessage(ctx, r.logger.Warn(r.logContext, message, err))
-		r.reportFailure(ctx, readFailureReader)
-		return
-	}
-
 	// Output is the one and only read path. read() is only ever invoked for the
 	// cat/grep/tail command handlers (see makeReadCommandHandler), and MapReduce
 	// always builds a Aggregate for both server mode and serverless (see
@@ -495,8 +484,21 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		"mode", r.mode, "hasAggregate", r.aggregate != nil)
 	r.logger.Info(r.logContext, "Using turbo mode for reading", path, "mode", r.mode, "hasAggregate", r.aggregate != nil)
 	// A group member waits for the other members holding no cat slot; its
-	// group read takes the slot for it (see readWithGroup).
+	// group read takes the slot for it (see readWithGroup). The group read
+	// makes the reader it needs itself, so this is decided before a private
+	// reader is made.
 	if group, ok := r.readShareGroup(ctx, target); ok && r.readWithGroup(ctx, ltx, re, readerOptions, group) {
+		return
+	}
+
+	reader, limiter, err := factory(readerOptions)
+	if err != nil {
+		message := "Unable to create file reader"
+		if target != nil && target.Kind == fs.JournalKind {
+			message = "Unable to read journal"
+		}
+		r.sendServerMessage(ctx, r.logger.Warn(r.logContext, message, err))
+		r.reportFailure(ctx, readFailureReader)
 		return
 	}
 
