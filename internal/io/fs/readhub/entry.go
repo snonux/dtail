@@ -256,7 +256,10 @@ func (e *entry) handOver(next *subscriber) {
 		// session's target. fail takes the hub's and the entry's locks,
 		// which the caller holds.
 		e.cancel()
-		go e.fail(fmt.Errorf("hand over the shared read target: %w", err))
+		go func() {
+			<-e.done
+			e.fail(fmt.Errorf("hand over the shared read target: %w", err))
+		}()
 		return
 	}
 	e.owner = next

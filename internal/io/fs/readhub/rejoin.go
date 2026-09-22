@@ -133,7 +133,7 @@ func (h *Hub) rejoin(sub *subscriber, at position) bool {
 // of the path since costs no line; if the path was rotated already, sub stays
 // private for now. The caller holds h.mu.
 func (h *Hub) startRejoined(key entryKey, sub *subscriber, at position) bool {
-	start := openSame(openTarget, sub.session.Target, at.file)
+	start := openSame(h.seams.openFile, sub.session.Target, at.file)
 	if start == nil {
 		return false
 	}

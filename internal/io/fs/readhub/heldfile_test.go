@@ -197,13 +197,15 @@ func TestEvictionAfterARotationWhileTheReaderLagsLosesNoLine(t *testing.T) {
 				t.Errorf("warned %d times about lines lost to the rotation, none were: %q", n, logger.lines)
 			}
 
+			beforeStop := opened.open()
 			if err := slow.stop(t); err != nil {
 				t.Errorf("Follow() = %v, want nil", err)
 			}
-			// Only the descriptor of a session still subscribed is open: the
-			// burst may have evicted the fast session, too.
-			if n, want := opened.open(), subscriberCount(hub, file.path); n != want {
-				t.Errorf("%d subscriber descriptors are open, want %d", n, want)
+			// A rejoin also opens the new reader's start descriptor through the
+			// seam; it can remain open alongside the subscriber descriptors.
+			if n, subscribers := opened.open(), subscriberCount(hub, file.path); n >= beforeStop || n > subscribers+1 {
+				t.Errorf("%d descriptors remain after stopping the slow session (before %d, subscribers %d)",
+					n, beforeStop, subscribers)
 			}
 		})
 	}

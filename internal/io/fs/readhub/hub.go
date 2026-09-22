@@ -28,6 +28,8 @@ import (
 // evicted to a private reader, a group member makes the group read wait.
 const defaultQueueChunks = 64
 
+const defaultRetryInterval = 2 * time.Second
+
 // ErrStopped reports that the session's max-count limit ended its read. A
 // private follow reader returns from Start at this point and the read command
 // starts it again, which re-reads the file from its beginning; a shared read
@@ -48,7 +50,7 @@ type Options struct {
 	MaxLineLength int
 	// RetryInterval is the pause before the reader opens the file again after
 	// a read ended, e.g. because the file was rotated, as the read command's
-	// retry interval is for a private reader.
+	// retry interval is for a private reader. Zero selects 2 seconds.
 	RetryInterval time.Duration
 	// QueueChunks bounds each subscriber's queue; zero selects a default. A
 	// follow subscriber whose queue is full is evicted to a private reader; a
@@ -150,6 +152,9 @@ type entryKey struct {
 
 // New returns an empty hub.
 func New(options Options) *Hub {
+	if options.RetryInterval <= 0 {
+		options.RetryInterval = defaultRetryInterval
+	}
 	if options.QueueChunks <= 0 {
 		options.QueueChunks = defaultQueueChunks
 	}
@@ -257,13 +262,15 @@ func (h *Hub) join(sub *subscriber) *entry {
 		h.mu.Lock()
 		e := h.entries[key]
 		if e == nil || e.isClosed() {
+			// newEntry can panic if its reader cannot be constructed. Do not
+			// leave the entire hub locked when the caller recovers that panic.
+			defer h.mu.Unlock()
 			sub.joinedAt = measure()
 			e = newEntry(key, sub.session, sub.joinedAt, nil, h.options, h.logger, h.seams, h.forget)
 			h.entries[key] = e
 			// A new entry is open.
 			_, _ = e.add(sub)
 			e.start()
-			h.mu.Unlock()
 			return e
 		}
 		// Joining waits for a publication in progress, which may take the
