@@ -58,6 +58,8 @@ type KnownHostsCallback struct {
 	logger         logging.Logger
 	promptLogger   logging.Logger
 	removeTempFile func(*os.Root, string) error
+	// lockTimeout bounds the wait for another client's known_hosts update.
+	lockTimeout time.Duration
 }
 
 var _ HostKeyCallback = (*KnownHostsCallback)(nil)
@@ -83,6 +85,7 @@ func NewKnownHostsCallback(knownHostsPath string, trustAllHosts bool,
 		logger:          logging.OrNop(logger),
 		promptLogger:    logging.OrNop(promptLogger),
 		removeTempFile:  func(root *os.Root, name string) error { return root.Remove(name) },
+		lockTimeout:     knownHostsLockTimeout,
 	}
 	if trustAllHosts {
 		// Use the same sync.Once path so both the constructor and the
@@ -226,10 +229,13 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	case <-c.trustAllHostsCh:
 		// Trust-all mode is non-interactive; avoid warning-level noise on stdout.
 		c.logger.Debug("Trusting host keys of servers", servers)
-		if err := c.trustHosts(hosts); err != nil {
+		unlocked, err := c.trustHosts(hosts)
+		if err != nil {
 			c.logger.Error("Unable to update known hosts file", c.knownHostsPath, err)
 			c.dontTrustHosts(hosts)
+			return
 		}
+		c.logUnlockedUpdate(unlocked)
 		return
 	default:
 	}
@@ -241,28 +247,30 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	)
 	p := prompt.New(question, c.promptLogger)
 
-	var trustErr error
+	// The prompt pauses logging while it runs the callbacks, so their
+	// results are logged from the end callbacks once logging has resumed.
+	var trustUnlocked, trustErr error
 	a := prompt.Answer{
 		Long:  "yes",
 		Short: "y",
 		Callback: func() {
-			trustErr = c.trustHosts(hosts)
+			trustUnlocked, trustErr = c.trustHosts(hosts)
 			if trustErr != nil {
 				c.dontTrustHosts(hosts)
 			}
 		},
 		EndCallback: func() {
-			c.logTrustHostsResult(trustErr)
+			c.logTrustHostsResult(trustUnlocked, trustErr)
 		},
 	}
 	p.Add(a)
 
-	var trustAllErr error
+	var trustAllUnlocked, trustAllErr error
 	a = prompt.Answer{
 		Long:  "all",
 		Short: "a",
 		Callback: func() {
-			trustAllErr = c.trustHosts(hosts)
+			trustAllUnlocked, trustAllErr = c.trustHosts(hosts)
 			if trustAllErr != nil {
 				c.dontTrustHosts(hosts)
 				return
@@ -272,7 +280,7 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 			c.closeTrustAllHostsCh()
 		},
 		EndCallback: func() {
-			c.logTrustHostsResult(trustAllErr)
+			c.logTrustHostsResult(trustAllUnlocked, trustAllErr)
 		},
 	}
 	p.Add(a)
@@ -305,22 +313,41 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	p.Ask(os.Stdin)
 }
 
-func (c *KnownHostsCallback) logTrustHostsResult(err error) {
+func (c *KnownHostsCallback) logTrustHostsResult(unlocked, err error) {
 	if err != nil {
 		c.logger.Error("Unable to update known hosts file", c.knownHostsPath, err)
 		return
 	}
+	c.logUnlockedUpdate(unlocked)
 	c.logger.Info("Added hosts to known hosts file", c.knownHostsPath)
 }
 
-func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
-	if err := c.updateKnownHosts(hosts); err != nil {
-		return err
+// logUnlockedUpdate reports a successful known_hosts update that ran without
+// the lock, which may have dropped another client's concurrent additions.
+// Platforms without advisory locking never lock, so that is only a debug note.
+func (c *KnownHostsCallback) logUnlockedUpdate(unlocked error) {
+	switch {
+	case unlocked == nil:
+	case errors.Is(unlocked, errors.ErrUnsupported):
+		c.logger.Debug("Updated known hosts file without a lock", c.knownHostsPath, unlocked)
+	default:
+		c.logger.Warn("Updated known hosts file without a lock; concurrent "+
+			"updates by other clients may have been lost", c.knownHostsPath, unlocked)
+	}
+}
+
+// trustHosts adds hosts to known_hosts and then trusts them. A nil err with a
+// non-nil unlocked means the update succeeded without the lock, for the reason
+// in unlocked; if err is non-nil it already includes that reason.
+func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) (unlocked, err error) {
+	unlocked, err = c.updateKnownHosts(hosts)
+	if err != nil {
+		return unlocked, err
 	}
 	for _, unknown := range hosts {
 		unknown.responseCh <- trustHost
 	}
-	return nil
+	return unlocked, nil
 }
 
 // updateKnownHosts rewrites known_hosts with hosts first, followed by every
@@ -330,23 +357,23 @@ func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) error {
 // file that is renamed over known_hosts atomically. Without the lock (see
 // lockKnownHosts) the update still succeeds, but may drop another client's
 // concurrent additions.
-func (c *KnownHostsCallback) updateKnownHosts(hosts []unknownHost) error {
+func (c *KnownHostsCallback) updateKnownHosts(hosts []unknownHost) (unlocked, err error) {
 	root, rootErr := c.knownHostsFile.OpenRoot()
 	if rootErr != nil {
-		return rootErr
+		return nil, rootErr
 	}
 	defer func() { _ = root.Close() }()
 
-	release, lockErr := lockKnownHosts(root, c.knownHostsFile.Name(), knownHostsLockTimeout)
+	release, lockErr := lockKnownHosts(root, c.knownHostsFile.Name(), c.lockTimeout)
 	defer release()
 
 	if err := c.replaceKnownHosts(root, hosts); err != nil {
 		if lockErr != nil {
-			return errors.Join(err, lockErr)
+			return lockErr, errors.Join(err, lockErr)
 		}
-		return err
+		return nil, err
 	}
-	return nil
+	return lockErr, nil
 }
 
 func (c *KnownHostsCallback) replaceKnownHosts(root *os.Root, hosts []unknownHost) error {

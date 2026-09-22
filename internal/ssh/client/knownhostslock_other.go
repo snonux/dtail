@@ -14,3 +14,7 @@ import (
 func tryLockFile(*os.File) (bool, error) {
 	return false, errors.ErrUnsupported
 }
+
+// fileLockSupported reports whether tryLockFile can lock. There is no advisory file lock on this platform.
+// It is a variable so that tests can exercise the unsupported path.
+var fileLockSupported = false

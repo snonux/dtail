@@ -25,3 +25,7 @@ func tryLockFile(fd *os.File) (bool, error) {
 		return false, err
 	}
 }
+
+// fileLockSupported reports whether tryLockFile can lock. flock(2) is available on this platform.
+// It is a variable so that tests can exercise the unsupported path.
+var fileLockSupported = true

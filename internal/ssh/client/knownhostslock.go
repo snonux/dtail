@@ -29,12 +29,21 @@ var errKnownHostsLockTimeout = errors.New("timed out waiting for known hosts loc
 // The lock file is persistent: removing it after use would let a waiter lock
 // an unlinked inode while a third client creates and locks a fresh one.
 //
+// The lock file is empty and only ever opened read-only (flock needs no
+// write access), with mode 0644 on creation, so every user who shares a
+// known_hosts file can lock it; 0600 would lock other users out of the lock.
+// Platforms without advisory locking (fileLockSupported false) get no lock
+// file at all.
+//
 // The returned release function is always safe to call. A non-nil error means
-// the lock is not held (no lock support, lock file not creatable, or timeout);
+// the lock is not held (no lock support, lock file not openable, or timeout);
 // callers may still update the file, only without the lost-update guard.
 func lockKnownHosts(root *os.Root, name string, timeout time.Duration) (func(), error) {
 	noop := func() {}
-	lockFd, err := root.OpenFile(name+".lock", os.O_RDWR|os.O_CREATE, 0o600)
+	if !fileLockSupported {
+		return noop, fmt.Errorf("lock known hosts file: %w", errors.ErrUnsupported)
+	}
+	lockFd, err := root.OpenFile(name+".lock", os.O_RDONLY|os.O_CREATE, 0o644)
 	if err != nil {
 		return noop, fmt.Errorf("open known hosts lock file: %w", err)
 	}

@@ -43,12 +43,13 @@ func TestTrustHostsConcurrentWriters(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make([]error, writers)
+	unlocked := make([]error, writers)
 	start := make(chan struct{})
 	for i := range hosts {
 		callback := testKnownHostsCallback(t, knownHostsPath)
 		wg.Go(func() {
 			<-start
-			errs[i] = callback.trustHosts([]unknownHost{hosts[i]})
+			unlocked[i], errs[i] = callback.trustHosts([]unknownHost{hosts[i]})
 		})
 	}
 	close(start)
@@ -57,6 +58,9 @@ func TestTrustHostsConcurrentWriters(t *testing.T) {
 	for i, err := range errs {
 		if err != nil {
 			t.Errorf("writer %d: trustHosts failed: %v", i, err)
+		}
+		if fileLockSupported && unlocked[i] != nil {
+			t.Errorf("writer %d: updated without the lock: %v", i, unlocked[i])
 		}
 	}
 	wantLines := []string{keepLine}
@@ -126,7 +130,7 @@ func TestKnownHostsWriterHelperProcess(t *testing.T) {
 	for i := range knownHostsHelperHosts {
 		callback := testKnownHostsCallback(t, knownHostsPath)
 		wg.Go(func() {
-			if err := callback.trustHosts([]unknownHost{concurrentTestHost(writer, i)}); err != nil {
+			if _, err := callback.trustHosts([]unknownHost{concurrentTestHost(writer, i)}); err != nil {
 				t.Errorf("writer %d host %d: %v", writer, i, err)
 			}
 		})
@@ -144,7 +148,7 @@ func TestTrustHostsSingleWriterLeavesNoTempFiles(t *testing.T) {
 	}
 	callback := testKnownHostsCallback(t, knownHostsPath)
 	host := concurrentTestHost(0, 1)
-	if err := callback.trustHosts([]unknownHost{host}); err != nil {
+	if _, err := callback.trustHosts([]unknownHost{host}); err != nil {
 		t.Fatalf("trustHosts failed: %v", err)
 	}
 
@@ -204,7 +208,7 @@ func TestTrustHostsErrorPathsLeaveNoTempFiles(t *testing.T) {
 			before := directoryEntries(t, dir)
 
 			callback := testKnownHostsCallback(t, knownHostsPath)
-			if err := callback.trustHosts([]unknownHost{concurrentTestHost(0, 1)}); err == nil {
+			if _, err := callback.trustHosts([]unknownHost{concurrentTestHost(0, 1)}); err == nil {
 				t.Fatal("trustHosts succeeded, want an error")
 			}
 			after := slices.DeleteFunc(directoryEntries(t, dir), func(name string) bool {
@@ -311,4 +315,138 @@ func directoryEntries(t *testing.T, dir string) []string {
 		names = append(names, entry.Name())
 	}
 	return names
+}
+
+// TestTrustHostsWarnsWhenLockIsHeld holds the known_hosts lock while a client
+// updates the file: the update must go ahead after the lock timeout and log a
+// warning, after the prompt has resumed logging in the interactive case.
+func TestTrustHostsWarnsWhenLockIsHeld(t *testing.T) {
+	if !fileLockSupported {
+		t.Skip("no advisory file locking on this platform")
+	}
+	tests := []struct {
+		name     string
+		trustAll bool
+	}{
+		{name: "prompt answer yes"},
+		{name: "trust all hosts", trustAll: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			knownHostsPath := filepath.Join(dir, "known_hosts")
+			if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
+				t.Fatalf("WriteFile failed: %v", err)
+			}
+			root, err := os.OpenRoot(dir)
+			if err != nil {
+				t.Fatalf("OpenRoot failed: %v", err)
+			}
+			defer func() { _ = root.Close() }()
+			release, err := lockKnownHosts(root, "known_hosts", time.Second)
+			if err != nil {
+				t.Fatalf("holding the lock failed: %v", err)
+			}
+			defer release()
+
+			logger := &recordingLogger{}
+			callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+			callback.lockTimeout = 20 * time.Millisecond
+			host := concurrentTestHost(0, 1)
+			started := time.Now()
+			if test.trustAll {
+				callback.closeTrustAllHostsCh()
+				callback.promptAddHosts([]unknownHost{host})
+			} else {
+				withPromptInput(t, "yes\n", func() {
+					callback.promptAddHosts([]unknownHost{host})
+				})
+			}
+			if waited := time.Since(started); waited >= knownHostsLockTimeout {
+				t.Fatalf("update waited %v, not the injected lock timeout", waited)
+			}
+
+			if got := logger.warnCount.Load(); got != 1 {
+				t.Fatalf("Warn calls = %d, want 1", got)
+			}
+			if warned := logger.lastWarnValue(); !errors.Is(warned, errKnownHostsLockTimeout) {
+				t.Fatalf("warning error = %v, want %v", warned, errKnownHostsLockTimeout)
+			}
+			if logger.logWhilePaused.Load() {
+				t.Fatal("lock warning logged while the prompt paused logging")
+			}
+			if got := logger.errorCount.Load(); got != 0 {
+				t.Fatalf("Error calls = %d, want 0", got)
+			}
+			assertKnownHostsLines(t, knownHostsPath, []string{host.hostLine, host.ipLine})
+		})
+	}
+}
+
+// TestLockKnownHostsUnsupportedCreatesNoLockFile checks that a platform
+// without advisory locking gets no useless lock file and that the update
+// still succeeds there without a warning.
+func TestLockKnownHostsUnsupportedCreatesNoLockFile(t *testing.T) {
+	previous := fileLockSupported
+	fileLockSupported = false
+	t.Cleanup(func() { fileLockSupported = previous })
+
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot failed: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	release, err := lockKnownHosts(root, "known_hosts", time.Second)
+	release()
+	if !errors.Is(err, errors.ErrUnsupported) {
+		t.Fatalf("lock error = %v, want %v", err, errors.ErrUnsupported)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "known_hosts.lock")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("lock file stat = %v, want it not to exist", statErr)
+	}
+
+	knownHostsPath := filepath.Join(dir, "known_hosts")
+	logger := &recordingLogger{}
+	callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+	callback.closeTrustAllHostsCh()
+	host := concurrentTestHost(0, 1)
+	callback.promptAddHosts([]unknownHost{host})
+	if got := logger.warnCount.Load(); got != 0 {
+		t.Fatalf("Warn calls = %d, want 0 on a platform without locking", got)
+	}
+	assertKnownHostsLines(t, knownHostsPath, []string{host.hostLine, host.ipLine})
+	if _, statErr := os.Stat(filepath.Join(dir, "known_hosts.lock")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("lock file stat after update = %v, want it not to exist", statErr)
+	}
+}
+
+// TestLockKnownHostsReadOnlyLockFile checks that a lock file the user can
+// only read (as another user's shared lock file would be) still locks and
+// still excludes a second holder.
+func TestLockKnownHostsReadOnlyLockFile(t *testing.T) {
+	if !fileLockSupported {
+		t.Skip("no advisory file locking on this platform")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "known_hosts.lock"), nil, 0o400); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatalf("OpenRoot failed: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+
+	release, err := lockKnownHosts(root, "known_hosts", time.Second)
+	if err != nil {
+		t.Fatalf("lock of read-only lock file failed: %v", err)
+	}
+	defer release()
+	if _, err := lockKnownHosts(root, "known_hosts", 20*time.Millisecond); !errors.Is(err, errKnownHostsLockTimeout) {
+		t.Fatalf("second lock error = %v, want %v", err, errKnownHostsLockTimeout)
+	}
 }
