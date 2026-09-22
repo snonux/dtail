@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,6 +101,20 @@ func TestFailedHandOverPublishesFailureAfterReaderStops(t *testing.T) {
 	file := newTestFile(t)
 	session := Session{Target: file.target(), FilePath: file.path, NewProcessor: (&recorder{}).newProcessor}
 	seams := defaultSeams()
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseReader := func() { releaseOnce.Do(func() { close(release) }) }
+	seams.startReader = func(ctx context.Context, _ *fs.ReadFile, processor line.Processor) error {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		// The real reader can finish a read after cancellation. entry.run
+		// flushes this pending line before closing e.done.
+		return processor.(*fanoutProcessor).ProcessRawLine([]byte("last line"), 0, "")
+	}
 	seams.replaceTarget = func(*fs.ReadFile, fs.ValidatedReadTarget) error {
 		return errors.New("injected hand-over failure")
 	}
@@ -109,22 +124,47 @@ func TestFailedHandOverPublishesFailureAfterReaderStops(t *testing.T) {
 	if _, added := e.add(sub); !added {
 		t.Fatal("subscriber was not added")
 	}
+	e.start()
+	defer func() {
+		releaseReader()
+		<-e.done
+	}()
+	select {
+	case <-started:
+	case <-time.After(waitTimeout):
+		t.Fatal("shared reader did not start")
+	}
 	e.mu.Lock()
 	e.handOver(sub)
 	e.mu.Unlock()
+	select {
+	case <-canceled:
+	case <-time.After(waitTimeout):
+		t.Fatal("shared reader was not canceled")
+	}
+	// While the reader is still able to publish its final line, the failure
+	// must wait. The old eager e.fail could publish here, before that line.
+	select {
+	case it := <-sub.queue:
+		t.Fatalf("published %+v before the reader's final line", it)
+	case <-time.After(50 * time.Millisecond):
+	}
+	releaseReader()
 
 	select {
 	case it := <-sub.queue:
-		t.Fatalf("published %+v before the reader stopped", it)
-	case <-time.After(50 * time.Millisecond):
+		if it.kind != chunkItem || string(it.chunk.line(0)) != "last line" {
+			t.Fatalf("first publication = %+v, want the reader's final line", it)
+		}
+	case <-time.After(waitTimeout):
+		t.Fatal("reader did not flush its final line")
 	}
-	close(e.done) // Simulate the reader's deferred completion after its final flush.
 	select {
 	case it := <-sub.queue:
 		if it.kind != failedItem || !errors.Is(it.err, ErrReaderFailed) {
-			t.Errorf("last item = %+v, want a reader failure", it)
+			t.Errorf("second publication = %+v, want the hand-over failure after the final line", it)
 		}
 	case <-time.After(waitTimeout):
-		t.Fatal("the stopped reader's hand-over failure was not published")
+		t.Fatal("hand-over failure was not published after the final line")
 	}
 }
