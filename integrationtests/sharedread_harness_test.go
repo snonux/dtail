@@ -37,6 +37,10 @@ const (
 	// sharedReadOutputTail is how much of a client's output file a wait for a
 	// marker line reads: markers are written last.
 	sharedReadOutputTail = 64 * 1024
+	// sharedReadPrefillMarker starts the lines createPrefilledFile writes
+	// before a test's clients start; sharedReadPrefillLines is their number.
+	sharedReadPrefillMarker = "PREFILL"
+	sharedReadPrefillLines  = 1000
 )
 
 // sharedReadMode is one of the two server configurations every shared read
@@ -376,10 +380,63 @@ func appendToFile(t *testing.T, file, data string) {
 // test ends.
 func createEmptyFile(t *testing.T, file string) {
 	t.Helper()
-	if err := os.WriteFile(file, nil, 0o600); err != nil {
+	createFileWithLines(t, file, nil)
+}
+
+// createFileWithLines creates file holding lines, or replaces it, and removes
+// it when the test ends.
+func createFileWithLines(t *testing.T, file string, lines []string) {
+	t.Helper()
+	var data []byte
+	if len(lines) > 0 {
+		data = []byte(strings.Join(lines, "\n") + "\n")
+	}
+	if err := os.WriteFile(file, data, 0o600); err != nil {
 		t.Fatalf("create %s: %v", file, err)
 	}
 	cleanupFiles(t, file)
+}
+
+// createPrefilledFile creates file holding sharedReadPrefillLines lines that
+// match every client regex of the shared read tests. A follow read starts at
+// the end of the file, so no client may print one of them.
+func createPrefilledFile(t *testing.T, file string) {
+	t.Helper()
+	createFileWithLines(t, file, markedLines(sharedReadPrefillMarker, sharedReadPrefillLines))
+}
+
+// markedLines returns n lines starting with marker that match every client
+// regex of the shared read tests.
+func markedLines(marker string, n int) []string {
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("%s %04d 7 foo bar", marker, i)
+	}
+	return lines
+}
+
+// requireNoMarkedLines fails the test when the client's whole output holds
+// a line containing marker: a line that was in the file before the client's
+// read started.
+func (c *followClient) requireNoMarkedLines(t *testing.T, marker string) {
+	t.Helper()
+	if n := strings.Count(c.output(t), marker); n > 0 {
+		t.Errorf("dtail %s printed %d lines containing %q, which were in the file before its read started",
+			c.name, n, marker)
+	}
+}
+
+// outputWithoutSync returns the whole output of a --plain client without
+// its sync lines, whose number varies from run to run.
+func (c *followClient) outputWithoutSync(t *testing.T) string {
+	t.Helper()
+	var sb strings.Builder
+	for _, line := range strings.SplitAfter(c.output(t), "\n") {
+		if !strings.Contains(line, sharedReadSyncMarker) {
+			sb.WriteString(line)
+		}
+	}
+	return sb.String()
 }
 
 // matchingLines returns the lines matching expr, each with its newline: what

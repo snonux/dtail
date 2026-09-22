@@ -39,7 +39,11 @@ Per run the script records:
   the input (`grep -E 'user999 |BENCH'`), every scheduled job exited with
   status 0 and wrote the same outfile as the scenario's first run.
 
-The clients use their own `known_hosts` file in the work directory.
+The clients use their own `known_hosts` file in the work directory, which
+pins the benchmark's host key, and get no stdin, so a wrong server makes them
+fail instead of prompting. dserver listens on the first free port from 24900
+on, or on the one given with `-p`; a run counts as started only once this
+run's dserver listens on it (checked with `ss`).
 
 ## How to run
 

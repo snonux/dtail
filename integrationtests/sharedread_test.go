@@ -14,7 +14,9 @@ import (
 // (internal/io/fs/readhub) give every session exactly the output of a
 // private read: each scenario runs with shared reads on and with
 // "SharedReadsDisable": true, requires byte-identical output, and checks the
-// server's shared read log lines for the mode.
+// server's shared read log lines for the mode. The dtail clients' files hold
+// lines matching their regexes before the clients start, which none of them
+// may print: a follow read starts at the end of the file.
 
 const (
 	// Server log lines of the shared follow and one-shot reads.
@@ -25,6 +27,7 @@ const (
 	sharedOneShotStartedLog = "|Shared one-shot read started|"
 	sharedOneShotAnyLog     = "Shared one-shot read"
 	truncatedLog            = "|File got truncated, reading from beginning"
+	readingAgainLog         = "|Reading file again"
 	noPermissionLog         = "|No permission to read file|"
 	// sharedContinuousAttempts bounds how often the continuous fan-out test
 	// appends its batch; see feedUntilOutfilesMatch.
@@ -232,7 +235,7 @@ func TestSharedReadMixedTail(t *testing.T) {
 	payload = append(payload, "MARK end")
 
 	runSharedReadModes(t, func(t *testing.T, mode sharedReadMode) map[string]string {
-		createEmptyFile(t, input)
+		createPrefilledFile(t, input)
 		removeIgnoringError("sharedread_mixed.csv.tmp")
 		cleanupFiles(t, "sharedread_mixed.csv.tmp", "sharedread_mixed.csv.tmp.query")
 		server := startSharedReadServer(t, mode, map[string]any{"Continuous": []map[string]any{{
@@ -255,9 +258,11 @@ func TestSharedReadMixedTail(t *testing.T) {
 		withContext.waitForOutput(t, "MARK end")
 
 		outputs := map[string]string{
-			"plain":   plain.outputAfterSync(t),
+			"plain":   plain.outputWithoutSync(t),
 			"context": withContext.outputAfterSync(t),
 		}
+		plain.requireNoMarkedLines(t, sharedReadPrefillMarker)
+		withContext.requireNoMarkedLines(t, sharedReadPrefillMarker)
 		if want := matchingLines(t, plainRegex, written); outputs["plain"] != want {
 			t.Errorf("plain client output differs from the matching lines:\n%s",
 				firstDifference(outputs["plain"], want))
@@ -279,7 +284,7 @@ func TestSharedReadRotation(t *testing.T) {
 	const plainRegex = "foo|SYNC|MARK"
 
 	runSharedReadModes(t, func(t *testing.T, mode sharedReadMode) map[string]string {
-		createEmptyFile(t, input)
+		createPrefilledFile(t, input)
 		cleanupFiles(t, input+".1", input+".2")
 		server := startSharedReadServer(t, mode, nil)
 		plain := startFollowClient(t, server, "rotate_plain", input, "--plain", "--grep", plainRegex)
@@ -310,9 +315,11 @@ func TestSharedReadRotation(t *testing.T) {
 		written = append(written, writeRotationPhase(t, input, "truncated", clients)...)
 
 		outputs := map[string]string{
-			"plain":   plain.outputAfterSync(t),
+			"plain":   plain.outputWithoutSync(t),
 			"context": withContext.outputAfterSync(t),
 		}
+		plain.requireNoMarkedLines(t, sharedReadPrefillMarker)
+		withContext.requireNoMarkedLines(t, sharedReadPrefillMarker)
 		if want := matchingLines(t, plainRegex, written); outputs["plain"] != want {
 			t.Errorf("plain client output differs from the matching lines:\n%s",
 				firstDifference(outputs["plain"], want))
@@ -321,6 +328,78 @@ func TestSharedReadRotation(t *testing.T) {
 		if mode.shared() {
 			server.requireLogCount(t, sharedFollowStartedLog, 1)
 			server.requireLogCount(t, sharedFollowGainedLog+"2", 1)
+			server.requireLogCount(t, sharedFollowEvictedLog, 0)
+		} else {
+			server.requireLogCount(t, sharedFollowAnyLog, 0)
+		}
+		return outputs
+	})
+}
+
+// TestSharedReadLateJoiner starts a second dtail client while the shared
+// reader lags behind the file: the path was rotated to a new file that
+// already holds lines, and the reader, still on the old file, reads the new
+// one only after its retry interval. A private read opened at the join starts
+// at the end of the new file, so the late client must not print the lines
+// that were in it before it joined; the first client prints them, as it
+// reads the new file from its beginning.
+func TestSharedReadLateJoiner(t *testing.T) {
+	const input = "sharedread_latejoin.log.tmp"
+	const regex = "foo|SYNC|MARK"
+	const preJoinMarker = "PREJOIN"
+	// The reader reopens the path this long after it noticed the rotation;
+	// the late client joins in between.
+	const retryIntervalMs = 5000
+
+	runSharedReadModes(t, func(t *testing.T, mode sharedReadMode) map[string]string {
+		createPrefilledFile(t, input)
+		cleanupFiles(t, input+".1")
+		server := startSharedReadServer(t, mode, map[string]any{"ReadRetryIntervalMs": retryIntervalMs})
+		first := startFollowClient(t, server, "latejoin_first", input, "--plain", "--grep", regex)
+		server.waitForReaders(t, input, 1)
+		written := syncFollowClients(t, input, first)
+		written = append(written, writeRotationPhase(t, input, "early", []*followClient{first})...)
+
+		if err := os.Rename(input, input+".1"); err != nil {
+			t.Fatalf("rotate: %v", err)
+		}
+		preJoin := markedLines(preJoinMarker, 200)
+		createFileWithLines(t, input, preJoin)
+		written = append(written, preJoin...)
+
+		late := startFollowClient(t, server, "latejoin_late", input, "--plain", "--grep", regex)
+		if mode.shared() {
+			server.waitForLog(t, sharedFollowGainedLog+"2", 1)
+			if server.logs.count(readingAgainLog) > 0 {
+				t.Fatalf("the late client joined after the shared reader reopened the file, "+
+					"more than %d ms after the rotation; the join must fall into the lag", retryIntervalMs)
+			}
+		} else {
+			server.waitForReaders(t, input, 2)
+		}
+		clients := []*followClient{first, late}
+		afterJoin := syncFollowClients(t, input, clients...)
+		afterJoin = append(afterJoin, writeRotationPhase(t, input, "late", clients)...)
+		written = append(written, afterJoin...)
+
+		outputs := map[string]string{
+			"first": first.outputWithoutSync(t),
+			"late":  late.outputWithoutSync(t),
+		}
+		for _, client := range clients {
+			client.requireNoMarkedLines(t, sharedReadPrefillMarker)
+		}
+		late.requireNoMarkedLines(t, preJoinMarker)
+		if want := matchingLines(t, regex, written); outputs["first"] != want {
+			t.Errorf("first client output differs from the matching lines:\n%s",
+				firstDifference(outputs["first"], want))
+		}
+		if want := matchingLines(t, regex, afterJoin); outputs["late"] != want {
+			t.Errorf("late client output differs from the lines matching after its join:\n%s",
+				firstDifference(outputs["late"], want))
+		}
+		if mode.shared() {
+			server.requireLogCount(t, sharedFollowStartedLog, 1)
 			server.requireLogCount(t, sharedFollowEvictedLog, 0)
 		} else {
 			server.requireLogCount(t, sharedFollowAnyLog, 0)
@@ -344,7 +423,7 @@ func TestSharedReadEvictsStalledClient(t *testing.T) {
 	}
 
 	runSharedReadModes(t, func(t *testing.T, mode sharedReadMode) map[string]string {
-		createEmptyFile(t, input)
+		createPrefilledFile(t, input)
 		server := startSharedReadServer(t, mode, nil)
 		stalled := startFollowClient(t, server, "evict_stalled", input, "--plain", "--grep", stalledRegex)
 		fast := startFollowClient(t, server, "evict_fast", input, "--grep", "7 foo|SYNC|MARK")
@@ -364,11 +443,13 @@ func TestSharedReadEvictsStalledClient(t *testing.T) {
 		waitForClients(t, "MARK end", stalled, fast)
 
 		outputs := map[string]string{
-			"stalled": stalled.outputAfterSync(t),
+			"stalled": stalled.outputWithoutSync(t),
 			"fast":    fast.outputAfterSync(t),
 		}
 		written = append(written, strings.Split(strings.TrimSuffix(burst.String(), "\n"), "\n")...)
 		written = append(written, "MARK fast", "MARK end")
+		stalled.requireNoMarkedLines(t, sharedReadPrefillMarker)
+		fast.requireNoMarkedLines(t, sharedReadPrefillMarker)
 		if want := matchingLines(t, stalledRegex, written); outputs["stalled"] != want {
 			t.Errorf("stalled client output differs from the matching lines:\n%s",
 				firstDifference(outputs["stalled"], want))

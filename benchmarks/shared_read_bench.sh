@@ -30,6 +30,7 @@
 #             process (default 0: do not wait; the load is recorded anyway)
 #   -w DIR    work directory (default ${TMPDIR:-/tmp}/dtail-shared-read-bench)
 #   -o FILE   append result rows to FILE as CSV (default: stdout only)
+#   -p PORT   dserver port (default: the first free port from 24900 on)
 #
 # Results are CSV rows:
 #   scenario,input,mode,run,sessions,elapsed_s,cpu_s,file_reads,all_reads,
@@ -39,7 +40,7 @@ set -euo pipefail
 declare -r REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 declare -r DATA_BYTES=$((100 * 1024 * 1024))
 declare -r CLK_TCK="$(getconf CLK_TCK)"
-declare -r PORT=24900
+declare PORT=""
 
 declare -i SESSIONS=4
 declare -i RUNS=3
@@ -65,6 +66,12 @@ _cleanup() {
         kill "$pid" 2>/dev/null || true
     done
     if [[ -n "$SERVER_PID" ]]; then
+        # Under strace SERVER_PID is strace; killing it detaches from
+        # dserver, which would keep running and holding the port.
+        if [[ "$STRACE" == yes ]]; then
+            pid="$(_server_pid)" || pid=""
+            [[ -z "$pid" ]] || kill "$pid" 2>/dev/null || true
+        fi
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi
@@ -185,7 +192,41 @@ _start_server() {
         && exec env -u DTAIL_INTEGRATION_TEST_RUN_MODE "${cmd[@]}") \
         > "$log" 2>&1 &
     SERVER_PID=$!
-    _poll 30 grep -q 'Binding server' "$log" || _die "dserver did not start"
+    # "Binding server" is logged before the bind, which can still fail; only
+    # a listening socket of this dserver shows that clients reach it and not
+    # another process on the port.
+    _poll 30 _server_listening "$log" \
+        || _die "dserver did not listen on port $PORT, see $log"
+}
+
+# _port_in_use PORT: succeeds when something listens on TCP port PORT.
+_port_in_use() {
+    [[ -n "$(ss -Hltn "sport = :$1")" ]]
+}
+
+# _free_port: prints the first port from 24900 on that nothing listens on.
+_free_port() {
+    local -i port
+    for ((port = 24900; port < 25900; port++)); do
+        if ! _port_in_use "$port"; then
+            printf '%d\n' "$port"
+            return
+        fi
+    done
+    _die "no free port in 24900-25899"
+}
+
+# _server_listening LOG: succeeds once this run's dserver listens on PORT and
+# makes _poll give up at once when it exited or logged a start failure.
+_server_listening() {
+    local -r log=$1
+    if ! kill -0 "$SERVER_PID" 2>/dev/null \
+        || grep -q 'Unable to run dserver' "$log"; then
+        _die "dserver failed to start on port $PORT, see $log"
+    fi
+    local pid
+    pid="$(_server_pid)" || return 1
+    ss -Hltnp "sport = :$PORT" | grep -q "pid=$pid,"
 }
 
 # _server_pid: the dserver process, also when it runs under strace.
@@ -270,7 +311,8 @@ _run_follow() {
         DTAIL_AUTH_KEY_PATH="$WORK_DIR/id_rsa" "$REPO_DIR/dtail" \
             --cfg "$WORK_DIR/client.json" --logger stdout --logLevel error \
             --plain --noColor --no-auth-key --servers "127.0.0.1:$PORT" \
-            --files "$file" --grep 'user999 |BENCH' > "$dir/client$i.out" 2>&1 &
+            --files "$file" --grep 'user999 |BENCH' < /dev/null \
+            > "$dir/client$i.out" 2>&1 &
         CLIENT_PIDS+=($!)
     done
     _sync_clients "$file" "$dir"
@@ -394,7 +436,7 @@ _run_one() {
 
 main() {
     local opt
-    while getopts 'n:r:sq:w:o:' opt; do
+    while getopts 'n:r:sq:w:o:p:' opt; do
         case "$opt" in
             n) SESSIONS=$OPTARG ;;
             r) RUNS=$OPTARG ;;
@@ -402,6 +444,7 @@ main() {
             q) QUIET_WAIT=$OPTARG ;;
             w) WORK_DIR=$OPTARG ;;
             o) RESULTS=$OPTARG ;;
+            p) PORT=$OPTARG ;;
             *) _die "unknown option" ;;
         esac
     done
@@ -413,6 +456,10 @@ main() {
     if [[ "$STRACE" == yes ]]; then
         command -v strace > /dev/null || _die "strace not installed"
     fi
+    command -v ss > /dev/null || _die "ss (iproute) not installed"
+    [[ -n "$PORT" ]] || PORT="$(_free_port)"
+    ! _port_in_use "$PORT" || _die "port $PORT is in use, pick another with -p"
+    _log "dserver port $PORT"
     _prepare_data
 
     local -i run
