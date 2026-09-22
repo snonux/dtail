@@ -62,6 +62,15 @@ func privateFollower(t *testing.T, file *testFile, ltx lcontext.LContext, re reg
 	start position) *recorder {
 
 	t.Helper()
+	return wrappedPrivateFollower(t, file, ltx, re, start, nil)
+}
+
+// wrappedPrivateFollower is privateFollower with each processor passed
+// through wrap, unless it is nil.
+func wrappedPrivateFollower(t *testing.T, file *testFile, ltx lcontext.LContext, re regex.Regex,
+	start position, wrap func(line.Processor) line.Processor) *recorder {
+
+	t.Helper()
 	target := file.target()
 	options := fs.ReadOptions{
 		Mode: omode.TailClient, Target: &target, FilePath: file.path, GlobID: "private",
@@ -79,6 +88,9 @@ func privateFollower(t *testing.T, file *testFile, ltx lcontext.LContext, re reg
 		defer close(done)
 		for ctx.Err() == nil {
 			processor := rec.newProcessor()
+			if wrap != nil {
+				processor = wrap(processor)
+			}
 			_ = reader.Start(ctx, ltx, processor, re)
 			_ = processor.Flush()
 			_ = processor.Close()

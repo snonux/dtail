@@ -329,37 +329,142 @@ func TestRejoinAfterARotationWhileEvicted(t *testing.T) {
 	}
 }
 
+// readStartGate holds a follow reader once, right before a read, when armed.
+type readStartGate struct {
+	armed   atomic.Bool
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newReadStartGate() *readStartGate {
+	return &readStartGate{reached: make(chan struct{}), release: make(chan struct{})}
+}
+
+// hold waits for release, the first time it is called after arming.
+func (g *readStartGate) hold() {
+	if g.armed.CompareAndSwap(true, false) {
+		close(g.reached)
+		<-g.release
+	}
+}
+
+func (g *readStartGate) open() { g.once.Do(func() { close(g.release) }) }
+
+// awaitHeld waits until the armed gate holds its reader.
+func (g *readStartGate) awaitHeld(t *testing.T, what string) {
+	t.Helper()
+	select {
+	case <-g.reached:
+	case <-time.After(3 * waitTimeout):
+		t.Fatalf("timed out waiting for %s to start a read", what)
+	}
+}
+
+// startGatedFanout is the shared reader's processor, held before a read by
+// gate.
+type startGatedFanout struct {
+	*fanoutProcessor
+	gate *readStartGate
+}
+
+func (g startGatedFanout) ReadStarting() {
+	g.gate.hold()
+	g.fanoutProcessor.ReadStarting()
+}
+
+// startGatedProcessor is a private reader's processor, held before a read by
+// gate. It observes positions only for that.
+type startGatedProcessor struct {
+	line.Processor
+	gate *readStartGate
+}
+
+func (g startGatedProcessor) ReadStarting()               { g.gate.hold() }
+func (startGatedProcessor) ReadUpTo(int64, os.FileInfo)   {}
+func (startGatedProcessor) LineEndsAt(int64, os.FileInfo) {}
+
+// SourceRestarted passes the restart on, which the embedded interface hides.
+func (g startGatedProcessor) SourceRestarted() {
+	if restarter, ok := g.Processor.(line.SourceRestarter); ok {
+		restarter.SourceRestarted()
+	}
+}
+
 // The path is rotated right after the session rejoined: it gets the rest of
-// the old file and the new file from the shared reader, like a private read.
+// the old file and the new file from the shared reader, like a private read,
+// whether or not a line was appended to the old file between the rejoin and
+// the rotation: without one, the reader moves on to the new file while the
+// session still skips the lines up to where it rejoined.
+//
+// A follow reader that reached the end of the file, and finds the path
+// rotated when it checks at that end, opens the new file without reading
+// the old one again: a line appended to the old file between its last read
+// and that check is not read. That holds for the shared reader and a private
+// reader alike, and which of the two loses such a line is a matter of timing.
+// So both are held right before a read while the last old line is appended
+// and the path rotated, and both read it from the old file after the
+// rotation.
 func TestRotationRightAfterARejoin(t *testing.T) {
+	for _, lastOld := range []string{"tail old", ""} {
+		t.Run(fmt.Sprintf("last old line %q", lastOld), func(t *testing.T) {
+			testRotationRightAfterARejoin(t, lastOld)
+		})
+	}
+}
+
+func testRotationRightAfterARejoin(t *testing.T, lastOld string) {
 	logger := &capturingLogger{}
 	hub := newRejoiningHub(logger)
+	sharedGate := newReadStartGate()
+	healthy := hub.seams.startReader
+	hub.seams.startReader = func(ctx context.Context, reader *fs.ReadFile, processor line.Processor) error {
+		gated := startGatedFanout{fanoutProcessor: processor.(*fanoutProcessor), gate: sharedGate}
+		return healthy(ctx, reader, gated)
+	}
 	file := newTestFile(t)
 	re := mustRegex(t, "ERROR|new|tail")
 	start, err := endOfFile(file.target())
 	if err != nil {
 		t.Fatal(err)
 	}
-	private := privateFollower(t, file, lcontext.LContext{}, re, start)
+	privateGate := newReadStartGate()
+	private := wrappedPrivateFollower(t, file, lcontext.LContext{}, re, start, func(p line.Processor) line.Processor {
+		return startGatedProcessor{Processor: p, gate: privateGate}
+	})
+	// The gates open before the readers' cleanups wait for them to end.
+	t.Cleanup(privateGate.open)
 	fast := startFastFollower(t, hub, file)
 	waitFor(t, "fast session to join", func() bool { return subscriberCount(hub, file.path) == 1 })
 	pauser := &pauser{}
 	slow := startPausableFollower(t, hub, file, lcontext.LContext{}, re, pauser)
 	waitFor(t, "slow session to join", func() bool { return subscriberCount(hub, file.path) == 2 })
+	t.Cleanup(sharedGate.open)
 
 	evictAndRejoin(t, file, logger, fast, pauser, 1, "old")
-	file.appendLines("tail old")
+	sharedGate.armed.Store(true)
+	privateGate.armed.Store(true)
+	sharedGate.awaitHeld(t, "the shared reader")
+	privateGate.awaitHeld(t, "the private read")
+	if lastOld != "" {
+		file.appendLines(lastOld)
+	}
 	if err := os.Rename(file.path, file.path+".1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(file.path, []byte("new 1\nINFO new 2\nnew 3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	sharedGate.open()
+	privateGate.open()
 	waitFor(t, "slow session to read the new file", func() bool { return slow.recorder.hasLine("new 3") })
 	waitFor(t, "private read to read the new file", func() bool { return private.hasLine("new 3") })
 	time.Sleep(100 * time.Millisecond)
 
 	assertSameStream(t, slow.recorder, private)
+	if lastOld != "" && !slow.recorder.hasLine(lastOld) {
+		t.Errorf("the session did not get %q, the last line of the old file", lastOld)
+	}
 }
 
 // The file is truncated and rewritten while the session is evicted and has
