@@ -447,8 +447,11 @@ and of at least one job, so that a wave is no larger than the group read the
 hub shares among at most `MaxConcurrentCats` members; other jobs, and all
 jobs when `Server.SharedReadsDisable` is set, run one at a time. Each set of
 servers (a job's `Servers` and `Discovery`) is discovered and resolved once
-per scheduler run, not once per group that run forms, and a run that starts
-a single job needs neither, as it has nothing to group with.
+per scheduler run, not once per group that run forms, and not at all while
+only one run is left pending, as there is nothing left to group it with. A
+run that is not due is only found out about while its group forms, so a
+scheduler run with several pending runs discovers and resolves their servers
+even when one job turns out to be due.
 Each job sends the option `share=<group>:<members>`; dserver honours it only
 for the scheduler's user `DTAIL-SCHEDULE` and ignores it elsewhere (older
 dservers ignore it too). Each member passes its own permission check and joins

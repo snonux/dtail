@@ -45,10 +45,10 @@ type ServerConfig struct {
 	SSHBindAddress string
 	// The max amount of concurrent user connection allowed to connect to the server.
 	// Connections still in their SSH handshake count too. Scheduled jobs whose
-	// servers are all this dserver run in groups of at most a quarter of it
-	// and at most MaxConcurrentCats (at least one), divided by the number of
-	// servers of the jobs; jobs on other dservers, whose limits the scheduler
-	// does not know, run one at a time.
+	// servers are all this dserver run in groups of at most the smaller of a
+	// quarter of it and MaxConcurrentCats, divided by the number of servers of
+	// the jobs, and of at least one job; jobs on other dservers, whose limits
+	// the scheduler does not know, run one at a time.
 	MaxConnections int
 	// Rolling inactivity timeout for authenticated SSH sessions, in seconds.
 	// The close lags this value by two to three refresh intervals (see
