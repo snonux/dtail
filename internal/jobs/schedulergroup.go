@@ -91,9 +91,8 @@ func (s *scheduler) nextGroup(ctx context.Context, pending []*config.Scheduled) 
 //
 // Every job of a group opens an SSH connection of its own to each of its
 // servers, and dserver counts connections still in their handshake against
-// MaxConnections too, and refuses the others; a scheduled job does not
-// retry, so a refused job would fail and, as its outfile then exists, not run
-// again until the dates in its outfile change. The quarter leaves the other
+// MaxConnections too, and refuses the others; a refused job fails and runs
+// again only after its backoff (see jobBackoff). The quarter leaves the other
 // connections to interactive users and continuous jobs. Dividing by the
 // number of servers keeps the bound when several server names of a job reach
 // this dserver. The limits of other dservers are unknown to the scheduler, and

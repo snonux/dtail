@@ -26,6 +26,8 @@ type scheduler struct {
 	// thisDServer recognises the servers of jobs that reach the dserver
 	// running the scheduler.
 	thisDServer thisDServer
+	// backoff delays the next runs of jobs whose runs failed.
+	backoff jobBackoff
 }
 
 func newScheduler(cfg config.RuntimeConfig, loggers clients.LoggerDependencies, colorizers ...*brush.Brush) *scheduler {
@@ -114,12 +116,20 @@ func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
 }
 
 // evaluate returns the client arguments of job at now, or why job is not due:
-// now is outside its time range, or its outfile already exists.
+// now is outside its time range, its outfile already exists, or its last run
+// failed and its backoff (see jobBackoff) has not ended yet.
 func (s *scheduler) evaluate(job *config.Scheduled, now time.Time) (dueJob, string) {
 	if hour := now.Hour(); hour < job.TimeRange[0] || hour >= job.TimeRange[1] {
 		return dueJob{}, "Not running job out of time range"
 	}
-	return s.prepare(job, now)
+	due, reason := s.prepare(job, now)
+	if reason != "" {
+		return dueJob{}, reason
+	}
+	if reason := s.backoff.wait(job, due.outfile, now); reason != "" {
+		return dueJob{}, reason
+	}
+	return due, ""
 }
 
 // prepare returns the client arguments of job at now, or why job is not due:
@@ -159,6 +169,8 @@ func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
 	client, err := s.newMaprClient(due.args, clients.ScheduledMode)
 	if err != nil {
 		s.log().Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
+		now := s.now()
+		s.logFailure(due, s.backoff.fail(job, due.outfile, now, now))
 		return
 	}
 
@@ -166,18 +178,27 @@ func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
 	defer cancel()
 
 	s.log().Info(fmt.Sprintf("Starting job %s", job.Name))
+	started := s.now()
 	status := client.Start(jobCtx, make(chan string))
 	logMessage := fmt.Sprintf("Job %s exited with status %d", job.Name, status)
 
 	if status != 0 {
 		// A scheduled mapreduce client writes the outfile only when it
 		// returns status 0, and the outfile did not exist when the job
-		// started: the next run finds none and runs the job again.
+		// started: a later run finds none and runs the job again, once the
+		// job's backoff ended.
 		s.log().Warn(logMessage)
-		s.log().Warn(fmt.Sprintf("Job %s failed and wrote no outfile %s, it runs again on the next scheduler run",
-			job.Name, due.outfile))
+		s.logFailure(due, s.backoff.fail(job, due.outfile, started, s.now()))
 		return
 	}
 
+	s.backoff.succeed(job)
 	s.log().Info(logMessage)
+}
+
+// logFailure logs that the run of due failed, which makes state its failures
+// in a row. The backoff bounds how often a job fails and so logs this.
+func (s *scheduler) logFailure(due dueJob, state failedJob) {
+	s.log().Warn(fmt.Sprintf("Job %s failed and wrote no outfile %s (failure %d in a row), it runs again "+
+		"from about %s", due.job.Name, due.outfile, state.failures, state.retryAt.Format(time.DateTime)))
 }

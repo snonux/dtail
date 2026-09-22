@@ -401,17 +401,52 @@ through optional interfaces the fan-out processor type-asserts (`readTracker`,
 
 **Failed scheduled jobs leave no outfile (dserver):**
 The scheduler skips a job for the rest of its date period once its outfile
-exists, so a scheduled job writes its outfile (and `.query` file, both via
-`.tmp` and rename as before) only when the query completed: every server
-connection ended with status 0 and the job was not canceled (e.g. by a
-dserver shutdown). It writes no interim results. A failed job (connection
-refused, server error, shutdown mid-read) writes nothing, logs `Job <name>
-failed and wrote no outfile <path>, it runs again on the next scheduler run`,
-and the next scheduler run (every minute within `TimeRange`) runs it again, so
-a job with a permanently unreachable server is retried every minute instead of
-writing a partial result once. This is `clients.ScheduledMode`; continuous
-jobs and interactive `dmap` with an outfile keep writing interim and final
-results whatever the exit status.
+exists, so a scheduled job (`clients.ScheduledMode`) writes its outfile and
+`.query` file (both via `.tmp` and rename) only when the query completed on
+every server, and never a partial result. It writes no interim results. The
+query completed when all of this holds:
+- there was at least one server connection, and every one ended with status 0
+  (a refused connection, failed SSH handshake or rejected session sets 1);
+- the job's context was not canceled (e.g. by the scheduling dserver's own
+  shutdown);
+- every session ended with the server's close handshake (`.syn close
+  connection`), which a server sends only after all of the session's output.
+  A session cut short without it (remote dserver killed with SIGKILL, stopped
+  with SIGTERM/SIGINT, crashed, connection lost) failed;
+- no server reported a failed command. dservers advertising capability
+  `command-failure-v1` send the hidden message `.syn command failed <reason>`
+  (fixed reasons, no paths or error details; those stay in the server log)
+  before the close handshake when a read found no file after its glob
+  retries ("No such file(s) to read" / "Giving up to read file(s)"), was
+  denied by the read permissions, could not create its reader or open/read a
+  file (e.g. permission denied), matched more files than `MaxGlobTargets`
+  (only part of them is read), or its command could not be parsed; and when
+  a `map` query was invalid, a command could not be decoded, was rejected by
+  dispatch or was unknown. A file of the job that does not exist yet (e.g.
+  `$today`'s log before its first line) is therefore a failure, and the job
+  is retried until it exists.
+
+Compatibility: older clients ignore the unknown hidden message (and a client
+of another protocol version never gets it). A current scheduler reading from
+an older dserver (no `command-failure-v1`) only has the close handshake:
+killed or shut down servers and lost connections are still detected, failed
+reads on such a server are not (they still give a header-only or partial
+outfile, as before).
+
+A failed job writes nothing, keeps an outfile of an earlier run untouched,
+and logs `Job <name> failed and wrote no outfile <path> (failure <n> in a
+row), it runs again from about <time>`. The scheduler then backs the job off,
+in memory (`internal/jobs/backoff.go`): it runs it again 1, 2, 4, 8, 16, 32
+and then every 60 minutes after the start of its last failed run, but at
+least half that time after the run's end (so a job running longer than its
+backoff does not run back to back), on the first scheduler run (every minute,
+within `TimeRange`) from then on, with 5 seconds of slack for scheduler drift.
+The backoff ends when the job succeeds, when its outfile path changes (the
+dates filled into it moved to a new period), and with a dserver restart.
+Runs skipped by the backoff are logged at DEBUG only, so a permanently
+failing job logs its failure lines once per run: at most once an hour after
+its first hour of failures. Continuous jobs and interactive `dmap` with an outfile
+keep writing interim and final results whatever the exit status.
 
 **Best Practices for High-Concurrency MapReduce:**
 1. Increase MaxConcurrentCats in the server configuration to match workload

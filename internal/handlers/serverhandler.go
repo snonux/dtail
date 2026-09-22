@@ -201,6 +201,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	if !found {
 		h.sendln(h.serverMessages, h.Logger().Error(h.user,
 			"Received unknown user command", commandName, argc, argsForLog(args)))
+		h.reportCommandFailure(commandFailureUnknown)
 		commandFinished()
 		return
 	}
@@ -337,6 +338,7 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 	if err != nil {
 		h.sendln(h.serverMessages, err.Error())
 		h.Logger().Error(h.user, err)
+		h.reportCommandFailure(commandFailureMapQuery)
 		commandFinished()
 		return
 	}

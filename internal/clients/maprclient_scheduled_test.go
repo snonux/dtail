@@ -46,15 +46,23 @@ func TestIncompleteQueryReason(t *testing.T) {
 // when it completed and then returns 0; otherwise it writes nothing, keeps an
 // outfile from an earlier run and returns a non-zero status. Other cumulative
 // clients keep writing their final result whatever the status.
+//
+// Unless a case gives outcomes, the client has one connection whose session
+// the server completed.
 func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 	t.Parallel()
 
 	const previous = "previous result\n"
+	completed := handlers.SessionOutcome{Completed: true}
+	cutShort := handlers.SessionOutcome{}
+	failedRead := handlers.SessionOutcome{Completed: true, Failure: "read: no file to read"}
 	tests := []struct {
 		name       string
 		mode       MaprClientMode
 		status     int
 		ctxErr     error
+		outcomes   []handlers.SessionOutcome
+		noOutcome  bool
 		existing   bool
 		badDir     bool
 		wantStatus int
@@ -69,6 +77,25 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 		{name: "scheduled canceled keeps earlier outfile", mode: ScheduledMode, ctxErr: context.Canceled,
 			existing: true, wantStatus: 1},
 		{name: "scheduled write error", mode: ScheduledMode, badDir: true, wantStatus: 1},
+		{name: "scheduled two servers completed", mode: ScheduledMode,
+			outcomes: []handlers.SessionOutcome{completed, completed}, wantResult: true},
+		{name: "scheduled session cut short", mode: ScheduledMode, outcomes: []handlers.SessionOutcome{cutShort},
+			wantStatus: 1},
+		{name: "scheduled second session cut short", mode: ScheduledMode,
+			outcomes: []handlers.SessionOutcome{completed, cutShort}, wantStatus: 1},
+		{name: "scheduled session cut short keeps earlier outfile", mode: ScheduledMode,
+			outcomes: []handlers.SessionOutcome{cutShort}, existing: true, wantStatus: 1},
+		{name: "scheduled failed read", mode: ScheduledMode, outcomes: []handlers.SessionOutcome{failedRead},
+			wantStatus: 1},
+		{name: "scheduled failed read on second server", mode: ScheduledMode,
+			outcomes: []handlers.SessionOutcome{completed, failedRead}, wantStatus: 1},
+		{name: "scheduled without servers", mode: ScheduledMode, outcomes: []handlers.SessionOutcome{},
+			wantStatus: 1},
+		{name: "scheduled handler without outcome", mode: ScheduledMode, noOutcome: true, wantStatus: 1},
+		{name: "cumulative session cut short still writes", mode: CumulativeMode,
+			outcomes: []handlers.SessionOutcome{cutShort}, wantResult: true},
+		{name: "cumulative failed read still writes", mode: CumulativeMode,
+			outcomes: []handlers.SessionOutcome{failedRead}, wantResult: true},
 		{name: "cumulative failed still writes", mode: CumulativeMode, status: 1, wantStatus: 1, wantResult: true},
 		{name: "cumulative canceled still writes", mode: CumulativeMode, ctxErr: context.Canceled, wantResult: true},
 		{name: "cumulative write error keeps status", mode: CumulativeMode, badDir: true},
@@ -91,6 +118,18 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 			query := outfileTestQuery(t, outfile, false)
 			client := newOutfileTestClient(query, tt.mode)
 			mergeOutfileTestRow(t, client.session.Snapshot(), 7)
+			outcomes := tt.outcomes
+			if outcomes == nil {
+				outcomes = []handlers.SessionOutcome{completed}
+			}
+			for i, outcome := range outcomes {
+				var handler handlers.Handler = &statusTestHandler{outcome: outcome}
+				if tt.noOutcome {
+					handler = &retryTestHandler{}
+				}
+				client.connections = append(client.connections, &retryTestConnector{
+					server: fmt.Sprintf("srv%d", i+1), handler: handler})
+			}
 
 			if got := client.finish(tt.ctxErr, tt.status); got != tt.wantStatus {
 				t.Fatalf("finish() status = %d, want %d", got, tt.wantStatus)
@@ -126,7 +165,7 @@ func TestMaprClientScheduledStartWritesNoInterimResult(t *testing.T) {
 			query := mustMaprClientQuery(t, fmt.Sprintf("from STATS select count(foo) interval 1 outfile %q", outfile))
 			client := newOutfileTestClient(query, ScheduledMode)
 			conn := &scheduledTestConnector{
-				handler: &statusTestHandler{status: status},
+				handler: &statusTestHandler{status: status, outcome: handlers.SessionOutcome{Completed: true}},
 				run: func() {
 					mergeOutfileTestRow(t, client.session.Snapshot(), 7)
 					time.Sleep(1500 * time.Millisecond)
@@ -172,13 +211,47 @@ func (c *scheduledTestConnector) Start(context.Context, context.CancelFunc, chan
 
 func (c *scheduledTestConnector) Handler() handlers.Handler { return c.handler }
 
-// statusTestHandler is a handler whose connection ended with status.
+// statusTestHandler is a handler whose connection ended with status and
+// outcome.
 type statusTestHandler struct {
 	retryTestHandler
-	status int
+	status  int
+	outcome handlers.SessionOutcome
 }
 
 func (h *statusTestHandler) Status() int { return h.status }
+
+func (h *statusTestHandler) Outcome() handlers.SessionOutcome { return h.outcome }
+
+// TestSessionIncompleteReason covers when a scheduled query takes a server's
+// session as complete.
+func TestSessionIncompleteReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		handler  handlers.Handler
+		complete bool
+	}{
+		{name: "closed by the server", handler: &statusTestHandler{outcome: handlers.SessionOutcome{Completed: true}},
+			complete: true},
+		{name: "cut short", handler: &statusTestHandler{}},
+		{name: "failed command", handler: &statusTestHandler{
+			outcome: handlers.SessionOutcome{Completed: true, Failure: "read: no file to read"}}},
+		{name: "failed command and cut short", handler: &statusTestHandler{
+			outcome: handlers.SessionOutcome{Failure: "read: no file to read"}}},
+		{name: "no outcome", handler: &retryTestHandler{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reason := sessionIncompleteReason("srv1", tt.handler)
+			if (reason == "") != tt.complete {
+				t.Fatalf("sessionIncompleteReason() = %q, want complete=%v", reason, tt.complete)
+			}
+		})
+	}
+}
 
 func writeScheduledTestFile(t *testing.T, path, content string) {
 	t.Helper()

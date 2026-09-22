@@ -114,12 +114,15 @@ func (d *commandDispatcher) handleCommand(command string) {
 
 	args, argc, add, err := d.codec.handleProtocolVersion(strings.Split(command, " "))
 	if err != nil {
+		// No failed-command message here: a client of another protocol
+		// version may not know hidden messages or their framing.
 		h.send(h.serverMessages, h.Logger().Error(h.user, err)+add)
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
 	if err != nil {
 		h.sendln(h.serverMessages, h.Logger().Error(h.user, err))
+		h.reportCommandFailure(commandFailureProtocol)
 		return
 	}
 
@@ -128,6 +131,7 @@ func (d *commandDispatcher) handleCommand(command string) {
 	if dispatchErr := d.dispatchCommand(ctx, args, argc); dispatchErr != nil {
 		cancel()
 		h.sendln(h.serverMessages, h.Logger().Error(h.user, dispatchErr))
+		h.reportCommandFailure(commandFailureRejected)
 	}
 }
 

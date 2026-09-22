@@ -18,6 +18,7 @@ import (
 	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/mapr/logformat"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 )
 
 // MaprClientMode determines whether to use cumulative mode or not.
@@ -101,11 +102,12 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 // Start starts the mapreduce client.
 //
 // In ScheduledMode no interim result is written, and the final result is
-// written only when the query completed: every server connection ended with
-// status 0 and ctx was not canceled. Start then returns 0 if and only if the
-// final result was written, so a failed scheduled job leaves no outfile (and
-// no .query file) and the scheduler runs it again on its next run. An outfile
-// from an earlier run is left untouched.
+// written only when the query completed (see scheduledQueryIncomplete): ctx
+// was not canceled and on every server the session ended with status 0, with
+// the server's close handshake and without a failed command. Start then
+// returns 0 if and only if the final result was written, so a failed
+// scheduled job leaves no outfile (and no .query file) and the scheduler runs
+// it again later. An outfile from an earlier run is left untouched.
 func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
 	if c.mode != ScheduledMode {
 		go c.periodicReportResults(ctx)
@@ -136,7 +138,7 @@ func (c *MaprClient) finish(ctxErr error, status int) int {
 }
 
 func (c *MaprClient) finishScheduled(ctxErr error, status int) int {
-	if reason := incompleteQueryReason(ctxErr, status); reason != "" {
+	if reason := c.scheduledQueryIncomplete(ctxErr, status); reason != "" {
 		c.clientLogger().Warn("Not writing the mapreduce result as the query did not complete", reason)
 		return max(status, 1)
 	}
@@ -147,6 +149,59 @@ func (c *MaprClient) finishScheduled(ctxErr error, status int) int {
 	}
 	c.clientLogger().Debug("Final result written")
 	return status
+}
+
+// scheduledQueryIncomplete returns why the scheduled query did not complete,
+// or "" if it did: the connections ended with status 0, ctxErr (the error of
+// the client's context by then) is nil, there was a connection at all, and
+// every session completed (see sessionIncompleteReason).
+func (c *MaprClient) scheduledQueryIncomplete(ctxErr error, status int) string {
+	if reason := incompleteQueryReason(ctxErr, status); reason != "" {
+		return reason
+	}
+	connections := c.snapshotConnections()
+	if len(connections) == 0 {
+		return "there was no server to run the query on"
+	}
+	for _, conn := range connections {
+		if reason := sessionIncompleteReason(conn.Server(), conn.Handler()); reason != "" {
+			return reason
+		}
+		if !conn.Handler().HasCapability(protocol.CapabilityCommandFailureV1) {
+			c.clientLogger().Debug(conn.Server(), "Server does not report failed commands, "+
+				"only an incomplete session fails the query", protocol.CapabilityCommandFailureV1)
+		}
+	}
+	return ""
+}
+
+// sessionOutcomeReporter is a client handler that knows how its session
+// ended.
+type sessionOutcomeReporter interface {
+	Outcome() handlers.SessionOutcome
+}
+
+// sessionIncompleteReason returns why the session of handler with server did
+// not complete, or "" if it did: the server ended it with its close handshake
+// (so the session was not cut short, e.g. by a killed or shut down server or
+// a lost connection) and reported no failed command (e.g. a file that does
+// not exist or can not be read). A server not advertising
+// protocol.CapabilityCommandFailureV1 reports no failed commands, so for it
+// only the close handshake counts.
+func sessionIncompleteReason(server string, handler handlers.Handler) string {
+	reporter, ok := handler.(sessionOutcomeReporter)
+	if !ok {
+		return fmt.Sprintf("the session with %s reports no outcome", server)
+	}
+	outcome := reporter.Outcome()
+	switch {
+	case !outcome.Completed:
+		return fmt.Sprintf("the session with %s ended before the server completed it", server)
+	case outcome.Failure != "":
+		return fmt.Sprintf("%s reported a failed command: %s", server, outcome.Failure)
+	default:
+		return ""
+	}
 }
 
 // incompleteQueryReason returns why a query whose connections ended with

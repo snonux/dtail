@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/fs"
@@ -16,6 +17,7 @@ import (
 	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
 )
 
@@ -41,7 +43,22 @@ type readCommand struct {
 	// readGroup reads a file once for a group of sessions through dserver's
 	// read hub; nil when there is no hub.
 	readGroup groupReadFunc
+	// failureReported is set once the client was told that this command
+	// failed (see reportFailure).
+	failureReported atomic.Bool
 }
+
+// Reasons a read command reports with reportFailure. They name no path and no
+// server-side error: those are in the server log only, like the warnings the
+// client gets ("check server logs").
+const (
+	readFailureCommand     = "read: unable to parse command"
+	readFailureNoFile      = "read: no file to read"
+	readFailureGlobCapped  = "read: more files than the server reads"
+	readFailurePermission  = "read: no permission to read file"
+	readFailureReader      = "read: unable to create file reader"
+	readFailureReadingFile = "read: unable to read file"
+)
 
 type pendingInputReservationKeyType struct{}
 
@@ -183,6 +200,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 		if err != nil {
 			r.sendServerMessage(ctx, r.logger.Error(r.logContext,
 				"Unable to parse command", err))
+			r.reportFailure(ctx, readFailureCommand)
 			return
 		}
 		re = deserializedRegex
@@ -190,6 +208,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	if argc < 3 {
 		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 			"Unable to parse command", args, argc))
+		r.reportFailure(ctx, readFailureCommand)
 		return
 	}
 
@@ -301,6 +320,7 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 			r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 				"Glob expansion exceeded server limit, only first targets served",
 				"limit", maxTargets, "matched", len(paths)))
+			r.reportFailure(ctx, readFailureGlobCapped)
 			paths = paths[:maxTargets]
 		}
 
@@ -310,6 +330,7 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 
 	r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 		"Giving up to read file(s)"))
+	r.reportFailure(ctx, readFailureNoFile)
 }
 
 func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
@@ -389,6 +410,7 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 		r.logger.Error(r.logContext, "No permission to read file", path, globID)
 		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
 			"Unable to read file(s), check server logs"))
+		r.reportFailure(ctx, readFailurePermission)
 		return
 	}
 	r.read(ctx, ltx, path, &target, globID, re)
@@ -420,6 +442,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 			message = "Unable to read journal"
 		}
 		r.sendServerMessage(ctx, r.logger.Warn(r.logContext, message, err))
+		r.reportFailure(ctx, readFailureReader)
 		return
 	}
 
@@ -477,6 +500,7 @@ func (r *readCommand) executeReadLoop(ctx context.Context, ltx lcontext.LContext
 			if errors.Is(err, fs.ErrReaderWorkerPanic) {
 				panic(err)
 			}
+			r.reportFailure(ctx, readFailureReadingFile)
 		}
 
 		select {
@@ -569,6 +593,19 @@ func (r *readCommand) makeGlobID(ctx context.Context, path, glob string) string 
 
 	r.sendServerMessage(ctx, r.logger.Warn("Empty file path given?", path, glob))
 	return ""
+}
+
+// reportFailure tells the client, once per command, that this read failed and
+// its output is incomplete (see protocol.HiddenCommandFailedPrefix). It is
+// sent through the same channel as the command's other messages and before
+// the command ends, so it reaches the client before the session's close
+// handshake. Nothing is sent once ctx is done: the session is ending without
+// its close handshake then, which clients recognise as incomplete anyway.
+func (r *readCommand) reportFailure(ctx context.Context, reason string) {
+	if ctx.Err() != nil || !r.failureReported.CompareAndSwap(false, true) {
+		return
+	}
+	r.server.SendReadMessage(ctx, r.generation, protocol.HiddenCommandFailedPrefix+reason)
 }
 
 // sendServerMessage forwards a user-visible message to the session's shared
