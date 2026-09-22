@@ -219,7 +219,7 @@ func (d *commandDispatcher) handleOptions(options map[string]string) {
 		// in-process serverless runtime may do. It is derived once from the
 		// runtime (Dependencies.ServerlessOutput) when the handler is built,
 		// so a remote client cannot divert its payload into the dserver log.
-		if serverless := options["serverless"]; serverless == "true" && !d.serverless {
+		if options["serverless"] == "true" && !d.serverless {
 			h.Logger().Debug(h.user, "Ignoring serverless option of a non-serverless session")
 		}
 	})

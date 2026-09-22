@@ -271,6 +271,14 @@ the full payload size. Payload always still goes to STDOUT/terminal, unchanged.
   directly to stdout; that path never wrote payload to the file and is unaffected.
   The disk-fill footgun lives on the `fout` file path (the server-mode receive
   path), which is what this setting gates.
+- Serverless mode is a property of the runtime that built a session handler, not
+  of the session: it holds exactly when the in-process client runtime hands over
+  an output of its own (`handlers.Dependencies.ServerlessOutput`, the single
+  source; there is no separate flag, and no stdout default). dserver never hands
+  one over and ignores the `serverless=true` option a client sends, so a remote
+  session can neither route its payload into the dserver process output instead
+  of its SSH channel, nor read dserver's own stdin with the target `-`, which
+  takes `readPipe` and so is checked by no `readfiles` permission.
 - Daily file rotation uses a day name cached by the file sink and refreshed on its
   100 ms idle-flush tick, so no clock is read per line. The file is chosen at
   write time: around midnight a line (including a timestamped dserver diagnostic)

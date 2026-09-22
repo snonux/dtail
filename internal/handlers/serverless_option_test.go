@@ -6,9 +6,12 @@ package handlers
 // handler (Dependencies.ServerlessOutput), not of the session. dserver used
 // to honour the client-supplied "serverless=true" option, which let any
 // authenticated remote client divert its payload into the dserver process
-// stdout (its own log with --logger stdout) and starved the SSH channel.
+// stdout (its own log with --logger stdout) and starved the SSH channel. It
+// also opened the serverless-only stdin path (readPipe), which no readfiles
+// permission covers.
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +65,31 @@ func TestServerlessRuntimeWritesPayloadToItsOutput(t *testing.T) {
 	}
 	if strings.Contains(output, serverlessOptionTestLine) {
 		t.Fatalf("serverless session also sent its payload to the transport: %q", output)
+	}
+}
+
+// TestRemoteSessionCannotReadProcessStdin covers the permission side of the
+// same option. A serverless read of "-" takes readPipe, which reads the
+// process' own stdin and never calls PrepareReadTarget, so it is subject to
+// no readfiles permission at all. A remote session must therefore not be able
+// to reach it: dserver's own stdin must stay unread.
+func TestRemoteSessionCannotReadProcessStdin(t *testing.T) {
+	handler := newMapTestHandler(t)
+	// "-" matches no file, and the read gives up after one retry interval.
+	handler.readTimings.globRetryInterval = time.Millisecond
+	stdin := captureProcessStdin(t, serverlessOptionTestLine+"\n")
+	stdout := captureProcessStdout(t)
+
+	output := runCatWithServerlessOption(t, handler, "-")
+
+	if remaining := stdin.remaining(t); remaining != serverlessOptionTestLine+"\n" {
+		t.Fatalf("remote serverless option let the session read the process stdin, left %q", remaining)
+	}
+	if captured := stdout.contents(t); strings.Contains(captured, serverlessOptionTestLine) {
+		t.Fatalf("process stdin content reached the process stdout: %q", captured)
+	}
+	if strings.Contains(output, serverlessOptionTestLine) {
+		t.Fatalf("process stdin content reached the session transport: %q", output)
 	}
 }
 
@@ -153,6 +181,51 @@ func (c *stdoutCapture) contents(t *testing.T) string {
 	content, err := os.ReadFile(c.file.Name())
 	if err != nil {
 		t.Fatalf("read stdout capture file: %v", err)
+	}
+	return string(content)
+}
+
+// stdinCapture replaces the process stdin with a pipe holding content, so a
+// read of the process' own stdin becomes observable: whatever the session
+// consumed is missing from what the test reads back.
+type stdinCapture struct {
+	reader *os.File
+	saved  *os.File
+}
+
+// captureProcessStdin puts content into a pipe and makes it the process
+// stdin. The write end is closed right away, so a reader of it sees EOF after
+// content instead of blocking. Tests in this package never run in parallel,
+// so the swap cannot race with another test.
+func captureProcessStdin(t *testing.T, content string) *stdinCapture {
+	t.Helper()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdin pipe: %v", err)
+	}
+	if _, err := writer.WriteString(content); err != nil {
+		t.Fatalf("fill stdin pipe: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close stdin pipe writer: %v", err)
+	}
+	capture := &stdinCapture{reader: reader, saved: os.Stdin}
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = capture.saved
+		if err := reader.Close(); err != nil {
+			t.Errorf("close stdin pipe reader: %v", err)
+		}
+	})
+	return capture
+}
+
+// remaining returns what is still in the stdin pipe.
+func (c *stdinCapture) remaining(t *testing.T) string {
+	t.Helper()
+	content, err := io.ReadAll(c.reader)
+	if err != nil {
+		t.Fatalf("read remaining stdin: %v", err)
 	}
 	return string(content)
 }

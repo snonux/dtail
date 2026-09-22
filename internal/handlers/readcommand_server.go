@@ -3,7 +3,6 @@ package handlers
 import (
 	"context"
 	"io"
-	"os"
 	"sync/atomic"
 	"time"
 
@@ -132,11 +131,11 @@ func (h *ServerHandler) PrepareReadTarget(path string) (fs.ValidatedReadTarget, 
 	return h.user.ResolveReadTarget(path, "readfiles")
 }
 
-// ServerlessOutput returns the configured in-process output destination.
+// ServerlessOutput returns the in-process output destination the runtime
+// handed over. It is nil exactly when this handler is not serverless; there
+// is no stdout default, so a handler can never fall back to writing the
+// session payload into its own process output.
 func (h *ServerHandler) ServerlessOutput() io.Writer {
-	if h.serverlessOutput == nil {
-		return os.Stdout
-	}
 	return h.serverlessOutput
 }
 

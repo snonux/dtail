@@ -14,14 +14,18 @@ import (
 )
 
 type baseHandlerConfig struct {
-	logger              logging.Logger
-	readerLogger        logging.Logger
+	logger       logging.Logger
+	readerLogger logging.Logger
+	// serverlessOutput is the in-process runtime's own output. It is the
+	// single source of serverless mode: a non-nil writer selects it, nil
+	// keeps the session on its transport. There is deliberately no separate
+	// serverless flag, so no caller can ask for serverless mode without
+	// saying where the payload goes.
 	serverlessOutput    io.Writer
 	user                *user.User
 	serverMessages      chan string
 	maprMessages        chan string
 	maxCommandFrameSize int
-	serverless          bool
 	hostname            string
 	activeGeneration    func() uint64
 }
@@ -81,9 +85,12 @@ func newBaseHandler(connCtx context.Context, cfg baseHandlerConfig) *baseHandler
 		maxCommandFrameSize: cfg.maxCommandFrameSize,
 	}
 	h.commandDispatcher = &commandDispatcher{
-		handler:    h,
-		codec:      newProtocolCodec(cfg.user, cfg.logger),
-		serverless: cfg.serverless,
+		handler: h,
+		codec:   newProtocolCodec(cfg.user, cfg.logger),
+		// Serverless mode is a property of the runtime that built this
+		// handler, never of the session it serves: it holds exactly when
+		// that runtime handed over an output of its own.
+		serverless: cfg.serverlessOutput != nil,
 	}
 	h.outputCoordinator = &outputCoordinator{
 		handler:          h,
