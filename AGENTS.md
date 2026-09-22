@@ -381,6 +381,20 @@ the middle of a line being written gets that whole line, where a private read
 gets the rest of it from the join; and a trailing line the writer has not
 finished yet is not passed on when a session leaves.
 
+A failed read reaches the client the same way, too. A private read reports
+every failed iteration of its retry loop to the client with the hidden
+message `.syn command failed read: unable to read file` (once per command,
+see `protocol.HiddenCommandFailedPrefix`), and a shared read reports the same
+for each of the four ways it fails: the session's processor or filter failing
+(`readCommand.readShared`, which then restarts privately), one read of the
+shared reader failing (it reads the file again, as a private reader does, and
+every session of it is told), the shared reader failing for good without a
+panic (each session goes on privately) and a failed read of a session's own
+reader after an eviction. The hub reports the last three through
+`readhub.Session.ReportFailure`. A max-count stop is no failure in either
+path, and a reader worker panic ends the session as a panic in both, without
+a report.
+
 An evicted session rejoins the shared reader once it caught up
 (`internal/io/fs/readhub/rejoin.go`): whenever its private reader reaches the
 end of the file at the start of a line, at offset P of file F, it asks
