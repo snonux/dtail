@@ -3,8 +3,10 @@ package client
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand/v2"
 	"os"
+	"syscall"
 	"time"
 )
 
@@ -29,9 +31,14 @@ var errKnownHostsLockTimeout = errors.New("timed out waiting for known hosts loc
 // The lock file is persistent: removing it after use would let a waiter lock
 // an unlinked inode while a third client creates and locks a fresh one.
 //
-// The lock file is empty and only ever opened read-only (flock needs no
-// write access), with mode 0644 on creation, so every user who shares a
-// known_hosts file can lock it; 0600 would lock other users out of the lock.
+// The lock file is empty and never written. It is opened read-write where
+// possible, because Linux NFS (and CIFS) clients emulate flock with fcntl
+// byte-range locks, which need a descriptor open for writing to take an
+// exclusive lock. Only when read-write access is refused (a lock file owned by
+// another user, or a read-only file system) is it opened read-only, which is
+// enough for flock on local file systems. It is created with mode 0644, so
+// every user who shares a known_hosts file can lock it; 0600 would lock other
+// users out of the lock.
 // Platforms without advisory locking (fileLockSupported false) get no lock
 // file at all.
 //
@@ -43,7 +50,7 @@ func lockKnownHosts(root *os.Root, name string, timeout time.Duration) (func(), 
 	if !fileLockSupported {
 		return noop, fmt.Errorf("lock known hosts file: %w", errors.ErrUnsupported)
 	}
-	lockFd, err := root.OpenFile(name+".lock", os.O_RDONLY|os.O_CREATE, 0o644)
+	lockFd, err := openLockFile(root, name+".lock")
 	if err != nil {
 		return noop, fmt.Errorf("open known hosts lock file: %w", err)
 	}
@@ -84,4 +91,14 @@ func createKnownHostsTemp(root *os.Root, name string) (*os.File, string, error) 
 		return fd, tmpName, nil
 	}
 	return nil, "", fmt.Errorf("no unused temporary name for %s: %w", name, os.ErrExist)
+}
+
+// openLockFile opens the lock file read-write, creating it if needed, and falls
+// back to read-only when read-write access is refused.
+func openLockFile(root *os.Root, name string) (*os.File, error) {
+	lockFd, err := root.OpenFile(name, os.O_RDWR|os.O_CREATE, 0o644)
+	if refused := errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS); !refused {
+		return lockFd, err
+	}
+	return root.OpenFile(name, os.O_RDONLY, 0)
 }
