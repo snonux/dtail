@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -64,6 +65,7 @@ func TestSharedReadContinuousFanOut(t *testing.T) {
 		for _, job := range jobs {
 			removeIgnoringError(sharedContinuousOutfile(job))
 			removeIgnoringError(sharedContinuousOutfile(job) + ".query")
+			cleanupFiles(t, sharedContinuousOutfile(job), sharedContinuousOutfile(job)+".query")
 			continuous = append(continuous, map[string]any{
 				"Name":      "sharedread_continuous_" + job.name,
 				"Enable":    true,
@@ -217,10 +219,17 @@ func TestSharedReadScheduledFanOut(t *testing.T) {
 
 // TestSharedReadMixedTail follows one file with a continuous job and two
 // dtail clients with different regexes, one of them with before and after
-// context. Both clients must print the same with sharing on and off.
+// context. Both clients must print the same with sharing on and off. The
+// continuous job, started with dserver, creates the shared reader the
+// clients join, so the job's counts also check where that reader starts: at
+// the end of the file, after the STATS lines the file holds beforehand.
 func TestSharedReadMixedTail(t *testing.T) {
 	const input = "sharedread_mixed.log.tmp"
+	const outfile = "sharedread_mixed.csv.tmp"
 	const plainRegex = "foo|SYNC|MARK"
+	// The only STATS lines appended after the start: the job must count
+	// exactly these.
+	const finalStatsLines = 37
 	var payload []string
 	for i := range 300 {
 		kind := "other"
@@ -235,17 +244,21 @@ func TestSharedReadMixedTail(t *testing.T) {
 	payload = append(payload, "MARK end")
 
 	runSharedReadModes(t, func(t *testing.T, mode sharedReadMode) map[string]string {
-		createPrefilledFile(t, input)
-		removeIgnoringError("sharedread_mixed.csv.tmp")
-		cleanupFiles(t, "sharedread_mixed.csv.tmp", "sharedread_mixed.csv.tmp.query")
+		// The prefill lines are STATS lines, which the job counts should
+		// its read start before them.
+		createFileWithLines(t, input, sharedReadStatsLines(sharedReadPrefillMarker, sharedReadPrefillLines))
+		removeIgnoringError(outfile)
+		cleanupFiles(t, outfile, outfile+".query")
 		server := startSharedReadServer(t, mode, map[string]any{"Continuous": []map[string]any{{
 			"Name":      "sharedread_mixed",
 			"Enable":    true,
 			"AllowFrom": []string{"localhost"},
 			"Files":     "./" + input,
 			"Query":     "from STATS select count($line) group by $hostname interval 1",
-			"Outfile":   "./sharedread_mixed.csv.tmp",
+			// Append mode keeps the count of every interval.
+			"Outfile": "append ./" + outfile,
 		}}})
+		server.waitForReaders(t, input, 1)
 		plain := startFollowClient(t, server, "mixed_plain", input, "--plain", "--grep", plainRegex)
 		withContext := startFollowClient(t, server, "mixed_context", input,
 			"--grep", "bar|SYNC|MARK", "--before", "2", "--after", "1")
@@ -267,6 +280,22 @@ func TestSharedReadMixedTail(t *testing.T) {
 			t.Errorf("plain client output differs from the matching lines:\n%s",
 				firstDifference(outputs["plain"], want))
 		}
+
+		// The clients' outputs were taken above. The job reads these lines
+		// after every line before them, so once it counted all of them it
+		// has counted every STATS line it read.
+		appendFileLines(t, input, sharedReadStatsLines("FINAL", finalStatsLines)...)
+		var counted int
+		pollUntil(t, "the continuous job counting the appended STATS lines", func() bool {
+			counted = continuousAppendedCount(t, outfile)
+			return counted >= finalStatsLines
+		})
+		if counted != finalStatsLines {
+			t.Errorf("continuous job counted %d STATS lines, want the %d appended after the start: "+
+				"its read started before the end of the file", counted, finalStatsLines)
+		}
+		outputs["job"] = strconv.Itoa(counted)
+
 		if mode.shared() {
 			server.requireLogCount(t, sharedFollowStartedLog, 1)
 			server.waitForLog(t, sharedFollowGainedLog+"3", 1)
@@ -275,6 +304,40 @@ func TestSharedReadMixedTail(t *testing.T) {
 		}
 		return outputs
 	})
+}
+
+// sharedReadStatsLines returns n STATS lines holding marker that match
+// every client regex of the shared read tests.
+func sharedReadStatsLines(marker string, n int) []string {
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("INFO|1002-071143|1|stats.go:56|8|13|7|0.21|471h0m21s|MAPREDUCE:STATS|"+
+			"lifetimeConnections=1|mark=%s %04d 7 foo bar", marker, i)
+	}
+	return lines
+}
+
+// continuousAppendedCount sums the counts of an append mode outfile of the
+// query "select count($line) ...": the lines the job counted in all
+// intervals so far. A missing outfile counts 0.
+func continuousAppendedCount(t *testing.T, outfile string) int {
+	t.Helper()
+	data, err := os.ReadFile(outfile)
+	if err != nil {
+		return 0
+	}
+	var sum int
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		// Skip a row still being written; the header is no number.
+		row, complete := strings.CutSuffix(line, "\n")
+		if !complete {
+			continue
+		}
+		if n, err := strconv.Atoi(row); err == nil {
+			sum += n
+		}
+	}
+	return sum
 }
 
 // TestSharedReadRotation rotates (move and create) and then copytruncates the

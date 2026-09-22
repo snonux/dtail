@@ -18,6 +18,10 @@ interleaving the two modes and alternating which goes first. Scenarios:
 | `scheduled` | N scheduled MapReduce jobs (four different `from STATS` queries) on one 100 MiB `stats` file. With sharing on they run as one group and dserver reads the file once; with sharing off one at a time with private reads. |
 | `scheduled-gz` | The same on the gzip-compressed file. |
 
+The input files are 100 MiB by default; `-b BYTES` generates them with
+another size instead (for example `-b 1048576` for a quick check). They are
+kept in the work directory under names holding their size.
+
 Follow sessions on compressed files always read privately, so there is no
 `.gz` follow scenario: with sharing on, two `dtail` sessions on a `.gz` file
 logged `Start reading` but no shared read line (checked 2026-09-22).
@@ -37,7 +41,9 @@ Per run the script records:
 - the 1-minute load average at the start;
 - `output_ok`: every follow client printed exactly the matching lines of
   the input (`grep -E 'user999 |BENCH'`), every scheduled job exited with
-  status 0 and wrote the same outfile as the scenario's first run.
+  status 0 and wrote the same outfile as the first run of the scenario with
+  the same input size and number of jobs (`runs/scheduled-<plain|gz>-<bytes>-n<N>-reference`
+  in the work directory, taken from a run whose jobs all exited with status 0).
 
 The clients use their own `known_hosts` file in the work directory, which
 pins the benchmark's host key, and get no stdin, so a wrong server makes them
@@ -57,6 +63,8 @@ benchmarks/shared_read_bench.sh -n 4 -r 3 -q 600 -o results.csv scheduled
 benchmarks/shared_read_bench.sh -n 4 -r 3 -q 600 -o results.csv scheduled-gz
 # read syscalls:
 benchmarks/shared_read_bench.sh -n 4 -r 1 -s -o results.csv scheduled
+# quick check that the script works, with 1 MiB inputs:
+benchmarks/shared_read_bench.sh -n 2 -r 1 -b 1048576 scheduled
 ```
 
 ## Conditions (2026-09-22)

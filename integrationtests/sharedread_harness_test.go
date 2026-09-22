@@ -212,6 +212,7 @@ func (s *sharedReadServer) waitForReaders(t *testing.T, file string, n int) {
 func startFollowClient(t *testing.T, server *sharedReadServer, name, file string, extra ...string) *followClient {
 	t.Helper()
 
+	cfgFile := writeFollowClientConfig(t)
 	outFile := "sharedread_" + name + ".out.tmp"
 	out, err := os.Create(outFile)
 	if err != nil {
@@ -220,7 +221,7 @@ func startFollowClient(t *testing.T, server *sharedReadServer, name, file string
 	defer closeIgnoringError(out)
 
 	args := append([]string{
-		"--cfg", "none",
+		"--cfg", cfgFile,
 		"--logger", "stdout",
 		"--logLevel", "error",
 		"--servers", server.address,
@@ -243,6 +244,29 @@ func startFollowClient(t *testing.T, server *sharedReadServer, name, file string
 		}
 	})
 	return &followClient{name: name, outFile: outFile, cmd: cmd}
+}
+
+// writeFollowClientConfig writes a client config whose known hosts file is
+// the client's own, in a temporary directory, and returns its path. With
+// --trustAllHosts a client adds the server's key to its known hosts file
+// through a temporary file of fixed name in the same directory, so clients
+// started together must not share one.
+func writeFollowClientConfig(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	knownHosts := filepath.Join(dir, "known_hosts")
+	if err := os.WriteFile(knownHosts, nil, 0o600); err != nil {
+		t.Fatalf("create client known hosts file: %v", err)
+	}
+	content, err := json.Marshal(map[string]any{"Client": map[string]any{"KnownHostsPath": knownHosts}})
+	if err != nil {
+		t.Fatalf("marshal client config: %v", err)
+	}
+	cfgFile := filepath.Join(dir, "client.json")
+	if err := os.WriteFile(cfgFile, content, 0o600); err != nil {
+		t.Fatalf("write client config: %v", err)
+	}
+	return cfgFile
 }
 
 // signal sends sig to the client process.

@@ -3,9 +3,10 @@
 # shared reads on (default) and off ("SharedReadsDisable": true).
 #
 # Scenarios:
-#   follow     N dtail clients follow one plain file; 100 MiB are appended
-#              at once (burst). A client matches about 0.1% of the lines.
-#   follow-paced  the same, but the 100 MiB are appended in 1 MiB writes
+#   follow     N dtail clients follow one plain file; 100 MiB (see -b) are
+#              appended at once (burst). A client matches about 0.1% of the
+#              lines.
+#   follow-paced  the same, but the data are appended in 1 MiB writes
 #              every 100 ms (about 10 MiB/s), like a busy log.
 #   scheduled  N scheduled MapReduce jobs on one 100 MiB file (plain or
 #              .gz); they start as one group, which dserver reads once with
@@ -31,6 +32,7 @@
 #   -w DIR    work directory (default ${TMPDIR:-/tmp}/dtail-shared-read-bench)
 #   -o FILE   append result rows to FILE as CSV (default: stdout only)
 #   -p PORT   dserver port (default: the first free port from 24900 on)
+#   -b BYTES  size of the generated input files (default 104857600, 100 MiB)
 #
 # Results are CSV rows:
 #   scenario,input,mode,run,sessions,elapsed_s,cpu_s,file_reads,all_reads,
@@ -38,7 +40,7 @@
 set -euo pipefail
 
 declare -r REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-declare -r DATA_BYTES=$((100 * 1024 * 1024))
+declare -i DATA_BYTES=$((100 * 1024 * 1024))
 declare -r CLK_TCK="$(getconf CLK_TCK)"
 declare PORT=""
 
@@ -95,10 +97,20 @@ _poll() {
     done
 }
 
+# The input files are named after their size, so that work directories can
+# be shared between runs with different -b.
+_normal_data() {
+    printf '%s/data/normal_%d.log' "$WORK_DIR" "$DATA_BYTES"
+}
+
+_stats_data() {
+    printf '%s/data/stats_%d.log' "$WORK_DIR" "$DATA_BYTES"
+}
+
 _prepare_data() {
     mkdir -p "$WORK_DIR/data" "$WORK_DIR/server/cache"
-    local -r normal="$WORK_DIR/data/normal_100mib.log"
-    local -r stats="$WORK_DIR/data/stats_100mib.log"
+    local -r normal="$(_normal_data)"
+    local -r stats="$(_stats_data)"
     if [[ ! -f "$normal" ]]; then
         _log "generating $normal"
         LC_ALL=C awk -v target="$DATA_BYTES" 'BEGIN {
@@ -298,7 +310,7 @@ _append_data() {
 _run_follow() {
     local -r mode=$1 run=$2 pace=$3
     local -r dir="$WORK_DIR/runs/follow-$pace-$mode-$run"
-    local -r data="$WORK_DIR/data/normal_100mib.log"
+    local -r data="$(_normal_data)"
     local -r file="$dir/follow.log"
     rm -rf "$dir"
     mkdir -p "$dir"
@@ -333,7 +345,7 @@ _run_follow() {
     _stop_server
 
     local ok=yes
-    local -r expected="$WORK_DIR/data/normal_100mib.expected"
+    local -r expected="${data%.log}.expected"
     [[ -f "$expected" ]] || { grep -E 'user999 |BENCH' "$data" || true
         printf 'BENCHEND\n'; } > "$expected"
     for ((i = 0; i < SESSIONS; i++)); do
@@ -368,7 +380,8 @@ _schedule_json() {
 _run_scheduled() {
     local -r mode=$1 run=$2 kind=$3
     local -r dir="$WORK_DIR/runs/scheduled-$kind-$mode-$run"
-    local input="$WORK_DIR/data/stats_100mib.log"
+    local input
+    input="$(_stats_data)"
     [[ "$kind" == gz ]] && input+=".gz"
     rm -rf "$dir"
     mkdir -p "$dir"
@@ -386,11 +399,16 @@ _run_scheduled() {
 
     local ok=yes
     grep -q 'exited with status [^0]' "$dir/dserver.log" && ok=no
-    local -r reference="$WORK_DIR/runs/scheduled-$kind-reference"
-    if [[ ! -d "$reference" ]]; then
-        mkdir -p "$reference"
-        cp "$dir"/job*.csv "$reference/"
+    # The first run of an input and job count is the reference of the later
+    # ones: every job of it must have exited with status 0.
+    local -r reference="$WORK_DIR/runs/scheduled-$kind-$DATA_BYTES-n$SESSIONS-reference"
+    if [[ ! -d "$reference" && "$ok" == yes ]]; then
+        rm -rf "$reference.tmp"
+        mkdir -p "$reference.tmp"
+        cp "$dir"/job*.csv "$reference.tmp/"
+        mv "$reference.tmp" "$reference"
     fi
+    [[ -d "$reference" ]] || ok=no
     local f
     for f in "$reference"/job*.csv; do
         cmp -s "$f" "$dir/$(basename "$f")" || ok=no
@@ -436,7 +454,7 @@ _run_one() {
 
 main() {
     local opt
-    while getopts 'n:r:sq:w:o:p:' opt; do
+    while getopts 'n:r:sq:w:o:p:b:' opt; do
         case "$opt" in
             n) SESSIONS=$OPTARG ;;
             r) RUNS=$OPTARG ;;
@@ -445,12 +463,14 @@ main() {
             w) WORK_DIR=$OPTARG ;;
             o) RESULTS=$OPTARG ;;
             p) PORT=$OPTARG ;;
+            b) DATA_BYTES=$OPTARG ;;
             *) _die "unknown option" ;;
         esac
     done
     shift $((OPTIND - 1))
     (($# == 1)) || _die "usage: $0 [options] SCENARIO (see the header)"
     local -r scenario=$1
+    ((DATA_BYTES > 0)) || _die "-b needs a positive number of bytes"
     [[ -x "$REPO_DIR/dserver" && -x "$REPO_DIR/dtail" ]] \
         || _die "build first: make build"
     if [[ "$STRACE" == yes ]]; then
