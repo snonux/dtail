@@ -30,6 +30,10 @@ const (
 	CumulativeMode MaprClientMode = iota
 	// NonCumulativeMode means results are from 0 for each interval
 	NonCumulativeMode MaprClientMode = iota
+	// ScheduledMode is CumulativeMode for dserver's scheduled jobs: the result
+	// is written once, after the query completed on every server, and never
+	// when it failed or was canceled (see Start).
+	ScheduledMode MaprClientMode = iota
 )
 
 // MaprClient is used for running mapreduce aggregations on remote files.
@@ -95,21 +99,67 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 }
 
 // Start starts the mapreduce client.
+//
+// In ScheduledMode no interim result is written, and the final result is
+// written only when the query completed: every server connection ended with
+// status 0 and ctx was not canceled. Start then returns 0 if and only if the
+// final result was written, so a failed scheduled job leaves no outfile (and
+// no .query file) and the scheduler runs it again on its next run. An outfile
+// from an earlier run is left untouched.
 func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
-	go c.periodicReportResults(ctx)
-
-	status = c.baseClient.Start(ctx, statsCh)
-
-	// Always write final result for cumulative mode (includes outfile case)
-	if snapshot := c.session.Snapshot(); c.isCumulative(snapshot.Query) {
-		c.clientLogger().Debug("Writing final mapreduce result")
-		if err := c.reportResults(true); err != nil {
-			c.clientLogger().Error("Unable to write final mapreduce result", err)
-		}
-		c.clientLogger().Debug("Final result written")
+	if c.mode != ScheduledMode {
+		go c.periodicReportResults(ctx)
 	}
 
-	return
+	status = c.baseClient.Start(ctx, statsCh)
+	return c.finish(ctx.Err(), status)
+}
+
+// finish writes the final result of a cumulative query after the connections
+// ended with status, ctxErr being the error of the client's context by then.
+// It returns the client's exit status.
+func (c *MaprClient) finish(ctxErr error, status int) int {
+	if snapshot := c.session.Snapshot(); !c.isCumulative(snapshot.Query) {
+		return status
+	}
+	if c.mode == ScheduledMode {
+		return c.finishScheduled(ctxErr, status)
+	}
+
+	// Always write final result for cumulative mode (includes outfile case)
+	c.clientLogger().Debug("Writing final mapreduce result")
+	if err := c.reportResults(true); err != nil {
+		c.clientLogger().Error("Unable to write final mapreduce result", err)
+	}
+	c.clientLogger().Debug("Final result written")
+	return status
+}
+
+func (c *MaprClient) finishScheduled(ctxErr error, status int) int {
+	if reason := incompleteQueryReason(ctxErr, status); reason != "" {
+		c.clientLogger().Warn("Not writing the mapreduce result as the query did not complete", reason)
+		return max(status, 1)
+	}
+	c.clientLogger().Debug("Writing final mapreduce result")
+	if err := c.reportResults(true); err != nil {
+		c.clientLogger().Error("Unable to write final mapreduce result", err)
+		return 1
+	}
+	c.clientLogger().Debug("Final result written")
+	return status
+}
+
+// incompleteQueryReason returns why a query whose connections ended with
+// status, while its context had ctxErr, did not complete, or "" if it did.
+func incompleteQueryReason(ctxErr error, status int) string {
+	switch {
+	case status != 0:
+		return fmt.Sprintf("a server connection ended with status %d", status)
+	case ctxErr != nil:
+		return fmt.Sprintf("the query was canceled: %v", ctxErr)
+	default:
+		return ""
+	}
 }
 
 func (c *MaprClient) periodicReportResults(ctx context.Context) {
@@ -291,7 +341,7 @@ func (c *MaprClient) commitSessionSpec(spec SessionSpec, generation uint64) erro
 
 func (c *MaprClient) isCumulative(query *mapr.Query) bool {
 	switch c.mode {
-	case CumulativeMode:
+	case CumulativeMode, ScheduledMode:
 		return true
 	case NonCumulativeMode:
 		return false

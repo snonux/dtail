@@ -399,6 +399,20 @@ held descriptors, read positions, in-order long line warnings) is wired
 through optional interfaces the fan-out processor type-asserts (`readTracker`,
 `warningSource`), which only the follow entry implements.
 
+**Failed scheduled jobs leave no outfile (dserver):**
+The scheduler skips a job for the rest of its date period once its outfile
+exists, so a scheduled job writes its outfile (and `.query` file, both via
+`.tmp` and rename as before) only when the query completed: every server
+connection ended with status 0 and the job was not canceled (e.g. by a
+dserver shutdown). It writes no interim results. A failed job (connection
+refused, server error, shutdown mid-read) writes nothing, logs `Job <name>
+failed and wrote no outfile <path>, it runs again on the next scheduler run`,
+and the next scheduler run (every minute within `TimeRange`) runs it again, so
+a job with a permanently unreachable server is retried every minute instead of
+writing a partial result once. This is `clients.ScheduledMode`; continuous
+jobs and interactive `dmap` with an outfile keep writing interim and final
+results whatever the exit status.
+
 **Best Practices for High-Concurrency MapReduce:**
 1. Increase MaxConcurrentCats in the server configuration to match workload
 2. Use server mode for large-scale MapReduce operations

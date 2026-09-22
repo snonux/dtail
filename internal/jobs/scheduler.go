@@ -156,7 +156,7 @@ func (s *scheduler) prepare(job *config.Scheduled, now time.Time) (dueJob, strin
 
 func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
 	job := due.job
-	client, err := s.newMaprClient(due.args, clients.CumulativeMode)
+	client, err := s.newMaprClient(due.args, clients.ScheduledMode)
 	if err != nil {
 		s.log().Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
 		return
@@ -170,7 +170,12 @@ func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
 	logMessage := fmt.Sprintf("Job %s exited with status %d", job.Name, status)
 
 	if status != 0 {
+		// A scheduled mapreduce client writes the outfile only when it
+		// returns status 0, and the outfile did not exist when the job
+		// started: the next run finds none and runs the job again.
 		s.log().Warn(logMessage)
+		s.log().Warn(fmt.Sprintf("Job %s failed and wrote no outfile %s, it runs again on the next scheduler run",
+			job.Name, due.outfile))
 		return
 	}
 
