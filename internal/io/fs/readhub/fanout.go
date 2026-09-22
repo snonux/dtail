@@ -26,6 +26,10 @@ const (
 	longLineItem
 	// failedItem: the reader failed for good.
 	failedItem
+	// readErrorItem: one read of the reader failed and it reads the file
+	// again, as the read command's retry loop does for a private reader,
+	// which reports that failure to its client (see sessionRead.handle).
+	readErrorItem
 )
 
 // item is one entry of a subscriber's queue.

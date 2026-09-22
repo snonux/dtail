@@ -91,6 +91,14 @@ type Session struct {
 	// read command does for every iteration of its retry loop. The hub
 	// flushes and closes every processor it made.
 	NewProcessor func() line.Processor
+	// ReportFailure, if set, tells the session's client that its read failed
+	// and its output is incomplete, as the read command does after a failed
+	// iteration of a private read. The hub calls it, on the session's own
+	// goroutine, for every failure it handles itself instead of returning it
+	// (see sessionRead.reportFailure); the caller reports the failures Follow
+	// returns. It may be called more than once for one session, so a caller
+	// that reports only once keeps that to itself.
+	ReportFailure func()
 }
 
 // Hub shares follow reads of the same file between sessions. It is safe for
@@ -160,6 +168,12 @@ func New(options Options) *Hub {
 // processor error or ErrReaderFailed together with fs.ErrReaderWorkerPanic
 // (the shared reader panicked) otherwise. After ErrStopped or an error, a
 // private reader would start over; the caller decides how to continue.
+//
+// A failure Follow goes on from instead of returning it — a failed read of
+// the shared reader, a failed read of the session's own reader after an
+// eviction, or a shared reader that failed without panicking — is told to the
+// session through Session.ReportFailure, so that its client hears of every
+// failed read that a private read would report to it.
 //
 // Like a private follow read, which starts at the end of the file when it
 // opens it, a session starts at the end of the file at the path when it

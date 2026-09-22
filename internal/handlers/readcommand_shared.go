@@ -60,6 +60,9 @@ func (r *readCommand) readShared(ctx context.Context, ltx lcontext.LContext, re 
 		NewProcessor: func() line.Processor {
 			return r.makeProcessor(path, globID, writer)
 		},
+		// Failures the hub handles itself, without ending the session's read,
+		// reach the client like a failed iteration of the private read loop.
+		ReportFailure: func() { r.reportFailure(ctx, readFailureReadingFile) },
 	})
 	if err == nil || ctx.Err() != nil {
 		return
@@ -69,6 +72,12 @@ func (r *readCommand) readShared(ctx context.Context, ltx lcontext.LContext, re 
 	if errors.Is(err, fs.ErrReaderWorkerPanic) {
 		// The private read loop panics on a reader worker panic, too.
 		panic(err)
+	}
+	if !errors.Is(err, readhub.ErrStopped) {
+		// The private read loop reports a failed read iteration to the client
+		// before it reads the file again (see executeReadLoop); only a
+		// max-count stop ends an iteration there without a failure.
+		r.reportFailure(ctx, readFailureReadingFile)
 	}
 	r.restartPrivately(ctx, ltx, re, options, writer)
 }

@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -182,6 +183,8 @@ type follower struct {
 	cancel   context.CancelFunc
 	done     chan error
 	messages chan string
+	// failures counts the failed reads the hub reported to the session.
+	failures atomic.Int64
 }
 
 func startFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LContext,
@@ -203,6 +206,7 @@ func startFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LContext
 		Regex:          re,
 		ServerMessages: f.messages,
 		NewProcessor:   f.recorder.newProcessor,
+		ReportFailure:  func() { f.failures.Add(1) },
 	}
 	go func() { f.done <- hub.Follow(ctx, session) }()
 	t.Cleanup(func() {

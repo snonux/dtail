@@ -141,8 +141,9 @@ func (s *subscriber) resubscribe(e *entry, held *os.File) {
 // drain handles what was queued before the eviction, nothing is queued
 // after it, and then the item that did not fit when it tells the session
 // something its private reader would not see: the file was truncated or
-// rotated, or the shared reader failed. A line the private reader reads
-// again, and the long line warning it sends again, are left to it.
+// rotated, or the shared reader failed a read or failed for good. A line the
+// private reader reads again, and the long line warning it sends again, are
+// left to it.
 func (s *subscriber) drain(ctx context.Context, reading *sessionRead) (goPrivate bool, err error) {
 	for {
 		select {
@@ -152,7 +153,7 @@ func (s *subscriber) drain(ctx context.Context, reading *sessionRead) (goPrivate
 			}
 		default:
 			switch s.missed.kind {
-			case restartItem, reopenItem, failedItem:
+			case restartItem, reopenItem, failedItem, readErrorItem:
 				return reading.handle(ctx, s.missed)
 			}
 			return false, nil
@@ -237,9 +238,25 @@ func (r *sessionRead) handle(ctx context.Context, it item) (goPrivate bool, err 
 		}
 		r.logger.Warn(r.session.FilePath, r.session.GlobID,
 			"Shared follow read failed, going on with a private read", "offset", r.at.offset)
+		// A private reader failing ends its read command's read iteration,
+		// which reports that to the client before it reads the file again.
+		r.reportFailure()
 		return true, nil
+	case readErrorItem:
+		// One read of the shared reader failed and it reads the file again;
+		// the read command reports such a read to the client (see
+		// executeReadLoop), so every session of the shared reader does too.
+		r.reportFailure()
 	}
 	return false, nil
+}
+
+// reportFailure tells the session's client that its read failed and its
+// output is incomplete, as the read command does for a private read.
+func (r *sessionRead) reportFailure() {
+	if r.session.ReportFailure != nil {
+		r.session.ReportFailure()
+	}
 }
 
 // handOver is asked by the private reader when it reached the end of the

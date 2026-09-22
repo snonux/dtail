@@ -316,6 +316,10 @@ func (e *entry) run() {
 		}
 		if err != nil {
 			e.logger.Error(e.path, err)
+			// The read command reports a failed read of a private reader to
+			// its client before it reads the file again; every session of
+			// this reader gets the same report (see sessionRead.handle).
+			e.publish(item{kind: readErrorItem, err: err})
 		}
 		if e.ctx.Err() != nil || !ctxutil.Sleep(e.ctx, e.options.RetryInterval) {
 			return

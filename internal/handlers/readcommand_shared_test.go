@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,6 +21,7 @@ import (
 	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
 	user "github.com/mimecast/dtail/internal/sessionuser"
 )
@@ -36,9 +38,10 @@ type sharedReadTestServer struct {
 	denied        map[string]bool
 	readHub       *readhub.Hub
 
-	mu      sync.Mutex
-	output  bytes.Buffer
-	pending int32
+	mu       sync.Mutex
+	output   bytes.Buffer
+	messages []string
+	pending  int32
 }
 
 func newSharedReadTestServer(t *testing.T, hub *readhub.Hub) *sharedReadTestServer {
@@ -61,7 +64,10 @@ func newSharedReadTestServer(t *testing.T, hub *readhub.Hub) *sharedReadTestServ
 				s.mu.Lock()
 				s.output.Write(data)
 				s.mu.Unlock()
-			case <-s.serverMessage:
+			case message := <-s.serverMessage:
+				s.mu.Lock()
+				s.messages = append(s.messages, message)
+				s.mu.Unlock()
 			case <-ctx.Done():
 				return
 			}
@@ -78,6 +84,19 @@ func (s *sharedReadTestServer) received() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.output.String()
+}
+
+// failureMessages returns the hidden failed-command messages the session sent.
+func (s *sharedReadTestServer) failureMessages() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var failures []string
+	for _, message := range s.messages {
+		if strings.HasPrefix(message, protocol.HiddenCommandFailedPrefix) {
+			failures = append(failures, message)
+		}
+	}
+	return failures
 }
 
 func (s *sharedReadTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarget, error) {
@@ -368,10 +387,14 @@ func TestSharedReadEndings(t *testing.T) {
 		// wantExisting: the read went on from the file's beginning, as the
 		// private loop does after a processor error.
 		wantExisting bool
+		// wantFailure: the client was told that the read failed, as the
+		// private loop tells it after a failed read iteration.
+		wantFailure bool
 	}{
-		{"reader panic", fmt.Errorf("%w: %w: boom", readhub.ErrReaderFailed, fs.ErrReaderWorkerPanic), true, false},
-		{"processor error", errors.New("processor failed"), false, true},
-		{"max count stop", readhub.ErrStopped, false, true},
+		{"reader panic", fmt.Errorf("%w: %w: boom", readhub.ErrReaderFailed, fs.ErrReaderWorkerPanic),
+			true, false, false},
+		{"processor error", errors.New("processor failed"), false, true, true},
+		{"max count stop", readhub.ErrStopped, false, true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -412,11 +435,89 @@ func TestSharedReadEndings(t *testing.T) {
 					t.Error("the private read after a failed shared reader did not start at the end of the file")
 				}
 			}
+			var wantFailures []string
+			if tt.wantFailure {
+				wantFailures = []string{protocol.HiddenCommandFailedPrefix + readFailureReadingFile}
+			}
+			if got := server.failureMessages(); !slices.Equal(got, wantFailures) {
+				t.Errorf("failed command messages = %q, want %q", got, wantFailures)
+			}
 			cancel()
 			<-done
 			if recovered := <-panicked; recovered != nil {
 				t.Fatalf("the session panicked: %v", recovered)
 			}
 		})
+	}
+}
+
+// failOnceLineWriter is a session output that fails on one line, like a
+// client connection that broke for a moment, and delivers every other line.
+// The failed line ends the read's iteration, in the private read loop as in
+// the shared read, and both read the file again, so no line is lost.
+type failOnceLineWriter struct {
+	LineWriter
+	failed *atomic.Bool
+}
+
+func (w failOnceLineWriter) WriteLineData(content []byte, lineNum uint64, sourceID string) error {
+	if w.failed.CompareAndSwap(false, true) {
+		return errors.New("line writer failed")
+	}
+	return w.LineWriter.WriteLineData(content, lineNum, sourceID)
+}
+
+// TestSharedAndPrivateReadReportTheSameFailure checks the output parity of
+// the failure report: a tail session whose output fails once sends the same
+// hidden failed-command message with a shared reader as with a private one.
+func TestSharedAndPrivateReadReportTheSameFailure(t *testing.T) {
+	report := func(t *testing.T, shared bool) []string {
+		t.Helper()
+		var hub *readhub.Hub
+		if shared {
+			hub = NewReadHub(&config.ServerConfig{ReadRetryIntervalMs: 10}, logging.NopLogger{})
+		}
+		path := writeSharedReadFile(t, "existing\n")
+		server := newSharedReadTestServer(t, hub)
+		dependencies := server.readCommandDependencies()
+		writers, failed := dependencies.newLineWriter, &atomic.Bool{}
+		dependencies.newLineWriter = func(ctx context.Context, generation uint64) LineWriter {
+			return failOnceLineWriter{LineWriter: writers(ctx, generation), failed: failed}
+		}
+		cmd := newReadCommandWithDependencies(dependencies, omode.TailClient, nil)
+		target, err := server.PrepareReadTarget(path)
+		if err != nil {
+			t.Fatalf("test setup: no target for %s: %v", path, err)
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop())
+		}()
+		// Both reads start at the end of the file, so append until a line
+		// reaches the output. The first one fails the writer, and both paths
+		// report that before they read the file again, which delivers it.
+		waitForShared(t, "the read to go on after the failed line", func() bool {
+			appendSharedReadFile(t, path, "payload\n")
+			time.Sleep(20 * time.Millisecond)
+			return strings.Contains(server.received(), "payload")
+		})
+		cancel()
+		<-done
+		if !failed.Load() {
+			t.Fatal("test setup: the session's output never failed")
+		}
+		return server.failureMessages()
+	}
+
+	private := report(t, false)
+	want := []string{protocol.HiddenCommandFailedPrefix + readFailureReadingFile}
+	if !slices.Equal(private, want) {
+		t.Fatalf("private read failure messages = %q, want %q", private, want)
+	}
+	if got := report(t, true); !slices.Equal(got, private) {
+		t.Errorf("shared read failure messages = %q, want the private read's %q", got, private)
 	}
 }
