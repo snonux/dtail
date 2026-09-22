@@ -358,10 +358,11 @@ costs one descriptor per session, as a private reader does. The one
 remaining gap: if the path is rotated in the moment between the shared
 reader opening a file and a session opening its descriptor, that session has
 none, and if it is later evicted with lines of the old file unread, it reads
-the new file from its beginning and logs a warning. Compressed files,
-max-count (`--max`) reads, journal targets, stdin and serverless mode always
-read privately; so do one-shot reads (`dcat`, `dgrep`, `dmap`) unless they
-belong to a scheduled job group (below).
+the new file from its beginning and logs a warning. Follow reads of
+compressed files and max-count (`--max`) follow reads read privately, as do
+journal targets, stdin and serverless mode; one-shot reads (`dcat`, `dgrep`,
+`dmap`) read privately unless they belong to a scheduled job group (below),
+whose shared read also covers compressed files.
 
 At a rotation, every follow read, shared or private
 (`internal/io/fs/readfile_processor_optimized.go`), reads the old file to its
@@ -414,25 +415,27 @@ dserver CPU with sharing on than off.
 **Shared one-shot reads of scheduled job groups (dserver):**
 The scheduler (`internal/jobs/schedulergroup.go`) starts due jobs that read
 the same files from the same servers, and do not write each other's outfiles
-or read files another writes, together as a group, when all their
-servers are this dserver (`internal/jobs/localserver.go`), in waves of at most
-`MaxConnections/4` (at least one) divided by the number of servers; other jobs,
-and all jobs when `Server.SharedReadsDisable` is set, run one at a time. Each
-job sends the option `share=<group>:<members>`; dserver honours it only for
-the scheduler's user `DTAIL-SCHEDULE` and ignores it elsewhere (older dservers
-ignore it too). The hub (`internal/io/fs/readhub/oneshot.go`) waits until the
-members joined or `GroupWait` (3 s) passed, takes a free cat slot per member
-without waiting for one while holding another, reads the file once from its
-beginning and delivers every line (with its newline, empty lines included) to
-every member, which numbers from 1 and filters on its own. This is a snapshot
-read: delivery blocks for a slow member instead of evicting it, there is no
-join skip and no held descriptor; a cancelled member leaves and releases the
-group. A member arriving after the read started, beyond `MaxConcurrentCats`
-members, without a free slot, or within 10 minutes after the group's read
-ended reads privately. The follow-only hub behaviour (eviction, join skip,
-held descriptors, read positions, in-order long line warnings) is wired
-through optional interfaces the fan-out processor type-asserts (`readTracker`,
-`warningSource`), which only the follow entry implements.
+or read files another writes, together as a group, when all their servers are
+this dserver (`internal/jobs/localserver.go`), in waves of at most
+`MaxConnections/4` (at least one) divided by the number of servers; other
+jobs, and all jobs when `Server.SharedReadsDisable` is set, run one at a time.
+Each job sends the option `share=<group>:<members>`; dserver honours it only
+for the scheduler's user `DTAIL-SCHEDULE` and ignores it elsewhere (older
+dservers ignore it too). Each member passes its own permission check and joins
+with its own validated target. The hub (`internal/io/fs/readhub/oneshot.go`)
+waits until the members joined or `GroupWait` (3 s) passed, takes a free cat
+slot per member without waiting for one while holding another, reads the file
+once from its beginning and delivers every line (with its newline, empty lines
+included) to every member, which numbers from 1 and filters on its own. This
+is a snapshot read: delivery blocks for a slow member instead of evicting it,
+there is no join skip and no held descriptor; a cancelled member leaves and
+releases the group. A member arriving after the read started, beyond
+`MaxConcurrentCats` members, without a free slot, or within 10 minutes after
+the group's read ended reads privately. The follow-only hub behaviour
+(eviction, join skip, held descriptors, read positions, in-order long line
+warnings) is wired through optional interfaces the fan-out processor
+type-asserts (`readTracker`, `warningSource`), which only the follow entry
+implements.
 
 **Failed scheduled jobs: strict until the TimeRange ends (dserver):**
 The scheduler skips a job for the rest of its date period once its outfile

@@ -58,27 +58,28 @@ run's dserver listens on it (checked with `ss`).
 
 ```bash
 make build
-# CPU and elapsed time, 3 runs per mode, waiting up to 10 min per run for
+# CPU and elapsed time, 3 runs per mode, waiting up to 15 min per run for
 # a quiet machine (load1 < 1.0, no other dserver, make or go test):
-benchmarks/shared_read_bench.sh -n 4 -r 3 -q 600 -o results.csv follow
-benchmarks/shared_read_bench.sh -n 4 -r 3 -q 600 -o results.csv follow-paced
-benchmarks/shared_read_bench.sh -n 4 -r 3 -q 600 -o results.csv scheduled
-benchmarks/shared_read_bench.sh -n 4 -r 3 -q 600 -o results.csv scheduled-gz
+benchmarks/shared_read_bench.sh -n 4 -r 3 -q 900 -o results.csv follow
+benchmarks/shared_read_bench.sh -n 4 -r 3 -q 900 -o results.csv follow-paced
+benchmarks/shared_read_bench.sh -n 4 -r 3 -q 900 -o results.csv scheduled
+benchmarks/shared_read_bench.sh -n 4 -r 3 -q 900 -o results.csv scheduled-gz
 # read syscalls:
 benchmarks/shared_read_bench.sh -n 4 -r 1 -s -o results.csv scheduled
 # quick check that the script works, with 1 MiB inputs:
 benchmarks/shared_read_bench.sh -n 2 -r 1 -b 1048576 scheduled
 ```
 
-## Conditions (2026-09-22, 15:30-16:45)
+## Conditions (2026-09-22, 15:30-16:15)
 
 Host: Rocky 9 bhyve guest, 4 vCPUs, the dev host of
 `performance-plan-2026-09-15.md`. No other agent, test suite or dserver ran.
 Every run waited for the script's quiet check (1-minute load below 1.0, no
 other dserver, make or go test process), except the strace runs (`-s`, no
-`-q`), which started at a load of 0.56-1.94. The fourth `follow` pair was run
-separately because the machine did not become quiet within 900 s before the
-third `off` run of the first series; its `on` run is included below.
+`-q`), which started at a load of 0.56-1.94. The first `follow` series
+stopped before its third `off` run because the machine did not become quiet
+within 900 s; one more `follow` pair was run separately, and both its runs are
+included below (its `off` run is the 8.49 s outlier).
 
 ## Results
 
@@ -109,16 +110,20 @@ What the numbers show:
 - **Scheduled groups** read the file once instead of once per job (102
   instead of 408 reads plain, 623 instead of 2,492 gzip) and finish about
   3.7 times sooner, because the grouped jobs run together while without
-  sharing they run one at a time. dserver CPU does not drop; it is about 6%
-  (plain) and 8% (gzip) higher: the MapReduce work of each job, not the file
-  read, dominates it.
+  sharing they run one at a time. dserver CPU does not drop: about 6% higher
+  for the plain file (the ranges do not overlap); for gzip the median is 8%
+  higher but the ranges overlap, with one outlier `on` run at 5.13 s CPU and
+  1.80 s elapsed. The MapReduce work of each job, not the file read,
+  dominates it.
 - **Follow burst:** the 100 MiB burst evicts all four sessions in every run
   (four `evicted a slow subscriber` lines), which read the burst privately,
-  so reads, CPU and time are those of sharing off. All four rejoined the
-  shared reader afterwards in every run (four `rejoined` lines, and a second
-  shared read started), so later appends are shared again.
+  so reads, CPU and time are those of sharing off. In each of the three
+  runs whose dserver log was kept (a later run reused the fourth one's
+  directory), all four rejoined the shared reader afterwards (four
+  `rejoined` lines, after a second shared read started), so later appends
+  are shared again.
 - **Follow paced** (about 10 MiB/s): no evictions; elapsed about 8% lower,
   but dserver CPU about 14% **higher** with sharing on (28.99 s against
   25.50 s, the ranges do not overlap). Sharing a follow read of a busy log
   therefore does not save dserver CPU at N=4 on this host; the cause is not
-  yet known.
+  yet known (task g9).
