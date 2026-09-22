@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
@@ -500,6 +501,119 @@ func TestNoRejoinBehindWhatTheReaderReadBeforeATruncation(t *testing.T) {
 	}
 }
 
+// readGatedFanout holds the shared reader once, after a read returned bytes
+// past threshold but before it records how far it read: in the middle of a
+// read, as far as the entry can tell.
+type readGatedFanout struct {
+	*fanoutProcessor
+	threshold *atomic.Int64
+	reached   chan struct{}
+	release   chan struct{}
+}
+
+func (g readGatedFanout) ReadUpTo(offset int64, file os.FileInfo) {
+	if threshold := g.threshold.Load(); threshold > 0 && offset > threshold &&
+		g.threshold.CompareAndSwap(threshold, 0) {
+		close(g.reached)
+		<-g.release
+	}
+	g.fanoutProcessor.ReadUpTo(offset, file)
+}
+
+// As TestNoRejoinBehindWhatTheReaderReadBeforeATruncation, but the session
+// tries to rejoin while the shared reader's read of the unfinished line has
+// returned and the reader has not recorded how far it read yet. The session
+// must not rejoin in the middle of that read; it rejoins after the restart,
+// and gets no rewritten line twice.
+func TestNoRejoinWhileTheReaderIsInARead(t *testing.T) {
+	logger := &capturingLogger{}
+	hub := newRejoiningHub(logger)
+	healthy := hub.seams.startReader
+	var threshold atomic.Int64
+	reached, release := make(chan struct{}), make(chan struct{})
+	var released sync.Once
+	releaseReader := func() { released.Do(func() { close(release) }) }
+	t.Cleanup(releaseReader)
+	hub.seams.startReader = func(ctx context.Context, reader *fs.ReadFile, processor line.Processor) error {
+		gated := readGatedFanout{fanoutProcessor: processor.(*fanoutProcessor), threshold: &threshold,
+			reached: reached, release: release}
+		return healthy(ctx, reader, gated)
+	}
+	file := newTestFile(t)
+	fast := startFastFollower(t, hub, file)
+	waitFor(t, "fast session to join", func() bool { return subscriberCount(hub, file.path) == 1 })
+	pauser := &pauser{}
+	slow := startPausableFollower(t, hub, file, lcontext.LContext{}, regex.NewNoop(), pauser)
+	waitFor(t, "slow session to join", func() bool { return subscriberCount(hub, file.path) == 2 })
+
+	pauser.pause()
+	lines := burst("old")
+	appendPaced(t, file, fast, lines)
+	waitFor(t, "eviction", func() bool { return logger.count("INFO", "evicted a slow subscriber") >= 1 })
+	info, err := os.Stat(file.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	end := info.Size()
+	// The private reader stops a few lines before the end of the file.
+	held := pauser.pauseAt(lines[len(lines)-10])
+	pauser.resume()
+	select {
+	case <-held:
+	case <-time.After(3 * waitTimeout):
+		t.Fatal("timed out waiting for the private reader to near the end of the file")
+	}
+	const unfinished = 100000
+	threshold.Store(end)
+	file.appendRaw(strings.Repeat("p", unfinished))
+	select {
+	case <-reached:
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for the shared reader to read the unfinished line")
+	}
+	// Rewritten to a size between the end of the complete lines and the end
+	// of the unfinished one, while the reader is held in its read.
+	var rewritten strings.Builder
+	var last string
+	for i := 0; int64(rewritten.Len()) < end+unfinished/2; i++ {
+		last = fmt.Sprintf("new %07d %s", i, strings.Repeat("n", 40))
+		rewritten.WriteString(last + "\n")
+	}
+	if err := os.WriteFile(file.path, []byte(rewritten.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pauser.resume()
+	waitWithin(t, 3*waitTimeout, "private reader to get to the end of the rewritten file", func() bool {
+		return slow.recorder.hasLine(last)
+	})
+	// Several attempts at the end of the file, 20 to 100 ms apart.
+	time.Sleep(500 * time.Millisecond)
+	if n := logger.count("INFO", "rejoined the shared follow read"); n != 0 {
+		t.Errorf("rejoined %d times while the shared reader was in a read", n)
+	}
+	releaseReader()
+	waitWithin(t, 3*waitTimeout, "rejoin", func() bool { return logger.count("INFO", "rejoined the shared follow read") >= 1 })
+	file.appendLines("after")
+	waitFor(t, "slow session to get the last line", func() bool { return slow.recorder.hasLine("after") })
+	// Let a wrong extra line, should there be one, arrive too.
+	time.Sleep(100 * time.Millisecond)
+
+	seen := map[string]int{}
+	duplicated := 0
+	for _, l := range slow.recorder.lines() {
+		if seen[l]++; seen[l] == 2 && strings.HasPrefix(l, "new ") {
+			duplicated++
+		}
+	}
+	if duplicated > 0 {
+		t.Errorf("session got %d rewritten lines twice", duplicated)
+	}
+	if seen[last] != 1 || seen["after"] != 1 {
+		t.Errorf("session got the last rewritten line %d times and the line after it %d times, want 1",
+			seen[last], seen["after"])
+	}
+}
+
 // A session whose private reader is in the middle of an unfinished line,
 // which the shared reader read too, rejoins once the line is complete, and
 // gets what one private read does.
@@ -641,6 +755,35 @@ func TestEntryFeedsPast(t *testing.T) {
 				t.Errorf("session holds the descriptor = %v, want %v", holds, tt.want)
 			}
 		})
+	}
+}
+
+// A reader in the middle of a read may have read past where readPos says;
+// feedsPast declines until the read's position is recorded.
+func TestEntryFeedsPastNotInARead(t *testing.T) {
+	file := newTestFile(t)
+	info, err := os.Stat(file.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	behind := position{offset: 10, file: info}
+	at := position{offset: 20, file: info}
+	e := entryPublishedAt(info, behind, behind)
+	if !e.feedsPast(at) {
+		t.Fatal("feedsPast() = false for a reader behind the session between two reads")
+	}
+	e.readStarting()
+	if e.feedsPast(at) {
+		t.Error("feedsPast() = true for a reader in a read")
+	}
+	e.readUpTo(behind)
+	if !e.feedsPast(at) {
+		t.Error("feedsPast() = false after the read's position was recorded")
+	}
+	e.readStarting()
+	e.readUpTo(position{offset: 21, file: info})
+	if e.feedsPast(at) {
+		t.Error("feedsPast() = true after a read past the session")
 	}
 }
 

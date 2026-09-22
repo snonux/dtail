@@ -256,12 +256,13 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 
 	for {
 		buf := (*bufPtr)[:cap(*bufPtr)]
+		positions.readStarting()
 		n, readErr := reader.Read(buf)
+		if err := positions.readReturned(n); err != nil {
+			return err
+		}
 
 		if n > 0 {
-			if err := positions.beginRead(n); err != nil {
-				return err
-			}
 			stop, err := lineProcessor.processChunk(ctx, buf[:n])
 			if err != nil {
 				return err
@@ -473,10 +474,18 @@ func (f *ReadFile) newPositionReporter(fd *os.File, reader *bufio.Reader,
 	return &positionReporter{observer: observer, fd: fd, reader: reader, file: file}, nil
 }
 
-// beginRead records where the n bytes the reader just returned start in the
-// file: the descriptor's position minus what the buffered reader still holds
-// and minus the n bytes themselves.
-func (r *positionReporter) beginRead(n int) error {
+// readStarting tells the observer that the reader is about to read.
+func (r *positionReporter) readStarting() {
+	if r != nil {
+		r.observer.ReadStarting()
+	}
+}
+
+// readReturned tells the observer how far the reader has read the file after
+// a read that returned n bytes, possibly none, and records where these bytes
+// start in the file: the descriptor's position minus what the buffered reader
+// still holds and minus the n bytes themselves.
+func (r *positionReporter) readReturned(n int) error {
 	if r == nil {
 		return nil
 	}

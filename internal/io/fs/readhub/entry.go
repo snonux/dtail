@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
+	"sync/atomic"
 
 	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/io/fs"
@@ -56,6 +57,11 @@ type entry struct {
 	// or an unknown position from the announcement of a new read until the
 	// reader opened the file. Guarded by publishMu.
 	readPos position
+	// reading is set by the reader right before every read and cleared,
+	// under publishMu, once readUpTo recorded how far it got: while it is
+	// set, the reader may have read past readPos. It is atomic so that the
+	// reader does not take publishMu before a read as well as after it.
+	reading atomic.Bool
 	// openedFile is the file the reader opened last, for which every
 	// subscriber holds a descriptor (see heldFile), or nil from the
 	// announcement of a new read until the reader opened the file. Guarded by
@@ -195,6 +201,11 @@ func (e *entry) warnings() <-chan string {
 	return e.messages
 }
 
+// readStarting records that the reader is about to read (see reading).
+func (e *entry) readStarting() {
+	e.reading.Store(true)
+}
+
 // readUpTo records how far the reader has read which file. When the reader
 // opened a file, every subscriber opens a descriptor of it through its own
 // target (see heldFile). A subscriber whose path was rotated away from the
@@ -203,6 +214,7 @@ func (e *entry) readUpTo(p position) {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()
 	e.readPos = p
+	e.reading.Store(false)
 	if p.file == e.openedFile {
 		return
 	}

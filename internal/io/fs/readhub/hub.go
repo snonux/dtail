@@ -190,7 +190,8 @@ func New(options Options) *Hub {
 // and warns that the rest of the old file is not read. An evicted session
 // rejoins the shared reader once its private reader caught up with it: when
 // the private reader reaches the end of the file at the start of a line
-// that the shared reader has not published past yet, or it starts a new
+// that the shared reader has neither read nor published past yet, while that
+// reader is not in the middle of a read, or it starts a new
 // shared reader there when there is none, with the same filter and processor
 // and without losing or repeating a line (see rejoin.go). A session evicted
 // again soon after it rejoined waits longer before it rejoins once more.

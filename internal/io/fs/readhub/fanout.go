@@ -79,6 +79,7 @@ type publisher interface {
 // The one-shot group entry has no late joiners and holds no descriptors; its
 // cat or grep reader reports no positions anyway.
 type readTracker interface {
+	readStarting()
 	readUpTo(p position)
 }
 
@@ -144,6 +145,14 @@ func (p *fanoutProcessor) LineEndsAt(offset int64, file os.FileInfo) {
 	}
 	p.pending.offsets[len(p.pending.offsets)-1] = offset
 	p.pending.file = file
+}
+
+// ReadStarting records that the reader is about to read, so that a session
+// does not rejoin behind bytes it read but did not report yet.
+func (p *fanoutProcessor) ReadStarting() {
+	if p.tracker != nil {
+		p.tracker.readStarting()
+	}
 }
 
 // ReadUpTo records how far the reader has read which file, so that a
