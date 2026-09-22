@@ -213,9 +213,14 @@ func (d *commandDispatcher) handleOptions(options map[string]string) {
 			h.Logger().Debug(h.user, "Enabling plain mode")
 			d.plain = true
 		}
-		if serverless := options["serverless"]; serverless == "true" {
-			h.Logger().Debug(h.user, "Enabling serverless mode")
-			d.serverless = true
+		// The "serverless" option is deliberately not honoured here. It
+		// decides whether the session payload is written to this process'
+		// own stdout instead of the session transport, which only the
+		// in-process serverless runtime may do. It is derived once from the
+		// runtime (Dependencies.ServerlessOutput) when the handler is built,
+		// so a remote client cannot divert its payload into the dserver log.
+		if serverless := options["serverless"]; serverless == "true" && !d.serverless {
+			h.Logger().Debug(h.user, "Ignoring serverless option of a non-serverless session")
 		}
 	})
 }

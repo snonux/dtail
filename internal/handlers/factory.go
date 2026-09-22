@@ -19,8 +19,12 @@ type Dependencies struct {
 	TailLimiter  chan struct{}
 	// ReadHub shares follow reads of the same file between sessions; nil
 	// makes every session read privately (see NewReadHub).
-	ReadHub          *readhub.Hub
-	AuthKeyStore     *authkey.Store
+	ReadHub      *readhub.Hub
+	AuthKeyStore *authkey.Store
+	// ServerlessOutput is set by the in-process client runtime only. A
+	// non-nil writer puts the handler into serverless mode, where payload
+	// goes to this process' own output instead of the session transport.
+	// dserver leaves it nil, so a remote session can never select that mode.
 	ServerlessOutput io.Writer
 	Loggers          HandlerLoggers
 	Capabilities     []string

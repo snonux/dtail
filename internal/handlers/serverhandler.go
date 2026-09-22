@@ -90,6 +90,11 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 			serverlessOutput:    dependencies.ServerlessOutput,
 			user:                user,
 			maxCommandFrameSize: serverCfg.MaxCommandFrameSize,
+			// Serverless mode is a property of the runtime that built this
+			// handler, never of the session. Only the in-process client
+			// runtime provides an output writer, so dserver sessions always
+			// stay on the transport path.
+			serverless: dependencies.ServerlessOutput != nil,
 		}),
 		catLimiter:   dependencies.CatLimiter,
 		tailLimiter:  dependencies.TailLimiter,
