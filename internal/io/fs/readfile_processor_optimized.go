@@ -26,6 +26,11 @@ type followLineProcessor struct {
 	// positions tells a line.PositionObserver where each line ends; nil for
 	// every other processor.
 	positions *positionReporter
+	// atLineStart reports that everything read so far ended with a newline
+	// (or the read started at the beginning of a line), so that nothing of
+	// the line the reader is in was read yet. Only tracked for a read that
+	// may hand over at the end of the file.
+	atLineStart bool
 }
 
 // readWithProcessorOptimized reads from the file using buffered line reading
@@ -220,9 +225,15 @@ func (f *ReadFile) start(ctx context.Context, filterProcessor *filteringProcesso
 
 // tailWithProcessorOptimized handles continuous reading for tail mode
 func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, reader *bufio.Reader,
-	truncate <-chan struct{}, filterProcessor *filteringProcessor) error {
+	truncate <-chan struct{}, filterProcessor *filteringProcessor) (err error) {
 
-	defer filterProcessor.resetGeneration()
+	defer func() {
+		// A read handed over keeps its local context for whoever goes on
+		// feeding the filter.
+		if !errors.Is(err, ErrHandedOver) {
+			filterProcessor.resetGeneration()
+		}
+	}()
 	processor := filterProcessor.processor
 
 	positions, positionsErr := f.newPositionReporter(fd, reader, processor)
@@ -237,6 +248,7 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 		filter:      filterProcessor,
 		partialLine: partialLine,
 		positions:   positions,
+		atLineStart: f.handOverAtEOF != nil && startsLine(fd),
 	}
 
 	bufPtr := pool.GetMediumBuffer()
@@ -244,12 +256,13 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 
 	for {
 		buf := (*bufPtr)[:cap(*bufPtr)]
+		positions.readStarting()
 		n, readErr := reader.Read(buf)
+		if err := positions.readReturned(n); err != nil {
+			return err
+		}
 
 		if n > 0 {
-			if err := positions.beginRead(n); err != nil {
-				return err
-			}
 			stop, err := lineProcessor.processChunk(ctx, buf[:n])
 			if err != nil {
 				return err
@@ -285,10 +298,12 @@ func (p *followLineProcessor) processChunk(ctx context.Context, data []byte) (bo
 		rest := data[consumed:]
 		newline := bytes.IndexByte(rest, '\n')
 		if newline < 0 {
+			p.atLineStart = false
 			return p.processFragment(ctx, rest, len(data))
 		}
 
 		consumed += newline + 1
+		p.atLineStart = true
 		p.partialLine.Write(rest[:newline])
 		if p.partialLine.Len() > 0 {
 			if stop, err := stopForProcessingError(p.processPartialLine(consumed)); stop || err != nil {
@@ -337,9 +352,12 @@ func (p *followLineProcessor) handleReadError(ctx context.Context, fd *os.File,
 		return false, nil
 	}
 
-	truncated, err := p.file.truncated(fd)
+	truncated, offset, file, err := p.file.inspectOpenFile(fd)
 	if truncated {
 		return p.handleTruncation(fd, reader, err)
+	}
+	if p.handsOver(reader, offset, file) {
+		return false, ErrHandedOver
 	}
 
 	select {
@@ -347,6 +365,37 @@ func (p *followLineProcessor) handleReadError(ctx context.Context, fd *os.File,
 	default:
 	}
 	return ctxutil.Sleep(ctx, 100*time.Millisecond), nil
+}
+
+// handsOver reports whether the read, which reached the end of the file at
+// offset, ends here because ReadOptions.HandOverAtEOF took it over. It is only
+// asked at the start of a line, with every line read fed.
+func (p *followLineProcessor) handsOver(reader *bufio.Reader, offset int64, file os.FileInfo) bool {
+	if p.file.handOverAtEOF == nil || file == nil || !p.atLineStart ||
+		p.partialLine.Len() > 0 || reader.Buffered() > 0 {
+		return false
+	}
+	return p.file.handOverAtEOF(offset, file)
+}
+
+// startsLine reports whether fd is positioned at the beginning of a line:
+// at the beginning of the file, or just past a newline.
+func startsLine(fd *os.File) bool {
+	if fd == nil {
+		return false
+	}
+	offset, err := fd.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return false
+	}
+	if offset == 0 {
+		return true
+	}
+	var last [1]byte
+	if _, err := fd.ReadAt(last[:], offset-1); err != nil {
+		return false
+	}
+	return last[0] == '\n'
 }
 
 func (p *followLineProcessor) handleTruncation(fd *os.File, reader *bufio.Reader,
@@ -362,6 +411,7 @@ func (p *followLineProcessor) handleTruncation(fd *os.File, reader *bufio.Reader
 
 	reader.Reset(fd)
 	p.partialLine.Reset()
+	p.atLineStart = true
 	p.filter.resetGeneration()
 	// The same processor keeps being fed, now from the rewritten content:
 	// let a processor with per-source state (the CSV header of a MapReduce
@@ -424,10 +474,18 @@ func (f *ReadFile) newPositionReporter(fd *os.File, reader *bufio.Reader,
 	return &positionReporter{observer: observer, fd: fd, reader: reader, file: file}, nil
 }
 
-// beginRead records where the n bytes the reader just returned start in the
-// file: the descriptor's position minus what the buffered reader still holds
-// and minus the n bytes themselves.
-func (r *positionReporter) beginRead(n int) error {
+// readStarting tells the observer that the reader is about to read.
+func (r *positionReporter) readStarting() {
+	if r != nil {
+		r.observer.ReadStarting()
+	}
+}
+
+// readReturned tells the observer how far the reader has read the file after
+// a read that returned n bytes, possibly none, and records where these bytes
+// start in the file: the descriptor's position minus what the buffered reader
+// still holds and minus the n bytes themselves.
+func (r *positionReporter) readReturned(n int) error {
 	if r == nil {
 		return nil
 	}

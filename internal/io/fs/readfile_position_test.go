@@ -25,6 +25,9 @@ type positionProcessor struct {
 	// readUpTo and readFiles record the ReadUpTo calls.
 	readUpTo  []int64
 	readFiles []os.FileInfo
+	// calls records the ReadStarting ("starting") and ReadUpTo ("up to")
+	// calls in order.
+	calls []string
 }
 
 func (p *positionProcessor) ProcessLine(buf *bytes.Buffer, _ uint64, _ string) error {
@@ -45,9 +48,16 @@ func (p *positionProcessor) LineEndsAt(offset int64, file os.FileInfo) {
 	p.files = append(p.files, file)
 }
 
+func (p *positionProcessor) ReadStarting() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.calls = append(p.calls, "starting")
+}
+
 func (p *positionProcessor) ReadUpTo(offset int64, file os.FileInfo) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.calls = append(p.calls, "up to")
 	p.readUpTo = append(p.readUpTo, offset)
 	p.readFiles = append(p.readFiles, file)
 }
@@ -168,8 +178,23 @@ func TestFollowReaderReportsWhereEachLineEnds(t *testing.T) {
 	// to, where the first line it fed starts, and after its last read how far
 	// it has read the file.
 	processor.mu.Lock()
-	readUpTo, readFiles := processor.readUpTo, processor.readFiles
+	readUpTo, readFiles, calls := processor.readUpTo, processor.readFiles, processor.calls
 	processor.mu.Unlock()
+	// Every read is announced before, and its position reported after it,
+	// whether or not it returned data; the last read may still be running.
+	if len(calls) < 2 || calls[0] != "up to" {
+		t.Fatalf("reader made the calls %v, want ReadUpTo first", calls)
+	}
+	for i := 1; i < len(calls); i++ {
+		want := "starting"
+		if i%2 == 0 {
+			want = "up to"
+		}
+		if calls[i] != want {
+			t.Fatalf("call %d of %d is %q, want %q: reads and their positions do not alternate",
+				i, len(calls), calls[i], want)
+		}
+	}
 	firstLineStart := offsets[0] - int64(len(lines[0])) - 1
 	if len(readUpTo) < 2 || readUpTo[0] != firstLineStart || readUpTo[len(readUpTo)-1] != int64(len(content)) {
 		t.Errorf("read up to %v, want %d first and %d last", readUpTo, firstLineStart, len(content))
@@ -207,7 +232,8 @@ func TestReadersWithoutAnObserverOrForCompressedFilesReportNothing(t *testing.T)
 		t.Errorf("reporter for the stdin pipe = %v, %v, want nil", reporter, err)
 	}
 	var none *positionReporter
-	if err := none.beginRead(1); err != nil {
+	none.readStarting()
+	if err := none.readReturned(1); err != nil {
 		t.Errorf("a nil reporter reported an error: %v", err)
 	}
 	none.lineEndsAt(1)

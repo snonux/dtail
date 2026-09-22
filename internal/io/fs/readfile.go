@@ -31,6 +31,10 @@ var (
 // reads the file at the path from the beginning.
 var ErrStartOffsetFileChanged = errors.New("file changed since the read start offset was taken")
 
+// ErrHandedOver reports that a follow read ended because
+// ReadOptions.HandOverAtEOF took the read over at the end of the file.
+var ErrHandedOver = errors.New("follow read handed over at the end of the file")
+
 // ReadOptions configures a file-backed reader.
 type ReadOptions struct {
 	Mode           omode.Mode
@@ -68,7 +72,18 @@ type ReadOptions struct {
 	// takes ownership and closes it when that read ends. It cannot be
 	// combined with SeekEOF and is only supported for uncompressed files, not
 	// for the stdin pipe.
-	StartFile     *os.File
+	StartFile *os.File
+	// HandOverAtEOF, when set, is asked by a follow read of an uncompressed
+	// file whenever it reached the end of the file at the start of a line,
+	// having fed every line before it to its filter and flushed the
+	// processor, and found the file neither truncated nor rotated: offset is
+	// the end of the file, file its identity. When it returns true, the read
+	// ends with ErrHandedOver, having fed nothing past offset, and keeps the
+	// local context of its filter, so that the caller can go on feeding the
+	// same filter (see ReadFile.StartFiltered) from offset on from elsewhere.
+	// It runs on the reader's goroutine. It cannot be combined with a
+	// compressed file or the stdin pipe.
+	HandOverAtEOF func(offset int64, file os.FileInfo) bool
 	MaxLineLength int
 	Logger        logging.Logger
 }
@@ -104,6 +119,8 @@ type ReadFile struct {
 	initialOffsetInSplitLine bool
 	// initialFile is the open file for the first read, if given.
 	initialFile *os.File
+	// handOverAtEOF, if set, may end a follow read at the end of the file.
+	handOverAtEOF func(offset int64, file os.FileInfo) bool
 	// Warned already about a long line.
 	warnedAboutLongLine bool
 	// Maximum line length before a line is split.
@@ -156,6 +173,7 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 		// Only meaningful together with a start offset.
 		initialOffsetInSplitLine: options.StartOffsetInSplitLine && options.StartOffset > 0,
 		initialFile:              options.StartFile,
+		handOverAtEOF:            options.HandOverAtEOF,
 	}
 	readFile.validatedTarget.Store(target)
 	return readFile, nil
@@ -163,6 +181,9 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 
 func validateStartOffset(options ReadOptions) error {
 	if err := validateStartFile(options); err != nil {
+		return err
+	}
+	if err := validateHandOver(options); err != nil {
 		return err
 	}
 	switch {
@@ -193,6 +214,19 @@ func validateStartFile(options ReadOptions) error {
 		return errors.New("read start file is not supported for the stdin pipe")
 	case CompressionFormat(options.FilePath) != "":
 		return fmt.Errorf("read start file is not supported for compressed file %s", options.FilePath)
+	}
+	return nil
+}
+
+func validateHandOver(options ReadOptions) error {
+	switch {
+	case options.HandOverAtEOF == nil:
+		return nil
+	case options.FilePath == "" && options.GlobID == "-":
+		return errors.New("hand-over at the end of the file is not supported for the stdin pipe")
+	case CompressionFormat(options.FilePath) != "":
+		return fmt.Errorf("hand-over at the end of the file is not supported for compressed file %s",
+			options.FilePath)
 	}
 	return nil
 }
@@ -451,8 +485,16 @@ func (f *ReadFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, 
 // before it, and a partial line pending from the old content is joined to the
 // first bytes read from the new one.
 func (f *ReadFile) truncated(fd *os.File) (bool, error) {
+	truncated, _, _, err := f.inspectOpenFile(fd)
+	return truncated, err
+}
+
+// inspectOpenFile is truncated, and also returns the descriptor's offset in
+// the open file and the file's identity, which are only set when the file was
+// neither truncated nor replaced.
+func (f *ReadFile) inspectOpenFile(fd *os.File) (truncated bool, offset int64, file os.FileInfo, err error) {
 	if fd == nil {
-		return false, nil
+		return false, 0, nil, nil
 	}
 
 	f.logger.Debug(f.filePath, "File truncation check")
@@ -460,24 +502,24 @@ func (f *ReadFile) truncated(fd *os.File) (bool, error) {
 	// Can not seek currently open FD.
 	currentPosition, err := fd.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return true, err
+		return true, 0, nil, err
 	}
 	openInfo, err := fd.Stat()
 	if err != nil {
-		return true, err
+		return true, 0, nil, err
 	}
 
 	pathInfo, err := f.pathInfo()
 	if err != nil {
-		return true, err
+		return true, 0, nil, err
 	}
 	if !os.SameFile(openInfo, pathInfo) {
-		return true, errFileRotated
+		return true, 0, nil, errFileRotated
 	}
 	if currentPosition > pathInfo.Size() {
-		return true, errFileTruncated
+		return true, 0, nil, errFileTruncated
 	}
-	return false, nil
+	return false, currentPosition, openInfo, nil
 }
 
 func (f *ReadFile) pathInfo() (os.FileInfo, error) {

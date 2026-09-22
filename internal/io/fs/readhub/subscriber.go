@@ -3,6 +3,7 @@ package readhub
 import (
 	"context"
 	"errors"
+	"os"
 
 	"github.com/mimecast/dtail/internal/io/fs"
 	"github.com/mimecast/dtail/internal/io/line"
@@ -31,6 +32,12 @@ type subscriber struct {
 	// Both are set before the session's goroutine runs.
 	joinedAt position
 	skip     joinSkip
+	// entry is the shared read the session subscribed to last: the one it
+	// joined, or the one it rejoined after an eviction. Only the session's
+	// goroutine uses it.
+	entry *entry
+	// pace paces the session's attempts to rejoin after an eviction.
+	pace rejoinPolicy
 }
 
 func newSubscriber(session Session, queueChunks int) *subscriber {
@@ -58,11 +65,26 @@ func (s *subscriber) offer(it item) bool {
 
 // run feeds the session until ctx ends or its read ends like a private read
 // would: with a max-count stop or an error. When the subscriber is evicted,
-// or the shared reader fails, the session goes on with a private reader.
-func (s *subscriber) run(ctx context.Context, logger logging.Logger, options Options) error {
-	reading := newSessionRead(s.session, logger, options, s.joinedAt, s.skip)
+// or the shared reader fails, the session goes on with a private reader,
+// until it rejoins a shared reader (see rejoin.go).
+func (s *subscriber) run(ctx context.Context, h *Hub) error {
+	reading := newSessionRead(s.session, h.logger, h.options, s.joinedAt, s.skip)
 	defer reading.close()
+	s.pace = newRejoinPolicy(h.seams)
+	reading.rejoin = func(at position) bool { return s.tryRejoin(h, at) }
 
+	for {
+		err := s.follow(ctx, reading)
+		if !errors.Is(err, errRejoined) {
+			return err
+		}
+	}
+}
+
+// follow feeds the session from its shared reader, and then, once evicted or
+// after the shared reader failed, from a private reader, until ctx ends, the
+// read ends, or the session rejoined a shared reader (errRejoined).
+func (s *subscriber) follow(ctx context.Context, reading *sessionRead) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -76,6 +98,7 @@ func (s *subscriber) run(ctx context.Context, logger logging.Logger, options Opt
 				return err
 			}
 		case <-s.evicted:
+			s.pace.evicted()
 			goPrivate, err := s.drain(ctx, reading)
 			if err != nil {
 				return err
@@ -87,6 +110,32 @@ func (s *subscriber) run(ctx context.Context, logger logging.Logger, options Opt
 			return reading.readPrivately(ctx, s.held.take())
 		}
 	}
+}
+
+// tryRejoin is asked by the session's private reader at the end of the file,
+// at, and reports whether the session rejoined a shared reader, when an
+// attempt is due.
+func (s *subscriber) tryRejoin(h *Hub, at position) bool {
+	if !s.pace.due() {
+		return false
+	}
+	if !h.rejoin(s, at) {
+		s.pace.declined()
+		return false
+	}
+	s.pace.rejoined()
+	return true
+}
+
+// resubscribe prepares the subscriber, evicted before, for deliveries from e
+// again, holding held, a descriptor of the file e's reader has open, if not
+// nil. The caller holds e.publishMu, or e has not started yet, so nothing is
+// delivered to the subscriber, and it is not evicted, meanwhile.
+func (s *subscriber) resubscribe(e *entry, held *os.File) {
+	s.entry = e
+	s.evicted = make(chan struct{})
+	s.missed = item{}
+	s.held.resume(held)
 }
 
 // drain handles what was queued before the eviction, nothing is queued
@@ -132,6 +181,9 @@ type sessionRead struct {
 	// warningPending: a long line warning arrived while the session was
 	// skipping; it is sent only if the split line it precedes is not skipped.
 	warningPending bool
+	// rejoin, if set, is asked by the private reader at the end of the file
+	// whether the session rejoined a shared reader there.
+	rejoin func(at position) bool
 }
 
 func newSessionRead(session Session, logger logging.Logger, options Options,
@@ -188,6 +240,23 @@ func (r *sessionRead) handle(ctx context.Context, it item) (goPrivate bool, err 
 		return true, nil
 	}
 	return false, nil
+}
+
+// handOver is asked by the private reader when it reached the end of the
+// file, at offset of file, at the start of a line. When the session rejoined
+// a shared reader there, it skips the published lines up to that point,
+// which its private reader fed already, and handOver reports true, so that
+// the private reader stops.
+func (r *sessionRead) handOver(offset int64, file os.FileInfo) bool {
+	at := position{offset: offset, file: file}
+	if !r.rejoin(at) {
+		return false
+	}
+	r.skip = joinSkip{active: true, at: at}
+	r.at = at
+	r.atLineEnd = true
+	r.warningPending = false
+	return true
 }
 
 // feed filters every line of c the session has not seen yet, then flushes,

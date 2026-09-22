@@ -115,6 +115,12 @@ type hubSeams struct {
 	// evicted, when set, is called after an eviction left remaining
 	// subscribers, before an entry without any stops.
 	evicted func(remaining int)
+	// now, rejoinMinDelay and rejoinMaxDelay pace an evicted session's
+	// attempts to rejoin (see rejoinPolicy); zero values select time.Now and
+	// the defaults.
+	now            func() time.Time
+	rejoinMinDelay time.Duration
+	rejoinMaxDelay time.Duration
 }
 
 func defaultSeams() hubSeams {
@@ -125,9 +131,7 @@ func defaultSeams() hubSeams {
 		replaceTarget: func(reader *fs.ReadFile, target fs.ValidatedReadTarget) error {
 			return reader.ReplaceTarget(target)
 		},
-		openFile: func(target fs.ValidatedReadTarget) (*os.File, error) {
-			return target.Open()
-		},
+		openFile: openTarget,
 	}
 }
 
@@ -184,7 +188,13 @@ func New(options Options) *Hub {
 // is then evicted after the rotation with lines of that file unread, its
 // private reader reads the new file from its beginning with a new processor
 // and warns that the rest of the old file is not read. An evicted session
-// does not rejoin the shared reader (a known limitation).
+// rejoins the shared reader once its private reader caught up with it: when
+// the private reader reaches the end of the file at the start of a line
+// that the shared reader has neither read nor published past yet, while that
+// reader is not in the middle of a read, or it starts a new
+// shared reader there when there is none, with the same filter and processor
+// and without losing or repeating a line (see rejoin.go). A session evicted
+// again soon after it rejoined waits longer before it rejoins once more.
 func (h *Hub) Follow(ctx context.Context, session Session) error {
 	if err := validateSession(session); err != nil {
 		return err
@@ -193,15 +203,17 @@ func (h *Hub) Follow(ctx context.Context, session Session) error {
 		return fmt.Errorf("shared follow read requires an uncompressed file, got %s", format)
 	}
 	sub := newSubscriber(session, h.options.QueueChunks)
-	e := h.join(sub)
+	sub.entry = h.join(sub)
 	defer func() {
-		h.leave(e, sub)
+		// The entry the session was subscribed to last, which it may have
+		// rejoined after an eviction.
+		h.leave(sub.entry, sub)
 		// Unless the session's private reader took it over, the descriptor
 		// is closed here, after leave: an eviction racing with the end of the
 		// session's read may still have left it held.
 		sub.held.close()
 	}()
-	return sub.run(ctx, h.logger, h.options)
+	return sub.run(ctx, h)
 }
 
 func validateSession(session Session) error {
@@ -224,10 +236,7 @@ func validateSession(session Session) error {
 // published lines that predate its join (see entry.join). A closed entry,
 // whose last subscriber was just evicted, is replaced by a new one.
 func (h *Hub) join(sub *subscriber) *entry {
-	key := entryKey{
-		path:        sub.session.Target.ResolvedPath(),
-		compression: fs.CompressionFormat(sub.session.FilePath),
-	}
+	key := sessionKey(sub.session)
 	measure := func() position { return h.endOfFile(sub.session) }
 
 	for {
@@ -235,9 +244,10 @@ func (h *Hub) join(sub *subscriber) *entry {
 		e := h.entries[key]
 		if e == nil || e.isClosed() {
 			sub.joinedAt = measure()
-			e = newEntry(key, sub.session, sub.joinedAt, h.options, h.logger, h.seams, h.forget)
+			e = newEntry(key, sub.session, sub.joinedAt, nil, h.options, h.logger, h.seams, h.forget)
 			h.entries[key] = e
-			e.add(sub)
+			// A new entry is open.
+			_, _ = e.add(sub)
 			e.start()
 			h.mu.Unlock()
 			return e
@@ -249,6 +259,14 @@ func (h *Hub) join(sub *subscriber) *entry {
 		if e.join(sub, measure) {
 			return e
 		}
+	}
+}
+
+// sessionKey returns the key of the entry for session's file.
+func sessionKey(session Session) entryKey {
+	return entryKey{
+		path:        session.Target.ResolvedPath(),
+		compression: fs.CompressionFormat(session.FilePath),
 	}
 }
 
