@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/mimecast/dtail/internal/ctxutil"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 )
@@ -131,6 +132,9 @@ type ReadFile struct {
 	pipeInput *os.File
 	// truncateCheck is an optional test seam for the periodic child goroutine.
 	truncateCheck func(context.Context, chan<- struct{})
+	// rotationDrainPoll is an optional test seam replacing the wait before
+	// each poll of a rotated-away file (see pollRotatedFile).
+	rotationDrainPoll func(context.Context) bool
 	// bufferRecycleObserver is an optional test seam for asserting buffer
 	// ownership without relying on sync.Pool retrieval order.
 	bufferRecycleObserver func(*bytes.Buffer)
@@ -420,6 +424,15 @@ func (f *ReadFile) periodicTruncateCheck(ctx context.Context, truncate chan<- st
 			return
 		}
 	}
+}
+
+// pollRotatedFile waits before the next poll of a file the path was rotated
+// away from, and reports false when ctx ended meanwhile.
+func (f *ReadFile) pollRotatedFile(ctx context.Context) bool {
+	if f.rotationDrainPoll != nil {
+		return f.rotationDrainPoll(ctx)
+	}
+	return ctxutil.Sleep(ctx, rotationDrainPollInterval)
 }
 
 func (f *ReadFile) startPeriodicTruncateCheck(ctx context.Context, cancel context.CancelFunc,

@@ -397,14 +397,11 @@ func (g startGatedProcessor) SourceRestarted() {
 // the rotation: without one, the reader moves on to the new file while the
 // session still skips the lines up to where it rejoined.
 //
-// A follow reader that reached the end of the file, and finds the path
-// rotated when it checks at that end, opens the new file without reading
-// the old one again: a line appended to the old file between its last read
-// and that check is not read. That holds for the shared reader and a private
-// reader alike, and which of the two loses such a line is a matter of timing.
-// So both are held right before a read while the last old line is appended
-// and the path rotated, and both read it from the old file after the
-// rotation.
+// Both readers are held right before a read while the last old line is
+// appended and the path rotated, and both read it from the old file after the
+// rotation. A line appended between a reader's last read and its rotation
+// check is drained from the old file too (see
+// TestSharedAndPrivateReadsDrainTheRotatedFile).
 func TestRotationRightAfterARejoin(t *testing.T) {
 	for _, lastOld := range []string{"tail old", ""} {
 		t.Run(fmt.Sprintf("last old line %q", lastOld), func(t *testing.T) {

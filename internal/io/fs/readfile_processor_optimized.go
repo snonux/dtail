@@ -19,9 +19,22 @@ import (
 
 const maxReadScannerTokenSize = 1024 * 1024
 
+// After a follow read found its file rotated away from the path, it reads the
+// old file to its end, then polls it rotationDrainPollInterval later for lines
+// that a writer which has not reopened the path yet still appends, again after
+// every poll that found some, but at most maxRotationDrainPolls times, so that
+// such a writer cannot keep the reader from moving on to the new file.
+const (
+	rotationDrainPollInterval = 100 * time.Millisecond
+	maxRotationDrainPolls     = 10
+)
+
 type followLineProcessor struct {
 	file        *ReadFile
 	filter      *filteringProcessor
+	processor   line.Processor
+	reader      *bufio.Reader
+	buf         []byte
 	partialLine *bytes.Buffer
 	// positions tells a line.PositionObserver where each line ends; nil for
 	// every other processor.
@@ -243,36 +256,26 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 
 	partialLine := pool.BytesBuffer.Get().(*bytes.Buffer)
 	defer pool.RecycleBytesBuffer(partialLine)
+	bufPtr := pool.GetMediumBuffer()
+	defer pool.PutMediumBuffer(bufPtr)
 	lineProcessor := followLineProcessor{
 		file:        f,
 		filter:      filterProcessor,
+		processor:   processor,
+		reader:      reader,
+		buf:         (*bufPtr)[:cap(*bufPtr)],
 		partialLine: partialLine,
 		positions:   positions,
 		atLineStart: f.handOverAtEOF != nil && startsLine(fd),
 	}
 
-	bufPtr := pool.GetMediumBuffer()
-	defer pool.PutMediumBuffer(bufPtr)
-
 	for {
-		buf := (*bufPtr)[:cap(*bufPtr)]
-		positions.readStarting()
-		n, readErr := reader.Read(buf)
-		if err := positions.readReturned(n); err != nil {
+		_, readErr, stop, err := lineProcessor.read(ctx)
+		if err != nil {
 			return err
 		}
-
-		if n > 0 {
-			stop, err := lineProcessor.processChunk(ctx, buf[:n])
-			if err != nil {
-				return err
-			}
-			if stop {
-				return nil
-			}
-			if flushErr := processor.Flush(); flushErr != nil {
-				return flushErr
-			}
+		if stop {
+			return nil
 		}
 
 		if readErr != nil {
@@ -289,6 +292,25 @@ func (f *ReadFile) tailWithProcessorOptimized(ctx context.Context, fd *os.File, 
 			return lineProcessor.finish()
 		}
 	}
+}
+
+// read reads the next bytes of the file, as many as the buffer holds, feeds
+// the lines they complete and flushes the processor. It returns how many bytes
+// it read and the error the read returned, and reports whether the read
+// stops because a max-count limit was reached, or the error that ends it.
+func (p *followLineProcessor) read(ctx context.Context) (n int, readErr error, stop bool, err error) {
+	p.positions.readStarting()
+	n, readErr = p.reader.Read(p.buf)
+	if err := p.positions.readReturned(n); err != nil {
+		return n, readErr, false, err
+	}
+	if n == 0 {
+		return n, readErr, false, nil
+	}
+	if stop, err := p.processChunk(ctx, p.buf[:n]); stop || err != nil {
+		return n, readErr, stop, err
+	}
+	return n, readErr, false, p.processor.Flush()
 }
 
 // processChunk feeds the lines that data, the bytes of one read, completes.
@@ -353,6 +375,11 @@ func (p *followLineProcessor) handleReadError(ctx context.Context, fd *os.File,
 	}
 
 	truncated, offset, file, err := p.file.inspectOpenFile(fd)
+	if truncated && leftPath(err) {
+		if keepGoing, drainErr := p.drainRotatedFile(ctx); !keepGoing || drainErr != nil {
+			return false, drainErr
+		}
+	}
 	if truncated {
 		return p.handleTruncation(fd, reader, err)
 	}
@@ -365,6 +392,62 @@ func (p *followLineProcessor) handleReadError(ctx context.Context, fd *os.File,
 	default:
 	}
 	return ctxutil.Sleep(ctx, 100*time.Millisecond), nil
+}
+
+// leftPath reports whether err, from inspectOpenFile, says that the path no
+// longer names the open file: it was rotated, or removed and not recreated
+// yet, as between the rename and the create of a rotation.
+func leftPath(err error) bool {
+	return errors.Is(err, errFileRotated) || errors.Is(err, os.ErrNotExist)
+}
+
+// drainRotatedFile feeds what was appended to the open file, which the path
+// was rotated away from, since the reader found the end of it: what a writer
+// appended before the rotation but after the reader's last read, and what a
+// writer that has not reopened the path yet appends shortly after the
+// rotation (see rotationDrainPollInterval). The lines keep their order,
+// numbering and positions in the old file. A last line of the old file that
+// is still unfinished when draining ends is dropped, as a follow read always
+// dropped the pending line at a rotation: every line a follow read feeds with
+// a position ends at a newline or where it split a line longer than the
+// maximum line length, which shared readers rely on (see readhub), and a
+// writer may still finish it. It returns false, with the error that ends the
+// read, if any, when the read ends while draining: canceled, or stopped by a
+// max-count limit.
+func (p *followLineProcessor) drainRotatedFile(ctx context.Context) (bool, error) {
+	for polls := 0; ; polls++ {
+		got, keepGoing, err := p.readToEnd(ctx)
+		if !keepGoing || err != nil {
+			return false, err
+		}
+		if (polls > 0 && !got) || polls == maxRotationDrainPolls {
+			return true, nil
+		}
+		if !p.file.pollRotatedFile(ctx) {
+			return false, nil
+		}
+	}
+}
+
+// readToEnd reads and feeds the open file up to its current end. It reports
+// whether it read anything, and returns false, with the error that ends the
+// read, if any, when the read ends.
+func (p *followLineProcessor) readToEnd(ctx context.Context) (got, keepGoing bool, err error) {
+	for ctx.Err() == nil {
+		n, readErr, stop, err := p.read(ctx)
+		got = got || n > 0
+		switch {
+		case err != nil:
+			return got, false, err
+		case stop:
+			return got, false, nil
+		case errors.Is(readErr, io.EOF):
+			return got, true, nil
+		case readErr != nil:
+			return got, false, readErr
+		}
+	}
+	return got, false, nil
 }
 
 // handsOver reports whether the read, which reached the end of the file at
