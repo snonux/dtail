@@ -123,8 +123,8 @@ func drained(t *testing.T, server *sharedReadTestServer) string {
 func runRead(t *testing.T, server *sharedReadTestServer, rc groupReadCase, path, share string) {
 	t.Helper()
 	cmd := newReadCommandWithDependencies(server.readCommandDependencies(), rc.mode, nil)
-	target, ok := server.PrepareReadTarget(path)
-	if !ok {
+	target, err := server.PrepareReadTarget(path)
+	if err != nil {
 		t.Fatalf("test setup: no target for %s", path)
 	}
 	re, err := regex.New(rc.regex, regex.Default)

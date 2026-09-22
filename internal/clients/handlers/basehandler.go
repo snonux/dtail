@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mimecast/dtail/internal"
@@ -52,6 +54,33 @@ type baseHandler struct {
 
 	sessionAcks chan SessionAck
 	logger      clientlog.Logger
+
+	// closeReceived is set when the server started the session's close
+	// handshake, i.e. the session ended normally (see Outcome).
+	closeReceived atomic.Bool
+	failureMu     sync.Mutex
+	// failures are the distinct reasons of the failed commands the server
+	// reported, in the order of their first report.
+	failures []string
+}
+
+// maxReportedFailures bounds how many distinct failure reasons a session
+// keeps; servers send a few fixed ones.
+const maxReportedFailures = 16
+
+// SessionOutcome is how the server ended a session, as far as the client
+// knows.
+type SessionOutcome struct {
+	// Completed is true when the server ended the session with its close
+	// handshake, after it had sent all of the session's output. A session
+	// that ended otherwise (connection lost, server killed or shut down, the
+	// client canceled it) is incomplete.
+	Completed bool
+	// Failures are the distinct reasons of the commands the server reported
+	// as failed (protocol.HiddenCommandFailedPrefix), in the order of their
+	// first report. Only servers advertising
+	// protocol.CapabilityCommandFailureV1 report failures.
+	Failures []string
 }
 
 // SessionAck is a parsed hidden acknowledgement for SESSION START/UPDATE requests.
@@ -104,6 +133,14 @@ func (h *baseHandler) HasCapability(name string) bool {
 
 	_, ok := h.capabilities[name]
 	return ok
+}
+
+// Outcome returns how the session ended so far; call it once the handler is
+// done.
+func (h *baseHandler) Outcome() SessionOutcome {
+	h.failureMu.Lock()
+	defer h.failureMu.Unlock()
+	return SessionOutcome{Completed: h.closeReceived.Load(), Failures: slices.Clone(h.failures)}
 }
 
 func (h *baseHandler) ReportServerError(message string) {
@@ -329,11 +366,27 @@ func (h *baseHandler) handleHiddenMessage(message string) {
 		strings.HasPrefix(message, protocol.HiddenSessionUpdateOKPrefix),
 		strings.HasPrefix(message, protocol.HiddenSessionErrorPrefix):
 		h.handleSessionAckMessage(message)
+	case strings.HasPrefix(message, protocol.HiddenCommandFailedPrefix):
+		h.handleCommandFailedMessage(message)
 	case strings.HasPrefix(message, ".syn close connection"):
+		h.closeReceived.Store(true)
 		if err := h.SendMessage(".ack close connection"); err != nil {
 			h.log().Debug(h.server, "Unable to acknowledge close connection", err)
 		}
 		h.Shutdown()
+	}
+}
+
+func (h *baseHandler) handleCommandFailedMessage(message string) {
+	reason := strings.TrimSpace(strings.TrimPrefix(message, protocol.HiddenCommandFailedPrefix))
+	if reason == "" {
+		reason = "unknown reason"
+	}
+	h.log().Debug(h.server, "Server reported a failed command", reason)
+	h.failureMu.Lock()
+	defer h.failureMu.Unlock()
+	if len(h.failures) < maxReportedFailures && !slices.Contains(h.failures, reason) {
+		h.failures = append(h.failures, reason)
 	}
 }
 

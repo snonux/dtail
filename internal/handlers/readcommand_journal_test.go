@@ -52,10 +52,9 @@ func (s *journalReadTestServer) ReaderLogger() logging.Logger {
 	return logging.NopLogger{}
 }
 
-func (s *journalReadTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarget, bool) {
+func (s *journalReadTestServer) PrepareReadTarget(path string) (fs.ValidatedReadTarget, error) {
 	s.prepared = append(s.prepared, path)
-	target, err := fs.NewValidatedJournalTarget(path)
-	return target, err == nil
+	return fs.NewValidatedJournalTarget(path)
 }
 
 func (s *journalReadTestServer) readCommandDependencies() readCommandDependencies {

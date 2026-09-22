@@ -87,6 +87,7 @@ func (r *readCommand) restartPrivately(ctx context.Context, ltx lcontext.LContex
 	reader, err := makeReader(options, omode.TailClient, false)
 	if err != nil {
 		r.sendServerMessage(ctx, r.logger.Warn(r.logContext, "Unable to create file reader", err))
+		r.reportFailure(ctx, readFailureReader)
 		return
 	}
 	r.executeReadLoop(ctx, ltx, options.path, options.globID, re, reader,

@@ -17,7 +17,7 @@ func TestSchedulerRunJobDisablesAuthKeyRegistration(t *testing.T) {
 	var capturedArgs config.Args
 	s.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
 		capturedArgs = args
-		if mode != clients.CumulativeMode {
+		if mode != clients.ScheduledMode {
 			t.Fatalf("Unexpected client mode: %v", mode)
 		}
 		return immediateBackgroundClient{}, nil

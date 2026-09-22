@@ -338,45 +338,103 @@ func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 			s.newMaprClient = recorder.newClient
 			s.runJobs(context.Background())
 
-			// The waves are the runs of consecutive jobs, in the configured
-			// order, with the same read share; a job running alone has none.
-			var waves []int
-			prev := ""
-			jobsOfShare := map[string]int{}
-			for i := range tt.jobs {
-				share := recorder.shares[fmt.Sprintf("j%d", i)]
-				switch {
-				case share.IsZero():
-					waves = append(waves, 1)
-				case share.Group == prev:
-					waves[len(waves)-1]++
-				case jobsOfShare[share.Group] > 0:
-					t.Fatalf("read share %+v of j%d is not in one wave", share, i)
-				default:
-					waves = append(waves, 1)
-				}
-				prev = share.Group
-				if !share.IsZero() {
-					jobsOfShare[share.Group]++
-					if share.Members < 2 {
-						t.Errorf("j%d has a read share of %d members", i, share.Members)
-					}
-				}
-			}
-			if !reflect.DeepEqual(waves, tt.wantWaves) {
-				t.Errorf("waves = %v, want %v", waves, tt.wantWaves)
-			}
-			for i := range tt.jobs {
-				share := recorder.shares[fmt.Sprintf("j%d", i)]
-				if !share.IsZero() && (share.Members != jobsOfShare[share.Group] || share.Members != recorder.started[share.Group]) {
-					t.Errorf("j%d read share %+v: %d jobs have it, %d started", i, share,
-						jobsOfShare[share.Group], recorder.started[share.Group])
-				}
-			}
-			if want := slices.Max(tt.wantWaves); recorder.maxRunning != want {
-				t.Errorf("at most %d jobs ran at the same time, want %d", recorder.maxRunning, want)
-			}
+			recorder.assertWaves(t, tt.jobs, tt.wantWaves)
 		})
+	}
+}
+
+// failingClient is a client whose run fails.
+type failingClient struct{}
+
+func (failingClient) Start(context.Context, <-chan string) int { return 1 }
+
+// The final runs of jobs on the same files that failed within their
+// TimeRange run as their runs within the TimeRange did: together, in waves of
+// at most a quarter of MaxConnections, each wave sharing a read among its
+// jobs, in the configured order.
+func TestSchedulerRunsFinalRunsInBoundedWaves(t *testing.T) {
+	dir := t.TempDir()
+	var schedule []config.Scheduled
+	for i := range 7 {
+		name := fmt.Sprintf("j%d", i)
+		job := scheduledJob(t, name, "/a.log", filepath.Join(dir, name))
+		job.TimeRange = [2]int{1, 2}
+		schedule = append(schedule, job)
+	}
+	s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
+		SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: 12, Schedule: schedule,
+	}}, jobTestLoggers)
+	now := time.Date(2026, 9, 22, 1, 30, 0, 0, time.Local)
+	s.now = func() time.Time { return now }
+	recorder := &waveRecorder{t: t, shares: map[string]config.ReadShare{},
+		started: map[string]int{}, joined: map[string]chan struct{}{}}
+	var mu sync.Mutex
+	var modes []clients.MaprClientMode
+	s.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
+		mu.Lock()
+		modes = append(modes, mode)
+		mu.Unlock()
+		if mode == clients.ScheduledMode {
+			return failingClient{}, nil
+		}
+		return recorder.newClient(args, mode)
+	}
+
+	s.runJobs(context.Background())
+	if len(recorder.shares) != 0 {
+		t.Fatalf("final runs ran within the TimeRange: %v", recorder.shares)
+	}
+	now = time.Date(2026, 9, 22, 2, 0, 0, 0, time.Local)
+	s.runJobs(context.Background())
+
+	recorder.assertWaves(t, len(schedule), []int{3, 3, 1})
+	want := slices.Concat(slices.Repeat([]clients.MaprClientMode{clients.ScheduledMode}, 7),
+		slices.Repeat([]clients.MaprClientMode{clients.ScheduledPartialMode}, 7))
+	if !slices.Equal(modes, want) {
+		t.Errorf("jobs ran with modes %v, want %v", modes, want)
+	}
+}
+
+// assertWaves checks that the jobs j0 to j<jobs-1> ran in waves of
+// wantWaves jobs, in the configured order: the runs of consecutive jobs with
+// the same read share, all started together; a job running alone has none.
+func (r *waveRecorder) assertWaves(t *testing.T, jobs int, wantWaves []int) {
+	t.Helper()
+	var waves []int
+	prev := ""
+	jobsOfShare := map[string]int{}
+	for i := range jobs {
+		share := r.shares[fmt.Sprintf("j%d", i)]
+		switch {
+		case share.IsZero():
+			waves = append(waves, 1)
+		case share.Group == prev:
+			waves[len(waves)-1]++
+		case jobsOfShare[share.Group] > 0:
+			t.Fatalf("read share %+v of j%d is not in one wave", share, i)
+		default:
+			waves = append(waves, 1)
+		}
+		prev = share.Group
+		if !share.IsZero() {
+			jobsOfShare[share.Group]++
+			if share.Members < 2 {
+				t.Errorf("j%d has a read share of %d members", i, share.Members)
+			}
+		}
+	}
+	if !reflect.DeepEqual(waves, wantWaves) {
+		t.Errorf("waves = %v, want %v", waves, wantWaves)
+	}
+	for i := range jobs {
+		share := r.shares[fmt.Sprintf("j%d", i)]
+		if !share.IsZero() && (share.Members != jobsOfShare[share.Group] || share.Members != r.started[share.Group]) {
+			t.Errorf("j%d read share %+v: %d jobs have it, %d started", i, share,
+				jobsOfShare[share.Group], r.started[share.Group])
+		}
+	}
+	if want := slices.Max(wantWaves); r.maxRunning != want {
+		t.Errorf("at most %d jobs ran at the same time, want %d", r.maxRunning, want)
 	}
 }
 

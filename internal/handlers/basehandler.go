@@ -9,6 +9,7 @@ import (
 	"github.com/mimecast/dtail/internal"
 	"github.com/mimecast/dtail/internal/logging"
 	mapaggregate "github.com/mimecast/dtail/internal/mapr/aggregate"
+	"github.com/mimecast/dtail/internal/protocol"
 	user "github.com/mimecast/dtail/internal/sessionuser"
 )
 
@@ -171,6 +172,23 @@ func (h *baseHandler) shutdown(ctx context.Context) {
 	h.waitForCloseAcknowledgement(ctx)
 	h.cancelCommands()
 	h.done.Shutdown()
+}
+
+// Reasons a session command reports with reportCommandFailure; the read
+// command has its own (see readCommand.reportFailure).
+const (
+	commandFailureProtocol = protocol.CommandFailureDecode
+	commandFailureRejected = protocol.CommandFailureRejected
+	commandFailureUnknown  = protocol.CommandFailureUnknown
+	commandFailureMapQuery = protocol.CommandFailureMapQuery
+)
+
+// reportCommandFailure tells the client that a command of the session failed
+// (see protocol.HiddenCommandFailedPrefix). Like the error message sent before
+// it, it is queued before the command ends and so reaches the client before
+// the session's close handshake.
+func (h *baseHandler) reportCommandFailure(reason string) {
+	h.sendln(h.serverMessages, protocol.HiddenCommandFailedPrefix+reason)
 }
 
 // abortAfterPanic signals every session-owned producer and consumer to stop.
