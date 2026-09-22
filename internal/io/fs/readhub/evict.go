@@ -21,6 +21,8 @@ import (
 // at the eviction (see heldFile), so a rotation of the path, before the
 // eviction while the shared reader was still behind in the old file or while
 // the session handles its queue, does not cost it the rest of the old file.
+// Once the private reader caught up, the session rejoins a shared reader (see
+// rejoin.go).
 
 // evict stops deliveries to sub, whose queue had no room for missed, and
 // tells it to go on privately. The caller holds e.publishMu, so nothing is
@@ -72,7 +74,8 @@ func (e *entry) detach(sub *subscriber) (remaining int, found bool) {
 // readPrivately goes on with a private follow reader of the session's own
 // target, from where the session's read got to, until ctx ends. Like the read
 // command's retry loop, it reads the file again after a read ended, e.g.
-// after a rotation, with a new processor. held, if not nil, is the session's
+// after a rotation, with a new processor, and returns errRejoined when the
+// session rejoined a shared reader at the end of the file. held, if not nil, is the session's
 // descriptor of the file the shared reader had open when the session left it;
 // readPrivately closes it.
 func (r *sessionRead) readPrivately(ctx context.Context, held *os.File) error {
@@ -82,6 +85,9 @@ func (r *sessionRead) readPrivately(ctx context.Context, held *os.File) error {
 	}
 	for {
 		err := reader.StartFiltered(ctx, r.filter)
+		if errors.Is(err, fs.ErrHandedOver) {
+			return errRejoined
+		}
 		if errors.Is(err, fs.ErrStartOffsetFileChanged) {
 			r.readRotatedFile()
 			continue
@@ -133,6 +139,9 @@ func (r *sessionRead) privateReader(held *os.File) (*fs.ReadFile, error) {
 			"Position of the shared read unknown, following privately from the end of the file")
 	}
 	r.at.startAt(&options)
+	if r.rejoin != nil {
+		options.HandOverAtEOF = r.handOver
+	}
 	if held != nil && r.holds(held) {
 		options.StartFile = held
 	} else {

@@ -54,6 +54,17 @@ func (h *heldFile) take() *os.File {
 	return fd
 }
 
+// resume makes fd, which may be nil, the held descriptor again after it was
+// taken, when the session rejoined a shared reader, and closes one still
+// held.
+func (h *heldFile) resume(fd *os.File) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	closeHeld(h.file)
+	h.file = fd
+	h.ended = false
+}
+
 // close closes the held descriptor unless it was taken.
 func (h *heldFile) close() {
 	closeHeld(h.take())

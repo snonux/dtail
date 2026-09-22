@@ -61,6 +61,13 @@ type entry struct {
 	// announcement of a new read until the reader opened the file. Guarded by
 	// publishMu.
 	openedFile os.FileInfo
+	// published is where the read the subscribers were fed got to: the end
+	// of the last line published, or where the reader started in the file
+	// it opened before it published a line, or an unknown position from the
+	// announcement of a new read until the reader opened the file. Every
+	// line of that file ending past it is still to be published. An evicted
+	// session rejoins from there on (see rejoin). Guarded by publishMu.
+	published position
 }
 
 var (
@@ -70,12 +77,16 @@ var (
 )
 
 // newEntry makes the shared follow read of creator's file, which starts at
-// start, the end of the file when creator joined.
-func newEntry(key entryKey, creator Session, start position, options Options, logger logging.Logger,
-	seams hubSeams, onFailure func(*entry)) *entry {
+// start: the end of the file when creator joined, or where creator's private
+// read got to when it rejoins. startFile, if not nil, is a descriptor of
+// start's file, which the reader then reads first (see
+// fs.ReadOptions.StartFile) and closes.
+func newEntry(key entryKey, creator Session, start position, startFile *os.File, options Options,
+	logger logging.Logger, seams hubSeams, onFailure func(*entry)) *entry {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	e := &entry{
+		published: unknownPosition(),
 		key:       key,
 		path:      creator.FilePath,
 		options:   options,
@@ -100,6 +111,7 @@ func newEntry(key entryKey, creator Session, start position, options Options, lo
 		Logger:         logger,
 	}
 	start.startAt(&readOptions)
+	readOptions.StartFile = startFile
 	reader, err := fs.NewReadFile(readOptions)
 	if err != nil {
 		// NewReadFile only fails for an unsupported mode or target kind, or a
@@ -125,22 +137,27 @@ func (e *entry) stop() {
 	})
 }
 
-// add registers sub, unless the entry is closed; the first subscriber owns
-// the reader's target.
-func (e *entry) add(sub *subscriber) bool {
+// add registers sub, unless the entry is closed, and returns how many
+// subscribers the entry has now; the first subscriber owns the reader's
+// target.
+func (e *entry) add(sub *subscriber) (count int, added bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed {
-		return false
+		return len(e.subscribers), false
 	}
 	e.subscribers = append(e.subscribers, sub)
 	if e.owner == nil {
 		e.owner = sub
 	}
-	if count := len(e.subscribers); count > 1 {
-		e.logger.Info(e.path, "Shared follow read gained a subscriber", fmt.Sprintf("subscribers=%d", count))
-	}
-	return true
+	return len(e.subscribers), true
+}
+
+// markClosed makes the entry take no new subscriber: its reader failed.
+func (e *entry) markClosed() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.closed = true
 }
 
 // join adds sub to the running entry and records where its read starts: at
@@ -155,8 +172,12 @@ func (e *entry) join(sub *subscriber, measure func() position) bool {
 	defer e.publishMu.Unlock()
 	sub.joinedAt = measure()
 	sub.skip = newJoinSkip(sub.joinedAt, e.readPos)
-	if !e.add(sub) {
+	count, added := e.add(sub)
+	if !added {
 		return false
+	}
+	if count > 1 {
+		e.logger.Info(e.path, "Shared follow read gained a subscriber", fmt.Sprintf("subscribers=%d", count))
 	}
 	sub.held.set(openSame(e.seams.openFile, sub.session.Target, e.openedFile))
 	return true
@@ -186,6 +207,9 @@ func (e *entry) readUpTo(p position) {
 		return
 	}
 	e.openedFile = p.file
+	// The reader opened a file and starts reading it here: nothing of it is
+	// published yet.
+	e.published = p
 	for _, sub := range e.snapshot() {
 		sub.held.set(openSame(e.seams.openFile, sub.session.Target, p.file))
 	}
@@ -295,8 +319,11 @@ func (e *entry) publish(it item) {
 	e.publishMu.Lock()
 	defer e.publishMu.Unlock()
 	switch it.kind {
+	case chunkItem:
+		e.published = it.chunk.lineEnd(len(it.chunk.ends) - 1)
 	case reopenItem:
 		e.readPos = unknownPosition()
+		e.published = unknownPosition()
 		// A descriptor of the file read so far is of no use to a session
 		// that goes on with the new read.
 		e.openedFile = nil
@@ -305,6 +332,10 @@ func (e *entry) publish(it item) {
 		}
 	case restartItem:
 		e.readPos.offset = 0
+		e.published = position{offset: 0, file: e.readPos.file}
+	case failedItem:
+		e.published = unknownPosition()
+		e.markClosed()
 	}
 	for _, sub := range e.snapshot() {
 		if !sub.offer(it) {

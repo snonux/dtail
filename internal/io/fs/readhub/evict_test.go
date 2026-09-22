@@ -268,9 +268,20 @@ func TestEvictingTheLastSessionStopsTheSharedRead(t *testing.T) {
 	if hub.entryFor(file.path) != nil {
 		t.Error("the hub still lists a shared read without sessions")
 	}
+	if n := logger.count("Shared follow read stopped"); n != 1 {
+		t.Errorf("logged the stop %d times, want once", n)
+	}
 
 	close(gate)
 	waitFor(t, "session to read everything", func() bool { return slow.recorder.hasLine(lines[len(lines)-1]) })
+	// Having caught up privately, the session starts a new shared read.
+	waitFor(t, "session to rejoin", func() bool { return subscriberCount(hub, file.path) == 1 })
+	if n := logger.count("INFO", "rejoined", "subscribers=1"); n != 1 {
+		t.Errorf("logged the rejoin %d times, want once: %q", n, logger.lines)
+	}
+	file.appendLines("after rejoin")
+	lines = append(lines, "after rejoin")
+	waitFor(t, "session to get a line after its rejoin", func() bool { return slow.recorder.hasLine("after rejoin") })
 	wantLines, wantNums := expectedFollow(lcontext.LContext{}, regex.NewNoop(), lines)
 	if got := slow.recorder.lines(); !reflect.DeepEqual(got, wantLines) {
 		t.Errorf("session lines differ: %s", firstDifference(got, wantLines))
@@ -281,8 +292,8 @@ func TestEvictingTheLastSessionStopsTheSharedRead(t *testing.T) {
 	if err := slow.stop(t); err != nil {
 		t.Errorf("Follow() = %v, want nil", err)
 	}
-	if n := logger.count("Shared follow read stopped"); n != 1 {
-		t.Errorf("logged the stop %d times, want once", n)
+	if n := logger.count("Shared follow read stopped"); n != 2 {
+		t.Errorf("logged the stop %d times, want twice: after the eviction and after the rejoined session left", n)
 	}
 }
 

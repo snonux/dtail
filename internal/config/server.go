@@ -65,7 +65,8 @@ type ServerConfig struct {
 	// shared one-shot reads of scheduled job groups. By default, sessions that
 	// tail the same uncompressed file share one reader of it in dserver, and
 	// each session still filters and processes the lines on its own; a
-	// session that falls behind moves to a reader of its own for good. The
+	// session that falls behind moves to a reader of its own until it caught
+	// up, and then rejoins the shared reader. The
 	// scheduled jobs that one scheduler run starts together on the same files
 	// of this dserver read each file once for the group (at most
 	// MaxConcurrentCats members per group read, each holding one of the cat

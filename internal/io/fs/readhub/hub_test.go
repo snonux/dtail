@@ -228,7 +228,14 @@ func (f *follower) stop(t *testing.T) error {
 
 func waitFor(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(waitTimeout)
+	waitWithin(t, waitTimeout, what, condition)
+}
+
+// waitWithin is waitFor with a timeout of its own, for waits that include a
+// whole burst read under the race detector on a loaded machine.
+func waitWithin(t *testing.T, timeout time.Duration, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for !condition() {
 		if time.Now().After(deadline) {
 			t.Fatalf("timed out waiting for %s", what)
