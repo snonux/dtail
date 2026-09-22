@@ -459,21 +459,22 @@ scheduler run from the range end on (ignoring the backoff), later ones after
 the backoff, which goes on counting. Due final runs are grouped like runs
 within the TimeRange (same files, servers and discovery, no conflicting
 outfiles or reads, configured job order, waves of the same bound), and each
-wave shares its reads, so jobs that failed together read their files once
-for their final runs too. A final run logs `Starting final run of job <name>
-for outfile <path> after its TimeRange ended at <time>, ...`. If its only failures are
-file read failures, it writes what it could read (the pre-d9 behaviour) and
-the client logs `Writing partial mapreduce result after the job's TimeRange
-ended|<server>: <reason>; ...`; if every file could be read by then, it writes
-the complete result. A transport failure still writes nothing and the final
-runs go on after the backoff. The scheduler gives up on an outfile 24 hours
-after its TimeRange ended (`Giving up job <name> after <n> failures in a row:
-it wrote no outfile <path> within 24h0m0s ...`), and skips (and forgets) a
-final run whose outfile exists by then. For an outfile without dates, the next
-day's TimeRange takes over: its first run ignores the previous range's
-backoff, a failure within it starts the failure count and the final runs over,
-and runs within it are strict again and move the range end. Failures are
-forgotten when the job writes the outfile and with a dserver restart: after a restart within the TimeRange the job runs strictly again, but
+wave shares its reads, so jobs that failed together read their files once for
+their final runs too. A final run logs `Starting final run of job <name> for
+outfile <path> after its TimeRange ended at <time>, ...`. If its only failures
+are file read failures, it writes what it could read (the pre-d9 behaviour)
+and the client logs `Writing partial mapreduce result after the job's
+TimeRange ended|<server>: <reason>; ...`; if every file could be read by then,
+it writes the complete result. A transport failure still writes nothing and
+the final runs go on after the backoff. The scheduler gives up on an outfile
+24 hours after its TimeRange ended (`Giving up job <name> after <n> failures
+in a row: it wrote no outfile <path> within 24h0m0s ...`), and skips (and
+forgets) a final run whose outfile exists by then. For an outfile without
+dates, the next day's TimeRange takes over: its first run ignores the previous
+range's backoff, a failure within it starts the failure count and the final
+runs over, and runs within it are strict again and move the range end.
+Failures are forgotten when the job writes the outfile and with a dserver
+restart: after a restart within the TimeRange the job runs strictly again, but
 a dserver restarted after the TimeRange ended does not know the failed run and
 writes no outfile for that period.
 
