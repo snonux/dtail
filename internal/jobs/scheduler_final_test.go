@@ -367,3 +367,45 @@ func TestFinalRunsDueOnlyAfterTheTimeRangeEnded(t *testing.T) {
 		}
 	}
 }
+
+// TestSchedulerFinalRunReadsTheFilesOfTheLastFailedRun runs a job with an
+// outfile without dates and files of the day that fails on the 22nd and on
+// the 23rd: the final run after the TimeRange of the 23rd reads the files of
+// the 23rd, not those of the 22nd, the day of its first failure.
+func TestSchedulerFinalRunReadsTheFilesOfTheLastFailedRun(t *testing.T) {
+	start := time.Date(2026, 9, 22, 1, 0, 0, 0, time.Local)
+	b := newBackoffTestScheduler(t, filepath.Join(t.TempDir(), "result.csv"), start)
+	b.cfg.Server.Schedule[0].TimeRange = [2]int{1, 2}
+	b.cfg.Server.Schedule[0].Files = "/logs/app-$today.log"
+	b.statuses = slices.Repeat([]int{1}, 100)
+	newClient := b.newMaprClient
+	type run struct {
+		at    time.Time
+		files string
+	}
+	var finals []run
+	b.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
+		if mode == clients.ScheduledPartialMode {
+			finals = append(finals, run{at: b.now, files: args.What})
+		}
+		return newClient(args, mode)
+	}
+
+	b.runEveryMinute(25*60 + 1)
+
+	// The final runs until the TimeRange of the 23rd starts are those of the
+	// failed runs of the 22nd; the one when it ended is of the 23rd.
+	secondRange := time.Date(2026, 9, 23, 1, 0, 0, 0, time.Local)
+	if len(finals) < 2 || !finals[len(finals)-1].at.Equal(secondRange.Add(time.Hour)) {
+		t.Fatalf("final runs %v, want some on the 22nd and the last at %v", finals, secondRange.Add(time.Hour))
+	}
+	for _, final := range finals {
+		want := "/logs/app-20260922.log"
+		if final.at.After(secondRange) {
+			want = "/logs/app-20260923.log"
+		}
+		if final.files != want {
+			t.Errorf("final run at %v read %s, want %s", final.at, final.files, want)
+		}
+	}
+}

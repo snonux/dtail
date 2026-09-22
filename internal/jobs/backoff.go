@@ -59,8 +59,9 @@ type failedJobKey struct {
 
 // failedJob is a job whose runs for an outfile failed failures times in a row.
 type failedJob struct {
-	// due is the job's run that failed first: its files and outfile have the
-	// dates of that run filled in.
+	// due is the job's last run within its TimeRange that failed, without a
+	// read share: its files and outfile have the dates of that run filled in,
+	// and its final runs read those files.
 	due      dueJob
 	failures int
 	// retryAt is when the job may run again: the backoff after the start of
@@ -122,11 +123,14 @@ func (b *jobBackoff) fail(due dueJob, final bool, started, ended, rangeEnd time.
 	}
 	key := failedJobKey{job: due.job, outfile: due.outfile}
 	state, ok := b.failed[key]
-	if !ok {
-		state = failedJob{due: due}
+	if !ok || !final {
+		// A later run within the TimeRange, e.g. the next day's for an
+		// outfile without dates, may read other files: the final runs read
+		// the files of the last one. They share reads only within the
+		// group they run in.
+		state.due = due
+		state.due.args.ReadShare = config.ReadShare{}
 	}
-	// A final run runs alone.
-	state.due.args.ReadShare = config.ReadShare{}
 	state.failures++
 	if final {
 		state.finalRuns++

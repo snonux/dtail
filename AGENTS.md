@@ -453,11 +453,15 @@ Once the TimeRange of a failed run has ended (its end hour on the day of the
 run; for `[0, 24]` that is the next midnight, when the `$today` period of the
 outfile has passed; a job with no or an empty TimeRange never runs at all),
 the scheduler runs **final runs** (`clients.ScheduledPartialMode`) with the
-files and outfile (dates filled in) of the failed run, one at a time, before
-the scheduler run's other jobs: the first at the first scheduler run from the
-range end on (ignoring the backoff), later ones after the backoff, which goes
-on counting. A final run logs `Starting final run of job <name> for outfile
-<path> after its TimeRange ended at <time>, ...`. If its only failures are
+files and outfile (dates filled in) of the job's last failed run within its
+TimeRange, before the scheduler run's other jobs: the first at the first
+scheduler run from the range end on (ignoring the backoff), later ones after
+the backoff, which goes on counting. Due final runs are grouped like runs
+within the TimeRange (same files, servers and discovery, no conflicting
+outfiles or reads, configured job order, waves of the same bound), and each
+wave shares its reads, so jobs that failed together read their files once
+for their final runs too. A final run logs `Starting final run of job <name>
+for outfile <path> after its TimeRange ended at <time>, ...`. If its only failures are
 file read failures, it writes what it could read (the pre-d9 behaviour) and
 the client logs `Writing partial mapreduce result after the job's TimeRange
 ended|<server>: <reason>; ...`; if every file could be read by then, it writes

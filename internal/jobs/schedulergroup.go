@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -38,50 +39,117 @@ func (d dueJob) groupKey() jobGroupKey {
 	return jobGroupKey{files: d.args.What, servers: d.args.ServersStr, discovery: d.args.Discovery}
 }
 
-// nextGroup evaluates the first pending job at the current time and, if it
-// is due, groups it with the pending jobs that are due at the same time and
+// pendingRun is a run the scheduler may start in its current run: a job run
+// within the job's TimeRange (scheduledRun) or the final run of a failed job
+// (finalRun).
+type pendingRun interface {
+	// name is the name of the run's job.
+	name() string
+	// evaluate returns the client arguments of the run at now, or why it is
+	// not due.
+	evaluate(s *scheduler, now time.Time) (dueJob, string)
+	// footprint returns what the run reads and writes at now.
+	footprint(now time.Time) jobFootprint
+}
+
+// scheduledRun is a run of job within its TimeRange.
+type scheduledRun struct {
+	job *config.Scheduled
+}
+
+func (r scheduledRun) name() string { return r.job.Name }
+
+func (r scheduledRun) evaluate(s *scheduler, now time.Time) (dueJob, string) {
+	return s.evaluate(r.job, now)
+}
+
+func (r scheduledRun) footprint(now time.Time) jobFootprint {
+	return footprintAt(r.job, now)
+}
+
+// finalRun is the final run of a job whose runs failed (see jobBackoff),
+// with the files and the outfile of its last failed run within its TimeRange.
+type finalRun struct {
+	state failedJob
+}
+
+func (r finalRun) name() string { return r.state.due.job.Name }
+
+// evaluate returns the final run, or why it is not due: its outfile exists by
+// now, and then the job's failures for it are forgotten.
+func (r finalRun) evaluate(s *scheduler, _ time.Time) (dueJob, string) {
+	if _, err := os.Stat(r.state.due.outfile); !os.IsNotExist(err) {
+		s.backoff.forget(r.state)
+		return dueJob{}, "Not running final run as outfile already exists: " + r.state.due.outfile
+	}
+	due := r.state.due
+	due.final = true
+	due.rangeEnd = r.state.rangeEnd
+	return due, ""
+}
+
+func (r finalRun) footprint(time.Time) jobFootprint {
+	return footprintOf(r.state.due.args.What, r.state.due.outfile)
+}
+
+// nextGroup evaluates the first pending run at the current time and, if it
+// is due, groups it with the pending runs that are due at the same time and
 // read the same files from the same servers with the same discovery. It
-// returns the group, empty when the first job is not due, and the jobs still
+// returns the group, empty when the first run is not due, and the runs still
 // pending, in their order; those are evaluated again when their group starts.
 //
-// The jobs of a group run together, before the jobs that stay pending. So
-// that the same jobs run and write the same outfiles as when every job ran on
-// its own in the configured order, a job joins the group only if it does not
-// conflict (see jobFootprint.conflicts) with a job of the group or with an
-// earlier job that stays pending. A job that writes the outfile of such a job
-// thus stays pending, runs after it and, as before, only if that job did not
-// write the outfile. dserver bounds how many members share a read by its own
-// cat slots; the other members read on their own.
+// The runs of a group run together, before the runs that stay pending. So
+// that the same jobs run and write the same outfiles as when every run ran on
+// its own in order, a run joins the group only if it does not conflict (see
+// jobFootprint.conflicts) with a run of the group or with an earlier run that
+// stays pending. A run that writes the outfile of such a run thus stays
+// pending, runs after it and, as before, only if that run did not write the
+// outfile. dserver bounds how many members share a read by its own cat slots;
+// the other members read on their own.
 //
-// A group has at most groupLimit jobs; the other jobs that could join it stay
-// pending and form the next groups, each a wave of at most groupLimit jobs
+// A group has at most groupLimit runs; the other runs that could join it stay
+// pending and form the next groups, each a wave of at most groupLimit runs
 // sharing reads among themselves.
-func (s *scheduler) nextGroup(ctx context.Context, pending []*config.Scheduled) ([]dueJob, []*config.Scheduled) {
+func (s *scheduler) nextGroup(ctx context.Context, pending []pendingRun) ([]dueJob, []pendingRun) {
 	now := s.now()
-	first, reason := s.evaluate(pending[0], now)
+	first, reason := pending[0].evaluate(s, now)
 	if reason != "" {
-		s.log().Debug(pending[0].Name, reason)
+		s.log().Debug(pending[0].name(), reason)
 		return nil, pending[1:]
 	}
 	group := []dueJob{first}
 	key := first.groupKey()
 	limit := s.groupLimit(ctx, first.args)
-	// before holds the footprints of the group's jobs and of the earlier
-	// jobs that stay pending: the jobs a later job must not conflict with to
+	// before holds the footprints of the group's runs and of the earlier
+	// runs that stay pending: the runs a later run must not conflict with to
 	// join the group.
-	before := []jobFootprint{footprintAt(first.job, now)}
-	var rest []*config.Scheduled
-	for _, job := range pending[1:] {
-		footprint := footprintAt(job, now)
-		due, reason := s.evaluate(job, now)
+	before := []jobFootprint{pending[0].footprint(now)}
+	var rest []pendingRun
+	for _, run := range pending[1:] {
+		footprint := run.footprint(now)
+		due, reason := run.evaluate(s, now)
 		if len(group) >= limit || reason != "" || due.groupKey() != key || footprint.conflictsWithAny(before) {
-			rest = append(rest, job)
+			rest = append(rest, run)
 		} else {
 			group = append(group, due)
 		}
 		before = append(before, footprint)
 	}
 	return group, rest
+}
+
+// runPending runs pending, one group after another (see nextGroup).
+func (s *scheduler) runPending(ctx context.Context, pending []pendingRun) {
+	for len(pending) > 0 {
+		if ctx.Err() != nil {
+			return
+		}
+		var group []dueJob
+		group, pending = s.nextGroup(ctx, pending)
+		if len(group) > 0 {
+			s.runGroup(ctx, group)
+		}
+	}
 }
 
 // groupLimit returns how many jobs connecting to the servers of args may run
@@ -139,14 +207,19 @@ type jobFootprint struct {
 }
 
 func footprintAt(job *config.Scheduled, now time.Time) jobFootprint {
+	return footprintOf(fillDatesAt(job.Files, now), fillDatesAt(job.Outfile, now))
+}
+
+// footprintOf returns the footprint of a job reading files, a comma separated
+// list of patterns, and writing outfile, both with their dates filled in.
+func footprintOf(files, outfile string) jobFootprint {
 	var footprint jobFootprint
-	for _, pattern := range strings.Split(fillDatesAt(job.Files, now), ",") {
+	for _, pattern := range strings.Split(files, ",") {
 		if pattern = strings.TrimSpace(pattern); pattern == "" {
 			continue
 		}
 		footprint.reads = append(footprint.reads, filePatterns(pattern)...)
 	}
-	outfile := fillDatesAt(job.Outfile, now)
 	for _, path := range []string{absPath(outfile), outfileKey(outfile)} {
 		for _, suffix := range []string{"", ".tmp", ".query", ".query.tmp"} {
 			footprint.writes = append(footprint.writes, path+suffix)
@@ -240,7 +313,11 @@ func (s *scheduler) runGroup(ctx context.Context, group []dueJob) {
 		names[i] = group[i].job.Name
 		group[i].args.ReadShare = share
 	}
-	s.log().Info(fmt.Sprintf("Starting job group of %d jobs reading %s together", len(group), group[0].args.What),
+	kind := "job group"
+	if group[0].final {
+		kind = "final run group"
+	}
+	s.log().Info(fmt.Sprintf("Starting %s of %d jobs reading %s together", kind, len(group), group[0].args.What),
 		"jobs="+strings.Join(names, ","))
 
 	var wg sync.WaitGroup

@@ -1,9 +1,11 @@
 package jobs
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -79,31 +81,23 @@ func wait(ctx context.Context, duration time.Duration) bool {
 	}
 }
 
-// runJobs runs the enabled jobs that are due, one group after another (see
-// nextGroup). Like the scheduler that ran every job on its own, it checks a
-// job's time range, fills the dates into its files and outfile and checks
-// that the outfile does not exist yet right before the job's group starts.
+// runJobs runs the final runs that are due (see runFinalJobs) and then the
+// enabled jobs that are due, one group after another (see nextGroup). Like
+// the scheduler that ran every job on its own, it checks a job's time range,
+// fills the dates into its files and outfile and checks that the outfile does
+// not exist yet right before the job's group starts.
 func (s *scheduler) runJobs(ctx context.Context) {
 	s.runFinalJobs(ctx)
-	var pending []*config.Scheduled
+	var pending []pendingRun
 	for i := range s.cfg.Server.Schedule {
 		job := &s.cfg.Server.Schedule[i]
 		if !job.Enable {
 			s.log().Debug(job.Name, "Not running job as not enabled")
 			continue
 		}
-		pending = append(pending, job)
+		pending = append(pending, scheduledRun{job: job})
 	}
-	for len(pending) > 0 {
-		if ctx.Err() != nil {
-			return
-		}
-		var group []dueJob
-		group, pending = s.nextGroup(ctx, pending)
-		if len(group) > 0 {
-			s.runGroup(ctx, group)
-		}
-	}
+	s.runPending(ctx, pending)
 }
 
 // runJob runs job now unless its outfile exists; it does not check the job's
@@ -165,9 +159,12 @@ func (s *scheduler) prepare(job *config.Scheduled, now time.Time) (dueJob, strin
 	return dueJob{job: job, args: args, outfile: outfile, rangeEnd: timeRangeEnd(job, now)}, ""
 }
 
-// runFinalJobs runs, one after another, the final runs of the jobs whose runs
-// failed and whose TimeRange ended since (see jobBackoff): they write what
-// they could read, unless their outfile exists by now.
+// runFinalJobs runs the final runs of the jobs whose runs failed and whose
+// TimeRange ended since (see jobBackoff): they write what they could read,
+// unless their outfile exists by now. They run in the order of their jobs in
+// the schedule and form groups by the same rules, and bounded by the same
+// waves, as the runs within the jobs' TimeRange (see nextGroup), with the
+// files and the outfiles of their failed runs; each group shares its reads.
 func (s *scheduler) runFinalJobs(ctx context.Context) {
 	now := s.now()
 	due, expired := s.backoff.finalRunsDue(now, func(state failedJob) bool {
@@ -180,23 +177,26 @@ func (s *scheduler) runFinalJobs(ctx context.Context) {
 			"within %v after its TimeRange ended at %s", state.due.job.Name, state.failures, state.due.outfile,
 			failedJobFinalRunWindow, state.rangeEnd.Format(time.DateTime)))
 	}
-	for _, state := range due {
-		if ctx.Err() != nil {
-			return
-		}
-		if _, err := os.Stat(state.due.outfile); !os.IsNotExist(err) {
-			s.log().Debug(state.due.job.Name, "Not running final run as outfile already exists: "+state.due.outfile)
-			s.backoff.forget(state)
-			continue
-		}
-		final := state.due
-		final.final = true
-		final.rangeEnd = state.rangeEnd
-		s.log().Info(fmt.Sprintf("Starting final run of job %s for outfile %s after its TimeRange ended at %s, "+
-			"it writes what it can read unless a server fails", final.job.Name, final.outfile,
-			state.rangeEnd.Format(time.DateTime)))
-		s.runDueJob(ctx, final)
+	// finalRunsDue sorts by job name and outfile; order the runs of the
+	// jobs as in the schedule, which the conflict rules of nextGroup keep.
+	slices.SortStableFunc(due, func(a, b failedJob) int {
+		return cmp.Compare(s.scheduleIndex(a.due.job), s.scheduleIndex(b.due.job))
+	})
+	pending := make([]pendingRun, len(due))
+	for i, state := range due {
+		pending[i] = finalRun{state: state}
 	}
+	s.runPending(ctx, pending)
+}
+
+// scheduleIndex returns the index of job in the schedule, or -1.
+func (s *scheduler) scheduleIndex(job *config.Scheduled) int {
+	for i := range s.cfg.Server.Schedule {
+		if &s.cfg.Server.Schedule[i] == job {
+			return i
+		}
+	}
+	return -1
 }
 
 func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
@@ -216,6 +216,11 @@ func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
 	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	if due.final {
+		s.log().Info(fmt.Sprintf("Starting final run of job %s for outfile %s after its TimeRange ended at %s, "+
+			"it writes what it can read unless a server fails", job.Name, due.outfile,
+			due.rangeEnd.Format(time.DateTime)))
+	}
 	s.log().Info(fmt.Sprintf("Starting job %s", job.Name))
 	started := s.now()
 	status := client.Start(jobCtx, make(chan string))
