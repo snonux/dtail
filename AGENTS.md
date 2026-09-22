@@ -390,21 +390,22 @@ middle of a read call (it flags each read before it starts, atomically, and
 clears the flag under `publishMu` once it recorded how far it read), and has
 neither read past P (e.g. an unfinished line: should F then be truncated to a
 size between P and it, the reader would restart and publish the rewritten
-lines up to P again) nor published a line ending past P; it then skips published lines
-ending at or before P, so the hand-over loses and repeats no line, and keeps
-its filter (numbering, context, max-count state), processor and a held
-descriptor of F. If no shared reader exists (every session was evicted), the
-session starts a new one at P, reading from a descriptor of F opened through
-its own target. Otherwise (reader in a read, read or published past P, on another
-file, between reads, failed) it stays private and tries again at a later end of the
-file; a declined attempt, or an eviction within 30 s of a rejoin, pauses the
-attempts for 1 s doubling up to 30 s. Each rejoin is logged at INFO ("Evicted subscriber rejoined the shared
-follow read", with the subscriber count). A large burst (about 55-60 MiB
-written at once in the checks) can evict sessions that are merely slower than
-the reader; they rejoin afterwards. In a check with 10 sessions after a
-300,000-line burst, dserver read about 40 MiB for the next 200,000 lines
-instead of about 380 MiB without rejoin (CPU time differences were within
-noise), and every output equalled sharing off.
+lines up to P again) nor published a line ending past P; it then skips
+published lines ending at or before P, so the hand-over loses and repeats no
+line, and keeps its filter (numbering, context, max-count state), processor
+and a held descriptor of F. If no shared reader exists (every session was
+evicted), the session starts a new one at P, reading from a descriptor of F
+opened through its own target. Otherwise (reader in a read, read or published
+past P, on another file, between reads, failed) it stays private and tries
+again at a later end of the file; a declined attempt, or an eviction within 30
+s of a rejoin, pauses the attempts for 1 s doubling up to 30 s. Each rejoin is
+logged at INFO ("Evicted subscriber rejoined the shared follow read", with the
+subscriber count). A large burst (about 55-60 MiB written at once in the
+checks) can evict sessions that are merely slower than the reader; they rejoin
+afterwards. In a check with 10 sessions after a 300,000-line burst, dserver
+read about 40 MiB for the next 200,000 lines instead of about 380 MiB without
+rejoin (CPU time differences were within noise), and every output equalled
+sharing off.
 
 Measured costs (N=4, 100 MiB, `docs/shared-reads-benchmark-2026-09.md`):
 scheduled groups read the file once and finish about 3.7 times sooner, at a
