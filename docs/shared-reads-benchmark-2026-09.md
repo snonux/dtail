@@ -42,8 +42,12 @@ Per run the script records:
 - `output_ok`: every follow client printed exactly the matching lines of
   the input (`grep -E 'user999 |BENCH'`), every scheduled job exited with
   status 0 and wrote the same outfile as the first run of the scenario with
-  the same input size and number of jobs (`runs/scheduled-<plain|gz>-<bytes>-n<N>-reference`
-  in the work directory, taken from a run whose jobs all exited with status 0).
+  the same input size, number of jobs and dserver build
+  (`runs/scheduled-<plain|gz>-<bytes>-n<N>-<dserver sha256 prefix>-reference`
+  in the work directory, taken from a run whose jobs all exited with status 0;
+  a rebuilt dserver takes a new reference). The reference comes from whichever
+  mode ran first, so a scheduled row shows `output_ok=yes` for both modes only
+  when sharing on and off wrote identical outfiles.
 
 The clients use their own `known_hosts` file in the work directory, which
 pins the benchmark's host key, and get no stdin, so a wrong server makes them

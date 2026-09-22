@@ -275,6 +275,7 @@ _all_outputs_contain() {
     local -r marker=$1 dir=$2
     local -i i
     for ((i = 0; i < SESSIONS; i++)); do
+        [[ -f "$dir/client$i.out" ]] || return 1
         tail -c 4096 "$dir/client$i.out" | grep -q "$marker" || return 1
     done
 }
@@ -399,9 +400,12 @@ _run_scheduled() {
 
     local ok=yes
     grep -q 'exited with status [^0]' "$dir/dserver.log" && ok=no
-    # The first run of an input and job count is the reference of the later
-    # ones: every job of it must have exited with status 0.
-    local -r reference="$WORK_DIR/runs/scheduled-$kind-$DATA_BYTES-n$SESSIONS-reference"
+    # The first run of an input, job count and dserver build is the
+    # reference of the later ones: every job of it must have exited with
+    # status 0. Keying it by the dserver binary's checksum makes a rebuild
+    # take a new reference instead of comparing against an old build's.
+    local -r build=$(sha256sum "$REPO_DIR/dserver" | cut -c1-12)
+    local -r reference="$WORK_DIR/runs/scheduled-$kind-$DATA_BYTES-n$SESSIONS-$build-reference"
     if [[ ! -d "$reference" && "$ok" == yes ]]; then
         rm -rf "$reference.tmp"
         mkdir -p "$reference.tmp"
