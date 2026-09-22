@@ -1,10 +1,11 @@
-// Package readhub shares one follow read of a file between the dserver
-// sessions that tail it. One reader per file reads, decompresses and splits
-// the file into lines once and fans the lines out to every subscribed session.
-// Each session keeps its own regex, local context, line numbering and
-// processor, applied by an fs.LineFilter on the session's own goroutine, so a
-// session sees the lines it would see from a private follow read, apart from
-// where it starts (see Hub.Follow).
+// Package readhub shares reads of a file between dserver sessions: one follow
+// read between the sessions that tail the file (Hub.Follow), and one snapshot
+// read between the members of a scheduled job group (Hub.ReadOnce). One reader
+// per file reads, decompresses and splits the file into lines once and fans
+// the lines out to every subscribed session. Each session keeps its own regex,
+// local context, line numbering and processor, applied by an fs.LineFilter on
+// the session's own goroutine, so a session sees the lines it would see from a
+// private read, apart from where a follow session starts (see Hub.Follow).
 package readhub
 
 import (
@@ -23,7 +24,8 @@ import (
 )
 
 // defaultQueueChunks bounds how many chunks, of about chunkSize bytes each, a
-// subscriber may have waiting before it is evicted to a private reader.
+// subscriber may have waiting: a follow subscriber with a full queue is
+// evicted to a private reader, a group member makes the group read wait.
 const defaultQueueChunks = 64
 
 // ErrStopped reports that the session's max-count limit ended its read. A
@@ -49,7 +51,8 @@ type Options struct {
 	// retry interval is for a private reader.
 	RetryInterval time.Duration
 	// QueueChunks bounds each subscriber's queue; zero selects a default. A
-	// subscriber whose queue is full is evicted to a private reader.
+	// follow subscriber whose queue is full is evicted to a private reader; a
+	// group member's full queue makes the group read wait for it.
 	QueueChunks int
 	// GroupWait bounds how long a one-shot group read waits for its members
 	// to join (see Hub.ReadOnce); zero selects DefaultGroupWait.
