@@ -1,7 +1,6 @@
 package jobs
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 
@@ -27,7 +26,7 @@ func TestSchedulerRunJobDisablesAuthKeyRegistration(t *testing.T) {
 	job.Name = "scheduled-job"
 	job.Query = "select count(*)"
 	job.Outfile = filepath.Join(t.TempDir(), "result")
-	s.runJob(context.Background(), &job)
+	runSingleJob(s, &job)
 
 	if !capturedArgs.NoAuthKey {
 		t.Fatal("Expected scheduled client to disable AUTHKEY registration")

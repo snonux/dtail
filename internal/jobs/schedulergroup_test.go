@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -196,28 +197,31 @@ func TestSchedulerGroupSkipsJobsWithAnExistingOutfile(t *testing.T) {
 	}
 }
 
-// Up to its connection bound, the scheduler groups the due jobs on the same
-// files regardless of MaxConcurrentCats: dserver bounds how many of them
-// share a read, by the cat slots of the dserver that reads.
-func TestSchedulerGroupsJobsBeyondTheCatSlots(t *testing.T) {
+// The cat slots bound a wave as the connections do: dserver shares a read
+// among at most MaxConcurrentCats members (see handlers.NewReadHub), and the
+// members beyond that queue for the same cat slots while holding their
+// connections, so the scheduler does not start them with the group.
+func TestSchedulerBoundsWavesByTheCatSlots(t *testing.T) {
 	dir := t.TempDir()
 	var schedule []config.Scheduled
-	var names []string
 	for i := range 5 {
-		name := string(rune('a' + i))
-		names = append(names, name)
+		name := fmt.Sprintf("j%d", i)
 		schedule = append(schedule, scheduledJob(t, name, "/a.log,/b.log", filepath.Join(dir, name)))
 	}
+	// A quarter of MaxConnections would allow 10 jobs per wave.
 	s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-		SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: 20, Schedule: schedule,
+		SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: 40, Schedule: schedule,
 	}}, jobTestLoggers)
-	recorder := newGroupRecorder(t, names...)
+	recorder := &waveRecorder{t: t, shares: map[string]config.ReadShare{},
+		started: map[string]int{}, joined: map[string]chan struct{}{}}
 	s.newMaprClient = recorder.newClient
 	s.runJobs(context.Background())
 
-	for _, name := range names {
-		if got := recorder.args[name].ReadShare.Members; got != 5 {
-			t.Errorf("%s read share members = %d, want 5", name, got)
+	recorder.assertWaves(t, len(schedule), []int{2, 2, 1})
+	for i := range 4 {
+		name := fmt.Sprintf("j%d", i)
+		if got := recorder.shares[name].Members; got != 2 {
+			t.Errorf("%s read share members = %d, want 2, the cat slots", name, got)
 		}
 	}
 }
@@ -282,17 +286,20 @@ func (c waveClient) Start(context.Context, <-chan string) int {
 	return 0
 }
 
-// A group larger than a quarter of MaxConnections, divided by the servers of
-// its jobs, runs in waves of at most that many jobs, one wave after another;
-// the jobs of each wave share a read among themselves. Jobs on another
-// dserver, whose MaxConnections the scheduler does not know, and all jobs
-// when shared reads are disabled run one at a time.
+// A group larger than a quarter of MaxConnections or than MaxConcurrentCats,
+// divided by the servers of its jobs, runs in waves of at most that many
+// jobs, one wave after another; the jobs of each wave share a read among
+// themselves. Jobs on another dserver, whose limits the scheduler does not
+// know, and all jobs when shared reads are disabled run one at a time.
 func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 	tests := []struct {
 		name           string
 		maxConnections int
-		servers        []string
-		discovery      string
+		// maxConcurrentCats sets Server.MaxConcurrentCats; 0 sets enough cat
+		// slots for the connection bound to be the smaller one.
+		maxConcurrentCats int
+		servers           []string
+		discovery         string
 		// sharedReadsDisable sets Server.SharedReadsDisable.
 		sharedReadsDisable bool
 		jobs               int
@@ -318,6 +325,11 @@ func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 			wantWaves: []int{1, 1, 1}},
 		{name: "shared reads disabled", maxConnections: 40, sharedReadsDisable: true, jobs: 3,
 			wantWaves: []int{1, 1, 1}},
+		{name: "fewer cat slots than connections", maxConnections: 40, maxConcurrentCats: 3, jobs: 7,
+			wantWaves: []int{3, 3, 1}},
+		{name: "cat slots divided by the servers", maxConnections: 40, maxConcurrentCats: 4,
+			servers: []string{"127.0.0.1:2222", "127.0.0.1"}, jobs: 5, wantWaves: []int{2, 2, 1}},
+		{name: "one cat slot", maxConnections: 40, maxConcurrentCats: 1, jobs: 3, wantWaves: []int{1, 1, 1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -329,8 +341,12 @@ func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 				job.Discovery = tt.discovery
 				schedule = append(schedule, job)
 			}
+			cats := tt.maxConcurrentCats
+			if cats == 0 {
+				cats = 100
+			}
 			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: tt.maxConnections,
+				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: cats, MaxConnections: tt.maxConnections,
 				SharedReadsDisable: tt.sharedReadsDisable, Schedule: schedule,
 			}}, jobTestLoggers)
 			recorder := &waveRecorder{t: t, shares: map[string]config.ReadShare{},
@@ -343,6 +359,53 @@ func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 	}
 }
 
+// The scheduler discovers the servers of its jobs and resolves their names
+// once per scheduler run, not once per group it forms: the runs of one job
+// list on the same servers share the lookup, and a run that has nothing to
+// group with needs none at all.
+func TestSchedulerLooksUpTheServersOncePerRun(t *testing.T) {
+	tests := []struct {
+		name        string
+		jobs        int
+		wantWaves   []int
+		wantLookups int
+	}{
+		{name: "three waves of two jobs", jobs: 6, wantWaves: []int{2, 2, 2}, wantLookups: 1},
+		{name: "a single job", jobs: 1, wantWaves: []int{1}, wantLookups: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var schedule []config.Scheduled
+			for i := range tt.jobs {
+				name := fmt.Sprintf("j%d", i)
+				schedule = append(schedule,
+					scheduledJob(t, name, "/a.log", filepath.Join(dir, name), "myhost"))
+			}
+			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
+				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: 40, Schedule: schedule,
+			}}, jobTestLoggers)
+			var mu sync.Mutex
+			lookups := 0
+			s.thisDServer.lookup = func(context.Context, string) ([]netip.Addr, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				lookups++
+				return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
+			}
+			recorder := &waveRecorder{t: t, shares: map[string]config.ReadShare{},
+				started: map[string]int{}, joined: map[string]chan struct{}{}}
+			s.newMaprClient = recorder.newClient
+			s.runJobs(context.Background())
+
+			recorder.assertWaves(t, tt.jobs, tt.wantWaves)
+			if lookups != tt.wantLookups {
+				t.Errorf("server name lookups = %d, want %d", lookups, tt.wantLookups)
+			}
+		})
+	}
+}
+
 // failingClient is a client whose run fails.
 type failingClient struct{}
 
@@ -350,8 +413,8 @@ func (failingClient) Start(context.Context, <-chan string) int { return 1 }
 
 // The final runs of jobs on the same files that failed within their
 // TimeRange run as their runs within the TimeRange did: together, in waves of
-// at most a quarter of MaxConnections, each wave sharing a read among its
-// jobs, in the configured order.
+// at most a quarter of MaxConnections and at most MaxConcurrentCats, each
+// wave sharing a read among its jobs, in the configured order.
 func TestSchedulerRunsFinalRunsInBoundedWaves(t *testing.T) {
 	dir := t.TempDir()
 	var schedule []config.Scheduled
@@ -362,7 +425,7 @@ func TestSchedulerRunsFinalRunsInBoundedWaves(t *testing.T) {
 		schedule = append(schedule, job)
 	}
 	s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-		SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 2, MaxConnections: 12, Schedule: schedule,
+		SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 8, MaxConnections: 12, Schedule: schedule,
 	}}, jobTestLoggers)
 	now := time.Date(2026, 9, 22, 1, 30, 0, 0, time.Local)
 	s.now = func() time.Time { return now }
@@ -477,7 +540,7 @@ func TestSchedulerRunsNoJobBeforeAnEarlierJobOnItsOutfile(t *testing.T) {
 	}
 	t.Chdir(dir)
 	s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-		SSHBindAddress: "127.0.0.1", MaxConnections: 40,
+		SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 8, MaxConnections: 40,
 		Schedule: []config.Scheduled{
 			scheduledJob(t, "j1", "/var/log/a.log", "one.csv"),
 			scheduledJob(t, "j2", "/var/log/b.log", "x.csv"),
@@ -528,7 +591,7 @@ func TestSchedulerSkipsAJobWhoseOutfileAnEarlierJobWrote(t *testing.T) {
 			}
 			first, second := tt.outfiles(dir)
 			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-				SSHBindAddress: "127.0.0.1", MaxConnections: 40,
+				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 8, MaxConnections: 40,
 				Schedule: []config.Scheduled{
 					scheduledJob(t, "first", "/var/log/x.log", first),
 					scheduledJob(t, "second", "/var/log/x.log", second),
@@ -599,7 +662,7 @@ func TestSchedulerEvaluatesAJobWhenItsGroupStarts(t *testing.T) {
 			b := scheduledJob(t, "b", "/var/log/b-$today.log", filepath.Join(dir, "b-$today"))
 			b.TimeRange = tt.timeRange
 			s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-				SSHBindAddress: "127.0.0.1", MaxConnections: 40,
+				SSHBindAddress: "127.0.0.1", MaxConcurrentCats: 8, MaxConnections: 40,
 				Schedule: []config.Scheduled{
 					scheduledJob(t, "a", "/var/log/a.log", filepath.Join(dir, "a")),
 					b,

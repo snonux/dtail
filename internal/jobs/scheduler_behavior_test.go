@@ -18,6 +18,13 @@ type statusBackgroundClient struct{ status int }
 
 func (c statusBackgroundClient) Start(context.Context, <-chan string) int { return c.status }
 
+// runSingleJob runs job as the only pending run of a scheduler run, within a
+// TimeRange that covers the whole day.
+func runSingleJob(s *scheduler, job *config.Scheduled) {
+	job.TimeRange = [2]int{0, 24}
+	s.runPending(context.Background(), []pendingRun{scheduledRun{job: job}}, newGroupLimits())
+}
+
 func TestSchedulerRunJobsSkipsDisabledAndOutOfRangeJobs(t *testing.T) {
 	t.Parallel()
 
@@ -82,7 +89,7 @@ func TestSchedulerRunJobSkipAndFailurePaths(t *testing.T) {
 			if tt.outfile != nil {
 				job.Outfile = tt.outfile(t)
 			}
-			s.runJob(context.Background(), &job)
+			runSingleJob(s, &job)
 			if calls != tt.wantCalls {
 				t.Fatalf("client factory calls = %d, want %d", calls, tt.wantCalls)
 			}
@@ -118,7 +125,7 @@ func TestSchedulerLogsTheJobNameWithItsExitStatus(t *testing.T) {
 		job := config.Scheduled{}
 		job.Name = "nightly"
 		job.Outfile = filepath.Join(t.TempDir(), "result")
-		s.runJob(context.Background(), &job)
+		runSingleJob(s, &job)
 
 		want := fmt.Sprintf("Job nightly exited with status %d", status)
 		if !slices.Contains(logger.lines, want) {

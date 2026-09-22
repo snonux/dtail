@@ -239,11 +239,13 @@ func TestSchedulerGroupsGiveTheResultsOfJobsRunOneByOne(t *testing.T) {
 
 		setUpModelDir(t, filepath.Join(root, fmt.Sprintf("%d-grouped", iteration)), rand.New(rand.NewPCG(dirSeed, 1)))
 		got := &modelJobs{fails: fails}
-		// Bound the groups to 1 to 10 jobs, so that groups larger than the
-		// bound run in waves.
+		// Bound the groups to 1 to 10 jobs, by the connections or by the cat
+		// slots, so that groups larger than the bound run in waves.
 		maxConnections := 4 * (1 + rng.IntN(10))
+		maxConcurrentCats := 1 + rng.IntN(10)
 		s := newScheduler(config.RuntimeConfig{Server: &config.ServerConfig{
-			SSHBindAddress: "127.0.0.1", MaxConnections: maxConnections, Schedule: jobs,
+			SSHBindAddress: "127.0.0.1", MaxConnections: maxConnections,
+			MaxConcurrentCats: maxConcurrentCats, Schedule: jobs,
 		}}, jobTestLoggers)
 		clock := now
 		s.now = func() time.Time { return clock }
@@ -260,8 +262,9 @@ func TestSchedulerGroupsGiveTheResultsOfJobsRunOneByOne(t *testing.T) {
 				fmt.Fprintf(&config, "\n  %s enable=%v range=%v files=%q outfile=%q servers=%v fails=%v",
 					job.Name, job.Enable, job.TimeRange, job.Files, job.Outfile, job.Servers, fails[job.Name])
 			}
-			t.Fatalf("iteration %d, MaxConnections %d, jobs:%s\nran %v, one by one %v\nfiles %v\none by one %v",
-				iteration, maxConnections, config.String(), got.ran, want.ran, gotFiles, wantFiles)
+			t.Fatalf("iteration %d, MaxConnections %d, MaxConcurrentCats %d, jobs:%s\nran %v, one by one %v\nfiles %v\none by one %v",
+				iteration, maxConnections, maxConcurrentCats, config.String(), got.ran, want.ran,
+				gotFiles, wantFiles)
 		}
 		if !slices.Equal(got.ran, want.ran) {
 			grouped++

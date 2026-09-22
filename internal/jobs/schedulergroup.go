@@ -92,6 +92,28 @@ func (r finalRun) footprint(time.Time) jobFootprint {
 	return footprintOf(r.state.due.args.What, r.state.due.outfile)
 }
 
+// serversKey identifies the servers a job connects to: the server addresses
+// as configured and the discovery module that turns them into a server list.
+type serversKey struct {
+	servers   string
+	discovery string
+}
+
+// groupLimits memoises, for one scheduler run, what discovering and resolving
+// the servers of its jobs found: the group limit of each set of servers and
+// whether a server address reaches this dserver. Without it, one scheduler run
+// discovers the servers of a job and resolves their names (see
+// thisDServer.reaches, with its lookupTimeout) again for every group it forms,
+// also for the jobs on other dservers that run one at a time.
+type groupLimits struct {
+	limits  map[serversKey]int
+	reaches map[string]bool
+}
+
+func newGroupLimits() *groupLimits {
+	return &groupLimits{limits: make(map[serversKey]int), reaches: make(map[string]bool)}
+}
+
 // nextGroup evaluates the first pending run at the current time and, if it
 // is due, groups it with the pending runs that are due at the same time and
 // read the same files from the same servers with the same discovery. It
@@ -104,13 +126,16 @@ func (r finalRun) footprint(time.Time) jobFootprint {
 // jobFootprint.conflicts) with a run of the group or with an earlier run that
 // stays pending. A run that writes the outfile of such a run thus stays
 // pending, runs after it and, as before, only if that run did not write the
-// outfile. dserver bounds how many members share a read by its own cat slots;
-// the other members read on their own.
+// outfile.
 //
 // A group has at most groupLimit runs; the other runs that could join it stay
 // pending and form the next groups, each a wave of at most groupLimit runs
-// sharing reads among themselves.
-func (s *scheduler) nextGroup(ctx context.Context, pending []pendingRun) ([]dueJob, []pendingRun) {
+// sharing reads among themselves. Once the group is full, the remaining runs
+// stay pending without being evaluated here, as they are evaluated again when
+// their own group starts anyway.
+func (s *scheduler) nextGroup(ctx context.Context, pending []pendingRun, limits *groupLimits) (
+	[]dueJob, []pendingRun) {
+
 	now := s.now()
 	first, reason := pending[0].evaluate(s, now)
 	if reason != "" {
@@ -118,17 +143,27 @@ func (s *scheduler) nextGroup(ctx context.Context, pending []pendingRun) ([]dueJ
 		return nil, pending[1:]
 	}
 	group := []dueJob{first}
+	if len(pending) == 1 {
+		return group, nil
+	}
+	limit := s.groupLimit(ctx, first.args, limits)
+	if limit <= 1 {
+		return group, pending[1:]
+	}
 	key := first.groupKey()
-	limit := s.groupLimit(ctx, first.args)
 	// before holds the footprints of the group's runs and of the earlier
 	// runs that stay pending: the runs a later run must not conflict with to
 	// join the group.
 	before := []jobFootprint{pending[0].footprint(now)}
 	var rest []pendingRun
-	for _, run := range pending[1:] {
+	for i, run := range pending[1:] {
+		if len(group) >= limit {
+			rest = append(rest, pending[1+i:]...)
+			break
+		}
 		footprint := run.footprint(now)
 		due, reason := run.evaluate(s, now)
-		if len(group) >= limit || reason != "" || due.groupKey() != key || footprint.conflictsWithAny(before) {
+		if reason != "" || due.groupKey() != key || footprint.conflictsWithAny(before) {
 			rest = append(rest, run)
 		} else {
 			group = append(group, due)
@@ -138,14 +173,15 @@ func (s *scheduler) nextGroup(ctx context.Context, pending []pendingRun) ([]dueJ
 	return group, rest
 }
 
-// runPending runs pending, one group after another (see nextGroup).
-func (s *scheduler) runPending(ctx context.Context, pending []pendingRun) {
+// runPending runs pending, one group after another (see nextGroup), with the
+// server lookups of one scheduler run memoised in limits.
+func (s *scheduler) runPending(ctx context.Context, pending []pendingRun, limits *groupLimits) {
 	for len(pending) > 0 {
 		if ctx.Err() != nil {
 			return
 		}
 		var group []dueJob
-		group, pending = s.nextGroup(ctx, pending)
+		group, pending = s.nextGroup(ctx, pending, limits)
 		if len(group) > 0 {
 			s.runGroup(ctx, group)
 		}
@@ -153,29 +189,46 @@ func (s *scheduler) runPending(ctx context.Context, pending []pendingRun) {
 }
 
 // groupLimit returns how many jobs connecting to the servers of args may run
-// together.
+// together. It answers from limits, the memo of the current scheduler run,
+// when it discovered and resolved the same servers already.
 //
 // Jobs run together only when every server of args reaches the dserver
-// running the scheduler (see thisDServer.reaches), whose MaxConnections the
-// scheduler knows, and when that dserver shares reads (Server.SharedReadsDisable
-// is not set): without a shared read, running jobs together only adds load. At
-// most a quarter of MaxConnections, divided by the number of servers each job
-// connects to, and at least one, run together then.
+// running the scheduler (see thisDServer.reaches), whose MaxConnections and
+// MaxConcurrentCats the scheduler knows, and when that dserver shares reads
+// (Server.SharedReadsDisable is not set): without a shared read, running jobs
+// together only adds load. At most a quarter of MaxConnections and at most
+// MaxConcurrentCats, divided by the number of servers each job connects to,
+// and at least one, run together then.
 //
 // Every job of a group opens an SSH connection of its own to each of its
 // servers, and dserver counts connections still in their handshake against
 // MaxConnections too, and refuses the others; a refused job fails and runs
 // again only after its backoff (see jobBackoff). The quarter leaves the other
-// connections to interactive users and continuous jobs. Dividing by the
-// number of servers keeps the bound when several server names of a job reach
-// this dserver. The limits of other dservers are unknown to the scheduler, and
-// others may use up their connections: jobs on them, and jobs whose servers
-// cannot be discovered, run one at a time, as the scheduler did before it
-// grouped jobs.
-func (s *scheduler) groupLimit(ctx context.Context, args config.Args) int {
+// connections to interactive users and continuous jobs. The cat slots bound
+// the group as dserver shares a read among at most MaxConcurrentCats members
+// (see handlers.NewReadHub), each holding a cat slot during it: the members
+// beyond that read the file on their own, and queue for the same cat slots
+// while holding their connection. Dividing by the number of servers keeps
+// both bounds when several server names of a job reach this dserver. The
+// limits of other dservers are unknown to the scheduler, and others may use
+// up their connections: jobs on them, and jobs whose servers cannot be
+// discovered, run one at a time, as the scheduler did before it grouped jobs.
+func (s *scheduler) groupLimit(ctx context.Context, args config.Args, limits *groupLimits) int {
 	if s.cfg.Server.SharedReadsDisable {
 		return 1
 	}
+	key := serversKey{servers: args.ServersStr, discovery: args.Discovery}
+	if limit, ok := limits.limits[key]; ok {
+		return limit
+	}
+	limit := s.discoverGroupLimit(ctx, args, limits)
+	limits.limits[key] = limit
+	return limit
+}
+
+// discoverGroupLimit discovers the servers of args and returns the group
+// limit of jobs connecting to them.
+func (s *scheduler) discoverGroupLimit(ctx context.Context, args config.Args, limits *groupLimits) int {
 	finder, err := discovery.New(args.Discovery, args.ServersStr, discovery.Shuffle, s.log())
 	var servers []string
 	if err == nil {
@@ -189,12 +242,24 @@ func (s *scheduler) groupLimit(ctx context.Context, args config.Args) int {
 		return 1
 	}
 	for _, server := range servers {
-		if !s.thisDServer.reaches(ctx, server) {
+		if !s.reachesThisDServer(ctx, server, limits) {
 			s.log().Debug("Running jobs one at a time as a server is not this dserver", server)
 			return 1
 		}
 	}
-	return max(1, s.cfg.Server.MaxConnections/4/len(servers))
+	cats := max(1, s.cfg.Server.MaxConcurrentCats)
+	return max(1, min(s.cfg.Server.MaxConnections/4, cats)/len(servers))
+}
+
+// reachesThisDServer reports whether server reaches this dserver (see
+// thisDServer.reaches), looking it up once per scheduler run.
+func (s *scheduler) reachesThisDServer(ctx context.Context, server string, limits *groupLimits) bool {
+	if reaches, ok := limits.reaches[server]; ok {
+		return reaches
+	}
+	reaches := s.thisDServer.reaches(ctx, server)
+	limits.reaches[server] = reaches
+	return reaches
 }
 
 // jobFootprint is what a scheduled job reads and writes at a time: the

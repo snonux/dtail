@@ -87,7 +87,8 @@ func wait(ctx context.Context, duration time.Duration) bool {
 // fills the dates into its files and outfile and checks that the outfile does
 // not exist yet right before the job's group starts.
 func (s *scheduler) runJobs(ctx context.Context) {
-	s.runFinalJobs(ctx)
+	limits := newGroupLimits()
+	s.runFinalJobs(ctx, limits)
 	var pending []pendingRun
 	for i := range s.cfg.Server.Schedule {
 		job := &s.cfg.Server.Schedule[i]
@@ -97,17 +98,7 @@ func (s *scheduler) runJobs(ctx context.Context) {
 		}
 		pending = append(pending, scheduledRun{job: job})
 	}
-	s.runPending(ctx, pending)
-}
-
-// runJob runs job now unless its outfile exists; it does not check the job's
-// time range.
-func (s *scheduler) runJob(ctx context.Context, job *config.Scheduled) {
-	if due, reason := s.prepare(job, s.now()); reason == "" {
-		s.runDueJob(ctx, due)
-	} else {
-		s.log().Debug(job.Name, reason)
-	}
+	s.runPending(ctx, pending, limits)
 }
 
 // evaluate returns the client arguments of job at now, or why job is not due:
@@ -165,7 +156,7 @@ func (s *scheduler) prepare(job *config.Scheduled, now time.Time) (dueJob, strin
 // the schedule and form groups by the same rules, and bounded by the same
 // waves, as the runs within the jobs' TimeRange (see nextGroup), with the
 // files and the outfiles of their failed runs; each group shares its reads.
-func (s *scheduler) runFinalJobs(ctx context.Context) {
+func (s *scheduler) runFinalJobs(ctx context.Context, limits *groupLimits) {
 	now := s.now()
 	due, expired := s.backoff.finalRunsDue(now, func(state failedJob) bool {
 		job := state.due.job
@@ -186,7 +177,7 @@ func (s *scheduler) runFinalJobs(ctx context.Context) {
 	for i, state := range due {
 		pending[i] = finalRun{state: state}
 	}
-	s.runPending(ctx, pending)
+	s.runPending(ctx, pending, limits)
 }
 
 // scheduleIndex returns the index of job in the schedule, or -1.

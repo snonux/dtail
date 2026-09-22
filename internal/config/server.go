@@ -46,9 +46,9 @@ type ServerConfig struct {
 	// The max amount of concurrent user connection allowed to connect to the server.
 	// Connections still in their SSH handshake count too. Scheduled jobs whose
 	// servers are all this dserver run in groups of at most a quarter of it
-	// (at least one), divided by the number of servers of the jobs; jobs on
-	// other dservers, whose limits the scheduler does not know, run one at a
-	// time.
+	// and at most MaxConcurrentCats (at least one), divided by the number of
+	// servers of the jobs; jobs on other dservers, whose limits the scheduler
+	// does not know, run one at a time.
 	MaxConnections int
 	// Rolling inactivity timeout for authenticated SSH sessions, in seconds.
 	// The close lags this value by two to three refresh intervals (see
@@ -57,7 +57,9 @@ type ServerConfig struct {
 	// three whole seconds late); omitting the key or setting it to 0 or less
 	// uses the DefaultIdleSessionTimeoutS 900 second default.
 	IdleSessionTimeoutS int `json:",omitempty"`
-	// The max amount of concurrent cats per server.
+	// The max amount of concurrent cats per server. It also bounds the jobs
+	// of a scheduled job group that run together, as a group read is shared
+	// among at most this many members (see SharedReadsDisable).
 	MaxConcurrentCats int
 	// The max amount of concurrent tails per server.
 	MaxConcurrentTails int
