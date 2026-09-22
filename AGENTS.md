@@ -472,8 +472,8 @@ it wrote no outfile <path> within 24h0m0s ...`), and skips (and forgets) a
 final run whose outfile exists by then. For an outfile without dates, the next
 day's TimeRange takes over: its first run ignores the previous range's
 backoff, a failure within it starts the failure count and the final runs over,
-and runs within it are strict again and move the range end. Failures are forgotten when the job writes the outfile and with a dserver
-restart: after a restart within the TimeRange the job runs strictly again, but
+and runs within it are strict again and move the range end. Failures are
+forgotten when the job writes the outfile and with a dserver restart: after a restart within the TimeRange the job runs strictly again, but
 a dserver restarted after the TimeRange ended does not know the failed run and
 writes no outfile for that period.
 

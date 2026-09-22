@@ -247,6 +247,9 @@ func TestBackoffStartsOverInANewTimeRange(t *testing.T) {
 	for minute := 0; minute < 8; minute++ {
 		backoff.fail(due, true, at(day1, 2, minute), at(day1, 2, minute), at(day1, 2, 0))
 	}
+	// The hourly final runs go on, and one fails shortly before day 2's
+	// range: its backoff lasts until 01:30, past the start of day 2's range.
+	backoff.fail(due, true, at(day2, 0, 30), at(day2, 0, 30), at(day1, 2, 0))
 	// Day 1's hour-long backoff must not hold back day 2's first run.
 	if reason := backoff.wait(job, due.outfile, at(day2, 1, 0)); reason != "" {
 		t.Fatalf("day 2's first run was held back by day 1's backoff: %s", reason)
