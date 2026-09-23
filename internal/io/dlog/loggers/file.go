@@ -58,6 +58,7 @@ type file struct {
 	strategy     Strategy
 	logDir       string
 	errorWriter  io.Writer
+	wrote        bool // logger goroutine: a write occurred since the last flush tick
 	// clock is the wall-time source for the daily file name. Production uses
 	// time.Now; tests inject a fake clock to exercise day rotation.
 	clock func() time.Time
@@ -65,8 +66,8 @@ type file struct {
 	// per message (a clock read costs ~8 µs on hosts whose clocksource the
 	// vDSO cannot read, such as hpet, and used to dominate client CPU on bulk
 	// payload). It is owned by the logger
-	// goroutine: filled on the first daily write and refreshed on every
-	// idle-flush tick. Midnight rotation typically follows within one or two
+	// goroutine: filled on the first daily write after idle and refreshed on
+	// active flush ticks. Midnight rotation typically follows within one or two
 	// idle-flush intervals, but that is not a bound: select picks randomly
 	// among ready cases and the ticker drops ticks while the goroutine is
 	// busy. The target file is decided at write time, not at log time, so
@@ -113,45 +114,7 @@ func (f *file) Start(ctx context.Context, wg *sync.WaitGroup) {
 
 	go func() {
 		defer wg.Done()
-		// Idle-flush ticker: with a real (64KB) buffer, low-volume output
-		// (follow/interactive) would otherwise sit in the buffer until it
-		// fills. The ticker flushes any partial buffer promptly so follow/tail
-		// output reaches disk within fileIdleFlushInterval. flush() is cheap
-		// when nothing is buffered.
-		ticker := time.NewTicker(fileIdleFlushInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case m := <-f.bufferCh:
-				f.reportError("write log message", f.write(m))
-			case <-ticker.C:
-				// Refresh the cached day before flushing. Only messages
-				// written after this refresh go to the new daily file;
-				// already buffered bytes were bound to the old file at write
-				// time, and ticks can be delayed or dropped while busy.
-				f.refreshDay()
-				f.reportError("flush idle log output", f.flush())
-			case done := <-f.flushCh:
-				// Synchronous flush: drain + write, then acknowledge so the
-				// blocked Flush() caller can proceed (used by FatalPanic).
-				f.reportError("flush requested log output", f.flush())
-				close(done)
-			case <-f.rotateCh:
-				// Force re-opening the outfile on the next write.
-				// Drained here (not only from write()) so that Rotate()
-				// makes progress even when no log messages arrive.
-				f.lastFileName = ""
-			case <-ctx.Done():
-				f.reportError("flush log output during shutdown", f.flush())
-				// f.fd is only populated after the first getWriter() call;
-				// guard against a nil pointer when the logger is shut down
-				// before anything has been written.
-				if f.fd != nil {
-					f.reportError("close log file during shutdown", f.fd.Close())
-				}
-				return
-			}
-		}
+		f.run(ctx)
 	}()
 }
 
@@ -205,6 +168,58 @@ func (f *file) Flush() {
 
 func (*file) SupportsColors() bool { return false }
 
+func (f *file) run(ctx context.Context) {
+	start := time.Now()
+	var timer *time.Timer
+	var tick <-chan time.Time
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+		f.reportError("flush log output during shutdown", f.flush())
+		if f.fd != nil {
+			f.reportError("close log file during shutdown", f.fd.Close())
+		}
+	}()
+	for {
+		select {
+		case m := <-f.bufferCh:
+			f.reportError("write log message", f.write(m))
+		case <-tick:
+			tick = nil
+			if f.wrote {
+				// Refresh even if bulk writes auto-flushed the buffer. Only
+				// subsequent writes select the new day; buffered bytes stay put.
+				f.refreshDay()
+				f.reportError("flush idle log output", f.flushWriter())
+				f.wrote = false
+				// Keep one more tick to detect a quiet interval. Timer work
+				// stays in this worker, not in the per-message write path.
+				timer.Reset(nextFlushDelay(start, fileIdleFlushInterval))
+				tick = timer.C
+			} else {
+				f.day = "" // First write after idle must refresh the cached day.
+			}
+		case done := <-f.flushCh:
+			f.reportError("flush requested log output", f.flush())
+			close(done)
+		case <-f.rotateCh:
+			f.lastFileName = ""
+		case <-ctx.Done():
+			return
+		}
+		if f.wrote && tick == nil {
+			delay := nextFlushDelay(start, fileIdleFlushInterval)
+			if timer == nil {
+				timer = time.NewTimer(delay)
+			} else {
+				timer.Reset(delay)
+			}
+			tick = timer.C
+		}
+	}
+}
+
 // refreshDay re-reads the clock and caches the daily file base name. Strategies
 // other than daily rotation never read the clock.
 func (f *file) refreshDay() {
@@ -216,7 +231,7 @@ func (f *file) refreshDay() {
 
 // fileName returns the base name of the file the next message goes to. For
 // daily rotation it serves the cached day, reading the clock only when the
-// cache is still empty (first write before any idle-flush tick).
+// cache is empty (first write, or first write after the timer went idle).
 func (f *file) fileName() string {
 	if f.strategy.Rotation != DailyRotation {
 		return f.strategy.FileBase
@@ -228,6 +243,7 @@ func (f *file) fileName() string {
 }
 
 func (f *file) write(m *fileMessageBuf) error {
+	f.wrote = true
 	writer, err := f.getWriter(f.fileName())
 	if err != nil {
 		return err
@@ -268,7 +284,7 @@ func (f *file) getWriter(name string) (*bufio.Writer, error) {
 	}
 	// Set new writer. Use a real buffer (fileWriterBufSize) so bulk payload
 	// batches into few write syscalls instead of one-or-two per line. The
-	// logger goroutine's idle ticker and the ctx.Done/flush paths keep
+	// logger goroutine's active timer and the ctx.Done/flush paths keep
 	// low-volume and shutdown output from being stuck in the buffer.
 	f.fd = newFd
 	f.writer = bufio.NewWriterSize(f.fd, fileWriterBufSize)
@@ -284,12 +300,16 @@ func (f *file) flush() error {
 		case m := <-f.bufferCh:
 			flushErr = errors.Join(flushErr, f.write(m))
 		default:
-			if f.writer != nil {
-				flushErr = errors.Join(flushErr, f.writer.Flush())
-			}
-			return flushErr
+			return errors.Join(flushErr, f.flushWriter())
 		}
 	}
+}
+
+func (f *file) flushWriter() error {
+	if f.writer != nil {
+		return f.writer.Flush()
+	}
+	return nil
 }
 
 func (f *file) reportError(operation string, err error) {

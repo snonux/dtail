@@ -280,7 +280,11 @@ the full payload size. Payload always still goes to STDOUT/terminal, unchanged.
   of its SSH channel, nor read dserver's own stdin with the target `-`, which
   takes `readPipe` and so is checked by no `readfiles` permission.
 - Daily file rotation uses a day name cached by the file sink and refreshed on its
-  100 ms idle-flush tick, so no clock is read per line. The file is chosen at
+  100 ms flush tick while active. Idle loggers stop their flush timers; the first
+  file write after idle refreshes the day, without reading the clock per bulk
+  payload line. Stdout arms its flush timer when buffered output first arrives;
+  both sinks retain their original 100 ms tick schedule when rearming after idle.
+  The file is chosen at
   write time: around midnight a line (including a timestamped dserver diagnostic)
   can land in the neighbouring day's file. This is intended.
 
