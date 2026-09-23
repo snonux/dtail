@@ -10,7 +10,14 @@ import (
 
 // chunkSize is the size a chunk is published at at the latest; a follow
 // reader publishes a chunk after every read anyway.
-const chunkSize = 64 * 1024
+const (
+	chunkSize = 64 * 1024
+	// Small follow reads must not allocate a full publication-sized buffer.
+	initialChunkSize  = 4 * 1024
+	initialChunkLines = 8
+	// Bound the next chunk's metadata reservation after unusually short lines.
+	maxChunkLineHint = 512
+)
 
 type itemKind int
 
@@ -108,6 +115,10 @@ type fanoutProcessor struct {
 	// warningSource, nil otherwise, which publishWarning never receives from.
 	messages <-chan string
 	pending  *chunk
+	// Metadata allocation hint only: publication depends on chunkSize, never
+	// capacity. Bulk chunks reuse their previous line count as a reservation,
+	// without keeping a large payload reservation for a later sparse read.
+	lineHint int
 }
 
 var (
@@ -187,11 +198,24 @@ func (p *fanoutProcessor) SourceRestarted() {
 
 func (p *fanoutProcessor) add(raw []byte) {
 	p.publishWarning()
-	if p.pending != nil && len(p.pending.data)+len(raw) > cap(p.pending.data) {
+	// An empty line still fits after an oversized line, as it did when the
+	// publication threshold was the pending buffer's capacity.
+	if p.pending != nil && len(raw) > 0 && len(p.pending.data)+len(raw) > chunkSize {
 		p.publishPending()
 	}
 	if p.pending == nil {
-		p.pending = &chunk{data: make([]byte, 0, max(chunkSize, len(raw)))}
+		p.pending = &chunk{
+			data:    make([]byte, 0, max(initialChunkSize, len(raw))),
+			ends:    make([]int, 0, max(initialChunkLines, p.lineHint)),
+			offsets: make([]int64, 0, max(initialChunkLines, p.lineHint)),
+		}
+	}
+	if len(p.pending.data)+len(raw) > cap(p.pending.data) {
+		// Grow at most once, to the publication threshold. Repeated geometric
+		// growth copies a dense chunk several times and can retain >64 KiB.
+		data := make([]byte, len(p.pending.data), chunkSize)
+		copy(data, p.pending.data)
+		p.pending.data = data
 	}
 	p.pending.data = append(p.pending.data, raw...)
 	p.pending.ends = append(p.pending.ends, len(p.pending.data))
@@ -219,5 +243,6 @@ func (p *fanoutProcessor) publishPending() {
 	}
 	published := p.pending
 	p.pending = nil
+	p.lineHint = min(maxChunkLineHint, len(published.ends))
 	p.entry.publish(item{kind: chunkItem, chunk: published})
 }
