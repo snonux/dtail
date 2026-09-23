@@ -34,7 +34,7 @@ The channel-less implementation replaces the channel pipeline with direct functi
    - `Flush()` - Ensure buffered data is written
    - `Close()` - Clean up resources
 
-2. **DirectLineProcessor** (`internal/server/handlers/line_writer.go`)
+2. **DirectLineProcessor** (`internal/handlers/line_writer.go`)
    - Implements `line.Processor` for direct read operations
    - Delegates formatted output to the active direct or network writer
    - Flushes the writer at read boundaries

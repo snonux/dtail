@@ -1,8 +1,19 @@
 # Integration Tests Refactoring Guide
 
+> **Status**: This guide was originally written as a forward-looking plan. That
+> plan has since been executed: `integrationtests/testhelpers.go` now contains
+> exactly the helpers described here (`skipIfNotIntegrationTest`,
+> `NewTestServer`, `NewCommandArgs`, `runDualModeTest`, `TestFileSet`,
+> `cleanupFiles`, `runCommandAndVerify`). This document is kept as **backlog**
+> for the *remaining* work: several older test files (e.g. `dcat_test.go`,
+> `dgrep_test.go`, `dserver_test.go`, the `djournal*` tests, `dtailhealth_test.go`)
+> still use the old `startCommand` pattern and have not been migrated to the
+> helpers yet. Newly written tests should use the helpers from
+> `integrationtests/testhelpers.go` directly.
+
 ## Overview
 
-This guide outlines the refactoring opportunities for the dtail integration tests to reduce code duplication and improve maintainability.
+This guide outlines the refactoring opportunities for the dtail integration tests to reduce code duplication and improve maintainability. It documents the target patterns (as implemented in `testhelpers.go`) and the patterns still found in the not-yet-migrated test files.
 
 ## Key Benefits of Refactoring
 
@@ -130,12 +141,13 @@ func TestX(t *testing.T) {
 
 ## Refactoring Strategy
 
-### Phase 1: Add Helper Functions
-1. Add `testhelpers.go` with all common utilities
-2. Ensure all tests still pass
+### Phase 1: Add Helper Functions (complete)
+1. `testhelpers.go` is merged with all the common utilities listed above
+2. All tests still pass
 
-### Phase 2: Refactor Test by Test
-1. Start with simpler tests (e.g., dcat_test.go)
+### Phase 2: Refactor Test by Test (remaining work)
+1. Start with simpler tests (e.g., `dcat_test.go`, `dgrep_test.go`, then the
+   `dserver*`, `djournal*` and `dtailhealth` tests)
 2. Refactor one test function at a time
 3. Run tests after each refactoring
 4. Commit after each file is complete
@@ -233,8 +245,12 @@ Based on the examples:
 
 ## Next Steps
 
-1. Review and approve the helper functions
-2. Create a PR with `testhelpers.go`
-3. Incrementally refactor tests in separate PRs
+1. ~~Review and approve the helper functions~~ (done: `testhelpers.go` is merged)
+2. ~~Create a PR with `testhelpers.go`~~ (done)
+3. Incrementally migrate the remaining test files that still use the old
+   `startCommand` pattern — e.g. `dcat_test.go`, `dgrep_test.go`,
+   `dserver_test.go` (and the other `dserver_*` tests), the `djournal*` tests,
+   and `dtailhealth_test.go` — one test function (or file) at a time, running
+   the integration tests after each migration
 4. Document any new patterns that emerge
 5. Consider creating a test generator for common scenarios

@@ -53,25 +53,48 @@ Each command has specific workloads designed to exercise common code paths:
 
 ### Special Handling
 
-1. **Empty Profiles**: I/O-bound operations may generate empty profiles. The implementation handles this gracefully by creating empty profile files that allow the workflow to continue.
+1. **Profile Verification (fail-loud)**: I/O-bound or idle workloads can capture
+   profiles without any CPU samples. Such profiles are worthless for PGO, so
+   every captured profile is verified (`verifyProfileNonEmpty` in
+   `internal/tools/pgo/pgo.go`): a profile that is missing, 0 bytes, or contains
+   zero samples aborts the run with an error. Likewise, `mergeProfiles` fails
+   when *all* iteration profiles of a command are empty instead of silently
+   writing an empty merged file. This is deliberate: a zero-sample dserver
+   capture (an idle server) and a 0-byte dtail capture both slipped through in
+   the past and were committed, leaving the two most important server-mode
+   binaries with no usable PGO despite documented gains. Failing loudly prevents
+   that class of silent empty-profile regression.
 
-2. **dserver Profiling**: Uses HTTP pprof endpoint instead of command-line flags, allowing profile capture during server operation.
+2. **dserver Profiling**: Uses HTTP pprof endpoint instead of command-line flags, allowing profile capture during server operation. The capture window is overlapped with sustained, authenticated client load, and the captured profile is checked to be dominated by streaming/read work rather than SSH-handshake crypto (see `doc/pgo_commands_detail.md`).
 
-3. **dtail Workload**: Simulates a growing log file with various log levels to exercise the tail functionality.
+3. **dtail Workload**: Runs a real follow session against a live dserver with a
+   file that keeps growing during the capture (see `doc/pgo_commands_detail.md`)
 
 ## Performance Results
 
-Based on testing with PGO optimization:
+### Current measured gains (conservative, 100 MiB serverless run)
 
-### Individual Command Improvements
+On a 100 MB serverless run, PGO on top of DTail's default optimized
+read/output path yields workload-dependent and modest improvements:
+- **dgrep**: ~7-8%
+- **dcat**: ~3%
+- **dmap**: within measurement noise
+
+PGO output is byte-identical to non-PGO output.
+
+### Historical point-in-time measurements (superseded)
+
+The figures below were measured at a specific point in time, before the
+channel-less read/output path became the single default path, and conflict
+with the conservative numbers above; they are kept only as a historical record:
 - **dcat**: 3.75-5.40% improvement
 - **dgrep**: Up to 19% improvement (varies by pattern hit rate)
 - **dmap**: Up to 39% improvement for specific queries
 
-### Overall Performance Progression
-From the original pre-optimization baseline to the current PGO-optimized build
-(the channel-less read/output path, formerly called "turbo", is now the default
-and only path):
+### Overall Performance Progression (historical)
+From the original pre-optimization baseline to the build current at the time
+of that measurement (the channel-less read/output path, formerly called
+"turbo", is now the default and only path):
 - **dcat**: 14-21x faster overall
 - **dgrep**: 9-15x faster overall
 - **dmap**: 9-29% faster overall
@@ -145,13 +168,22 @@ Profile files are stored in the `pgo-profiles/` directory:
 - `dcat.pprof` - DCat CPU profile
 - `dgrep.pprof` - DGrep CPU profile
 - `dmap.pprof` - DMap CPU profile
-- `dtail.pprof` - DTail CPU profile (may be empty for I/O-bound operations)
+- `dtail.pprof` - DTail CPU profile (captured from a live follow session; verified non-empty — a 0-byte dtail.pprof is what used to be committed before verification existed)
 - `dserver.pprof` - DServer CPU profile
+
+Every profile is verified to exist, be non-empty, and contain at least one
+CPU sample before the PGO build proceeds; profiles are gitignored and
+regenerated locally with `make pgo` / `make pgo-generate`.
 
 ## Troubleshooting
 
-### Empty Profiles
-Some commands may generate empty profiles if they are I/O-bound. This is normal and the PGO workflow handles it gracefully.
+### Empty or Zero-Sample Profiles
+A workload that does not actually exercise the binary under load (e.g. an
+idle server or a failed client run) produces a profile with no CPU samples.
+This is **not** handled silently: the run fails loudly during profile
+verification. Check that the workload drives real work (client load reaches
+the server, the dtail session authenticates and streams), fix the workload,
+and regenerate the profiles.
 
 ### Profile Merge Failures
 If profile merging fails, check that:

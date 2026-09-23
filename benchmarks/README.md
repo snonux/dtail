@@ -42,6 +42,27 @@ The upstream checkout defaults to `../dtail-mimecast`. See
 [`upstream_comparison_plan.md`](upstream_comparison_plan.md) for the pinned
 revision, fairness controls, workloads, metrics, and result interpretation.
 
+### Makefile Targets
+
+The top-level Makefile wraps the benchmark runner (`dtail-tools benchmark`);
+all of these build the binaries and `dtail-tools` first, so they can be run
+straight from a fresh checkout:
+
+```bash
+# Run the full benchmark suite
+make benchmark
+
+# Quick benchmarks (smaller datasets, faster feedback)
+make benchmark-quick
+
+# Full benchmarks with 3x iterations (longer runs, more stable results)
+make benchmark-full
+
+# Drop the OS disk caches before a benchmark run for cold-cache measurements
+# (uses sudo; see benchmarks/drop_caches.sh)
+make drop-caches
+```
+
 ### Quick Benchmarks (Small Files Only)
 ```bash
 go test -bench=BenchmarkQuick ./benchmarks

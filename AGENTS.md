@@ -78,8 +78,18 @@ make benchmark-full
 # Create a baseline for comparison
 make benchmark-baseline
 
+# Create a quick baseline (small files only, will prompt for name)
+make benchmark-baseline-quick
+
 # Compare current performance against a baseline
 make benchmark-compare BASELINE=benchmarks/baselines/baseline_TIMESTAMP.txt
+
+# Compare the local fork with upstream (sibling checkout of github.com/mimecast/dtail)
+make benchmark-upstream-smoke   # Compile both trees, tiny correctness checks, no timings
+make benchmark-upstream         # Paired end-to-end scenarios; run only on an idle host
+
+# Drop system caches before a benchmark run
+make drop-caches
 ```
 
 ## Profile-Guided Optimization (PGO)
@@ -122,17 +132,19 @@ make pgo-help
   workload-specific; regenerate them after significant hot-path changes.
 - Optimized binaries are built in `pgo-build/` directory
 - Use `make build-pgo` to rebuild optimized binaries without regenerating profiles
-- The tooling verifies every captured profile has non-zero CPU samples and
-  fails loudly otherwise (see `internal/tools/pgo`), so an idle-server or
+- The tooling (`verifyProfileNonEmpty` in `internal/tools/pgo`) fails loudly
+  on missing, 0-byte, or zero-sample profiles, so an idle-server or
   I/O-bound capture can no longer silently produce an empty/zero-sample profile.
-- **dtail is intentionally excluded from PGO.** Its follow client does not
-  return from `client.Start` under `-shutdownAfter`, SIGINT or SIGTERM (the
-  pre-existing "auto shutdown does not work" bug noted in `cmd/dtail/main.go`),
-  so it never flushes a CPU profile. Attempting to profile it produced the
-  0-byte `dtail.pprof`. The `dtail-tools pgo` default command set therefore
-  covers dcat, dgrep, dmap and dserver only, matching the existing
-  `internal/tools/profile` harness which also omits dtail. Re-enable dtail here
-  once its follow shutdown is fixed.
+- **All five commands are profiled by default.** The `dtail-tools pgo` default
+  command set covers dcat, dgrep, dmap, dtail and dserver. dtail used to be
+  excluded because its follow client never returned from `client.Start` under
+  `-shutdownAfter`, SIGINT or SIGTERM (the "auto shutdown does not work" bug
+  noted in `cmd/dtail/main.go`), producing a 0-byte `dtail.pprof`; that follow
+  shutdown is now fixed. PGO profiles dtail with a dedicated live-server
+  follow workload (`runDtailWorkload` in `internal/tools/pgo`: live dserver,
+  deterministic keypair auth, `-shutdownAfter 6`, plus a handshake-failure
+  representativeness guard). The separate `internal/tools/profile` profiling
+  harness still covers dcat, dgrep and dmap only.
 
 ## Profiling
 
@@ -140,29 +152,23 @@ make pgo-help
 # Profile all commands (dcat, dgrep, dmap)
 make profile-all
 
-# Profile individual commands
-make profile-dcat         # Profile dcat with test data
-make profile-dgrep        # Profile dgrep with test data
-make profile-dmap         # Profile dmap MapReduce queries
-
 # Quick profiling with smaller datasets
 make profile-quick
 
-# Full automated profiling (includes larger files)
-make profile-auto
+# Profile dmap MapReduce queries
+make profile-dmap
 
-# Clean all profile data
-make profile-clean
+# List available profiles
+make profile-list
 
 # Analyze a specific profile interactively
 make profile-analyze PROFILE=profiles/dcat_cpu_*.prof
 
-# Generate flame graph visualization
-make profile-flamegraph PROFILE=profiles/dcat_cpu_*.prof
+# Open the web interface for a profile (go tool pprof -web)
+make profile-web PROFILE=profiles/dcat_cpu_*.prof
 
-# Custom profiling options
-PROFILE_SIZE=10000000 make profile-all    # Profile with 10M lines
-PROFILE_DIR=myprofiles make profile-dcat  # Custom profile directory
+# Clean all profile data
+make profile-clean
 
 # Show all profiling options
 make profile-help
@@ -595,16 +601,17 @@ as stable log strings and do not imply a separate mode.
 # Run benchmarks
 make benchmark
 
-# Run performance profiling
-make profile
-
-# Generate profiling reports
-make profile-report
+# Run performance profiling (see the Profiling section for all profile-* targets)
+make profile-quick
+make profile-all
 
 # Run specific benchmark suites
-make benchmark-network
-make benchmark-mapreduce
-make benchmark-ssh
+make benchmark-quick
+make benchmark-full
+
+# Compare the local fork with upstream
+make benchmark-upstream-smoke
+make benchmark-upstream
 ```
 
 ## Profile-Guided Optimization (PGO)
@@ -680,7 +687,7 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 
 - **Main Server Loop**: `/internal/server/server.go` - Core server processing logic
 - **Client Base**: `/internal/clients/baseClient.go` - Common client functionality
-- **MapReduce Parser**: `/internal/mapr/parse/` - SQL-like query language parser
+- **MapReduce Parser**: `/internal/mapr/` (query.go, token.go, whereclause.go, wherecondition.go, selectcondition.go, groupset.go, etc.) - SQL-like query language parser
 - **Log Format Parsers**: `/internal/mapr/logformat/` - Extensible log parsing system
 - **SSH Authorization Callback**: `/internal/ssh/server/publickeycallback.go` - auth-key fast-path + `authorized_keys` fallback
 - **AUTHKEY Handler**: `/internal/handlers/serverhandler.go` - session command handling for auth-key registration
@@ -713,6 +720,6 @@ When modifying server behavior:
 3. Handler implementations in `/internal/handlers/`
 
 When working with MapReduce:
-1. Query parsing in `/internal/mapr/parse/`
+1. Query parsing in `/internal/mapr/` (query.go, token.go, whereclause.go, wherecondition.go, selectcondition.go, groupset.go, etc.)
 2. In-process aggregation in `/internal/mapr/aggregate/`
 3. Log format parsing in `/internal/mapr/logformat/`

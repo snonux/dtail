@@ -1,5 +1,14 @@
 # Serverless Mode Large File Issue
 
+> **Status: OUTDATED / ARCHIVED (2026-09).** This issue description is kept for
+> historical reference only. The channel-based serverless fix it describes no
+> longer exists (the channel-less read/output path is now the only mode), and
+> its central claim — that files larger than ~100 KB time out in serverless
+> mode — is disproved by the 2026-09-23 upstream benchmark, which measured a
+> serverless cat of a 1 GiB file completing in 1.46 s with output correctness
+> verified. See `docs/upstream-benchmark-2026-09-23.md` for the current
+> measured serverless and SSH-server performance.
+
 ## Summary
 While the serverless mode deadlock has been partially resolved, files larger than approximately 10KB still experience timeouts in serverless mode.
 

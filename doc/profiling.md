@@ -15,7 +15,7 @@ The profiling framework provides:
 ### 1. Build the Tools
 
 ```bash
-make build  # Builds all tools including dprofile
+make build  # Builds all tools: dserver, dcat, dgrep, dmap, dtail, dtailhealth and dtail-tools
 ```
 
 ### 2. Run Commands with Profiling
@@ -169,7 +169,8 @@ Generate visualizations:
 # Flame graph (requires graphviz)
 go tool pprof -http=:8080 profiles/dcat_cpu_*.prof
 
-# Generate SVG
+# Generate SVG (the -svg flag is deprecated; prefer -http, which serves an
+# interactive browser view including flame graphs)
 go tool pprof -svg profiles/dgrep_mem_*.prof > profile.svg
 
 # Generate text report
@@ -208,9 +209,12 @@ The dtail-tools profile command provides quick summaries:
 
 3. **Identify Bottlenecks**
    ```bash
-   # Analyze CPU profile
-   ./dprofile -profile profiles/dcat_cpu_*.prof -top 10
-   
+   # Analyze CPU profile (same target as `make profile-analyze`)
+   make profile-analyze PROFILE=profiles/dcat_cpu_*.prof
+
+   # Or invoke the tool directly:
+   ./dtail-tools profile -mode analyze profiles/dcat_cpu_*.prof
+
    # Check memory allocations
    go tool pprof -alloc_space profiles/dcat_alloc_*.prof
    ```
@@ -334,16 +338,37 @@ Add profiling snapshots in code:
 import "github.com/mimecast/dtail/internal/profiling"
 
 func processLargeFile() {
-    profiler := profiling.GetProfiler() // Assumes global profiler
-    
-    // Take memory snapshot before processing
+    // Create a profiler for this command (see internal/profiling/profiler.go).
+    // CPU and memory profiling are enabled through Config; profiles land
+    // in ProfileDir as <CommandName>_cpu_<timestamp>.prof and
+    // <CommandName>_mem_<timestamp>.prof.
+    profiler := profiling.NewProfiler(profiling.Config{
+        CPUProfile:  true,
+        MemProfile:  true,
+        ProfileDir:  "profiles",
+        CommandName: "mycommand",
+    })
+    defer profiler.Stop() // Stops CPU profiling and writes the memory profiles
+
+    // Take a labelled memory snapshot before processing
     profiler.Snapshot("before_processing")
-    
-    // ... process file ...
-    
+
+    // ... process ...
+
     // Take snapshot after
     profiler.Snapshot("after_processing")
 }
+```
+
+For ad-hoc runtime numbers, `profiling.GetMetrics()` returns a
+`ProfileMetrics` struct (heap usage, GC counts and pauses, goroutine and CPU
+counts), and `Profiler.LogMetrics(label)` logs those metrics with a label:
+
+```go
+metrics := profiling.GetMetrics()
+log.Printf("heap in use: %d bytes, goroutines: %d", metrics.Alloc, metrics.NumGoroutine)
+
+profiler.LogMetrics("after_processing")
 ```
 
 ### Continuous Profiling
