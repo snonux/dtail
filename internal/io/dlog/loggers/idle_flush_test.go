@@ -324,7 +324,7 @@ func TestFileLoggerBlockedFlushPreservesBackpressureAndShutdown(t *testing.T) {
 		w := &gatedLogWriter{entered: make(chan struct{}), release: make(chan struct{})}
 		release := sync.OnceFunc(func() { close(w.release) })
 		f := newFile(Strategy{Rotation: SignalRotation, FileBase: "blocked"}, "")
-		f.bufferCh = make(chan *fileMessageBuf, 2)
+		f.queue = newFileQueue(2)
 		f.lastFileName = "blocked"
 		f.writer = bufio.NewWriterSize(w, fileWriterBufSize)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -341,10 +341,11 @@ func TestFileLoggerBlockedFlushPreservesBackpressureAndShutdown(t *testing.T) {
 		default:
 			t.Fatal("timer did not flush into the blocked sink")
 		}
-		f.Raw("queued1")
-		f.Raw("queued2")
+		queued := strings.Repeat("q", fileWriterBufSize)
+		f.Raw(queued)
+		f.Raw(queued)
 		done := make(chan struct{})
-		go func() { f.Log("blocked"); close(done) }()
+		go func() { f.Log(strings.Repeat("b", fileWriterBufSize)); close(done) }()
 		synctest.Wait()
 		select {
 		case <-done:
@@ -355,8 +356,8 @@ func TestFileLoggerBlockedFlushPreservesBackpressureAndShutdown(t *testing.T) {
 		release()
 		wg.Wait()
 		<-done
-		if got := w.String(); got != "firstqueued1queued2blocked\n" {
-			t.Fatalf("shutdown dropped/reordered queued output: %q", got)
+		if got := w.String(); got != "first"+queued+queued+strings.Repeat("b", fileWriterBufSize)+"\n" {
+			t.Fatalf("shutdown dropped/reordered queued output (%d bytes)", len(got))
 		}
 	})
 }

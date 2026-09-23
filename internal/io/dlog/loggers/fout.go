@@ -81,8 +81,8 @@ func (f *fout) Raw(message string) {
 	}
 }
 
-// RawBytes is the byte-slice form of Raw with the same --log-payload gate. Only
-// the file tee converts to a string, and only when payload teeing is enabled.
+// RawBytes is the byte-slice form of Raw with the same --log-payload gate.
+// Byte-capable sinks consume or copy the borrowed input during this call.
 func (f *fout) RawBytes(message []byte) {
 	WriteRawBytes(f.stdout, message)
 	if f.logPayload {

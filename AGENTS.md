@@ -287,6 +287,16 @@ the full payload size. Payload always still goes to STDOUT/terminal, unchanged.
   The file is chosen at
   write time: around midnight a line (including a timestamped dserver diagnostic)
   can land in the neighbouring day's file. This is intended.
+  File sinks copy payload and diagnostics into owned 64 KiB batches rather
+  than allocate/enqueue a message per line. Four queued batches, one producer
+  batch and one worker batch bound payload backing memory to 384 KiB (plus the
+  64 KiB output buffer). Buffers are reused locally; an unused sink allocates
+  no batch storage. Partial batches flush on the existing 100 ms phase or on
+  explicit Flush/shutdown. Calls are serialized in file-sink admission order;
+  even a call larger than the queue is contiguous and keeps one destination
+  through rotation. Shutdown drains accepted calls, including blocked large
+  calls, and rejects later admissions with a diagnostic. A blocked sink still
+  applies backpressure. The default payload-disabled fout path is unchanged.
 
 ### Output Path and MapReduce Operations
 DTail uses a single, channel-less read/output path for both direct output
