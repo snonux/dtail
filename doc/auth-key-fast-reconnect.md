@@ -189,6 +189,16 @@ Server config (`dtail.json`, `internal/config/server.go`):
 * `AuthKeyTTLSeconds` (int, default `86400` = 24h) — TTL of a cached key.
 * `AuthKeyMaxPerUser` (int, default `5`) — maximum cached keys per user.
 
+```json
+{
+  "Server": {
+    "AuthKeyEnabled": true,
+    "AuthKeyTTLSeconds": 86400,
+    "AuthKeyMaxPerUser": 5
+  }
+}
+```
+
 Client flags and config (`internal/cli/authkeyflags.go`,
 `internal/cli/client.go`, `internal/config/client.go`):
 
