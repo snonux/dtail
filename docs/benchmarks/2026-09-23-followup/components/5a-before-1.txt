@@ -1,9 +1,0 @@
-goos: linux
-goarch: amd64
-pkg: github.com/mimecast/dtail/internal/clients
-cpu: Intel(R) N100
-BenchmarkServerlessPayloadByteTee/128         	 4658527	        71.51 ns/op	1789.99 MB/s	     128 B/op	       1 allocs/op
-BenchmarkServerlessPayloadByteTee/4096        	  335625	      1291 ns/op	3171.79 MB/s	    4096 B/op	       1 allocs/op
-BenchmarkServerlessPayloadByteTee/65536       	   15805	     20601 ns/op	3181.18 MB/s	   65536 B/op	       1 allocs/op
-BenchmarkServerlessPayloadByteTee/131072      	   10000	     44668 ns/op	2934.34 MB/s	  131072 B/op	       1 allocs/op
-PASS

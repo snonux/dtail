@@ -445,7 +445,8 @@ with 10 sessions after a 300,000-line burst, dserver read about 40 MiB for the
 next 200,000 lines instead of about 380 MiB without rejoin (CPU time
 differences were within noise), and every output equalled sharing off.
 
-Measured costs (N=4, 100 MiB, `docs/shared-reads-benchmark-2026-09.md`):
+Historical measured costs (N=4, 100 MiB; report retained in Git via
+`git show 5eece8d:docs/shared-reads-benchmark-2026-09.md`):
 scheduled groups read the file once and finish about 3.7 times sooner, at a
 slightly higher dserver CPU (about 6-8%); a 100 MiB follow burst evicts every
 session, so it costs what sharing off does; a paced follow (10 MiB/s) used

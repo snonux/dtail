@@ -1,6 +1,0 @@
-2026/09/23 19:08:02 Started CPU profiling: /tmp/dtail-3a-4GFdYdUn/profiles-final/serverless-map-100000-count-limit10-0-before/dmap_cpu_20260923_190802.prof
-2026/09/23 19:08:02 Profile metrics [startup]: alloc=1.43MB total_alloc=1.43MB sys=7.71MB num_gc=0 gc_pause=0.00ms goroutines=5
-2026/09/23 19:08:03 Profile metrics [shutdown]: alloc=99.36MB total_alloc=372.21MB sys=270.50MB num_gc=10 gc_pause=3.30ms goroutines=11
-2026/09/23 19:08:03 Stopped CPU profiling
-2026/09/23 19:08:03 Wrote memory profile: /tmp/dtail-3a-4GFdYdUn/profiles-final/serverless-map-100000-count-limit10-0-before/dmap_mem_20260923_190802.prof
-2026/09/23 19:08:03 Wrote allocation profile: /tmp/dtail-3a-4GFdYdUn/profiles-final/serverless-map-100000-count-limit10-0-before/dmap_alloc_20260923_190803.prof

@@ -1,8 +1,0 @@
-follow-burst,plain,on,1,4,n/a,n/a,6160,6371,4,2,0.44,yes
-follow-burst,plain,off,1,4,n/a,n/a,6434,6646,0,0,0.96,yes
-follow-paced,plain,on,1,4,n/a,n/a,1698,1929,0,1,0.58,yes
-follow-paced,plain,off,1,4,n/a,n/a,6605,6845,0,0,0.41,yes
-scheduled,plain,on,1,4,n/a,n/a,102,468,0,1,0.80,yes
-scheduled,plain,off,1,4,n/a,n/a,408,822,0,0,0.41,yes
-scheduled,gz,on,1,4,n/a,n/a,623,1001,0,1,0.47,yes
-scheduled,gz,off,1,4,n/a,n/a,2492,2921,0,0,0.67,yes
