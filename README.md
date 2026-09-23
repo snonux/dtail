@@ -19,8 +19,6 @@ Installation and Usage
 ======================
 
 * Check out the [DTail Documentation](doc/index.md)
-* Read the [Interactive Query Reload](doc/interactive-query.md) documentation for `:reload`-style interactive control of running queries.
-* Read the [Auth-Key Fast-Reconnect](doc/auth-key-fast-reconnect.md) documentation for the optional SSH auth fast path on repeated reconnects.
 
 More
 ====
