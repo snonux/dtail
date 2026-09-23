@@ -223,6 +223,32 @@ func TestReadCommandReportsNoFailureOnceCanceled(t *testing.T) {
 	}
 }
 
+// Repeatedly exercise the completion boundary with real directory targets.
+// A worker must count its skipped target before signaling the wait group:
+// otherwise readFiles can return without reporting that it read no files.
+func TestDirectoryOnlyReadReportsFailureBeforeReturning(t *testing.T) {
+	dir := t.TempDir()
+	paths := []string{filepath.Join(dir, "archive"), filepath.Join(dir, "old")}
+	for _, path := range paths {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{protocol.HiddenCommandFailedPrefix + readFailureNoFile + "\n"}
+	for i := 0; i < 1000; i++ {
+		srv := newFailureTestServer(100)
+		command := newReadCommand(srv, omode.CatClient)
+		command.readFiles(context.Background(), lcontext.LContext{}, paths,
+			filepath.Join(dir, "*"), regex.NewNoop())
+		if got := failedCommandMessages(srv.serverMessage); !slices.Equal(got, want) {
+			t.Fatalf("iteration %d: failure messages = %q, want %q", i, got, want)
+		}
+		if pending, _ := srv.PendingAndActive(); pending != 0 {
+			t.Fatalf("iteration %d: pending files = %d, want 0", i, pending)
+		}
+	}
+}
+
 // failedCommandMessages drains messages and returns the failed-command ones.
 func failedCommandMessages(messages chan string) []string {
 	var failed []string

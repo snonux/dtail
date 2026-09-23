@@ -351,7 +351,10 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	wg.Add(len(paths))
 	for _, path := range paths {
 		go func() {
-			if r.readFileIfPermissions(ctx, ltx, &wg, path, glob, re) {
+			// Completion includes the returned result's accounting, not just
+			// the read and its cleanup: Wait must observe every skipped path.
+			defer wg.Done()
+			if r.readFileIfPermissions(ctx, ltx, path, glob, re) {
 				skipped.Add(1)
 			}
 		}()
@@ -414,10 +417,9 @@ func (r *readCommand) releasePendingInputReservation(ctx context.Context) {
 // matched), which is not a failure: such a path is skipped silently, as it
 // has no lines to read.
 func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LContext,
-	wg *sync.WaitGroup, path, glob string, re regex.Regex) (skipped bool) {
+	path, glob string, re regex.Regex) (skipped bool) {
 
 	defer recoverHandlerPanic(r.logger, r.logContext, "file read cleanup", r.abortAfterPanic)
-	defer wg.Done()
 	defer func() {
 		r.shutdownCoordinator.onFileProcessed(ctx, path)
 	}()

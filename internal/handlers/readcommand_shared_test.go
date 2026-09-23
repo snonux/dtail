@@ -366,10 +366,7 @@ func TestDeniedReadTargetNeverReachesTheHub(t *testing.T) {
 	}
 	server.AddPendingFiles(1)
 
-	var wg sync.WaitGroup
-	wg.Add(1)
-	cmd.readFileIfPermissions(context.Background(), lcontext.LContext{}, &wg, path, path, regex.NewNoop())
-	wg.Wait()
+	cmd.readFileIfPermissions(context.Background(), lcontext.LContext{}, path, path, regex.NewNoop())
 
 	if got := atomic.LoadInt32(&calls); got != 0 {
 		t.Errorf("a session denied by PrepareReadTarget reached the shared reader %d times", got)
