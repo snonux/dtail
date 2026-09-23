@@ -1,0 +1,29 @@
+goos: linux
+goarch: amd64
+pkg: github.com/mimecast/dtail/internal/io/dlog/loggers
+cpu: Intel(R) N100
+BenchmarkLoggerOutput/bytes128/stdout         	 8454913	        38.45 ns/op	3328.65 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutput/bytes128/file           	  599460	       575.4 ns/op	 222.44 MB/s	     152 B/op	       2 allocs/op
+BenchmarkLoggerOutput/bytes128/teeOff         	 8858389	        45.41 ns/op	2818.84 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutput/bytes128/teeOn          	  592562	       652.1 ns/op	 196.29 MB/s	     152 B/op	       2 allocs/op
+BenchmarkLoggerOutput/bytes4096/stdout        	 1779165	       196.8 ns/op	20817.28 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutput/bytes4096/file          	  158727	      2483 ns/op	1649.36 MB/s	    4120 B/op	       2 allocs/op
+BenchmarkLoggerOutput/bytes4096/teeOff        	 1745448	       209.9 ns/op	19511.90 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutput/bytes4096/teeOn         	  155374	      2680 ns/op	1528.40 MB/s	    4120 B/op	       2 allocs/op
+BenchmarkLoggerOutput/bytes131072/stdout      	 7798634	        40.99 ns/op	3197655.95 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutput/bytes131072/file        	    8340	     49232 ns/op	2662.34 MB/s	  131096 B/op	       2 allocs/op
+BenchmarkLoggerOutput/bytes131072/teeOff      	 7737283	        46.21 ns/op	2836631.75 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutput/bytes131072/teeOn       	    7616	     53923 ns/op	2430.74 MB/s	  131096 B/op	       2 allocs/op
+BenchmarkLoggerOutputCopy/bytes128/stdout     	 7658481	        53.54 ns/op	2390.54 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutputCopy/bytes128/file       	  577435	       642.1 ns/op	 199.34 MB/s	     152 B/op	       2 allocs/op
+BenchmarkLoggerOutputCopy/bytes128/teeOff     	 7637534	        53.05 ns/op	2412.90 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutputCopy/bytes128/teeOn      	  520124	       629.3 ns/op	 203.41 MB/s	     152 B/op	       2 allocs/op
+BenchmarkLoggerOutputCopy/bytes4096/stdout    	  996847	       385.6 ns/op	10621.52 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutputCopy/bytes4096/file      	  144398	      2447 ns/op	1673.60 MB/s	    4120 B/op	       2 allocs/op
+BenchmarkLoggerOutputCopy/bytes4096/teeOff    	  968630	       366.5 ns/op	11174.74 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutputCopy/bytes4096/teeOn     	  123468	      2856 ns/op	1434.32 MB/s	    4120 B/op	       2 allocs/op
+BenchmarkLoggerOutputCopy/bytes131072/stdout  	   64294	      6605 ns/op	19844.20 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutputCopy/bytes131072/file    	    5972	     56180 ns/op	2333.06 MB/s	  131096 B/op	       2 allocs/op
+BenchmarkLoggerOutputCopy/bytes131072/teeOff  	   68023	      5615 ns/op	23344.81 MB/s	       0 B/op	       0 allocs/op
+BenchmarkLoggerOutputCopy/bytes131072/teeOn   	    5804	     63106 ns/op	2077.01 MB/s	  131096 B/op	       2 allocs/op
+PASS

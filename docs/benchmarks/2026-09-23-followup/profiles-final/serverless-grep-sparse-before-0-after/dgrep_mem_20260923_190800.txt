@@ -1,0 +1,22 @@
+File: dgrep
+Build ID: 92f8ba76e6f1570e2dc153888bbff3db8f0e40c0
+Type: inuse_space
+Time: 2026-09-23 19:08:00 EEST
+Showing nodes accounting for 1569.67kB, 100% of 1569.67kB total
+Showing top 15 nodes out of 29
+      flat  flat%   sum%        cum   cum%
+  544.67kB 34.70% 34.70%   544.67kB 34.70%  bufio.NewWriterSize (inline)
+     513kB 32.68% 67.38%      513kB 32.68%  runtime.mallocgc
+  512.01kB 32.62%   100%   512.01kB 32.62%  github.com/mimecast/dtail/internal/io/dlog.(*DLog).start
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/cli.(*ClientRunner).RunClientWithBrush
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/cli.(*ClientRunner).RunClientWithBrush.func1
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/cli.(*ClientRunner).createClientRuntime
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/cli.(*ClientRunner).runClientWithBrush
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/cli.NewClientRuntime (inline)
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/cli.newClientRuntimeWithColorizer
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/cli.newClientRuntimeWithColorizerAndProfiler
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/io/dlog.Start
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/io/dlog.newDLog
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/io/dlog/loggers.Factory
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/io/dlog/loggers.init.func2
+         0     0%   100%   544.67kB 34.70%  github.com/mimecast/dtail/internal/io/dlog/loggers.newStdout (inline)

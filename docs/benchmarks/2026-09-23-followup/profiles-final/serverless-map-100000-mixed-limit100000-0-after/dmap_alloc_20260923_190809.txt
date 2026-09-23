@@ -1,0 +1,23 @@
+File: dmap
+Build ID: 8377f1950101240877ec9860ae1acea9963efe1a
+Type: alloc_space
+Time: 2026-09-23 19:08:09 EEST
+Showing nodes accounting for 72997.67kB, 99.23% of 73567.74kB total
+Dropped 55 nodes (cum <= 367.84kB)
+Showing top 15 nodes out of 57
+      flat  flat%   sum%        cum   cum%
+39146.55kB 53.21% 53.21% 39146.55kB 53.21%  strings.(*Builder).WriteString (inline)
+   12504kB 17.00% 70.21% 16936.48kB 23.02%  github.com/mimecast/dtail/internal/mapr.(*GroupSet).result
+ 7232.52kB  9.83% 80.04% 14464.52kB 19.66%  fmt.Sprintf
+    7232kB  9.83% 89.87%     7232kB  9.83%  fmt.(*buffer).writeString (inline)
+    2864kB  3.89% 93.76%     2864kB  3.89%  github.com/mimecast/dtail/internal/mapr.(*GroupSet).makeResultStats
+    1568kB  2.13% 95.89%     1568kB  2.13%  github.com/mimecast/dtail/internal/mapr.sortedGroupKeys (inline)
+    1024kB  1.39% 97.29%     1024kB  1.39%  runtime/pprof.StartCPUProfile
+  778.22kB  1.06% 98.34%   781.45kB  1.06%  github.com/mimecast/dtail/internal/mapr.(*GroupSet).GetSet (inline)
+     648kB  0.88% 99.22%      712kB  0.97%  compress/flate.NewWriter (inline)
+    0.28kB 0.00038% 99.22% 37429.94kB 50.88%  github.com/mimecast/dtail/internal/mapr.(*GroupSet).resultWriteFormattedDataEntry
+    0.11kB 0.00015% 99.23%   430.93kB  0.59%  github.com/mimecast/dtail/internal/clients/handlers.(*MaprHandler).Write
+         0     0% 99.23%      712kB  0.97%  compress/gzip.(*Writer).Write
+         0     0% 99.23%     7232kB  9.83%  fmt.(*fmt).fmtS
+         0     0% 99.23%     7232kB  9.83%  fmt.(*fmt).padString
+         0     0% 99.23%     7232kB  9.83%  fmt.(*pp).doPrintf

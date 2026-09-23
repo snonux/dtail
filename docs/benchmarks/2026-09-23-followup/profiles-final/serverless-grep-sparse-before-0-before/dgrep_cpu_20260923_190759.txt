@@ -1,0 +1,23 @@
+File: dgrep
+Build ID: 3ea53b20fe5dfaf6e241f9d3b0c94427ae7c2f96
+Type: cpu
+Time: 2026-09-23 19:07:59 EEST
+Duration: 48.34ms, Total samples = 50ms (103.44%)
+Showing nodes accounting for 50ms, 100% of 50ms total
+Showing top 15 nodes out of 35
+      flat  flat%   sum%        cum   cum%
+      10ms 20.00% 20.00%       10ms 20.00%  bufio.(*Scanner).Scan
+      10ms 20.00% 40.00%       10ms 20.00%  bytes.Index
+      10ms 20.00% 60.00%       10ms 20.00%  runtime.futex
+      10ms 20.00% 80.00%       10ms 20.00%  runtime.scanObjectSmall
+      10ms 20.00%   100%       10ms 20.00%  sync/atomic.(*Value).Load (inline)
+         0     0%   100%       10ms 20.00%  bytes.Contains (inline)
+         0     0%   100%       10ms 20.00%  context.(*cancelCtx).Done
+         0     0%   100%       30ms 60.00%  github.com/mimecast/dtail/internal/handlers.(*readCommand).executeReadLoop
+         0     0%   100%       30ms 60.00%  github.com/mimecast/dtail/internal/handlers.(*readCommand).read
+         0     0%   100%       30ms 60.00%  github.com/mimecast/dtail/internal/handlers.(*readCommand).readFileIfPermissions
+         0     0%   100%       30ms 60.00%  github.com/mimecast/dtail/internal/handlers.(*readCommand).readFiles.func1
+         0     0%   100%       30ms 60.00%  github.com/mimecast/dtail/internal/handlers.(*readCommand).readWithProcessor
+         0     0%   100%       30ms 60.00%  github.com/mimecast/dtail/internal/handlers.(*readCommand).readWithProcessor.(*readCommand).readViaProcessor.func1
+         0     0%   100%       30ms 60.00%  github.com/mimecast/dtail/internal/handlers.(*readCommand).readWithProcessor.(*readCommand).readViaProcessor.func1.1
+         0     0%   100%       30ms 60.00%  github.com/mimecast/dtail/internal/io/fs.(*ReadFile).Start

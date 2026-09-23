@@ -1,0 +1,12 @@
+=== RUN   TestIdleLoggerCPU
+=== RUN   TestIdleLoggerCPU/pairs0
+    idle_cpu_linux_test.go:43: pairs=0 cpu_ms=0.847 elapsed_ms=3001.735 core_percent=0.028 file_clock_calls=0
+=== RUN   TestIdleLoggerCPU/pairs1
+    idle_cpu_linux_test.go:43: pairs=1 cpu_ms=22.086 elapsed_ms=3001.049 core_percent=0.736 file_clock_calls=31
+=== RUN   TestIdleLoggerCPU/pairs16
+    idle_cpu_linux_test.go:43: pairs=16 cpu_ms=90.466 elapsed_ms=3000.135 core_percent=3.015 file_clock_calls=496
+--- PASS: TestIdleLoggerCPU (9.31s)
+    --- PASS: TestIdleLoggerCPU/pairs0 (3.10s)
+    --- PASS: TestIdleLoggerCPU/pairs1 (3.10s)
+    --- PASS: TestIdleLoggerCPU/pairs16 (3.10s)
+PASS

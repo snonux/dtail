@@ -1,0 +1,119 @@
+goos: linux
+goarch: amd64
+pkg: github.com/mimecast/dtail/internal/io/dlog/loggers
+cpu: Intel(R) N100
+                                    │  /dev/fd/63  │             /dev/fd/62             │
+                                    │    sec/op    │    sec/op     vs base              │
+LoggerOutput/bytes128/stdout          36.61n ± 25%   37.77n ± 23%       ~ (p=0.310 n=6)
+LoggerOutput/bytes128/file            581.5n ±  4%   584.0n ± 10%       ~ (p=0.937 n=6)
+LoggerOutput/bytes128/teeOff          46.27n ±  6%   47.18n ±  5%       ~ (p=0.699 n=6)
+LoggerOutput/bytes128/teeOn           612.0n ± 10%   642.9n ±  9%       ~ (p=0.394 n=6)
+LoggerOutput/bytes4096/stdout         189.1n ±  7%   191.8n ±  8%       ~ (p=0.965 n=6)
+LoggerOutput/bytes4096/file           2.347µ ±  7%   2.266µ ± 19%       ~ (p=0.461 n=6)
+LoggerOutput/bytes4096/teeOff         200.5n ±  8%   199.0n ±  8%       ~ (p=0.818 n=6)
+LoggerOutput/bytes4096/teeOn          2.532µ ±  7%   2.561µ ±  8%       ~ (p=1.000 n=6)
+LoggerOutput/bytes131072/stdout       41.10n ±  8%   40.32n ±  6%       ~ (p=0.589 n=6)
+LoggerOutput/bytes131072/file         46.28µ ±  8%   47.28µ ± 21%       ~ (p=0.394 n=6)
+LoggerOutput/bytes131072/teeOff       51.73n ± 10%   49.44n ± 12%       ~ (p=0.589 n=6)
+LoggerOutput/bytes131072/teeOn        51.79µ ± 15%   48.84µ ±  8%       ~ (p=0.310 n=6)
+LoggerOutputCopy/bytes128/stdout      45.63n ±  9%   45.41n ±  4%       ~ (p=1.000 n=6)
+LoggerOutputCopy/bytes128/file        584.6n ± 11%   585.2n ±  6%       ~ (p=0.937 n=6)
+LoggerOutputCopy/bytes128/teeOff      52.90n ± 27%   51.54n ±  6%       ~ (p=0.394 n=6)
+LoggerOutputCopy/bytes128/teeOn       674.2n ± 11%   654.3n ± 17%       ~ (p=0.937 n=6)
+LoggerOutputCopy/bytes4096/stdout     389.4n ±  7%   414.2n ± 21%       ~ (p=0.310 n=6)
+LoggerOutputCopy/bytes4096/file       2.492µ ±  9%   2.506µ ± 15%       ~ (p=0.699 n=6)
+LoggerOutputCopy/bytes4096/teeOff     400.8n ± 12%   394.5n ± 12%       ~ (p=1.000 n=6)
+LoggerOutputCopy/bytes4096/teeOn      3.141µ ± 11%   3.309µ ± 10%       ~ (p=0.093 n=6)
+LoggerOutputCopy/bytes131072/stdout   6.143µ ±  9%   5.689µ ± 13%       ~ (p=0.093 n=6)
+LoggerOutputCopy/bytes131072/file     53.43µ ± 26%   54.03µ ±  9%       ~ (p=0.818 n=6)
+LoggerOutputCopy/bytes131072/teeOff   5.780µ ±  3%   5.745µ ± 19%       ~ (p=0.818 n=6)
+LoggerOutputCopy/bytes131072/teeOn    61.88µ ± 11%   58.48µ ± 10%       ~ (p=0.485 n=6)
+geomean                               906.4n         902.6n        -0.41%
+
+                                    │  /dev/fd/63   │             /dev/fd/62              │
+                                    │      B/s      │      B/s       vs base              │
+LoggerOutput/bytes128/stdout          3.258Gi ± 20%   3.156Gi ± 19%       ~ (p=0.310 n=6)
+LoggerOutput/bytes128/file            209.9Mi ±  4%   209.1Mi ± 11%       ~ (p=0.937 n=6)
+LoggerOutput/bytes128/teeOff          2.576Gi ±  6%   2.527Gi ±  5%       ~ (p=0.699 n=6)
+LoggerOutput/bytes128/teeOn           199.5Mi ±  9%   190.1Mi ± 10%       ~ (p=0.394 n=6)
+LoggerOutput/bytes4096/stdout         20.18Gi ±  6%   19.89Gi ±  8%       ~ (p=0.937 n=6)
+LoggerOutput/bytes4096/file           1.625Gi ±  6%   1.685Gi ± 16%       ~ (p=0.485 n=6)
+LoggerOutput/bytes4096/teeOff         19.03Gi ±  8%   19.17Gi ±  7%       ~ (p=0.818 n=6)
+LoggerOutput/bytes4096/teeOn          1.508Gi ±  6%   1.490Gi ±  9%       ~ (p=1.000 n=6)
+LoggerOutput/bytes131072/stdout       2.901Ti ±  8%   2.956Ti ±  6%       ~ (p=0.589 n=6)
+LoggerOutput/bytes131072/file         2.637Gi ±  9%   2.587Gi ± 18%       ~ (p=0.394 n=6)
+LoggerOutput/bytes131072/teeOff       2.305Ti ± 11%   2.411Ti ± 10%       ~ (p=0.589 n=6)
+LoggerOutput/bytes131072/teeOn        2.357Gi ± 17%   2.499Gi ±  9%       ~ (p=0.310 n=6)
+LoggerOutputCopy/bytes128/stdout      2.614Gi ±  8%   2.625Gi ±  3%       ~ (p=1.000 n=6)
+LoggerOutputCopy/bytes128/file        208.8Mi ± 10%   208.6Mi ±  6%       ~ (p=0.937 n=6)
+LoggerOutputCopy/bytes128/teeOff      2.254Gi ± 21%   2.314Gi ±  6%       ~ (p=0.394 n=6)
+LoggerOutputCopy/bytes128/teeOn       181.1Mi ± 12%   186.6Mi ± 15%       ~ (p=0.937 n=6)
+LoggerOutputCopy/bytes4096/stdout     9.802Gi ±  6%   9.210Gi ± 17%       ~ (p=0.310 n=6)
+LoggerOutputCopy/bytes4096/file       1.536Gi ± 10%   1.523Gi ± 17%       ~ (p=0.699 n=6)
+LoggerOutputCopy/bytes4096/teeOff     9.520Gi ± 11%   9.671Gi ± 10%       ~ (p=1.000 n=6)
+LoggerOutputCopy/bytes4096/teeOn      1.215Gi ± 12%   1.153Gi ±  9%       ~ (p=0.093 n=6)
+LoggerOutputCopy/bytes131072/stdout   19.88Gi ±  9%   21.46Gi ± 12%       ~ (p=0.093 n=6)
+LoggerOutputCopy/bytes131072/file     2.286Gi ± 21%   2.259Gi ±  8%       ~ (p=0.818 n=6)
+LoggerOutputCopy/bytes131072/teeOff   21.12Gi ±  3%   21.25Gi ± 16%       ~ (p=0.818 n=6)
+LoggerOutputCopy/bytes131072/teeOn    1.973Gi ± 12%   2.087Gi ±  9%       ~ (p=0.485 n=6)
+geomean                               4.210Gi         4.227Gi        +0.40%
+
+                                    │   /dev/fd/63   │              /dev/fd/62              │
+                                    │      B/op      │     B/op      vs base                │
+LoggerOutput/bytes128/stdout            0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes128/file              152.0 ± 0%       152.0 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes128/teeOff            0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes128/teeOn             152.0 ± 0%       152.0 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes4096/stdout           0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes4096/file           4.023Ki ± 0%     4.023Ki ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes4096/teeOff           0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes4096/teeOn          4.023Ki ± 0%     4.023Ki ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes131072/stdout         0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes131072/file         128.0Ki ± 0%     128.0Ki ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes131072/teeOff         0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes131072/teeOn        128.0Ki ± 0%     128.0Ki ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes128/stdout        0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes128/file          152.0 ± 0%       152.0 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes128/teeOff        0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes128/teeOn         152.0 ± 0%       152.0 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes4096/stdout       0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes4096/file       4.023Ki ± 0%     4.023Ki ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes4096/teeOff       0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes4096/teeOn      4.023Ki ± 0%     4.023Ki ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes131072/stdout     0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes131072/file     128.0Ki ± 0%     128.0Ki ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes131072/teeOff     0.000 ± 0%       0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes131072/teeOn    128.0Ki ± 0%     128.0Ki ± 0%       ~ (p=1.000 n=6) ¹
+geomean                                            ²                 +0.00%               ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                                    │  /dev/fd/63  │             /dev/fd/62             │
+                                    │  allocs/op   │ allocs/op   vs base                │
+LoggerOutput/bytes128/stdout          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes128/file            2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes128/teeOff          0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes128/teeOn           2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes4096/stdout         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes4096/file           2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes4096/teeOff         0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes4096/teeOn          2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes131072/stdout       0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes131072/file         2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes131072/teeOff       0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutput/bytes131072/teeOn        2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes128/stdout      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes128/file        2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes128/teeOff      0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes128/teeOn       2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes4096/stdout     0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes4096/file       2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes4096/teeOff     0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes4096/teeOn      2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes131072/stdout   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes131072/file     2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes131072/teeOff   0.000 ± 0%     0.000 ± 0%       ~ (p=1.000 n=6) ¹
+LoggerOutputCopy/bytes131072/teeOn    2.000 ± 0%     2.000 ± 0%       ~ (p=1.000 n=6) ¹
+geomean                                          ²               +0.00%               ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean

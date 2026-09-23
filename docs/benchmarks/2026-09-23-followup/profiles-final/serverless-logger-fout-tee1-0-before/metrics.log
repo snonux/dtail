@@ -1,0 +1,6 @@
+2026/09/23 19:08:00 Started CPU profiling: /tmp/dtail-3a-4GFdYdUn/profiles-final/serverless-logger-fout-tee1-0-before/dcat_cpu_20260923_190800.prof
+2026/09/23 19:08:00 Profile metrics [startup]: alloc=1.43MB total_alloc=1.43MB sys=12.21MB num_gc=0 gc_pause=0.00ms goroutines=9
+2026/09/23 19:08:01 Profile metrics [shutdown]: alloc=2.73MB total_alloc=115.44MB sys=20.93MB num_gc=37 gc_pause=17.82ms goroutines=13
+2026/09/23 19:08:01 Stopped CPU profiling
+2026/09/23 19:08:01 Wrote memory profile: /tmp/dtail-3a-4GFdYdUn/profiles-final/serverless-logger-fout-tee1-0-before/dcat_mem_20260923_190800.prof
+2026/09/23 19:08:01 Wrote allocation profile: /tmp/dtail-3a-4GFdYdUn/profiles-final/serverless-logger-fout-tee1-0-before/dcat_alloc_20260923_190801.prof

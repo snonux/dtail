@@ -1,0 +1,24 @@
+File: dmap
+Build ID: 8377f1950101240877ec9860ae1acea9963efe1a
+Type: cpu
+Time: 2026-09-23 19:08:08 EEST
+Duration: 1.66s, Total samples = 2840ms (170.67%)
+Showing nodes accounting for 1510ms, 53.17% of 2840ms total
+Dropped 62 nodes (cum <= 14.20ms)
+Showing top 15 nodes out of 228
+      flat  flat%   sum%        cum   cum%
+     270ms  9.51%  9.51%      270ms  9.51%  runtime.procyieldAsm
+     180ms  6.34% 15.85%      300ms 10.56%  runtime.tryDeferToSpanScan
+     170ms  5.99% 21.83%      310ms 10.92%  runtime.scanObjectsSmall
+     130ms  4.58% 26.41%      130ms  4.58%  runtime.nanotime
+     100ms  3.52% 29.93%      100ms  3.52%  aeshashbody
+     100ms  3.52% 33.45%      100ms  3.52%  runtime.spanClass.sizeclass (inline)
+      90ms  3.17% 36.62%      140ms  4.93%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+      80ms  2.82% 39.44%       80ms  2.82%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+      70ms  2.46% 41.90%       70ms  2.46%  runtime.memmove
+      60ms  2.11% 44.01%       70ms  2.46%  internal/runtime/maps.(*Iter).Next
+      60ms  2.11% 46.13%       60ms  2.11%  internal/strconv.readFloat
+      50ms  1.76% 47.89%       50ms  1.76%  indexbytebody
+      50ms  1.76% 49.65%       50ms  1.76%  runtime.futex
+      50ms  1.76% 51.41%      110ms  3.87%  runtime.mapaccess1_faststr
+      50ms  1.76% 53.17%      270ms  9.51%  runtime.mapassign_faststr

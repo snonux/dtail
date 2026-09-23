@@ -1,0 +1,412 @@
+goos: linux
+goarch: amd64
+pkg: github.com/mimecast/dtail/internal/io/fs
+cpu: Intel(R) N100
+                                                                │  /dev/fd/63   │             /dev/fd/62              │
+                                                                │    sec/op     │    sec/op     vs base               │
+ContextFilter/bytes128/none/hitEvery0/invertfalse/rawfalse         35.58n ± ∞ ¹   39.55n ± ∞ ¹        ~ (p=0.095 n=5)
+ContextFilter/bytes128/none/hitEvery0/invertfalse/rawtrue          34.28n ± ∞ ¹   36.43n ± ∞ ¹        ~ (p=0.222 n=5)
+ContextFilter/bytes128/none/hitEvery0/inverttrue/rawfalse          68.68n ± ∞ ¹   63.30n ± ∞ ¹        ~ (p=0.222 n=5)
+ContextFilter/bytes128/none/hitEvery0/inverttrue/rawtrue           38.11n ± ∞ ¹   42.27n ± ∞ ¹        ~ (p=0.310 n=5)
+ContextFilter/bytes128/none/hitEvery100/invertfalse/rawfalse       36.47n ± ∞ ¹   37.76n ± ∞ ¹        ~ (p=0.222 n=5)
+ContextFilter/bytes128/none/hitEvery100/invertfalse/rawtrue        36.38n ± ∞ ¹   38.14n ± ∞ ¹        ~ (p=0.841 n=5)
+ContextFilter/bytes128/none/hitEvery100/inverttrue/rawfalse        61.73n ± ∞ ¹   63.08n ± ∞ ¹        ~ (p=0.690 n=5)
+ContextFilter/bytes128/none/hitEvery100/inverttrue/rawtrue         41.60n ± ∞ ¹   40.71n ± ∞ ¹        ~ (p=0.690 n=5)
+ContextFilter/bytes128/none/hitEvery1/invertfalse/rawfalse         58.04n ± ∞ ¹   61.50n ± ∞ ¹        ~ (p=0.841 n=5)
+ContextFilter/bytes128/none/hitEvery1/invertfalse/rawtrue          34.73n ± ∞ ¹   38.36n ± ∞ ¹        ~ (p=0.151 n=5)
+ContextFilter/bytes128/none/hitEvery1/inverttrue/rawfalse          31.94n ± ∞ ¹   35.72n ± ∞ ¹        ~ (p=0.095 n=5)
+ContextFilter/bytes128/none/hitEvery1/inverttrue/rawtrue           35.81n ± ∞ ¹   34.62n ± ∞ ¹        ~ (p=0.841 n=5)
+ContextFilter/bytes128/max/hitEvery0/invertfalse/rawfalse          69.35n ± ∞ ¹   38.93n ± ∞ ¹  -43.86% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery0/invertfalse/rawtrue           71.29n ± ∞ ¹   37.27n ± ∞ ¹  -47.72% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery0/inverttrue/rawfalse           78.91n ± ∞ ¹   71.53n ± ∞ ¹        ~ (p=0.222 n=5)
+ContextFilter/bytes128/max/hitEvery0/inverttrue/rawtrue            78.22n ± ∞ ¹   43.18n ± ∞ ¹  -44.80% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery100/invertfalse/rawfalse        69.88n ± ∞ ¹   39.33n ± ∞ ¹  -43.72% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery100/invertfalse/rawtrue         73.14n ± ∞ ¹   39.51n ± ∞ ¹  -45.98% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery100/inverttrue/rawfalse         73.08n ± ∞ ¹   69.44n ± ∞ ¹   -4.98% (p=0.016 n=5)
+ContextFilter/bytes128/max/hitEvery100/inverttrue/rawtrue          70.78n ± ∞ ¹   44.33n ± ∞ ¹  -37.37% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery1/invertfalse/rawfalse          69.76n ± ∞ ¹   61.14n ± ∞ ¹  -12.36% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery1/invertfalse/rawtrue           77.42n ± ∞ ¹   40.08n ± ∞ ¹  -48.23% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery1/inverttrue/rawfalse           71.11n ± ∞ ¹   33.46n ± ∞ ¹  -52.95% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery1/inverttrue/rawtrue            72.10n ± ∞ ¹   35.94n ± ∞ ¹  -50.15% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery0/invertfalse/rawfalse        69.11n ± ∞ ¹   38.31n ± ∞ ¹  -44.57% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery0/invertfalse/rawtrue         66.63n ± ∞ ¹   39.72n ± ∞ ¹  -40.39% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery0/inverttrue/rawfalse         70.50n ± ∞ ¹   67.16n ± ∞ ¹        ~ (p=0.151 n=5)
+ContextFilter/bytes128/after/hitEvery0/inverttrue/rawtrue          71.81n ± ∞ ¹   42.28n ± ∞ ¹  -41.12% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery100/invertfalse/rawfalse      71.41n ± ∞ ¹   38.87n ± ∞ ¹  -45.57% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery100/invertfalse/rawtrue       74.92n ± ∞ ¹   40.23n ± ∞ ¹  -46.30% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery100/inverttrue/rawfalse       77.61n ± ∞ ¹   69.13n ± ∞ ¹        ~ (p=0.151 n=5)
+ContextFilter/bytes128/after/hitEvery100/inverttrue/rawtrue        81.94n ± ∞ ¹   42.03n ± ∞ ¹  -48.71% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery1/invertfalse/rawfalse        72.33n ± ∞ ¹   62.95n ± ∞ ¹  -12.97% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery1/invertfalse/rawtrue         69.22n ± ∞ ¹   38.44n ± ∞ ¹  -44.47% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery1/inverttrue/rawfalse         68.34n ± ∞ ¹   34.08n ± ∞ ¹  -50.13% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery1/inverttrue/rawtrue          66.20n ± ∞ ¹   33.78n ± ∞ ¹  -48.97% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/invertfalse/rawfalse      108.80n ± ∞ ¹   67.41n ± ∞ ¹  -38.04% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/invertfalse/rawtrue       110.30n ± ∞ ¹   70.68n ± ∞ ¹  -35.92% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/inverttrue/rawfalse        73.90n ± ∞ ¹   65.38n ± ∞ ¹  -11.53% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/inverttrue/rawtrue         72.87n ± ∞ ¹   65.60n ± ∞ ¹        ~ (p=0.056 n=5)
+ContextFilter/bytes128/before/hitEvery100/invertfalse/rawfalse    110.50n ± ∞ ¹   72.08n ± ∞ ¹  -34.77% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery100/invertfalse/rawtrue     106.40n ± ∞ ¹   74.91n ± ∞ ¹  -29.60% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery100/inverttrue/rawfalse      72.50n ± ∞ ¹   68.14n ± ∞ ¹        ~ (p=0.151 n=5)
+ContextFilter/bytes128/before/hitEvery100/inverttrue/rawtrue       70.04n ± ∞ ¹   69.86n ± ∞ ¹        ~ (p=1.000 n=5)
+ContextFilter/bytes128/before/hitEvery1/invertfalse/rawfalse       68.61n ± ∞ ¹   61.77n ± ∞ ¹        ~ (p=0.095 n=5)
+ContextFilter/bytes128/before/hitEvery1/invertfalse/rawtrue        68.31n ± ∞ ¹   64.80n ± ∞ ¹        ~ (p=0.095 n=5)
+ContextFilter/bytes128/before/hitEvery1/inverttrue/rawfalse       107.80n ± ∞ ¹   75.28n ± ∞ ¹  -30.17% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery1/inverttrue/rawtrue        113.40n ± ∞ ¹   65.90n ± ∞ ¹  -41.89% (p=0.008 n=5)
+ContextFilter/bytes4096/none/hitEvery0/invertfalse/rawfalse        168.6n ± ∞ ¹   158.4n ± ∞ ¹        ~ (p=0.095 n=5)
+ContextFilter/bytes4096/none/hitEvery0/invertfalse/rawtrue         165.0n ± ∞ ¹   153.7n ± ∞ ¹        ~ (p=0.246 n=5)
+ContextFilter/bytes4096/none/hitEvery0/inverttrue/rawfalse         254.4n ± ∞ ¹   248.3n ± ∞ ¹        ~ (p=0.690 n=5)
+ContextFilter/bytes4096/none/hitEvery0/inverttrue/rawtrue          162.6n ± ∞ ¹   168.0n ± ∞ ¹        ~ (p=0.690 n=5)
+ContextFilter/bytes4096/none/hitEvery100/invertfalse/rawfalse      163.5n ± ∞ ¹   164.7n ± ∞ ¹        ~ (p=0.841 n=5)
+ContextFilter/bytes4096/none/hitEvery100/invertfalse/rawtrue       157.7n ± ∞ ¹   162.5n ± ∞ ¹        ~ (p=0.421 n=5)
+ContextFilter/bytes4096/none/hitEvery100/inverttrue/rawfalse       262.9n ± ∞ ¹   253.0n ± ∞ ¹        ~ (p=0.548 n=5)
+ContextFilter/bytes4096/none/hitEvery100/inverttrue/rawtrue        161.8n ± ∞ ¹   158.9n ± ∞ ¹        ~ (p=1.000 n=5)
+ContextFilter/bytes4096/none/hitEvery1/invertfalse/rawfalse        130.0n ± ∞ ¹   124.2n ± ∞ ¹        ~ (p=0.056 n=5)
+ContextFilter/bytes4096/none/hitEvery1/invertfalse/rawtrue         38.05n ± ∞ ¹   35.68n ± ∞ ¹        ~ (p=0.222 n=5)
+ContextFilter/bytes4096/none/hitEvery1/inverttrue/rawfalse         34.60n ± ∞ ¹   32.54n ± ∞ ¹        ~ (p=0.548 n=5)
+ContextFilter/bytes4096/none/hitEvery1/inverttrue/rawtrue          32.16n ± ∞ ¹   33.87n ± ∞ ¹        ~ (p=0.222 n=5)
+ContextFilter/bytes4096/max/hitEvery0/invertfalse/rawfalse         257.8n ± ∞ ¹   159.3n ± ∞ ¹  -38.21% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery0/invertfalse/rawtrue          255.8n ± ∞ ¹   160.3n ± ∞ ¹  -37.33% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery0/inverttrue/rawfalse          269.2n ± ∞ ¹   249.3n ± ∞ ¹   -7.39% (p=0.032 n=5)
+ContextFilter/bytes4096/max/hitEvery0/inverttrue/rawtrue           268.1n ± ∞ ¹   157.8n ± ∞ ¹  -41.14% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery100/invertfalse/rawfalse       255.5n ± ∞ ¹   170.4n ± ∞ ¹  -33.31% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery100/invertfalse/rawtrue        257.0n ± ∞ ¹   162.7n ± ∞ ¹  -36.69% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery100/inverttrue/rawfalse        254.3n ± ∞ ¹   252.8n ± ∞ ¹        ~ (p=0.333 n=5)
+ContextFilter/bytes4096/max/hitEvery100/inverttrue/rawtrue         267.1n ± ∞ ¹   163.3n ± ∞ ¹  -38.86% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery1/invertfalse/rawfalse         154.1n ± ∞ ¹   127.5n ± ∞ ¹        ~ (p=0.095 n=5)
+ContextFilter/bytes4096/max/hitEvery1/invertfalse/rawtrue         135.20n ± ∞ ¹   37.56n ± ∞ ¹  -72.22% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery1/inverttrue/rawfalse         132.80n ± ∞ ¹   35.79n ± ∞ ¹  -73.05% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery1/inverttrue/rawtrue          133.20n ± ∞ ¹   32.75n ± ∞ ¹  -75.41% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery0/invertfalse/rawfalse       265.4n ± ∞ ¹   160.4n ± ∞ ¹  -39.56% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery0/invertfalse/rawtrue        272.0n ± ∞ ¹   162.3n ± ∞ ¹  -40.33% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery0/inverttrue/rawfalse        267.8n ± ∞ ¹   251.8n ± ∞ ¹        ~ (p=0.548 n=5)
+ContextFilter/bytes4096/after/hitEvery0/inverttrue/rawtrue         282.1n ± ∞ ¹   171.2n ± ∞ ¹  -39.31% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery100/invertfalse/rawfalse     282.1n ± ∞ ¹   167.2n ± ∞ ¹  -40.73% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery100/invertfalse/rawtrue      263.0n ± ∞ ¹   172.0n ± ∞ ¹  -34.60% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery100/inverttrue/rawfalse      252.5n ± ∞ ¹   247.3n ± ∞ ¹        ~ (p=0.548 n=5)
+ContextFilter/bytes4096/after/hitEvery100/inverttrue/rawtrue       271.5n ± ∞ ¹   160.1n ± ∞ ¹  -41.03% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery1/invertfalse/rawfalse       132.4n ± ∞ ¹   125.1n ± ∞ ¹        ~ (p=0.310 n=5)
+ContextFilter/bytes4096/after/hitEvery1/invertfalse/rawtrue       130.20n ± ∞ ¹   39.18n ± ∞ ¹  -69.91% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery1/inverttrue/rawfalse       128.40n ± ∞ ¹   35.32n ± ∞ ¹  -72.49% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery1/inverttrue/rawtrue        125.80n ± ∞ ¹   35.86n ± ∞ ¹  -71.49% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery0/invertfalse/rawfalse      369.5n ± ∞ ¹   318.9n ± ∞ ¹        ~ (p=0.056 n=5)
+ContextFilter/bytes4096/before/hitEvery0/invertfalse/rawtrue       368.3n ± ∞ ¹   329.3n ± ∞ ¹        ~ (p=0.151 n=5)
+ContextFilter/bytes4096/before/hitEvery0/inverttrue/rawfalse       249.4n ± ∞ ¹   257.8n ± ∞ ¹        ~ (p=0.690 n=5)
+ContextFilter/bytes4096/before/hitEvery0/inverttrue/rawtrue        256.4n ± ∞ ¹   270.7n ± ∞ ¹        ~ (p=0.151 n=5)
+ContextFilter/bytes4096/before/hitEvery100/invertfalse/rawfalse    365.0n ± ∞ ¹   325.8n ± ∞ ¹        ~ (p=0.421 n=5)
+ContextFilter/bytes4096/before/hitEvery100/invertfalse/rawtrue     388.7n ± ∞ ¹   311.4n ± ∞ ¹  -19.89% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery100/inverttrue/rawfalse     256.5n ± ∞ ¹   251.8n ± ∞ ¹        ~ (p=0.841 n=5)
+ContextFilter/bytes4096/before/hitEvery100/inverttrue/rawtrue      254.1n ± ∞ ¹   251.7n ± ∞ ¹        ~ (p=0.548 n=5)
+ContextFilter/bytes4096/before/hitEvery1/invertfalse/rawfalse      129.6n ± ∞ ¹   123.9n ± ∞ ¹        ~ (p=0.310 n=5)
+ContextFilter/bytes4096/before/hitEvery1/invertfalse/rawtrue       125.8n ± ∞ ¹   126.4n ± ∞ ¹        ~ (p=1.000 n=5)
+ContextFilter/bytes4096/before/hitEvery1/inverttrue/rawfalse       208.3n ± ∞ ¹   178.5n ± ∞ ¹  -14.31% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery1/inverttrue/rawtrue        223.5n ± ∞ ¹   177.3n ± ∞ ¹  -20.67% (p=0.008 n=5)
+geomean                                                            112.1n         82.50n        -26.39%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                                                │  /dev/fd/63   │               /dev/fd/62               │
+                                                                │      B/s      │      B/s        vs base                │
+ContextFilter/bytes128/none/hitEvery0/invertfalse/rawfalse        3.350Gi ± ∞ ¹    3.014Gi ± ∞ ¹         ~ (p=0.095 n=5)
+ContextFilter/bytes128/none/hitEvery0/invertfalse/rawtrue         3.477Gi ± ∞ ¹    3.272Gi ± ∞ ¹         ~ (p=0.222 n=5)
+ContextFilter/bytes128/none/hitEvery0/inverttrue/rawfalse         1.736Gi ± ∞ ¹    1.883Gi ± ∞ ¹         ~ (p=0.222 n=5)
+ContextFilter/bytes128/none/hitEvery0/inverttrue/rawtrue          3.128Gi ± ∞ ¹    2.820Gi ± ∞ ¹         ~ (p=0.310 n=5)
+ContextFilter/bytes128/none/hitEvery100/invertfalse/rawfalse      3.268Gi ± ∞ ¹    3.157Gi ± ∞ ¹         ~ (p=0.222 n=5)
+ContextFilter/bytes128/none/hitEvery100/invertfalse/rawtrue       3.277Gi ± ∞ ¹    3.125Gi ± ∞ ¹         ~ (p=0.841 n=5)
+ContextFilter/bytes128/none/hitEvery100/inverttrue/rawfalse       1.931Gi ± ∞ ¹    1.890Gi ± ∞ ¹         ~ (p=0.690 n=5)
+ContextFilter/bytes128/none/hitEvery100/inverttrue/rawtrue        2.865Gi ± ∞ ¹    2.928Gi ± ∞ ¹         ~ (p=0.690 n=5)
+ContextFilter/bytes128/none/hitEvery1/invertfalse/rawfalse        2.054Gi ± ∞ ¹    1.938Gi ± ∞ ¹         ~ (p=0.841 n=5)
+ContextFilter/bytes128/none/hitEvery1/invertfalse/rawtrue         3.432Gi ± ∞ ¹    3.108Gi ± ∞ ¹         ~ (p=0.151 n=5)
+ContextFilter/bytes128/none/hitEvery1/inverttrue/rawfalse         3.732Gi ± ∞ ¹    3.337Gi ± ∞ ¹         ~ (p=0.095 n=5)
+ContextFilter/bytes128/none/hitEvery1/inverttrue/rawtrue          3.329Gi ± ∞ ¹    3.443Gi ± ∞ ¹         ~ (p=0.841 n=5)
+ContextFilter/bytes128/max/hitEvery0/invertfalse/rawfalse         1.719Gi ± ∞ ¹    3.062Gi ± ∞ ¹   +78.15% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery0/invertfalse/rawtrue          1.672Gi ± ∞ ¹    3.198Gi ± ∞ ¹   +91.27% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery0/inverttrue/rawfalse          1.511Gi ± ∞ ¹    1.666Gi ± ∞ ¹         ~ (p=0.222 n=5)
+ContextFilter/bytes128/max/hitEvery0/inverttrue/rawtrue           1.524Gi ± ∞ ¹    2.761Gi ± ∞ ¹   +81.15% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery100/invertfalse/rawfalse       1.706Gi ± ∞ ¹    3.031Gi ± ∞ ¹   +77.68% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery100/invertfalse/rawtrue        1.630Gi ± ∞ ¹    3.018Gi ± ∞ ¹   +85.13% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery100/inverttrue/rawfalse        1.631Gi ± ∞ ¹    1.717Gi ± ∞ ¹    +5.25% (p=0.016 n=5)
+ContextFilter/bytes128/max/hitEvery100/inverttrue/rawtrue         1.684Gi ± ∞ ¹    2.689Gi ± ∞ ¹   +59.68% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery1/invertfalse/rawfalse         1.709Gi ± ∞ ¹    1.950Gi ± ∞ ¹   +14.09% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery1/invertfalse/rawtrue          1.540Gi ± ∞ ¹    2.974Gi ± ∞ ¹   +93.15% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery1/inverttrue/rawfalse          1.676Gi ± ∞ ¹    3.562Gi ± ∞ ¹  +112.49% (p=0.008 n=5)
+ContextFilter/bytes128/max/hitEvery1/inverttrue/rawtrue           1.653Gi ± ∞ ¹    3.317Gi ± ∞ ¹  +100.61% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery0/invertfalse/rawfalse       1.725Gi ± ∞ ¹    3.112Gi ± ∞ ¹   +80.41% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery0/invertfalse/rawtrue        1.789Gi ± ∞ ¹    3.001Gi ± ∞ ¹   +67.77% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery0/inverttrue/rawfalse        1.691Gi ± ∞ ¹    1.775Gi ± ∞ ¹         ~ (p=0.151 n=5)
+ContextFilter/bytes128/after/hitEvery0/inverttrue/rawtrue         1.660Gi ± ∞ ¹    2.820Gi ± ∞ ¹   +69.84% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery100/invertfalse/rawfalse     1.669Gi ± ∞ ¹    3.067Gi ± ∞ ¹   +83.71% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery100/invertfalse/rawtrue      1.591Gi ± ∞ ¹    2.963Gi ± ∞ ¹   +86.23% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery100/inverttrue/rawfalse      1.536Gi ± ∞ ¹    1.725Gi ± ∞ ¹         ~ (p=0.151 n=5)
+ContextFilter/bytes128/after/hitEvery100/inverttrue/rawtrue       1.455Gi ± ∞ ¹    2.837Gi ± ∞ ¹   +94.98% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery1/invertfalse/rawfalse       1.648Gi ± ∞ ¹    1.894Gi ± ∞ ¹   +14.90% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery1/invertfalse/rawtrue        1.722Gi ± ∞ ¹    3.101Gi ± ∞ ¹   +80.07% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery1/inverttrue/rawfalse        1.744Gi ± ∞ ¹    3.498Gi ± ∞ ¹  +100.55% (p=0.008 n=5)
+ContextFilter/bytes128/after/hitEvery1/inverttrue/rawtrue         1.801Gi ± ∞ ¹    3.529Gi ± ∞ ¹   +95.96% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/invertfalse/rawfalse      1.095Gi ± ∞ ¹    1.768Gi ± ∞ ¹   +61.47% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/invertfalse/rawtrue       1.081Gi ± ∞ ¹    1.687Gi ± ∞ ¹   +55.99% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/inverttrue/rawfalse       1.613Gi ± ∞ ¹    1.823Gi ± ∞ ¹   +13.02% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/inverttrue/rawtrue        1.636Gi ± ∞ ¹    1.817Gi ± ∞ ¹         ~ (p=0.056 n=5)
+ContextFilter/bytes128/before/hitEvery100/invertfalse/rawfalse    1.079Gi ± ∞ ¹    1.654Gi ± ∞ ¹   +53.27% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery100/invertfalse/rawtrue     1.120Gi ± ∞ ¹    1.591Gi ± ∞ ¹   +42.10% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery100/inverttrue/rawfalse     1.644Gi ± ∞ ¹    1.749Gi ± ∞ ¹         ~ (p=0.151 n=5)
+ContextFilter/bytes128/before/hitEvery100/inverttrue/rawtrue      1.702Gi ± ∞ ¹    1.706Gi ± ∞ ¹         ~ (p=1.000 n=5)
+ContextFilter/bytes128/before/hitEvery1/invertfalse/rawfalse      1.737Gi ± ∞ ¹    1.930Gi ± ∞ ¹         ~ (p=0.095 n=5)
+ContextFilter/bytes128/before/hitEvery1/invertfalse/rawtrue       1.745Gi ± ∞ ¹    1.840Gi ± ∞ ¹         ~ (p=0.095 n=5)
+ContextFilter/bytes128/before/hitEvery1/inverttrue/rawfalse       1.106Gi ± ∞ ¹    1.584Gi ± ∞ ¹   +43.24% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery1/inverttrue/rawtrue        1.051Gi ± ∞ ¹    1.809Gi ± ∞ ¹   +72.15% (p=0.008 n=5)
+ContextFilter/bytes4096/none/hitEvery0/invertfalse/rawfalse       22.63Gi ± ∞ ¹    24.09Gi ± ∞ ¹         ~ (p=0.095 n=5)
+ContextFilter/bytes4096/none/hitEvery0/invertfalse/rawtrue        23.12Gi ± ∞ ¹    24.82Gi ± ∞ ¹         ~ (p=0.310 n=5)
+ContextFilter/bytes4096/none/hitEvery0/inverttrue/rawfalse        15.00Gi ± ∞ ¹    15.36Gi ± ∞ ¹         ~ (p=0.690 n=5)
+ContextFilter/bytes4096/none/hitEvery0/inverttrue/rawtrue         23.46Gi ± ∞ ¹    22.70Gi ± ∞ ¹         ~ (p=0.690 n=5)
+ContextFilter/bytes4096/none/hitEvery100/invertfalse/rawfalse     23.34Gi ± ∞ ¹    23.16Gi ± ∞ ¹         ~ (p=0.841 n=5)
+ContextFilter/bytes4096/none/hitEvery100/invertfalse/rawtrue      24.18Gi ± ∞ ¹    23.47Gi ± ∞ ¹         ~ (p=0.421 n=5)
+ContextFilter/bytes4096/none/hitEvery100/inverttrue/rawfalse      14.51Gi ± ∞ ¹    15.08Gi ± ∞ ¹         ~ (p=0.548 n=5)
+ContextFilter/bytes4096/none/hitEvery100/inverttrue/rawtrue       23.58Gi ± ∞ ¹    24.00Gi ± ∞ ¹         ~ (p=1.000 n=5)
+ContextFilter/bytes4096/none/hitEvery1/invertfalse/rawfalse       29.35Gi ± ∞ ¹    30.72Gi ± ∞ ¹         ~ (p=0.056 n=5)
+ContextFilter/bytes4096/none/hitEvery1/invertfalse/rawtrue        100.3Gi ± ∞ ¹    106.9Gi ± ∞ ¹         ~ (p=0.222 n=5)
+ContextFilter/bytes4096/none/hitEvery1/inverttrue/rawfalse        110.3Gi ± ∞ ¹    117.2Gi ± ∞ ¹         ~ (p=0.548 n=5)
+ContextFilter/bytes4096/none/hitEvery1/inverttrue/rawtrue         118.6Gi ± ∞ ¹    112.6Gi ± ∞ ¹         ~ (p=0.222 n=5)
+ContextFilter/bytes4096/max/hitEvery0/invertfalse/rawfalse        14.80Gi ± ∞ ¹    23.94Gi ± ∞ ¹   +61.79% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery0/invertfalse/rawtrue         14.91Gi ± ∞ ¹    23.80Gi ± ∞ ¹   +59.58% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery0/inverttrue/rawfalse         14.17Gi ± ∞ ¹    15.30Gi ± ∞ ¹    +7.96% (p=0.032 n=5)
+ContextFilter/bytes4096/max/hitEvery0/inverttrue/rawtrue          14.23Gi ± ∞ ¹    24.18Gi ± ∞ ¹   +69.95% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery100/invertfalse/rawfalse      14.93Gi ± ∞ ¹    22.39Gi ± ∞ ¹   +49.96% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery100/invertfalse/rawtrue       14.84Gi ± ∞ ¹    23.45Gi ± ∞ ¹   +58.00% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery100/inverttrue/rawfalse       15.00Gi ± ∞ ¹    15.09Gi ± ∞ ¹         ~ (p=0.310 n=5)
+ContextFilter/bytes4096/max/hitEvery100/inverttrue/rawtrue        14.28Gi ± ∞ ¹    23.36Gi ± ∞ ¹   +63.57% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery1/invertfalse/rawfalse        24.76Gi ± ∞ ¹    29.92Gi ± ∞ ¹         ~ (p=0.095 n=5)
+ContextFilter/bytes4096/max/hitEvery1/invertfalse/rawtrue         28.21Gi ± ∞ ¹   101.57Gi ± ∞ ¹  +260.00% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery1/inverttrue/rawfalse         28.73Gi ± ∞ ¹   106.59Gi ± ∞ ¹  +271.04% (p=0.008 n=5)
+ContextFilter/bytes4096/max/hitEvery1/inverttrue/rawtrue          28.64Gi ± ∞ ¹   116.48Gi ± ∞ ¹  +306.73% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery0/invertfalse/rawfalse      14.38Gi ± ∞ ¹    23.78Gi ± ∞ ¹   +65.43% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery0/invertfalse/rawtrue       14.03Gi ± ∞ ¹    23.50Gi ± ∞ ¹   +67.58% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery0/inverttrue/rawfalse       14.25Gi ± ∞ ¹    15.15Gi ± ∞ ¹         ~ (p=0.548 n=5)
+ContextFilter/bytes4096/after/hitEvery0/inverttrue/rawtrue        13.52Gi ± ∞ ¹    22.29Gi ± ∞ ¹   +64.79% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery100/invertfalse/rawfalse    13.52Gi ± ∞ ¹    22.82Gi ± ∞ ¹   +68.78% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery100/invertfalse/rawtrue     14.50Gi ± ∞ ¹    22.17Gi ± ∞ ¹   +52.88% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery100/inverttrue/rawfalse     15.11Gi ± ∞ ¹    15.42Gi ± ∞ ¹         ~ (p=0.548 n=5)
+ContextFilter/bytes4096/after/hitEvery100/inverttrue/rawtrue      14.05Gi ± ∞ ¹    23.83Gi ± ∞ ¹   +69.60% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery1/invertfalse/rawfalse      28.82Gi ± ∞ ¹    30.48Gi ± ∞ ¹         ~ (p=0.310 n=5)
+ContextFilter/bytes4096/after/hitEvery1/invertfalse/rawtrue       29.29Gi ± ∞ ¹    97.37Gi ± ∞ ¹  +232.43% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery1/inverttrue/rawfalse       29.70Gi ± ∞ ¹   107.99Gi ± ∞ ¹  +263.56% (p=0.008 n=5)
+ContextFilter/bytes4096/after/hitEvery1/inverttrue/rawtrue        30.32Gi ± ∞ ¹   106.39Gi ± ∞ ¹  +250.86% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery0/invertfalse/rawfalse     10.33Gi ± ∞ ¹    11.96Gi ± ∞ ¹         ~ (p=0.056 n=5)
+ContextFilter/bytes4096/before/hitEvery0/invertfalse/rawtrue      10.36Gi ± ∞ ¹    11.59Gi ± ∞ ¹         ~ (p=0.151 n=5)
+ContextFilter/bytes4096/before/hitEvery0/inverttrue/rawfalse      15.30Gi ± ∞ ¹    14.80Gi ± ∞ ¹         ~ (p=0.690 n=5)
+ContextFilter/bytes4096/before/hitEvery0/inverttrue/rawtrue       14.88Gi ± ∞ ¹    14.09Gi ± ∞ ¹         ~ (p=0.151 n=5)
+ContextFilter/bytes4096/before/hitEvery100/invertfalse/rawfalse   10.45Gi ± ∞ ¹    11.71Gi ± ∞ ¹         ~ (p=0.421 n=5)
+ContextFilter/bytes4096/before/hitEvery100/invertfalse/rawtrue    9.814Gi ± ∞ ¹   12.251Gi ± ∞ ¹   +24.83% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery100/inverttrue/rawfalse    14.87Gi ± ∞ ¹    15.15Gi ± ∞ ¹         ~ (p=0.841 n=5)
+ContextFilter/bytes4096/before/hitEvery100/inverttrue/rawtrue     15.01Gi ± ∞ ¹    15.16Gi ± ∞ ¹         ~ (p=0.548 n=5)
+ContextFilter/bytes4096/before/hitEvery1/invertfalse/rawfalse     29.42Gi ± ∞ ¹    30.80Gi ± ∞ ¹         ~ (p=0.310 n=5)
+ContextFilter/bytes4096/before/hitEvery1/invertfalse/rawtrue      30.31Gi ± ∞ ¹    30.18Gi ± ∞ ¹         ~ (p=1.000 n=5)
+ContextFilter/bytes4096/before/hitEvery1/inverttrue/rawfalse      18.31Gi ± ∞ ¹    21.37Gi ± ∞ ¹   +16.71% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery1/inverttrue/rawtrue       17.07Gi ± ∞ ¹    21.51Gi ± ∞ ¹   +26.00% (p=0.008 n=5)
+geomean                                                           6.016Gi          8.174Gi         +35.86%
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                                                │ /dev/fd/63  │               /dev/fd/62                │
+                                                                │    B/op     │    B/op      vs base                    │
+ContextFilter/bytes128/none/hitEvery0/invertfalse/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery0/invertfalse/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery0/inverttrue/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery0/inverttrue/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery100/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery100/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery100/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery100/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery1/invertfalse/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery1/invertfalse/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery1/inverttrue/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery1/inverttrue/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery0/invertfalse/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery0/invertfalse/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery0/inverttrue/rawfalse          0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery0/inverttrue/rawtrue           0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery100/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery100/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery100/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery100/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery1/invertfalse/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery1/invertfalse/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery1/inverttrue/rawfalse          0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery1/inverttrue/rawtrue           0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery0/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery0/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery0/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery0/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery100/invertfalse/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery100/invertfalse/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery100/inverttrue/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery100/inverttrue/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery1/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery1/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery1/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery1/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery0/invertfalse/rawfalse      16.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/invertfalse/rawtrue       16.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery0/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery0/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery100/invertfalse/rawfalse    15.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery100/invertfalse/rawtrue     15.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery100/inverttrue/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery100/inverttrue/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery1/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery1/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery1/inverttrue/rawfalse       16.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes128/before/hitEvery1/inverttrue/rawtrue        16.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes4096/none/hitEvery0/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery0/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery0/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery0/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery100/invertfalse/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery100/invertfalse/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery100/inverttrue/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery100/inverttrue/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery1/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery1/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery1/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery1/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery0/invertfalse/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery0/invertfalse/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery0/inverttrue/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery0/inverttrue/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery100/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery100/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery100/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery100/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery1/invertfalse/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery1/invertfalse/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery1/inverttrue/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery1/inverttrue/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery0/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery0/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery0/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery0/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery100/invertfalse/rawfalse    0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery100/invertfalse/rawtrue     0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery100/inverttrue/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery100/inverttrue/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery1/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery1/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery1/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery1/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery0/invertfalse/rawfalse     16.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery0/invertfalse/rawtrue      16.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery0/inverttrue/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery0/inverttrue/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery100/invertfalse/rawfalse   15.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery100/invertfalse/rawtrue    15.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery100/inverttrue/rawfalse    0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery100/inverttrue/rawtrue     0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery1/invertfalse/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery1/invertfalse/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹         ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery1/inverttrue/rawfalse      16.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+ContextFilter/bytes4096/before/hitEvery1/inverttrue/rawtrue       16.00 ± ∞ ¹    0.00 ± ∞ ¹  -100.00% (p=0.008 n=5)
+geomean                                                                     ³                ?                      ³ ⁴
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+³ summaries must be >0 to compute geomean
+⁴ ratios must be >0 to compute geomean
+
+                                                                │ /dev/fd/63  │             /dev/fd/62              │
+                                                                │  allocs/op  │  allocs/op   vs base                │
+ContextFilter/bytes128/none/hitEvery0/invertfalse/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery0/invertfalse/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery0/inverttrue/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery0/inverttrue/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery100/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery100/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery100/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery100/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery1/invertfalse/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery1/invertfalse/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery1/inverttrue/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/none/hitEvery1/inverttrue/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery0/invertfalse/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery0/invertfalse/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery0/inverttrue/rawfalse          0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery0/inverttrue/rawtrue           0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery100/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery100/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery100/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery100/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery1/invertfalse/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery1/invertfalse/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery1/inverttrue/rawfalse          0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/max/hitEvery1/inverttrue/rawtrue           0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery0/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery0/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery0/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery0/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery100/invertfalse/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery100/invertfalse/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery100/inverttrue/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery100/inverttrue/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery1/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery1/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery1/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/after/hitEvery1/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery0/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery0/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery0/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery0/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery100/invertfalse/rawfalse    0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery100/invertfalse/rawtrue     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery100/inverttrue/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery100/inverttrue/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery1/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery1/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery1/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes128/before/hitEvery1/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery0/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery0/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery0/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery0/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery100/invertfalse/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery100/invertfalse/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery100/inverttrue/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery100/inverttrue/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery1/invertfalse/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery1/invertfalse/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery1/inverttrue/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/none/hitEvery1/inverttrue/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery0/invertfalse/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery0/invertfalse/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery0/inverttrue/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery0/inverttrue/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery100/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery100/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery100/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery100/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery1/invertfalse/rawfalse        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery1/invertfalse/rawtrue         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery1/inverttrue/rawfalse         0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/max/hitEvery1/inverttrue/rawtrue          0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery0/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery0/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery0/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery0/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery100/invertfalse/rawfalse    0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery100/invertfalse/rawtrue     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery100/inverttrue/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery100/inverttrue/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery1/invertfalse/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery1/invertfalse/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery1/inverttrue/rawfalse       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/after/hitEvery1/inverttrue/rawtrue        0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery0/invertfalse/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery0/invertfalse/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery0/inverttrue/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery0/inverttrue/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery100/invertfalse/rawfalse   0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery100/invertfalse/rawtrue    0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery100/inverttrue/rawfalse    0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery100/inverttrue/rawtrue     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery1/invertfalse/rawfalse     0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery1/invertfalse/rawtrue      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery1/inverttrue/rawfalse      0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+ContextFilter/bytes4096/before/hitEvery1/inverttrue/rawtrue       0.000 ± ∞ ¹   0.000 ± ∞ ¹       ~ (p=1.000 n=5) ²
+geomean                                                                     ³                +0.00%               ³
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
+³ summaries must be >0 to compute geomean

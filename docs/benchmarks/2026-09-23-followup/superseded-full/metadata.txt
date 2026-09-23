@@ -1,0 +1,45 @@
+created_utc=2026-09-23T15:15:18Z
+mode=run
+hostname=rocky
+kernel=Linux 5.14.0-687.42.1.el9_8.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Aug 26 12:55:43 UTC 2026 x86_64 GNU/Linux
+go_binary=/usr/local/go/bin/go
+go_version=go version go1.26.6 linux/amd64
+go_env=linux amd64 1 auto 
+logical_cpus=4
+
+[upstream]
+root=/tmp/dtail-3a-4GFdYdUn/preplan
+commit=d2774f799521d39c282a6113964358d59ad8253d
+remote=ssh://git@code.f3s.buetow.org:2022/snonux/dtail.git
+go_directive=1.26.6
+tracked_dirty=no
+status:
+binary_sha256:
+1b9ac49b387a5170ccf8dd3ed775b6e04e0ea8e504a2216d5ecb811095189b54  /tmp/dtail-3a-4GFdYdUn/full/bin/upstream/dcat
+1d4081fc6033e33e46917e0d67374c624df10f3dce9eb786ea9ca4c46c40884f  /tmp/dtail-3a-4GFdYdUn/full/bin/upstream/dgrep
+5f65d12aeb3745fc9a889121ce2393c2063707b8cac751af2b5b1f55fe014e49  /tmp/dtail-3a-4GFdYdUn/full/bin/upstream/dmap
+5b4d0718b381c937e17def75722b82c1eeea4988578a9e79d545b0fb221241d9  /tmp/dtail-3a-4GFdYdUn/full/bin/upstream/dserver
+b0ddf9734d9468dd33b01aadd04239d90edc69a31d10fff31d266a295dd87430  /tmp/dtail-3a-4GFdYdUn/full/bin/upstream/dtail
+
+[local]
+root=/tmp/dtail-3a-4GFdYdUn/final
+commit=6b8b31342923fe8e57434d70ee134de86213516c
+remote=ssh://git@code.f3s.buetow.org:2022/snonux/dtail.git
+go_directive=1.26.6
+tracked_dirty=no
+status:
+binary_sha256:
+cf30303418ddd9271e323ae998e0ea6f8289c17f159d1917bacf5c88991aa370  /tmp/dtail-3a-4GFdYdUn/full/bin/local/dcat
+285642715d4be461b1f20e3cd56345960246103bcbd532f81957017ce31380f2  /tmp/dtail-3a-4GFdYdUn/full/bin/local/dgrep
+04078ea281a63d79c65cb567571536dc4e74a418cc2537235b9f795a92ebeee9  /tmp/dtail-3a-4GFdYdUn/full/bin/local/dmap
+8cfcd01acae80dc4a3461df0dc35f277a220109debfa0a6815a3ef907cc10976  /tmp/dtail-3a-4GFdYdUn/full/bin/local/dserver
+e680f97a08e97084f2deeb70729c67a3e8906a84701da5ae15bb4b7fa2fe17af  /tmp/dtail-3a-4GFdYdUn/full/bin/local/dtail
+
+[data_sha256]
+bb615cf54c9d4faa80230d3c778f48e761d46725d7520e1dd5b0cd3e69c4585a  /tmp/dtail-3a-4GFdYdUn/full/data/smoke/normal.log
+76debc59e6369a64b9afbc7e5f0832c9d3e52cb18e4a2bf0894f7e37fc232eff  /tmp/dtail-3a-4GFdYdUn/full/data/smoke/stats.log
+ebbac7bf57ff8efb066a9313f6edb7e1042fc12936cc693470a8c9fadcfe64f8  /tmp/dtail-3a-4GFdYdUn/full/data/smoke/follow.log
+3bcafa015d65bae0e4f7f46463f28b122fc8436d383f8c03faf9ce27f1c27587  /tmp/dtail-3a-4GFdYdUn/full/data/normal_100mib.log
+deb662eaee0afe0281c887127f30e702b0e423c9b579ecd32bc726dd283f36ec  /tmp/dtail-3a-4GFdYdUn/full/data/normal_1gib.log
+807bfa4e5759bef3b11f5d134d33fb3409b560ba578d7299ab2832eb3c6014c9  /tmp/dtail-3a-4GFdYdUn/full/data/stats_100mib.log
+db2d4cf1ff8845d6b9d7db1bc1718542b75c4d90bde4687eabfcf51ca3774ec1  /tmp/dtail-3a-4GFdYdUn/full/data/follow_10mib.log

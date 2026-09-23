@@ -1,0 +1,22 @@
+File: dmap
+Build ID: ad3eb357eae75cad9081cdf748c910d8d1a4cad8
+Type: inuse_space
+Time: 2026-09-23 19:08:07 EEST
+Showing nodes accounting for 85.65MB, 100% of 85.65MB total
+Showing top 15 nodes out of 43
+      flat  flat%   sum%        cum   cum%
+   30.51MB 35.62% 35.62%    30.51MB 35.62%  github.com/mimecast/dtail/internal/mapr.(*AggregateSet).setString
+      20MB 23.36% 58.98%       20MB 23.36%  github.com/mimecast/dtail/internal/mapr.(*AggregateSet).addFloat
+      11MB 12.84% 71.82%       11MB 12.84%  bytes.(*Buffer).String
+    9.50MB 11.09% 82.91%     9.50MB 11.09%  github.com/mimecast/dtail/internal/mapr.NewAggregateSet (inline)
+    8.05MB  9.40% 92.32%     8.05MB  9.40%  strings.(*Builder).WriteString (inline)
+    3.08MB  3.59% 95.91%    12.58MB 14.69%  github.com/mimecast/dtail/internal/mapr.(*GroupSet).GetSet
+    2.50MB  2.92% 98.83%     2.50MB  2.92%  internal/stringslite.Clone
+    0.50MB  0.58% 99.42%     0.50MB  0.58%  runtime.mallocgc
+    0.50MB  0.58%   100%     0.50MB  0.58%  github.com/mimecast/dtail/internal/io/dlog.(*DLog).start
+         0     0%   100%     8.05MB  9.40%  github.com/mimecast/dtail/internal/cli.(*ClientRunner).RunClientWithBrush
+         0     0%   100%     8.05MB  9.40%  github.com/mimecast/dtail/internal/cli.(*ClientRunner).runClientWithBrush
+         0     0%   100%     8.05MB  9.40%  github.com/mimecast/dtail/internal/cli.(*ClientRunner).runConfiguredClient
+         0     0%   100%     8.05MB  9.40%  github.com/mimecast/dtail/internal/clients.(*MaprClient).Start
+         0     0%   100%     8.05MB  9.40%  github.com/mimecast/dtail/internal/clients.(*MaprClient).finish
+         0     0%   100%     8.05MB  9.40%  github.com/mimecast/dtail/internal/clients.(*MaprClient).printResults

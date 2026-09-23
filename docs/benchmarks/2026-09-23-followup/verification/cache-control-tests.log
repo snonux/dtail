@@ -1,0 +1,5 @@
+cache drop failed; see /tmp/dtail-cache-test.T3lUkS9H/cache-drops.log
+cache helper selection/failure tests passed: /tmp/dtail-cache-test.T3lUkS9H/preferred-helper
+cache drop failed; see /tmp/dtail-cache-test.T3lUkS9H/cache-drops.log
+cache helper selection/failure tests passed: /home/paul/git/dtail/benchmarks/drop_caches.sh
+cache control tests passed

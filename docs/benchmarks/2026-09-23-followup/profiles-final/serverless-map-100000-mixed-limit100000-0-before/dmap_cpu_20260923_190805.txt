@@ -1,0 +1,24 @@
+File: dmap
+Build ID: ad3eb357eae75cad9081cdf748c910d8d1a4cad8
+Type: cpu
+Time: 2026-09-23 19:08:05 EEST
+Duration: 1.71s, Total samples = 3050ms (177.85%)
+Showing nodes accounting for 1610ms, 52.79% of 3050ms total
+Dropped 93 nodes (cum <= 15.25ms)
+Showing top 15 nodes out of 229
+      flat  flat%   sum%        cum   cum%
+     350ms 11.48% 11.48%      350ms 11.48%  runtime.nanotime
+     230ms  7.54% 19.02%      230ms  7.54%  runtime.procyieldAsm
+     200ms  6.56% 25.57%      290ms  9.51%  runtime.tryDeferToSpanScan
+     150ms  4.92% 30.49%      320ms 10.49%  runtime.scanObjectsSmall
+     120ms  3.93% 34.43%      120ms  3.93%  runtime.memmove
+     100ms  3.28% 37.70%      100ms  3.28%  internal/runtime/maps.ctrlGroup.matchH2 (inline)
+      70ms  2.30% 40.00%       70ms  2.30%  runtime.spanClass.sizeclass (inline)
+      60ms  1.97% 41.97%       90ms  2.95%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+      60ms  1.97% 43.93%      270ms  8.85%  runtime.mapassign_faststr
+      50ms  1.64% 45.57%       50ms  1.64%  aeshashbody
+      50ms  1.64% 47.21%       50ms  1.64%  internal/runtime/maps.(*Iter).Next
+      50ms  1.64% 48.85%      230ms  7.54%  runtime.mapaccess2_faststr
+      40ms  1.31% 50.16%       50ms  1.64%  bytes.(*Buffer).WriteByte
+      40ms  1.31% 51.48%       50ms  1.64%  github.com/mimecast/dtail/internal/protocol.ScanField
+      40ms  1.31% 52.79%       40ms  1.31%  memeqbody

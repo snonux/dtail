@@ -1,0 +1,23 @@
+test_case_selection_rejects_empty_and_unknown (test_perf_followup.HarnessTests) ... ok
+test_digest_real_file_and_missing_file (test_perf_followup.HarnessTests) ... ok
+test_environment_removes_configuration_and_profiling_overrides (test_perf_followup.HarnessTests) ... ok
+test_grep_confirmation_rejects_missing_arguments_and_invalid_rounds (test_perf_followup.HarnessTests) ... ok
+test_profile_selection_requires_complete_unique_serverless_commands (test_perf_followup.HarnessTests) ... ok
+test_ready_rejects_exited_server (test_perf_followup.HarnessTests) ... ok
+test_stop_reaps_real_child_and_is_idempotent (test_perf_followup.HarnessTests) ... ok
+test_tee_checks_real_file_without_repairing_missing_newline (test_perf_followup.HarnessTests) ... ok
+test_eof_is_failure (test_perf_followup.ReceiverTests) ... ok
+test_fragmented_real_pipe_and_sync_exclusion (test_perf_followup.ReceiverTests) ... ok
+test_oracle_rejects_missing_duplicate_reordered_and_partial (test_perf_followup.ReceiverTests) ... ok
+test_changed_binary_is_failure (test_perf_followup.SharedWrapperTests) ... ok
+test_cross_build_mismatch_is_failure (test_perf_followup.SharedWrapperTests) ... ok
+test_dangling_directory_symlink_is_rejected (test_perf_followup.SharedWrapperTests) ... ok
+test_empty_results_are_not_success (test_perf_followup.SharedWrapperTests) ... ok
+test_existing_directory_without_marker_is_preserved (test_perf_followup.SharedWrapperTests) ... ok
+test_invalid_round_count_is_failure (test_perf_followup.SharedWrapperTests) ... ok
+test_serial_order_and_output_counts (test_perf_followup.SharedWrapperTests) ... ok
+
+----------------------------------------------------------------------
+Ran 18 tests in 2.502s
+
+OK

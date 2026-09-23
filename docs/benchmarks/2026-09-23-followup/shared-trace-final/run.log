@@ -1,0 +1,71 @@
+1,follow,preplan
+# dserver port 24900
+# generating /tmp/dtail-3a-4GFdYdUn/shared-trace-final/preplan/data/normal_104857600.log
+# generating /tmp/dtail-3a-4GFdYdUn/shared-trace-final/preplan/data/stats_104857600.log
+follow-burst,plain,on,1,4,n/a,n/a,5977,6185,4,2,0.13,yes
+follow-burst,plain,off,1,4,n/a,n/a,6436,6641,0,0,0.79,yes
+1,follow,latest-baseline
+# dserver port 24900
+# generating /tmp/dtail-3a-4GFdYdUn/shared-trace-final/latest-baseline/data/normal_104857600.log
+# generating /tmp/dtail-3a-4GFdYdUn/shared-trace-final/latest-baseline/data/stats_104857600.log
+# machine busy (load 1.04), waiting 60s
+follow-burst,plain,on,1,4,n/a,n/a,6160,6371,4,2,0.44,yes
+follow-burst,plain,off,1,4,n/a,n/a,6434,6646,0,0,0.96,yes
+1,follow,final
+# dserver port 24900
+# generating /tmp/dtail-3a-4GFdYdUn/shared-trace-final/final/data/normal_104857600.log
+# generating /tmp/dtail-3a-4GFdYdUn/shared-trace-final/final/data/stats_104857600.log
+# machine busy (load 1.33), waiting 60s
+follow-burst,plain,on,1,4,n/a,n/a,5757,5972,4,2,0.49,yes
+# machine busy (load 1.41), waiting 60s
+follow-burst,plain,off,1,4,n/a,n/a,6432,6638,0,0,0.61,yes
+1,follow-paced,preplan
+# dserver port 24900
+follow-paced,plain,on,1,4,n/a,n/a,1687,1916,0,1,0.80,yes
+follow-paced,plain,off,1,4,n/a,n/a,6593,6830,0,0,0.99,yes
+1,follow-paced,latest-baseline
+# dserver port 24900
+# machine busy (load 1.37), waiting 60s
+follow-paced,plain,on,1,4,n/a,n/a,1698,1929,0,1,0.58,yes
+# machine busy (load 1.11), waiting 60s
+follow-paced,plain,off,1,4,n/a,n/a,6605,6845,0,0,0.41,yes
+1,follow-paced,final
+# dserver port 24900
+# machine busy (load 1.35), waiting 60s
+follow-paced,plain,on,1,4,n/a,n/a,1687,1978,0,1,0.68,yes
+# machine busy (load 1.37), waiting 60s
+follow-paced,plain,off,1,4,n/a,n/a,6600,6844,0,0,0.50,yes
+1,scheduled,preplan
+# dserver port 24900
+# machine busy (load 1.50), waiting 60s
+scheduled,plain,on,1,4,n/a,n/a,102,481,0,1,0.59,yes
+scheduled,plain,off,1,4,n/a,n/a,408,822,0,0,0.78,yes
+1,scheduled,latest-baseline
+# dserver port 24900
+scheduled,plain,on,1,4,n/a,n/a,102,468,0,1,0.80,yes
+# machine busy (load 1.13), waiting 60s
+scheduled,plain,off,1,4,n/a,n/a,408,822,0,0,0.41,yes
+1,scheduled,final
+# dserver port 24900
+scheduled,plain,on,1,4,n/a,n/a,102,467,0,1,0.46,yes
+scheduled,plain,off,1,4,n/a,n/a,408,843,0,0,0.91,yes
+1,scheduled-gz,preplan
+# dserver port 24900
+scheduled,gz,on,1,4,n/a,n/a,623,995,0,1,0.91,yes
+# machine busy (load 1.24), waiting 60s
+scheduled,gz,off,1,4,n/a,n/a,2492,2917,0,0,0.51,yes
+1,scheduled-gz,latest-baseline
+# dserver port 24900
+scheduled,gz,on,1,4,n/a,n/a,623,1001,0,1,0.47,yes
+scheduled,gz,off,1,4,n/a,n/a,2492,2921,0,0,0.67,yes
+1,scheduled-gz,final
+# dserver port 24900
+scheduled,gz,on,1,4,n/a,n/a,623,989,0,1,0.78,yes
+scheduled,gz,off,1,4,n/a,n/a,2492,2909,0,0,0.80,yes
+/tmp/dtail-3a-4GFdYdUn/preplan/dserver: OK
+/tmp/dtail-3a-4GFdYdUn/preplan/dtail: OK
+/tmp/dtail-3a-4GFdYdUn/latest-baseline/dserver: OK
+/tmp/dtail-3a-4GFdYdUn/latest-baseline/dtail: OK
+/tmp/dtail-3a-4GFdYdUn/final-5a/dserver: OK
+/tmp/dtail-3a-4GFdYdUn/final-5a/dtail: OK
+All within-build and cross-build output checks passed.

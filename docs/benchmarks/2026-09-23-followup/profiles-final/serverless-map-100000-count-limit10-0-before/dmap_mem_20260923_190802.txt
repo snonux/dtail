@@ -1,0 +1,22 @@
+File: dmap
+Build ID: ad3eb357eae75cad9081cdf748c910d8d1a4cad8
+Type: inuse_space
+Time: 2026-09-23 19:08:03 EEST
+Showing nodes accounting for 81.11MB, 100% of 81.11MB total
+Showing top 15 nodes out of 27
+      flat  flat%   sum%        cum   cum%
+   31.01MB 38.23% 38.23%    31.01MB 38.23%  github.com/mimecast/dtail/internal/mapr.(*AggregateSet).setString (inline)
+      19MB 23.43% 61.66%       19MB 23.43%  github.com/mimecast/dtail/internal/mapr.(*AggregateSet).addFloat (inline)
+   13.50MB 16.65% 78.31%    13.50MB 16.65%  github.com/mimecast/dtail/internal/mapr.NewAggregateSet (inline)
+    8.50MB 10.48% 88.79%     8.50MB 10.48%  bytes.(*Buffer).String (inline)
+       4MB  4.93% 93.72%        4MB  4.93%  internal/stringslite.Clone (inline)
+    3.59MB  4.43% 98.15%    17.09MB 21.07%  github.com/mimecast/dtail/internal/mapr.(*GroupSet).GetSet (inline)
+       1MB  1.23% 99.38%        1MB  1.23%  github.com/mimecast/dtail/internal/io/dlog.(*DLog).start
+    0.50MB  0.62%   100%     0.50MB  0.62%  runtime.mallocgc
+         0     0%   100%    79.61MB 98.15%  github.com/mimecast/dtail/internal/clients/connectors.(*Serverless).copyQueueToClient
+         0     0%   100%    79.61MB 98.15%  github.com/mimecast/dtail/internal/clients/handlers.(*MaprHandler).Write
+         0     0%   100%    71.10MB 87.67%  github.com/mimecast/dtail/internal/clients/handlers.(*MaprHandler).handleAggregateMessage
+         0     0%   100%        4MB  4.93%  github.com/mimecast/dtail/internal/mapr.(*AggregateSet).Aggregate
+         0     0%   100%    50.01MB 61.66%  github.com/mimecast/dtail/internal/mapr.(*AggregateSet).Merge
+         0     0%   100%    67.10MB 82.74%  github.com/mimecast/dtail/internal/mapr.(*GlobalGroupSet).MergeNoblock
+         0     0%   100%    67.10MB 82.74%  github.com/mimecast/dtail/internal/mapr.(*GlobalGroupSet).merge

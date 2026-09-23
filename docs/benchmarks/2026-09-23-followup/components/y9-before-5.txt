@@ -1,0 +1,13 @@
+goos: linux
+goarch: amd64
+pkg: github.com/mimecast/dtail/internal/io/fs/readhub
+cpu: Intel(R) N100
+BenchmarkFanoutChunks/follow_sparse         	   19394	     11050 ns/op	  11.58 MB/s	   65648 B/op	       4 allocs/op
+BenchmarkFanoutChunks/follow_4KiB           	   18734	     12891 ns/op	 317.74 MB/s	   66640 B/op	      14 allocs/op
+BenchmarkFanoutChunks/follow_64KiB          	    7868	     28562 ns/op	2294.52 MB/s	   82000 B/op	      22 allocs/op
+BenchmarkFanoutChunks/follow_long           	    7155	     30066 ns/op	4359.52 MB/s	  131184 B/op	       4 allocs/op
+BenchmarkFanoutChunks/snapshot_512KiB       	     978	    220154 ns/op	2381.46 MB/s	  656000 B/op	     176 allocs/op
+BenchmarkFanoutChunks/snapshot_short        	     100	   2606098 ns/op	  25.15 MB/s	 5089872 B/op	      54 allocs/op
+BenchmarkFanoutChangingReadSize             	    5960	     38712 ns/op	1696.22 MB/s	  147648 B/op	      26 allocs/op
+PASS
+ok  	github.com/mimecast/dtail/internal/io/fs/readhub	2.239s

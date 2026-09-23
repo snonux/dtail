@@ -33,6 +33,9 @@
 #   -o FILE   append result rows to FILE as CSV (default: stdout only)
 #   -p PORT   dserver port (default: the first free port from 24900 on)
 #   -b BYTES  size of the generated input files (default 104857600, 100 MiB)
+#   -d DIR    directory of prebuilt dserver/dtail binaries (default repo root)
+#   -i FIRST  first run number (default 1); retains alternating mode order when
+#             interleaving builds with separate -r 1 invocations
 #
 # Results are CSV rows:
 #   scenario,input,mode,run,sessions,elapsed_s,cpu_s,file_reads,all_reads,
@@ -40,6 +43,8 @@
 set -euo pipefail
 
 declare -r REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+declare BINARY_DIR="$REPO_DIR"
+declare -i FIRST_RUN=1
 declare -i DATA_BYTES=$((100 * 1024 * 1024))
 declare -r CLK_TCK="$(getconf CLK_TCK)"
 declare PORT=""
@@ -194,7 +199,7 @@ _write_config() {
 # _start_server CFG LOG STRACE_OUT: sets SERVER_PID (the dserver process).
 _start_server() {
     local -r cfg=$1 log=$2 strace_out=$3
-    local -a cmd=("$REPO_DIR/dserver" --cfg "$cfg" --logger stdout
+    local -a cmd=("$BINARY_DIR/dserver" --cfg "$cfg" --logger stdout
         --logLevel info --bindAddress 127.0.0.1 --port "$PORT")
     if [[ "$STRACE" == yes ]]; then
         cmd=(strace -f -y -s 0 -e trace=read,pread64,readv,preadv
@@ -321,7 +326,7 @@ _run_follow() {
 
     local -i i
     for ((i = 0; i < SESSIONS; i++)); do
-        DTAIL_AUTH_KEY_PATH="$WORK_DIR/id_rsa" "$REPO_DIR/dtail" \
+        DTAIL_AUTH_KEY_PATH="$WORK_DIR/id_rsa" "$BINARY_DIR/dtail" \
             --cfg "$WORK_DIR/client.json" --logger stdout --logLevel error \
             --plain --noColor --no-auth-key --servers "127.0.0.1:$PORT" \
             --files "$file" --grep 'user999 |BENCH' < /dev/null \
@@ -404,7 +409,7 @@ _run_scheduled() {
     # reference of the later ones: every job of it must have exited with
     # status 0. Keying it by the dserver binary's checksum makes a rebuild
     # take a new reference instead of comparing against an old build's.
-    local -r build=$(sha256sum "$REPO_DIR/dserver" | cut -c1-12)
+    local -r build=$(sha256sum "$BINARY_DIR/dserver" | cut -c1-12)
     local -r reference="$WORK_DIR/runs/scheduled-$kind-$DATA_BYTES-n$SESSIONS-$build-reference"
     if [[ ! -d "$reference" && "$ok" == yes ]]; then
         rm -rf "$reference.tmp"
@@ -458,7 +463,7 @@ _run_one() {
 
 main() {
     local opt
-    while getopts 'n:r:sq:w:o:p:b:' opt; do
+    while getopts 'n:r:sq:w:o:p:b:d:i:' opt; do
         case "$opt" in
             n) SESSIONS=$OPTARG ;;
             r) RUNS=$OPTARG ;;
@@ -468,6 +473,12 @@ main() {
             o) RESULTS=$OPTARG ;;
             p) PORT=$OPTARG ;;
             b) DATA_BYTES=$OPTARG ;;
+            d) BINARY_DIR=$OPTARG ;;
+            i)
+                [[ "$OPTARG" =~ ^[1-9][0-9]*$ ]] \
+                    || _die "first run must be a positive integer"
+                FIRST_RUN=$OPTARG
+                ;;
             *) _die "unknown option" ;;
         esac
     done
@@ -475,7 +486,9 @@ main() {
     (($# == 1)) || _die "usage: $0 [options] SCENARIO (see the header)"
     local -r scenario=$1
     ((DATA_BYTES > 0)) || _die "-b needs a positive number of bytes"
-    [[ -x "$REPO_DIR/dserver" && -x "$REPO_DIR/dtail" ]] \
+    ((FIRST_RUN > 0 && RUNS > 0)) || _die "run numbers must be positive"
+    BINARY_DIR="$(cd "$BINARY_DIR" && pwd -P)"
+    [[ -x "$BINARY_DIR/dserver" && -x "$BINARY_DIR/dtail" ]] \
         || _die "build first: make build"
     if [[ "$STRACE" == yes ]]; then
         command -v strace > /dev/null || _die "strace not installed"
@@ -487,7 +500,7 @@ main() {
     _prepare_data
 
     local -i run
-    for ((run = 1; run <= RUNS; run++)); do
+    for ((run = FIRST_RUN; run < FIRST_RUN + RUNS; run++)); do
         # Interleave the modes and alternate which one goes first.
         if ((run % 2)); then
             _run_one "$scenario" on "$run"

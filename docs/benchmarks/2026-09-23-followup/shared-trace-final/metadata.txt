@@ -1,0 +1,16 @@
+2026-09-23T17:23:26Z
+Linux rocky 5.14.0-687.42.1.el9_8.x86_64 #1 SMP PREEMPT_DYNAMIC Wed Aug 26 12:55:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+GOMAXPROCS=4
+go version go1.26.6 linux/amd64
+
+[preplan]
+root=/tmp/dtail-3a-4GFdYdUn/preplan
+d2774f799521d39c282a6113964358d59ad8253d
+
+[latest-baseline]
+root=/tmp/dtail-3a-4GFdYdUn/latest-baseline
+1a1fc0fe39a9f76fec6ce68f938e854cac0cbb8a
+
+[final]
+root=/tmp/dtail-3a-4GFdYdUn/final-5a
+368b29ef39e97635bbc7a49422a5124c2ab065be

@@ -1,5 +1,10 @@
 # DTail Performance Benchmark Results
 
+For the newer local-before/after comparison (`d2774f7` → `368b29e`) and a
+fresh rerun of the shared-read baseline, see
+[the 2026-09-23 follow-up](docs/performance-followup-2026-09-23.md).
+The historical upstream comparison below is a different experiment.
+
 This document summarizes the performance comparison between the **Upstream** reference implementation and the **Local** optimized fork.
 
 Last run: 2026-09-21, local fork at `df52a1e`, upstream (`github.com/mimecast/dtail`) at `91d3500`. It was the closure run of `docs/performance-plan-2026-09-15.md`, which also records the per-task measurements.

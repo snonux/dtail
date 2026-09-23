@@ -1,0 +1,23 @@
+File: dcat
+Build ID: 7be88cca5958e510be9d5393d7b2d204f1b1973f
+Type: cpu
+Time: 2026-09-23 19:08:01 EEST
+Duration: 239.68ms, Total samples = 360ms (150.20%)
+Showing nodes accounting for 330ms, 91.67% of 360ms total
+Showing top 15 nodes out of 102
+      flat  flat%   sum%        cum   cum%
+      60ms 16.67% 16.67%       60ms 16.67%  internal/runtime/syscall/linux.Syscall6
+      40ms 11.11% 27.78%      150ms 41.67%  github.com/mimecast/dtail/internal/io/fs.(*filteringProcessor).ProcessFilteredRaw
+      40ms 11.11% 38.89%       40ms 11.11%  internal/sync.(*Mutex).Unlock (inline)
+      30ms  8.33% 47.22%       30ms  8.33%  runtime.futex
+      30ms  8.33% 55.56%       30ms  8.33%  runtime.usleep
+      20ms  5.56% 61.11%      110ms 30.56%  github.com/mimecast/dtail/internal/handlers.(*DirectWriter).WriteLineData
+      20ms  5.56% 66.67%       30ms  8.33%  internal/sync.(*Mutex).Lock (inline)
+      20ms  5.56% 72.22%       20ms  5.56%  runtime.procyieldAsm
+      10ms  2.78% 75.00%       50ms 13.89%  bufio.(*Scanner).Scan
+      10ms  2.78% 77.78%       10ms  2.78%  bytes.(*Buffer).Write
+      10ms  2.78% 80.56%       10ms  2.78%  context.(*cancelCtx).Done
+      10ms  2.78% 83.33%       10ms  2.78%  github.com/mimecast/dtail/internal/clients.newBaseClient
+      10ms  2.78% 86.11%       20ms  5.56%  github.com/mimecast/dtail/internal/handlers.appendNewlineLine
+      10ms  2.78% 88.89%       10ms  2.78%  runtime.(*timer).unlock
+      10ms  2.78% 91.67%       10ms  2.78%  runtime.checkdead

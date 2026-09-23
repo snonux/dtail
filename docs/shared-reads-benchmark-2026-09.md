@@ -1,5 +1,9 @@
 # Shared reads: sharing on vs off benchmark (2026-09)
 
+[The 2026-09-23 follow-up](performance-followup-2026-09-23.md) reruns this
+exact baseline alongside the pre-plan and final builds. It reports the
+remaining paced-follow CPU gap as well as sparse, idle and file-sink results.
+
 Results of `benchmarks/shared_read_bench.sh` with N=4 sessions or jobs and
 100 MiB inputs, on master at 1a1fc0f (d9 merged, rejoin from c9 and the
 rotation drain from f9 included), run on 2026-09-22.
