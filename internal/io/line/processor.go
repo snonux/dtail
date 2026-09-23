@@ -32,9 +32,9 @@ type Processor interface {
 // copy whatever it needs before returning and must not retain raw or any
 // sub-slice of it. There is nothing to recycle on any return path.
 //
-// Readers use it only where a line is emitted without local context
-// (before/after/max), because the context path has to keep lines beyond the
-// call. Processors that must retain lines keep implementing only Processor.
+// Readers use it when no before-context is requested. Max/after-only context
+// does not retain input and can also borrow emitted lines. Processors that
+// must retain lines keep implementing only Processor.
 type RawProcessor interface {
 	ProcessRawLine(raw []byte, lineNum uint64, sourceID string) error
 }

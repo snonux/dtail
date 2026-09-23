@@ -31,7 +31,7 @@ type LineFilter struct {
 // NewLineFilter returns a filter that passes matching lines, and the context
 // lines ltx asks for, to processor. globID is the source ID passed to the
 // processor with every line. Like a private reader it uses processor's
-// line.RawProcessor fast path when there is one and ltx has no local context.
+// line.RawProcessor fast path when there is one and ltx has no before-context.
 func NewLineFilter(ltx lcontext.LContext, processor line.Processor,
 	re regex.Regex, globID string) *LineFilter {
 

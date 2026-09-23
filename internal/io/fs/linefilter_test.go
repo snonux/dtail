@@ -150,7 +150,7 @@ func TestLineFilterMatchesPrivateSnapshotRead(t *testing.T) {
 	}
 }
 
-func TestLineFilterUsesRawFastPathOnlyWithoutContext(t *testing.T) {
+func TestLineFilterUsesRawFastPathWithoutBeforeContext(t *testing.T) {
 	tests := []struct {
 		name     string
 		ltx      lcontext.LContext
@@ -158,7 +158,9 @@ func TestLineFilterUsesRawFastPathOnlyWithoutContext(t *testing.T) {
 		wantNums []uint64
 	}{
 		{"no context", lcontext.LContext{}, true, []uint64{2}},
-		{"after context", lcontext.LContext{AfterContext: 1}, false, []uint64{2, 3}},
+		{"after context", lcontext.LContext{AfterContext: 1}, true, []uint64{2, 3}},
+		{"max context", lcontext.LContext{MaxCount: 1}, true, []uint64{2}},
+		{"before context", lcontext.LContext{BeforeContext: 1}, false, []uint64{1, 2}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

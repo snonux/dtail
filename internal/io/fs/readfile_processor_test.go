@@ -1016,8 +1016,8 @@ func TestFilteringProcessorRecyclesOwnedBuffersOnBeforeContextPanic(t *testing.T
 // the shared pool.BytesBuffer twice; the pool would then hand one object to two
 // Get callers whose concurrent writes race and corrupt data.
 //
-// The three caller-buffer error sites (ProcessFilteredLine simple case, the
-// processWithContext after-context and matched-line sites) are checked with a
+// The two caller-buffer error sites (processWithContext after-context and
+// matched-line sites) are checked with a
 // nonRecyclingErrorProcessor: post-fix the buffer must be left untouched on error
 // (payload survives). Pre-fix filteringProcessor called RecycleBytesBuffer -> the
 // buffer was Reset and the payload vanished, so each sub-case goes red.
@@ -1039,21 +1039,15 @@ func TestFilteringProcessorDoesNotDoubleRecycleOnError(t *testing.T) {
 		primeAfter bool
 	}{
 		{
-			name:    "simple no-context site",
-			ltx:     lcontext.LContext{},
-			re:      matchAll,
-			payload: "no-context-payload",
-		},
-		{
 			name:       "context after-context site",
-			ltx:        lcontext.LContext{AfterContext: 1},
+			ltx:        lcontext.LContext{BeforeContext: 1, AfterContext: 1},
 			re:         noMatch,
 			payload:    "after-context-payload",
 			primeAfter: true,
 		},
 		{
 			name:    "context matched-line site",
-			ltx:     lcontext.LContext{AfterContext: 1},
+			ltx:     lcontext.LContext{BeforeContext: 1, AfterContext: 1},
 			re:      matchAll,
 			payload: "matched-line-payload",
 		},
@@ -1077,8 +1071,8 @@ func TestFilteringProcessorDoesNotDoubleRecycleOnError(t *testing.T) {
 			buf.Reset()
 			buf.WriteString(tt.payload)
 
-			if err := fp.ProcessFilteredLine(buf); !errors.Is(err, sinkErr) {
-				t.Fatalf("ProcessFilteredLine error = %v, want %v", err, sinkErr)
+			if err := fp.processWithContext(buf, 1); !errors.Is(err, sinkErr) {
+				t.Fatalf("processWithContext error = %v, want %v", err, sinkErr)
 			}
 			if got := buf.String(); got != tt.payload {
 				t.Fatalf("filteringProcessor recycled a buffer it does not own "+
@@ -1092,7 +1086,7 @@ func TestFilteringProcessorDoesNotDoubleRecycleOnError(t *testing.T) {
 	}
 }
 
-// TestProcessFilteredRawDoesNotDoubleRecycleOnError guards the fourth error site,
+// TestProcessFilteredRawDoesNotDoubleRecycleOnError guards the no-context error site,
 // the zero-copy fast path ProcessFilteredRaw, which acquires its own pooled buffer
 // internally (so payload survival cannot be observed from outside). It uses a
 // recyclingErrorProcessor that faithfully mimics DirectLineProcessor - recycle the
