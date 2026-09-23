@@ -113,6 +113,15 @@ func (f *fout) RawFileOnly(message string) {
 	}
 }
 
+// RawFileOnlyBytes is the borrowed-byte form of RawFileOnly. It keeps the
+// opt-in gate and never writes stdout; the file sink consumes or copies the
+// bytes before this call returns.
+func (f *fout) RawFileOnlyBytes(message []byte) {
+	if f.logPayload {
+		WriteRawBytes(f.file, message)
+	}
+}
+
 func (f *fout) Flush() { f.stdout.Flush(); f.file.Flush() }
 
 func (f *fout) Pause() {
