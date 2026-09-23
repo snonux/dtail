@@ -209,7 +209,7 @@ Follow the systemd journal of a unit on all servers (Linux servers advertising t
 % dtail --servers serverlist.txt journal:myapp.service
 ```
 
-Keep a `dgrep` run open and reload the query in-flight (see the README section *Interactive Query Reload*):
+Keep a `dgrep` run open and reload the query in-flight (see the [Interactive Query Reload documentation](interactive-query.md)):
 
 ```shell
 % dgrep --servers serverlist.txt --files '/var/log/dserver/*.log' --grep ERROR --interactive-query

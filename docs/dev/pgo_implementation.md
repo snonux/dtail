@@ -65,10 +65,10 @@ Each command has specific workloads designed to exercise common code paths:
    binaries with no usable PGO despite documented gains. Failing loudly prevents
    that class of silent empty-profile regression.
 
-2. **dserver Profiling**: Uses HTTP pprof endpoint instead of command-line flags, allowing profile capture during server operation. The capture window is overlapped with sustained, authenticated client load, and the captured profile is checked to be dominated by streaming/read work rather than SSH-handshake crypto (see `doc/pgo_commands_detail.md`).
+2. **dserver Profiling**: Uses HTTP pprof endpoint instead of command-line flags, allowing profile capture during server operation. The capture window is overlapped with sustained, authenticated client load, and the captured profile is checked to be dominated by streaming/read work rather than SSH-handshake crypto (see `pgo_commands_detail.md`).
 
 3. **dtail Workload**: Runs a real follow session against a live dserver with a
-   file that keeps growing during the capture (see `doc/pgo_commands_detail.md`)
+   file that keeps growing during the capture (see `pgo_commands_detail.md`)
 
 ## Performance Results
 

@@ -11,7 +11,7 @@ DTail Documentation
 ## Advanced topics
 
 * The [DTail Query Language](./querylanguage.md) is the starting point to dig deeper into DTail's own SQL-like mapreduce language for extraction/aggregation stats from log files.
-* The [Interactive Query Reload](../README.md#interactive-query-reload) section in the main README documents `:reload`, `:show`, `:help`, `:quit`, capability fallback on mixed-version servers, and session reuse semantics.
+* The [Interactive Query Reload](./interactive-query.md) documentation describes `:reload`, `:show`, `:help`, `:quit`, the reload flags per mode, capability fallback on mixed-version servers, and session reuse semantics.
 * [Log Formats](./logformats.md) explains how to create your own custom log format for use with mapreduce queries.
 * The [Auth-Key Fast-Reconnect](./auth-key-fast-reconnect.md) documentation explains how clients register a temporary public key with `dserver` to skip the full SSH authentication on reconnects.
 * The [serverless mode](./examples.md#how-to-use-the-dtail-serverless-mode) (see the Usage Examples) works without any `dserver` and without SSH networking.

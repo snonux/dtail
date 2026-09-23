@@ -102,6 +102,6 @@ Without the ``--cfg`` flag, all client commands look for a JSON config file at `
 * **Serverless mode**: All clients also work without any ``dserver`` — just omit the server list (or pass ``--servers serverless``) to read local files directly. See [examples.md](examples.md).
 * **Journal reads**: On Linux, a ``journal:unit.service`` file target follows or reads the systemd journal of that unit (requires the server to advertise the ``journal-v1`` capability, i.e. ``journalctl`` on ``PATH``).
 * **Auth-key fast reconnect**: Enabled by default; the client registers a key with ``dserver`` on first connect so repeated connections skip the normal SSH auth round-trips. See [auth-key-fast-reconnect.md](auth-key-fast-reconnect.md).
-* **Interactive query control**: ``--interactive-query`` keeps the run open for ``:reload <flags>``, ``:show``, ``:help`` and ``:quit`` control commands. See the README section *Interactive Query Reload*.
+* **Interactive query control**: ``--interactive-query`` keeps the run open for ``:reload <flags>``, ``:show``, ``:help`` and ``:quit`` control commands. See [interactive-query.md](interactive-query.md).
 
 Have a look [here](examples.md) for more usage examples.

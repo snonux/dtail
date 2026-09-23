@@ -23,58 +23,15 @@ Installation and Usage
 Interactive Query Reload
 ========================
 
-`dtail`, `dgrep`, `dcat`, and `dmap` accept `--interactive-query` to keep the
-current run open and listen for control commands on the controlling TTY.
-
-Available control commands:
-
-* `:reload <flags>` apply a new workload by reusing the current session when the
-  active servers support it
-* `:show` print the current interactive state, including capability counts
-* `:help` print the interactive command help text
-* `:quit` stop the interactive session
-
-Reload flags are mode-specific:
-
-* `dtail` and `dgrep`: `--grep`/`--regex`, `--before`, `--after`, `--max`,
-  `--invert`, plus shared flags such as `--files`, `--plain`, `--quiet`, and
-  `--timeout`
-* `dmap`, and query-driven `dtail`: `--query` plus the shared flags above
-* `dcat`: shared flags such as `--files`, `--plain`, `--quiet`, and `--timeout`
-
-Examples:
-
-```bash
-dtail --servers app01 --files /var/log/app.log --grep ERROR --interactive-query
-# then type:
-:reload --grep WARN
-
-dgrep --servers app01 --files /var/log/app.log --grep ERROR --interactive-query
-# then type:
-:reload --grep WARN --before 2 --after 3
-
-dmap --servers app01 --files /var/log/app.log \
-  --query 'from STATS select count($line) group by hostname' \
-  --interactive-query
-# then type:
-:reload --query "from STATS select count($line),avg(latency) group by hostname"
-```
-
-Compatibility and session reuse:
-
-* On startup, an interactive client first tries `SESSION START` when the remote
-  side advertises the `query-update-v1` capability
-* If a server is older or does not advertise that capability, startup falls
-  back to the legacy command stream automatically, so mixed-version
-  client/server combinations still run the original workload normally
-* Live `:reload` updates require every active server to advertise
-  `query-update-v1`; otherwise the reload is rejected and the current workload
-  keeps running unchanged
-* On capable servers, DTail reuses the existing SSH session and sends
-  `SESSION UPDATE` messages instead of reconnecting
-* Every successful reload advances a generation boundary; late output from the
-  previous workload is dropped so stale matches do not leak into the new result
-  stream
+All clients (`dtail`, `dgrep`, `dcat`, `dmap`) accept `--interactive-query` to
+keep the current run open and listen for control commands (`:reload <flags>`,
+`:show`, `:help`, `:quit`) on the controlling TTY. On servers advertising the
+`query-update-v1` capability, live reloads reuse the existing SSH session;
+servers without it reject reloads, while mixed-version client/server
+combinations still run the initial workload via an automatic fallback. Read
+the full [Interactive Query Reload documentation](doc/interactive-query.md)
+for the reload flags per mode, examples, and the session reuse and
+compatibility semantics.
 
 Auth-Key Fast Reconnect
 =======================
@@ -87,6 +44,8 @@ on subsequent connections.
 
 This reduces repeated hardware-token signing (for example YubiKey-backed SSH
 agent keys) while keeping transparent fallback to normal SSH authentication.
+For the full design, security considerations, and configuration reference,
+see the [Auth-Key Fast-Reconnect documentation](doc/auth-key-fast-reconnect.md).
 
 Client options:
 
