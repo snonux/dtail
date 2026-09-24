@@ -226,11 +226,21 @@ feature is disabled with a warning telling the user to set
 - **No server-side disk persistence** — keys exist only in memory, lost on restart.
 - **Trust chain** — auth-keys can only be registered over an already-authenticated
   session. An attacker cannot register a key without first proving identity.
-- **TTL expiry** — keys auto-expire (default 24h), limiting exposure window.
+- **Delegated credential and revocation window** — an auth-key is a temporary,
+  per-user credential accepted by every `dserver` instance that has cached it.
+  Possession of its private key permits access as that user until the entry
+  expires (default 24h) or the server restarts. Removing or revoking the normal
+  key that originally authenticated the session does **not** remove an already
+  cached auth-key.
 - **Per-user limits** — max 5 keys per user prevents memory exhaustion.
-- **Same security model as `~/.ssh/id_rsa`** — the local key is protected by
-  filesystem permissions (0600). If an attacker has access to `~/.ssh/id_rsa`,
-  they already have SSH access anyway.
-- **No new attack surface** — the `AUTHKEY` command is only processed inside an
-  authenticated session. The `PublicKeyCallback` fast-path is equivalent to
-  having the key in `authorized_keys`.
+- **Protect the local private key** — use restrictive file permissions (normally
+  `0600`). The auth-key need not itself be in `authorized_keys`; if it is
+  compromised, it grants access only to the `dserver` instances that still
+  cache it, but it can still be sufficient to read everything that user may
+  read there.
+- **Protocol and operational scope** — `AUTHKEY` is accepted only inside an
+  authenticated session, so it does not allow unauthenticated registration.
+  It intentionally expands the set of keys a server accepts for the cache
+  lifetime, much like temporarily adding the key to that user's
+  `authorized_keys`. Choose a TTL that fits the desired revocation window, or
+  disable the feature where that trade-off is unacceptable.

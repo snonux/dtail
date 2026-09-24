@@ -20,7 +20,8 @@ make build  # Builds all tools: dserver, dcat, dgrep, dmap, dtail, dtailhealth a
 
 ### 2. Run Commands with Profiling
 
-Each command now supports profiling flags:
+The client commands (`dcat`, `dgrep`, `dmap`, and `dtail`) support profiling
+flags. `dserver` exposes runtime profiling through `--pprof <address>` instead.
 
 ```bash
 # Profile dcat
@@ -30,7 +31,8 @@ Each command now supports profiling flags:
 ./dgrep -cpuprofile -memprofile -profiledir profiles -regex "error" /path/to/file.log
 
 # Profile dmap
-./dmap -profile -query "select count(*) from data.csv"
+./dmap -profile -files data.csv \
+  -query "select count(*) logformat csv"
 ```
 
 ### 3. Analyze Profiles
@@ -55,7 +57,7 @@ go tool pprof profiles/dcat_cpu_20240101_120000.prof
 
 ### Command-line Flags
 
-All dtail commands support these profiling flags:
+The client commands support these profiling flags:
 
 - `-cpuprofile`: Enable CPU profiling only
 - `-memprofile`: Enable memory profiling only

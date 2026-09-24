@@ -1,7 +1,10 @@
 DTail Installation Guide
 ========================
 
-The following installation guide has been tested successfully on CentOS 7. You may need to adjust accordingly depending on the distribution you use.
+This guide targets maintained Linux distributions. Its service examples use
+`systemd` and its package examples use `dnf` (RHEL, Rocky Linux and Fedora);
+adapt them for your platform. Install at least the Go version declared in
+[`go.mod`](../go.mod) (currently Go 1.26.6) before building.
 
 # Compile it
 
@@ -239,4 +242,3 @@ To verify that DTail server is up and running and functioning as expected, you s
 % ./check_dserver.sh
 OK: DTail SSH Server seems fine
 ```
-

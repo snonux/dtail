@@ -23,7 +23,8 @@ The following example demonstrates how to follow logs of multiple servers at onc
 % dtail --servers serverlist.txt --grep INFO --files "/var/log/dserver/*.log"
 ```
 
-Hint: you can also provide a comma separated server list, e.g.: `servers server1.example.org,server2.example.org:PORT,...`
+Hint: you can also provide a comma-separated server list, e.g.:
+`--servers server1.example.org,server2.example.org:PORT,...`
 
 ![dtail](dtail.gif "Tail example")
 

@@ -158,7 +158,8 @@ dtail-tools pgo -outdir my-pgo-build
 To integrate PGO into your build pipeline:
 
 1. Generate profiles periodically with production-like workloads
-2. Store profiles in version control or artifact repository
+2. Keep profiles in an artifact repository when they must be retained; do not
+   commit them, because they are workload- and architecture-specific
 3. Use `make build-pgo` in your build process
 4. Monitor performance metrics to validate improvements
 

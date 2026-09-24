@@ -1,5 +1,9 @@
 # DTail code-quality audit, 2026-09-06
 
+> **Historical snapshot, not a live issue tracker.** This audit describes the
+> repository at commit `3004a71`. Findings may have been addressed since then;
+> verify the current code and tests before treating any item below as open.
+
 Full-repository audit of all production Go code under `cmd/` and `internal/`
 (about 26k lines, 290 files) at commit `3004a71`. Five independent passes were
 run: defect sweep (find-code-bugs), Go best practices, 100 Go Mistakes, SOLID,
