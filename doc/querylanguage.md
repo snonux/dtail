@@ -74,6 +74,14 @@ FUNCTION := md5sum|maskdigits
 * If no `group by` clause is given, DTail implicitly groups by the first select
   field. For `select count(*)` that field is `*`, i.e. everything collapses
   into a single group.
+* Multiple group fields form a tuple: `("x,y", "z")` and `("x", "y,z")`
+  are distinct groups. Compound keys escape commas and percent signs internally;
+  selected values are unchanged. Old clients can consume these opaque keys,
+  but queries grouping values containing commas or percent signs require all
+  participating dservers to have this fix. Older servers can merge distinct
+  tuples or emit different keys for the same tuple. Ordinary compound keys and
+  single-field keys retain their previous spelling. Result ordering remains
+  deterministic; escaped compound keys can change the order of tied rows.
 * The field given to `order by`/`rorder by` must also appear in the `select`
   clause, otherwise the query fails to parse with an error.
 * If no `interval` clause is given, results are aggregated every 5 seconds.
