@@ -196,7 +196,9 @@ Job fields (both job types share them unless noted):
 
 `Files` and `Outfile` support date placeholders, replaced with the date in
 `YYYYMMDD` form: `$today`, `$tomorrow`, `$yesterday` (1 day ago), `$yyesterday`
-(2 days ago) and `$yyyesterday` (3 days ago).
+(2 days ago) and `$yyyesterday` (3 days ago). These are calendar days in the
+scheduling server's local timezone, including across daylight-saving changes.
+Both fields use the same time captured for that run.
 
 **Failure semantics (scheduled jobs).** A scheduled job only writes its
 outfile while its run completed successfully. Within the job's `TimeRange`, a
