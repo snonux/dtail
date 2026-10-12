@@ -107,6 +107,11 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 
 // Start starts the mapreduce client.
 //
+// After connections finish, Start stops and joins the periodic reporter before
+// publishing the final result. Non-cumulative clients publish their remaining
+// interval even on cancellation; an empty interval preserves any non-empty
+// outfile already published in that query generation.
+//
 // In the scheduled modes no interim result is written, and the final result
 // is written only when the query completed (see scheduledQueryOutcome): ctx
 // was not canceled and on every server the session ended with status 0, with
@@ -117,11 +122,23 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 // scheduled job leaves no outfile (and no .query file) and the scheduler runs
 // it again later. An outfile from an earlier run is left untouched.
 func (c *MaprClient) Start(ctx context.Context, statsCh <-chan string) (status int) {
+	reportCtx, stopReporting := context.WithCancel(ctx)
+	defer stopReporting()
+	var reporter sync.WaitGroup
 	if !c.mode.scheduled() {
-		go c.periodicReportResults(ctx)
+		reporter.Add(1)
+		go func() {
+			defer reporter.Done()
+			c.periodicReportResults(reportCtx)
+		}()
 	}
 
 	status = c.baseClient.Start(ctx, statsCh)
+	// Connections have drained all received aggregates. Stop and join any
+	// in-flight report before publishing the remaining interval, also when
+	// connections completed without canceling the caller's context.
+	stopReporting()
+	reporter.Wait()
 	return c.finish(ctx.Err(), status)
 }
 
@@ -130,21 +147,20 @@ func (mode MaprClientMode) scheduled() bool {
 	return mode == ScheduledMode || mode == ScheduledPartialMode
 }
 
-// finish writes the final result of a cumulative query after the connections
-// ended with status, ctxErr being the error of the client's context by then.
-// It returns the client's exit status.
+// finish publishes the final result after the connections and reporter ended,
+// consuming the remaining interval for a non-cumulative query. ctxErr is the
+// error of the client's context by then. As for interim reports, output errors
+// are logged; only scheduled modes change the exit status on publication errors.
 func (c *MaprClient) finish(ctxErr error, status int) int {
-	if snapshot := c.session.Snapshot(); !c.isCumulative(snapshot.Query) {
-		return status
-	}
 	if c.mode.scheduled() {
 		return c.finishScheduled(ctxErr, status)
 	}
 
-	// Always write final result for cumulative mode (includes outfile case)
+	// Publish already-received data even if the connections were canceled.
 	c.clientLogger().Debug("Writing final mapreduce result")
 	if err := c.reportResults(true); err != nil {
 		c.clientLogger().Error("Unable to write final mapreduce result", err)
+		return status
 	}
 	c.clientLogger().Debug("Final result written")
 	return status
@@ -265,6 +281,9 @@ func (c *MaprClient) periodicReportResults(ctx context.Context) {
 	)
 
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		snapshot := c.session.Snapshot()
 		rampUp := !seenGeneration || snapshot.Generation != lastGeneration
 		lastGeneration = snapshot.Generation
