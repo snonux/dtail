@@ -170,6 +170,9 @@ type sessionRead struct {
 	options   Options
 	processor line.Processor
 	filter    *fs.LineFilter
+	// snapshot keeps the one-shot reader's physical record endings intact;
+	// only follow delivery adapts LF to a processor's terminator capability.
+	snapshot bool
 	// at is where the session's read got to: just past the last line it
 	// handled, where a private reader would go on, or where it joined.
 	at position
@@ -290,7 +293,13 @@ func (r *sessionRead) feed(ctx context.Context, c *chunk) error {
 			r.warningPending = false
 			r.sendLongLineWarning(ctx)
 		}
-		stop, err := r.filter.ProcessLine(c.line(i))
+		var stop bool
+		var err error
+		if r.snapshot {
+			stop, err = r.filter.ProcessLine(c.line(i))
+		} else {
+			stop, err = r.filter.ProcessFollowLine(c.line(i))
+		}
 		r.at = end
 		r.atLineEnd = true
 		if err != nil {

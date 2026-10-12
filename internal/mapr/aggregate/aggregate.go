@@ -38,8 +38,9 @@ type Aggregate struct {
 	// parserFillsFields reports whether parser is a logformat.FieldsIntoParser
 	// and thus parses straight into a line scratch's own map. The map any
 	// other parser returns is copied, see parseLine.
-	parserFillsFields bool
-	serializer        *serializer
+	parserFillsFields  bool
+	preserveWhitespace bool
+	serializer         *serializer
 	// Stats
 	// linesProcessed counts the lines handed to the aggregation; lines an
 	// abort discards before they were parsed are not included.
@@ -103,6 +104,9 @@ func New(query *mapr.Query, parser logformat.Parser, hostname string,
 		shutdownDone:  make(chan struct{}),
 	}
 	_, a.parserFillsFields = parser.(logformat.FieldsIntoParser)
+	if p, ok := parser.(logformat.WhitespacePreservingParser); ok {
+		a.preserveWhitespace = p.PreserveWhitespace()
+	}
 	a.serializer = newSerializer(query, logger)
 	logger.Debug("Created MapReduce aggregate", "hostname", hostname)
 	return a, nil
@@ -449,7 +453,12 @@ func (a *Aggregate) processRawBatchWith(scratch *batchScratch, batch []rawLine) 
 func (a *Aggregate) parseLine(scratch *lineScratch, lineContent *bytes.Buffer,
 	sourceID string) (bool, error) {
 
-	maprLine := borrowedLine(lineContent)
+	var maprLine string
+	if a.preserveWhitespace {
+		maprLine = borrowedPhysicalLine(lineContent)
+	} else {
+		maprLine = borrowedLine(lineContent)
+	}
 	parsedFields, err := logformat.MakeFieldsInto(a.parser, scratch.fields, maprLine, sourceID)
 	if err == nil && !a.parserFillsFields {
 		// Any other parser returns a map of its own, which it may clear and
@@ -616,6 +625,10 @@ func NewProcessor(aggregate *Aggregate, globID string) *Processor {
 		registered: registered,
 	}
 }
+
+// PreserveLineTerminators lets whitespace-sensitive parsers distinguish CRLF
+// records from bare CR characters in unfinished or length-split follow lines.
+func (p *Processor) PreserveLineTerminators() bool { return p.aggregate.preserveWhitespace }
 
 // newSourceKey returns a parser source key no other processor or source
 // generation of this aggregate uses.
