@@ -191,6 +191,9 @@ func (q *Query) parseFromClause(tokens []token) ([]token, error) {
 	case 0:
 		return remaining, errors.New(invalidQuery + "expected table name after 'from'")
 	case 1:
+		if found[0].str == "" {
+			return remaining, errors.New(invalidQuery + "expected table name after 'from'")
+		}
 		q.Table = strings.ToUpper(found[0].str)
 		return remaining, nil
 	default:
@@ -218,6 +221,11 @@ func (q *Query) parseGroupClause(tokens []token) ([]token, error) {
 		return tokens, errors.New(invalidQuery + unexpectedEnd)
 	}
 	remaining, fields := tokensConsumeStr(tokens)
+	for _, field := range fields {
+		if field == "" {
+			return remaining, errors.New(invalidQuery + "expected field name in 'group' clause")
+		}
+	}
 	q.GroupBy = fields
 	q.GroupKey = strings.Join(fields, ",")
 	return remaining, nil
@@ -229,7 +237,7 @@ func (q *Query) parseOrderClause(tokens []token, reverse bool) ([]token, error) 
 		return tokens, errors.New(invalidQuery + unexpectedEnd)
 	}
 	remaining, found := tokensConsume(tokens)
-	if len(found) == 0 {
+	if len(found) == 0 || found[0].str == "" {
 		return remaining, errors.New(invalidQuery + unexpectedEnd)
 	}
 	q.OrderBy = found[0].str
@@ -278,12 +286,15 @@ func (q *Query) parseOutfileClause(tokens []token) ([]token, error) {
 	default:
 		return remaining, errors.New(invalidQuery + invalidQuery)
 	}
+	if q.Outfile.FilePath == "" {
+		return remaining, errors.New(invalidQuery + "expected file path in 'outfile' clause")
+	}
 	return remaining, nil
 }
 
 func (q *Query) parseLogFormatClause(tokens []token) ([]token, error) {
 	remaining, found := tokensConsume(tokens)
-	if len(found) == 0 {
+	if len(found) == 0 || found[0].str == "" {
 		return remaining, errors.New(invalidQuery + unexpectedEnd)
 	}
 	q.LogFormat = found[0].str

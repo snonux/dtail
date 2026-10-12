@@ -42,6 +42,9 @@ func makeSelectConditions(tokens []token) ([]selectCondition, error) {
 	// Parse select aggregation, e.g. sum(foo)
 	parse := func(token token) (selectCondition, error) {
 		var sc selectCondition
+		if token.str == "" {
+			return sc, errors.New(invalidQuery + "expected field name in 'select' clause")
+		}
 
 		// With quotes stripped: We got a quoted select expression, e.g.
 		// "select `count($foo)` ...", which will literaly look for field

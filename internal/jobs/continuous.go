@@ -94,8 +94,9 @@ func (c *continuous) runJobs(ctx context.Context) {
 func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 	c.log().Debug(job.Name, "Processing job")
 
-	files := fillDates(job.Files)
-	outfile := fillDates(job.Outfile)
+	now := c.now()
+	files := fillDatesAt(job.Files, now)
+	outfile := fillDatesAt(job.Outfile, now)
 	servers := strings.Join(job.Servers, ",")
 	if servers == "" {
 		servers = c.cfg.Server.SSHBindAddress

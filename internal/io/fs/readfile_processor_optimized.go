@@ -328,6 +328,9 @@ func (p *followLineProcessor) processChunk(ctx context.Context, data []byte) (bo
 		p.atLineStart = true
 		p.partialLine.Write(rest[:newline])
 		if p.partialLine.Len() > 0 {
+			if p.filter.preserveTerminators {
+				_ = p.partialLine.WriteByte('\n')
+			}
 			if stop, err := stopForProcessingError(p.processPartialLine(consumed)); stop || err != nil {
 				return stop, err
 			}
@@ -359,7 +362,7 @@ func (p *followLineProcessor) processFragment(ctx context.Context, fragment []by
 // processPartialLine feeds the pending line, which ends after the first
 // readEnd bytes of the current read.
 func (p *followLineProcessor) processPartialLine(readEnd int) error {
-	err := p.filter.processLine(p.partialLine.Bytes())
+	err := p.filter.processFollowLine(p.partialLine.Bytes())
 	p.positions.lineEndsAt(readEnd)
 	return err
 }
