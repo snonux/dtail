@@ -23,8 +23,23 @@ The following example demonstrates how to follow logs of multiple servers at onc
 % dtail --servers serverlist.txt --grep INFO --files "/var/log/dserver/*.log"
 ```
 
+The server list file has one server (`HOST` or `HOST:PORT`) per line.
+Whitespace around an entry is ignored, and so are blank lines and lines
+starting with `#`, e.g.:
+
+```
+# web tier
+web01.example.org
+web02.example.org:2223
+
+# db tier
+db01.example.org
+```
+
 Hint: you can also provide a comma-separated server list, e.g.:
 `--servers server1.example.org,server2.example.org:PORT,...`
+Spaces around the commas and empty entries are ignored, so
+`--servers 'server1.example.org, server2.example.org'` works as well.
 
 ![dtail](dtail.gif "Tail example")
 

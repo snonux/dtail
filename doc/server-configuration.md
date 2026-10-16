@@ -188,7 +188,7 @@ Job fields (both job types share them unless noted):
 | `Files` | both | Comma-separated file list or glob to read. Supports the date placeholders below. |
 | `Query` | both | A [DTail query language](./querylanguage.md) MapReduce query. |
 | `Outfile` | both | Where the MapReduce result is written. Supports the date placeholders below. |
-| `Servers` | both | Comma-separated server list. Empty means this `dserver` itself. |
+| `Servers` | both | Server list, joined with commas into the client's `--servers` value. Whitespace around entries and empty entries are ignored. A single entry naming an existing file is read as a server list file (one server per line; blank lines and `#` comment lines are ignored). Empty means this `dserver` itself. |
 | `Discovery` | both | Optional server discovery module, e.g. `comma:server1,server2` or `file:/path/to/serverlist`. |
 | `AllowFrom` | both | Optional list of addresses the job's SSH connections are accepted from (hostnames are resolved). |
 | `TimeRange` | `Schedule` only | `[startHour, endHour]` (24h clock); the job runs when `startHour <= hour < endHour`. `[0, 24]` means the whole day. |

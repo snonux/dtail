@@ -94,7 +94,9 @@ func (d *Discovery) initRegex() error {
 	return nil
 }
 
-// ServerList to connect to via DTail client.
+// ServerList to connect to via DTail client. The FILE and COMMA modules
+// already trim their entries and skip empty ones, so the regex filter and the
+// deduplication below see "host" and " host" as the same server.
 func (d *Discovery) ServerList() ([]string, error) {
 	servers, err := d.serverListFromModule()
 	if err != nil {
@@ -158,6 +160,16 @@ func (d *Discovery) serverListFromReflectedModule() ([]string, error) {
 		panic(fmt.Sprintf("discovery method %s does not return error", methodName))
 	}
 	return nil, fmt.Errorf("run server discovery module %q: %w", d.module, err)
+}
+
+// trimServerEntry trims surrounding whitespace from one raw entry of the FILE
+// or COMMA module and reports whether anything is left. Both modules use it
+// so that their entries are clean before ServerList filters them by regex and
+// deduplicates them: the client rejects an empty or whitespace-wrapped
+// address, and a single such entry would otherwise abort the whole client.
+func trimServerEntry(raw string) (string, bool) {
+	server := strings.TrimSpace(raw)
+	return server, server != ""
 }
 
 // Filter server list based on a regexp.

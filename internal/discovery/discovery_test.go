@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -143,6 +144,27 @@ func TestServerListIgnoresEmptyServerEntries(t *testing.T) {
 			server: "",
 			want:   []string{""},
 		},
+		{
+			name:   "comma list trims whitespace around entries",
+			server: "alpha:2222, beta:2222 ,\tgamma ",
+			want:   []string{"alpha:2222", "beta:2222", "gamma"},
+		},
+		{
+			name:   "comma list dedups entries differing only in whitespace",
+			server: "alpha, alpha,alpha ",
+			want:   []string{"alpha"},
+		},
+		{
+			name:   "whitespace-only comma list is no serverless sentinel",
+			server: " , ,",
+			want:   []string{},
+		},
+		{
+			name:   "explicit comma module trims entries",
+			method: "comma",
+			server: " alpha , beta",
+			want:   []string{"alpha", "beta"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -208,5 +230,52 @@ func TestServerListReturnsFileReadError(t *testing.T) {
 	_, err = discovery.ServerList()
 	if err == nil || !strings.Contains(err.Error(), missing) {
 		t.Fatalf("ServerList error = %v, want missing file path", err)
+	}
+}
+
+// TestServerListFromFileSkipsBlankAndCommentLines covers server list files
+// with blank lines, indented entries, CRLF line endings and comments. Each
+// of these used to yield an empty or whitespace-wrapped address that aborted
+// the whole client before it connected to any server.
+func TestServerListFromFileSkipsBlankAndCommentLines(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		method  string
+		content string
+		want    []string
+	}{
+		{name: "trailing blank line", content: "alpha:2222\n\n", want: []string{"alpha:2222"}},
+		{name: "blank separator lines", content: "alpha\n\n \t\nbeta\n", want: []string{"alpha", "beta"}},
+		{name: "indented and padded entries", content: "  alpha  \n\tbeta\t\n", want: []string{"alpha", "beta"}},
+		{name: "crlf line endings", content: "alpha\r\nbeta\r\n\r\n", want: []string{"alpha", "beta"}},
+		{name: "comment lines", content: "# servers\nalpha\n  # beta\ngamma\n", want: []string{"alpha", "gamma"}},
+		{name: "dedup after trimming", content: "alpha\n alpha\nalpha \n", want: []string{"alpha"}},
+		{name: "only blank and comment lines", content: "\n# none\n  \n", want: []string{}},
+		{name: "explicit file module", method: "file", content: "\nalpha\n", want: []string{"alpha"}},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			path := filepath.Join(t.TempDir(), "servers.txt")
+			if err := os.WriteFile(path, []byte(tt.content), 0o600); err != nil {
+				t.Fatalf("write server list file: %v", err)
+			}
+			finder, err := New(tt.method, path, ServerOrder(99), testLogger)
+			if err != nil {
+				t.Fatalf("New(%q, %q) error = %v", tt.method, path, err)
+			}
+			servers, err := finder.ServerList()
+			if err != nil {
+				t.Fatalf("ServerList() error = %v", err)
+			}
+			if len(servers) != len(tt.want) || (len(servers) > 0 && !reflect.DeepEqual(servers, tt.want)) {
+				t.Fatalf("ServerList() = %q, want %q", servers, tt.want)
+			}
+		})
 	}
 }
