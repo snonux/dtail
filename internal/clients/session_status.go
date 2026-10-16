@@ -12,9 +12,13 @@ import "github.com/mimecast/dtail/internal/clients/handlers"
 // in serverless mode, whose in-process server reports failures the same way.
 // Servers without protocol.CapabilityCommandFailureV1 report no failures, so
 // with them the status stays the connection status. A connection status of
-// 1 (a refused or unreachable server, a failed SSH handshake, a journal
-// target the server does not support) stays 1 unless such a report raises
-// it; the client exits with the highest status of all its connections (see
+// 1 (a refused or unreachable server, a failed SSH handshake, an SSH session
+// or shell that could not be opened, an --interactive-query SESSION START the
+// server rejected or did not acknowledge, commands that could not be sent, a
+// journal target the server does not support, a failed serverless
+// in-process session: every error ServerConnection.Start and Serverless.Start
+// pass to Handler.ReportServerError) stays 1 unless such a report raises it;
+// the client exits with the highest status of all its connections (see
 // baseClient.runConnections). A session cut short without the server's close
 // handshake (e.g. a SIGKILLed server mid-read) currently keeps status 0, as
 // ServerConnection.handle returns only the dispatch error and
