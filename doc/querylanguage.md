@@ -84,6 +84,29 @@ FUNCTION := md5sum|maskdigits
   deterministic; escaped compound keys can change the order of tied rows.
 * The field given to `order by`/`rorder by` must also appear in the `select`
   clause, otherwise the query fails to parse with an error.
+* Each `select` field may appear only once: a query such as
+  `select count($line),count($line)` (or `select $foo,$foo`) fails to parse
+  with the error `'select' clause has 'count($line)' more than once`. Every
+  select field is stored, sent over the wire and printed as a result (and CSV
+  outfile) column under its text as written, so two equal fields would share
+  one value, and each of them used to add every line to it again: for
+  `count(lat),count(lat)` dmap printed 8 times the real count in both
+  columns, `sum` was inflated the same way and `percentage` came out too low
+  (`avg`, `min`, `max`, `last` and `len` were not affected). For the same
+  reason a backtick-quoted field named like an aggregation
+  (`` `count($foo)` ``, see "Escaping keywords") cannot be selected together
+  with that aggregation (`count($foo)`). Different aggregations of one field
+  (`count($foo),sum($foo),avg($foo)`) are fine. Both the client (before it
+  connects to any server) and dserver reject such a query:
+  * A current client rejects it whatever version the dservers have, so it
+    never sends the query; a scheduled or continuous job with such a query
+    logs the error instead of starting and writes no outfile.
+  * An older client does not reject it and sends it to the dservers. A
+    current dserver answers with the parse error (reported as
+    `map: invalid query`) and sends no results, so that server contributes no
+    rows instead of wrong numbers; an outfile the older client writes has
+    no rows from it. An older dserver still aggregates the query with the
+    wrong numbers described above.
 * If no `interval` clause is given, results are aggregated every 5 seconds.
 * An aggregation only sees the lines of a group that have its field (sparse
   `key=value` fields, a `where` clause not requiring it). The client merges
@@ -150,7 +173,9 @@ it. For example, `select` with an escaped aggregation expression:
 
 This selects the field literally named `count($foo)` (using the `last`
 aggregation to pick its value) instead of counting the occurrences of `$foo`.
-This also allows using a clause keyword itself as a field name.
+This also allows using a clause keyword itself as a field name. Such a field
+cannot be selected together with the aggregation it is named like
+(`` select `count($foo)`,count($foo) `` is rejected, see the notes above).
 
 ### Special table names
 

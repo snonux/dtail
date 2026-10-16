@@ -99,7 +99,9 @@ func legacyResultSelect(g *GroupSet, q *Query, sc *selectCondition, set *Aggrega
 
 func TestResultRowsMatchLegacy(t *testing.T) {
 	fields := []string{"count(v)", "sum(v)", "min(v)", "max(v)", "v", "avg(v)", "len(v)", "percentage(v)", "percentile(v)"}
-	selections := append(append([]string{}, fields...), strings.Join(fields, ","), "percentage(v),percentage(v),percentile(v),percentile(v)")
+	// A selection repeating a field, such as percentage(v),percentage(v), is
+	// no longer a valid query (TestParseQueryRejectsDuplicateSelect).
+	selections := append(append([]string{}, fields...), strings.Join(fields, ","))
 	for _, selection := range selections {
 		t.Run(selection, func(t *testing.T) {
 			q, err := NewQuery("select "+selection+" from stats group by host", nil)
