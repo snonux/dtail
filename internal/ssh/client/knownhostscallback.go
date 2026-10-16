@@ -21,7 +21,23 @@ import (
 	"golang.org/x/crypto/ssh/knownhosts"
 )
 
-const unknownHostsPromptDelay = 2 * time.Second
+const (
+	// unknownHostsPromptDelay is the quiet period the interactive prompt
+	// waits for after the last unknown host before asking, so that hosts
+	// whose handshakes arrive close together end up in a single question.
+	// Every new unknown host restarts it.
+	unknownHostsPromptDelay = 2 * time.Second
+	// trustAllHostsBatchDelay is the coalescing window in trust-all mode
+	// (--trustAllHosts or an "all" answer). Nobody is asked, so there is no
+	// reason to wait for a quiet period: the window starts with the first
+	// unknown host of a batch and is not restarted by later ones, which
+	// bounds the handshake delay of every host to about this value while
+	// still writing hosts that arrive together to known_hosts in one update.
+	trustAllHostsBatchDelay = 20 * time.Millisecond
+	// unknownHostsMaxBatch caps the size of a batch: once that many unknown
+	// hosts are pending they are handled without waiting for the timer.
+	unknownHostsMaxBatch = 50
+)
 
 type response int
 
@@ -178,45 +194,73 @@ func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 	}
 }
 
-// PromptAddHosts prompts a question to the user whether unknown hosts should
-// be added to the known hosts or not.
+// PromptAddHosts collects the unknown hosts that Wrap reports into batches
+// and asks the user once per batch whether to add them to the known hosts.
+// A batch is handled when its timer fires (see batchTimerDelay) or once
+// unknownHostsMaxBatch hosts are pending. The timer only runs while hosts are
+// pending, so an idle client does not wake up periodically. If ctx is
+// cancelled, pending hosts are left unanswered; their Wrap callbacks return
+// ctx.Err() on their own.
 func (c *KnownHostsCallback) PromptAddHosts(ctx context.Context) {
 	var hosts []unknownHost
-	timer := time.NewTimer(unknownHostsPromptDelay)
+	// The timer is created stopped and armed by the first pending host. Since
+	// Go 1.23, Stop and Reset discard a pending expiry, so a stale tick of an
+	// earlier batch cannot fire the timer of a later one.
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
 	defer timer.Stop()
 
 	for {
-		// Check whether there is a unknown host
 		select {
 		case unknown := <-c.unknownCh:
 			hosts = append(hosts, unknown)
-			// Ask every 50 unknown hosts
-			if len(hosts) >= 50 {
+			if len(hosts) >= unknownHostsMaxBatch {
+				timer.Stop()
 				c.promptAddHosts(hosts)
-				hosts = []unknownHost{}
+				hosts = nil
+				continue
+			}
+			if delay, arm := c.batchTimerDelay(len(hosts)); arm {
+				timer.Reset(delay)
 			}
 		case <-timer.C:
-			// Or ask when after 2 seconds no new unknown hosts were added.
+			// The timer only runs while hosts are pending; the check merely
+			// guards against ever asking about an empty batch.
 			if len(hosts) > 0 {
 				c.promptAddHosts(hosts)
-				hosts = []unknownHost{}
+				hosts = nil
 			}
 		case <-ctx.Done():
 			c.logger.Debug("Stopping goroutine prompting new hosts...")
 			return
 		}
-		restartTimer(timer, unknownHostsPromptDelay)
 	}
 }
 
-func restartTimer(timer *time.Timer, delay time.Duration) {
-	if !timer.Stop() {
-		select {
-		case <-timer.C:
-		default:
-		}
+// batchTimerDelay tells PromptAddHosts whether, and to what delay, to (re)arm
+// the batch timer after a host was added to a batch of now pending hosts. In
+// trust-all mode only the first host of a batch arms the timer, with the
+// short trustAllHostsBatchDelay coalescing window. Otherwise every host
+// restarts the interactive debounce of unknownHostsPromptDelay, so that the
+// user is asked once the hosts stopped arriving. The mode can only change in
+// promptAddHosts (an "all" answer), which runs between batches, so the mode
+// a batch started in holds for all of its hosts.
+func (c *KnownHostsCallback) batchTimerDelay(pending int) (time.Duration, bool) {
+	if c.trustAll() {
+		return trustAllHostsBatchDelay, pending == 1
 	}
-	timer.Reset(delay)
+	return unknownHostsPromptDelay, true
+}
+
+// trustAll reports whether trust-all mode is on, i.e. whether trustAllHostsCh
+// was closed by --trustAllHosts or by an "all" answer.
+func (c *KnownHostsCallback) trustAll() bool {
+	select {
+	case <-c.trustAllHostsCh:
+		return true
+	default:
+		return false
+	}
 }
 
 func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
@@ -225,8 +269,7 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 		servers = append(servers, host.server)
 	}
 
-	select {
-	case <-c.trustAllHostsCh:
+	if c.trustAll() {
 		// Trust-all mode is non-interactive; avoid warning-level noise on stdout.
 		c.logger.Debug("Trusting host keys of servers", servers)
 		unlocked, err := c.trustHosts(hosts)
@@ -237,7 +280,6 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 		}
 		c.logUnlockedUpdate(unlocked)
 		return
-	default:
 	}
 
 	question := fmt.Sprintf("Encountered %d unknown hosts: '%s'\n%s",
