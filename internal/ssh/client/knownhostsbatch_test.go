@@ -30,10 +30,9 @@ const (
 	// for the prompt to be answered: the debounce plus generous slack for a
 	// loaded machine.
 	interactiveMaxWait = unknownHostsPromptDelay + 10*time.Second
-	// parkWait is how long a test waits for its handshake goroutines to block
-	// on sending their unknown host before it starts PromptAddHosts. It only
-	// needs to cover a parse of a tiny known_hosts file per goroutine.
-	parkWait = 200 * time.Millisecond
+	// handOverMaxWait only guards against a hang: it bounds how long a test
+	// waits for PromptAddHosts to take a host it hands over directly.
+	handOverMaxWait = 10 * time.Second
 )
 
 func TestBatchTimerDelay(t *testing.T) {
@@ -64,35 +63,35 @@ func TestBatchTimerDelay(t *testing.T) {
 // TestPromptAddHostsTrustAllAnswersQuickly verifies that in trust-all mode
 // unknown hosts are trusted without waiting for the 2 s interactive prompt
 // debounce, all of them within one overall deadline, and that hosts arriving
-// together are written to known_hosts in a single update. The handshake
-// goroutines get parkWait to block on sending their host before
-// PromptAddHosts starts, so it receives all of them back to back, well
-// within the 20 ms window, without depending on how promptly a loaded
-// machine schedules the goroutines afterwards.
+// together are written to known_hosts in a single update. The test goroutine
+// hands the hosts to PromptAddHosts itself, back to back, so no goroutine
+// scheduling decides how they are batched. Whether they all arrived within
+// the 20 ms window is then known from the time the hand-over took (see
+// sendUnknownHosts): only then is a single update guaranteed and checked.
+// The Wrap side of trust-all mode is covered by the tests below.
 func TestPromptAddHostsTrustAllAnswersQuickly(t *testing.T) {
-	for _, hosts := range []int{1, 3} {
-		t.Run(fmt.Sprintf("%d hosts", hosts), func(t *testing.T) {
+	for _, n := range []int{1, 3} {
+		t.Run(fmt.Sprintf("%d hosts", n), func(t *testing.T) {
 			logger := &trustBatchCountingLogger{}
 			callback := newBatchTestCallbackWithLogger(t, true, logger)
-			// The Wrap callbacks start before PromptAddHosts, so they get a
-			// ctx of their own; like the PromptAddHosts ctx, the cleanup
-			// cancels it.
-			ctx, cancel := context.WithCancel(context.Background())
-			t.Cleanup(cancel)
-
-			errCh := make(chan error, hosts)
-			for i := range hosts {
-				go func() { errCh <- callUnknownHost(ctx, callback, i) }()
-			}
-			time.Sleep(parkWait)
-			start := time.Now()
 			_, _ = startPromptAddHosts(t, callback)
 
-			waitForHosts(t, errCh, hosts, time.After(trustAllMaxWait), "trust-all")
-			t.Logf("%d unknown hosts trusted after %v", hosts, time.Since(start))
-			assertKnownHostsLines(t, callback.knownHostsPath, batchHostLines(hosts))
-			if batches := logger.batches.Load(); batches != 1 {
-				t.Fatalf("%d hosts were written in %d known_hosts updates, want 1", hosts, batches)
+			hosts := batchUnknownHosts(0, n)
+			start := time.Now()
+			deadline := time.After(trustAllMaxWait)
+			handOver := sendUnknownHosts(t, callback, hosts)
+			waitForAnswers(t, hosts, trustHost, deadline, "trust-all")
+			t.Logf("%d unknown hosts handed over in %v, trusted after %v", n, handOver, time.Since(start))
+			assertKnownHostsLines(t, callback.knownHostsPath, batchHostLines(n))
+
+			batches := logger.batches.Load()
+			if handOver >= trustAllHostsBatchDelay {
+				t.Logf("hand-over took %v, not less than the %v window; the %d known_hosts "+
+					"updates are not checked", handOver, trustAllHostsBatchDelay, batches)
+				return
+			}
+			if batches != 1 {
+				t.Fatalf("%d hosts were written in %d known_hosts updates, want 1", n, batches)
 			}
 		})
 	}
@@ -158,49 +157,38 @@ func TestPromptAddHostsTrustAllWindowIsNotRestarted(t *testing.T) {
 }
 
 // TestPromptAddHostsBatchCap verifies that the interactive prompt does not
-// wait for its debounce once unknownHostsMaxBatch hosts are pending: all of
-// them are answered before the debounce could have fired even once, which is
-// unknownHostsPromptDelay after the last of them arrived and so after start.
-// One more host then starts a new batch and stays pending.
+// wait for its debounce once unknownHostsMaxBatch hosts are pending, without
+// depending on timing: the test goroutine hands the hosts over itself, and
+// PromptAddHosts takes the host after a full batch only once it answered that
+// batch, so all of the batch must be answered when that hand-over returns. A
+// batch that waited for the debounce would instead take the next host at once
+// and leave the batch unanswered. The next host then starts a new batch and
+// stays pending. Only if the hand-over of the batch took as long as the
+// debounce could the debounce have split the batch; the test is skipped then.
 func TestPromptAddHostsBatchCap(t *testing.T) {
 	callback := newBatchTestCallback(t, false)
 	withPromptInput(t, "yes\n", func() {
-		ctx, stop := startPromptAddHosts(t, callback)
+		_, stop := startPromptAddHosts(t, callback)
 		// Stop before withPromptInput restores os.Stdin, which the prompt reads.
 		defer stop()
 
-		start := time.Now()
-		errCh := make(chan error, unknownHostsMaxBatch)
-		for i := range unknownHostsMaxBatch {
-			go func() { errCh <- callUnknownHost(ctx, callback, i) }()
+		hosts := batchUnknownHosts(0, unknownHostsMaxBatch)
+		if handOver := sendUnknownHosts(t, callback, hosts); handOver >= unknownHostsPromptDelay {
+			t.Skipf("handing over %d hosts took %v, not less than the %v debounce",
+				len(hosts), handOver, unknownHostsPromptDelay)
 		}
-		deadline := time.After(unknownHostsPromptDelay)
-		waitForHosts(t, errCh, unknownHostsMaxBatch, deadline, "batch cap")
-		t.Logf("%d unknown hosts trusted after %v", unknownHostsMaxBatch, time.Since(start))
+		next := batchUnknownHosts(unknownHostsMaxBatch, 1)
+		sendUnknownHosts(t, callback, next)
+		assertAnswered(t, hosts, trustHost, "batch cap")
 		assertKnownHostsLines(t, callback.knownHostsPath, batchHostLines(unknownHostsMaxBatch))
 
-		assertNextHostStaysPending(t, callback, stop)
+		stop()
+		select {
+		case resp := <-next[0].responseCh:
+			t.Fatalf("host after a full batch was answered %s, want it pending", responseName(resp))
+		default:
+		}
 	})
-}
-
-// assertNextHostStaysPending hands PromptAddHosts one more host directly. The
-// unbuffered unknownCh send returns once PromptAddHosts holds the host, which
-// now waits for the 2 s debounce; it must stay unanswered until PromptAddHosts
-// is stopped.
-func assertNextHostStaysPending(t *testing.T, callback *KnownHostsCallback, stop func()) {
-	t.Helper()
-	next := testUnknownHost("batch-next.example:2222", "batch-next")
-	select {
-	case callback.unknownCh <- next:
-	case <-time.After(time.Second):
-		t.Fatal("PromptAddHosts did not take the next unknown host")
-	}
-	stop()
-	select {
-	case resp := <-next.responseCh:
-		t.Fatalf("host after a full batch was answered with %v, want it pending", resp)
-	default:
-	}
 }
 
 // TestPromptAddHostsAllAnswerSwitchesToTrustAll answers "all" for the first
@@ -346,6 +334,81 @@ func startPromptAddHosts(t *testing.T, callback *KnownHostsCallback) (context.Co
 	})
 	t.Cleanup(stop)
 	return ctx, stop
+}
+
+// batchUnknownHosts returns the unknown hosts that Wrap would report for the
+// n host numbers from first on (see batchHost), for tests that hand hosts to
+// PromptAddHosts directly. Each responseCh has room for a second answer, so
+// a host answered twice never blocks PromptAddHosts.
+func batchUnknownHosts(first, n int) []unknownHost {
+	hosts := make([]unknownHost, 0, n)
+	for i := first; i < first+n; i++ {
+		server, remote, key := batchHost(i)
+		hosts = append(hosts, unknownHost{
+			server:     server,
+			remote:     remote,
+			key:        key,
+			hostLine:   knownhosts.Line([]string{server}, key),
+			ipLine:     knownhosts.Line([]string{remote.String()}, key),
+			responseCh: make(chan response, 2),
+		})
+	}
+	return hosts
+}
+
+// sendUnknownHosts hands hosts to PromptAddHosts from the test goroutine, one
+// after another, as the handshakes of Wrap do, and returns the time from
+// before the first send to the return of the last one. unknownCh is
+// unbuffered, so a send returns only once PromptAddHosts took the host, and
+// a batch timer armed for these hosts was armed after the first send began:
+// if the returned time is below the timer delay, every host was taken before
+// the timer could fire and they form one batch.
+func sendUnknownHosts(t *testing.T, callback *KnownHostsCallback, hosts []unknownHost) time.Duration {
+	t.Helper()
+	start := time.Now()
+	for _, host := range hosts {
+		select {
+		case callback.unknownCh <- host:
+		case <-time.After(handOverMaxWait):
+			t.Fatalf("PromptAddHosts did not take unknown host %s", host.server)
+		}
+	}
+	return time.Since(start)
+}
+
+// waitForAnswers waits for the answer of every host, each of which must be
+// want, until deadline fires once for all of them.
+func waitForAnswers(t *testing.T, hosts []unknownHost, want response,
+	deadline <-chan time.Time, mode string) {
+
+	t.Helper()
+	for i, host := range hosts {
+		select {
+		case got := <-host.responseCh:
+			if got != want {
+				t.Fatalf("%s host %s was answered %s, want %s", mode, host.server,
+					responseName(got), responseName(want))
+			}
+		case <-deadline:
+			t.Fatalf("only %d of %d %s hosts were answered before the deadline", i, len(hosts), mode)
+		}
+	}
+}
+
+// assertAnswered checks, without waiting, that every host was answered want.
+func assertAnswered(t *testing.T, hosts []unknownHost, want response, mode string) {
+	t.Helper()
+	for _, host := range hosts {
+		select {
+		case got := <-host.responseCh:
+			if got != want {
+				t.Fatalf("%s host %s was answered %s, want %s", mode, host.server,
+					responseName(got), responseName(want))
+			}
+		default:
+			t.Fatalf("%s host %s was not answered yet", mode, host.server)
+		}
+	}
 }
 
 // waitForHosts waits for hosts results of handshake callbacks on errCh, each
