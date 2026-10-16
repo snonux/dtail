@@ -184,26 +184,21 @@ func stopCutShortClientTerm(control cutShortControl) {
 // SIGINT and, secondInterruptDelay after the client printed ctrlCHint (which
 // pauses its output, so the read cannot complete meanwhile), a second one,
 // within the interrupt pause (config.InterruptTimeoutS) that the first one
-// started, which stops the client. The client ignores a first SIGINT while
-// its stats loop is not ready to print the hint, so the first one is sent
-// again if no hint arrived within 4 seconds: by then the pause timer of an
-// accepted first SIGINT (3 s) has expired, so a resent one is never taken as
-// the second. Once the second is sent, no further SIGINT is: the client stops
-// listening for them, and one more would kill it.
+// started, which stops the client. The first SIGINT is sent only once: should
+// the client ignore it (its stats loop not ready to print the hint yet), the
+// read completes in about a second, long before a resend could help, and
+// checkCutShortStopped reports that the signal did not stop the read and
+// whether the hint was printed. Once the second is sent, no further SIGINT
+// is: the client stops listening for them, and one more would kill it.
 func stopCutShortClientInterrupt(control cutShortControl) {
+	_ = control.client.Signal(os.Interrupt)
 	go func() {
-		for {
+		select {
+		case <-control.hint:
+			time.Sleep(secondInterruptDelay)
+			control.secondInterrupt <- time.Now()
 			_ = control.client.Signal(os.Interrupt)
-			select {
-			case <-control.hint:
-				time.Sleep(secondInterruptDelay)
-				control.secondInterrupt <- time.Now()
-				_ = control.client.Signal(os.Interrupt)
-				return
-			case <-control.clientDone:
-				return
-			case <-time.After(4 * time.Second):
-			}
+		case <-control.clientDone:
 		}
 	}()
 }

@@ -432,8 +432,8 @@ handshake after a completed session's output, so no capability gates this;
 Known gap: in `--plain` server mode a payload line starting with `.syn command
 failed` is taken as a failure report (exit `2`), and a payload line `.syn close
 connection` as the close handshake, so the client stops reading that server and
-exits `0` with truncated output, as long as the client or the dserver lacks
-capability `control-frames-v1` (the plain-mode framing fix, task 1e3). With
+exits `0` with truncated output, until the `--plain` framing fix (task 1e3)
+lands. With
 `--interactive-query` the client keeps the failures of every workload of the
 session that reached it, also of workloads a `:reload` replaced; dserver drops
 queued messages of a stale generation (`outputCoordinator.shouldDropGeneration`),
