@@ -188,8 +188,16 @@ working with every other one:
    after its error and failure report, instead of leaving the session open
    until `IdleSessionTimeoutS`; a health session
    (`HealthHandler.frameRejected`) does so for any rejected frame. A frame
-   of another protocol version (or none) gets its mismatch error and then,
-   under the same conditions, ends the session without the close handshake
+   of another protocol version (or none) gets its mismatch error, once per
+   session. A frame of an older client (protocol major version <= 3) then
+   leaves the session open, as before: it ends when the client exits or at
+   `IdleSessionTimeoutS`. Such clients do not check the close handshake,
+   and those that retry (v3 `dtail`, v3 `dmap` in tail mode without
+   outfile) reconnect 2 s after a session ended, so ending it would make
+   them reconnect in a loop, each time with a full SSH handshake and server
+   log lines. A frame of any other version (or none), e.g. of a future 4.x+
+   client, then, under the same conditions, ends the session without the
+   close handshake
    (`ServerHandler.versionRejected`, `HealthHandler.versionRejected`,
    `baseHandler.closeWithoutHandshake`): the server flushes the error and
    closes the session, with no `.syn close connection` and no wait for an
@@ -198,13 +206,13 @@ working with every other one:
    requests in that version too, so the server rejects them and the
    session stays raw, while the client already chose marked framing from
    the capabilities frame and would print the unmarked close request as
-   payload and never acknowledge it. Clients of every version thus see the
-   error and the session ends at once. Clients that check for the close
-   handshake (this fork since ef3) treat it as cut short: `dcat`/`dgrep`
-   exit 1, a scheduled job counts a transport failure, `dtailhealth`
-   reports CRITICAL. Older clients (protocol <= 3) print the error and end
-   with their own exit status, likely 0. Once the session is closing, further frames of another
-   version get no error message (`commandDispatcher.rejectProtocolVersion`).
+   payload and never acknowledge it. Such clients thus see the error and
+   the session ends at once. Clients that check for the close handshake
+   (this fork since ef3) treat it as cut short: `dcat`/`dgrep` exit 1, a
+   scheduled job counts a transport failure, `dtailhealth` reports
+   CRITICAL. Further frames of another version get no error message, and
+   none at all once the session is closing
+   (`commandDispatcher.rejectProtocolVersion`).
    Settling before the command has a
    cost: its replies may follow a frame queued before it, e.g. the close
    handshake of a dserver shutting down in the session's first moment, as

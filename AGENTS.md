@@ -472,14 +472,19 @@ reported failed command (`2`) outweighs it. Servers of every protocol version
 handshake after a completed session's output, so no capability gates this;
 `--max` stops on the server, which then closes normally. A session whose
 frames are of another protocol version is no completed one: dserver sends the
-mismatch error and ends it without the close handshake
-(`handlers.baseHandler.closeWithoutHandshake`), as such a client may not
-recognize or acknowledge it, so every client sees the error and the session
-ends at once instead of after the 5 s acknowledgement timeout. Clients that
-check for the close handshake (this fork since ef3) treat the session as cut
-short (`dcat`/`dgrep` exit `1`, a scheduled job counts a transport failure);
-older clients (protocol <= 3) print the error and end with their own exit
-status, likely `0`.
+mismatch error once (`handlers.commandDispatcher.rejectProtocolVersion`).
+For an older client (protocol major version <= 3) it then keeps the session
+open, as before, until the client exits or `IdleSessionTimeoutS`: such clients
+do not check the close handshake, and those that retry (v3 `dtail`, v3 `dmap`
+in tail mode without outfile) reconnect 2 s after a session ended, so ending
+it would make them reconnect in a loop with full SSH handshakes and server log
+lines. For any other version (e.g. a future 4.x+ client) it ends the session
+without the close handshake (`handlers.baseHandler.closeWithoutHandshake`),
+as such a client may not recognize or acknowledge it, so it sees the error and
+the session ends at once instead of after the 5 s acknowledgement timeout.
+Clients that check for the close handshake (this fork since ef3) treat that
+session as cut short (`dcat`/`dgrep` exit `1`, a scheduled job counts a
+transport failure).
 Known gap: in `--plain` server mode a payload line starting with `.syn
 command failed` or a payload line `.syn close connection` is payload (printed,
 exit unchanged) when client and server negotiated control frames

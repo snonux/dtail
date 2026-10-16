@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -302,5 +303,80 @@ func waitForActiveCommand(t *testing.T, handler *ServerHandler) {
 			t.Fatal("command did not start")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// olderMismatchReport is the error message of a frame of protocol version
+// 3.9, followed by the newline such an older client expects after it.
+const olderMismatchReport = "does not match client protocol version '3.9', please update DTail client\n"
+
+// encodeOlderMismatchCommand frames command like an older client of
+// protocol version 3.9.
+func encodeOlderMismatchCommand(command string) string {
+	return "protocol 3.9 base64 " + base64.StdEncoding.EncodeToString([]byte(command)) + ";"
+}
+
+// TestOlderVersionMismatchKeepsSessionOpen: a session of an older client
+// (protocol <= 3) whose frames are all rejected for their protocol version
+// gets the mismatch error once, followed by the newline such a client
+// expects, and then stays open, as it did before
+// (commandDispatcher.rejectProtocolVersion): it ends when the client exits
+// or at IdleSessionTimeoutS. Older clients that retry (dtail, dmap in tail
+// mode without outfile) reconnect 2 s after their session ended, so ending
+// it at once would make them reconnect in a loop. Both the server and the
+// health handler must keep such a session open with no close handshake.
+func TestOlderVersionMismatchKeepsSessionOpen(t *testing.T) {
+	handlers := map[string]func(t *testing.T) (io.ReadWriter, func()){
+		"server": func(t *testing.T) (io.ReadWriter, func()) {
+			handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
+			return handler, handler.Shutdown
+		},
+		"health": func(t *testing.T) (io.ReadWriter, func()) {
+			handler, err := NewHealthHandler(context.Background(), &userserver.User{Name: "health"},
+				config.DefaultMaxCommandFrameSize, "testhost", handlerTestLogger)
+			if err != nil {
+				t.Fatalf("NewHealthHandler: %v", err)
+			}
+			return handler, handler.Shutdown
+		},
+	}
+	for name, newHandler := range handlers {
+		t.Run(name, func(t *testing.T) {
+			handler, shutdown := newHandler(t)
+			output := &testOutput{}
+			var writeMu sync.Mutex
+			readerDone := startTestReaderAcking(handler, output, &writeMu,
+				encodeOlderMismatchCommand(".ack close connection"))
+			frame := encodeOlderMismatchCommand("cat test.log .")
+			writeTestFramesWithin(t, handler, &writeMu, 10*time.Second, frame+frame)
+			output.waitForContains(t, olderMismatchReport, 5*time.Second)
+			checkOlderMismatchSessionOpen(t, output, readerDone)
+			shutdown()
+			select {
+			case <-readerDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("reader did not observe EOF after handler shutdown")
+			}
+		})
+	}
+}
+
+// checkOlderMismatchSessionOpen fails unless the session of an older client
+// whose frames were all of another protocol version is still open 500 ms
+// after its mismatch error, which it got exactly once, and sent no close
+// handshake.
+func checkOlderMismatchSessionOpen(t *testing.T, output *testOutput, readerDone <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-readerDone:
+		t.Fatalf("session of an older client ended after the mismatch error: %q", output.String())
+	case <-time.After(500 * time.Millisecond):
+	}
+	stream := output.String()
+	if strings.Contains(stream, ".syn close connection") {
+		t.Fatalf("close handshake in a session of an older client: %q", stream)
+	}
+	if reports := strings.Count(stream, olderMismatchReport); reports != 1 {
+		t.Fatalf("%d mismatch errors, want 1: %q", reports, stream)
 	}
 }

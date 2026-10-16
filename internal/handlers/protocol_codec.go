@@ -25,6 +25,12 @@ func (c protocolCodec) log() logging.Logger {
 	return logging.OrNop(c.logger)
 }
 
+// handleProtocolVersion strips the "protocol <version>" prefix of a command
+// frame. For a frame of another protocol version (or none) it returns an
+// error, and add is the separator the client expects after that error
+// message: a newline for clients of protocol major version 3 or lower
+// (isLegacyProtocolMajor), otherwise nothing. A non-empty add thus also
+// identifies such an older client (commandDispatcher.rejectProtocolVersion).
 func (c protocolCodec) handleProtocolVersion(args []string) ([]string, int, string, error) {
 	argc := len(args)
 	var add string
@@ -36,7 +42,7 @@ func (c protocolCodec) handleProtocolVersion(args []string) ([]string, int, stri
 	if args[1] != protocol.ProtocolCompat {
 		clientMajor, clientMinor := parseProtocolCompat(args[1])
 		serverMajor, serverMinor := parseProtocolCompat(protocol.ProtocolCompat)
-		if clientMajor <= 3 {
+		if isLegacyProtocolMajor(clientMajor) {
 			// Protocol version 3 or lower expect a newline as message separator
 			// One day (after 2 major versions) this exception may be removed!
 			add = "\n"
@@ -53,6 +59,15 @@ func (c protocolCodec) handleProtocolVersion(args []string) ([]string, int, stri
 	}
 
 	return args[2:], argc - 2, add, nil
+}
+
+// isLegacyProtocolMajor reports whether a client of protocol major version
+// major is one of the older clients (protocol 3 or lower): they expect a
+// newline after each message, do not check for the close handshake, and
+// some of them (dtail, dmap in tail mode without outfile) reconnect 2 s
+// after their session ended.
+func isLegacyProtocolMajor(major int) bool {
+	return major <= 3
 }
 
 func parseProtocolCompat(version string) (int, int) {

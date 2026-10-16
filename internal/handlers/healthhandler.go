@@ -65,7 +65,8 @@ func (h *HealthHandler) frameRejected() {
 }
 
 // versionRejected ends a health session after a command frame of another
-// protocol version (or none) was rejected
+// protocol version (or none), but not of an older client (protocol <= 3),
+// whose session stays open, was rejected
 // (commandDispatcher.rejectProtocolVersion), like frameRejected, but without
 // the close handshake (closeWithoutHandshake), which such a client may not
 // recognize or acknowledge. The health client still reads the mismatch error

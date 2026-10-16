@@ -447,7 +447,8 @@ func (h *ServerHandler) frameRejected() {
 }
 
 // versionRejected ends a session after a command frame of another protocol
-// version (or none) was rejected (commandDispatcher.rejectProtocolVersion),
+// version (or none), but not of an older client (protocol <= 3), whose
+// session stays open, was rejected (commandDispatcher.rejectProtocolVersion),
 // when that left the session without work, like frameRejected, but without
 // the close handshake (closeWithoutHandshake): the client may not recognize
 // or acknowledge it. Its mismatch error is already queued and is read before
