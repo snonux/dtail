@@ -98,10 +98,22 @@ func startPausableFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.
 	re regex.Regex, pauser *pauser) *follower {
 
 	t.Helper()
+	return startPausableFollowerWithMessages(t, hub, file, ltx, re, pauser, nil)
+}
+
+// startPausableFollowerWithMessages is startPausableFollower with the
+// session's server messages, such as long line warnings, sent to messages,
+// unless it is nil. The session waits for room in messages, so it needs room
+// for every message of the test.
+func startPausableFollowerWithMessages(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LContext,
+	re regex.Regex, pauser *pauser, messages chan string) *follower {
+
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	f := &follower{recorder: &recorder{}, cancel: cancel, done: make(chan error, 1)}
+	f := &follower{recorder: &recorder{}, cancel: cancel, done: make(chan error, 1), messages: messages}
 	session := Session{
 		Target: file.target(), FilePath: file.path, GlobID: "slow", LContext: ltx, Regex: re,
+		ServerMessages: messages,
 		NewProcessor: func() line.Processor {
 			return pausedProcessor{Processor: f.recorder.newProcessor(), pauser: pauser}
 		},

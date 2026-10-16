@@ -133,7 +133,7 @@ The example config above only sets a few keys. The most important ``Server`` set
 | ``MaxConcurrentCats`` | ``2`` | Max concurrent cat/grep/MapReduce reads; also bounds grouped scheduled jobs |
 | ``MaxConcurrentTails`` | ``50`` | Max concurrent tails |
 | ``SharedReadsDisable`` | ``false`` | Turn off shared reads (same-file follow reads and grouped job reads) |
-| ``MaxLineLength`` | ``1048576`` | Max line length in bytes before a line is split |
+| ``MaxLineLength`` | ``1048576`` | Max line length in bytes before a line of a file read is split (`journal:` targets read entries of up to 1 MiB and are not split) |
 | ``HostKeyPath`` | ``./cache/ssh_host_key`` | Private SSH host key (generated on first start) |
 | ``HostKeyBits`` | ``4096`` | RSA host key size in bits |
 | ``AuthKeyEnabled`` | ``true`` | In-memory auth-key registration and fast reconnect |

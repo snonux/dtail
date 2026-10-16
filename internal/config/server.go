@@ -79,8 +79,10 @@ type ServerConfig struct {
 	// at a time.
 	SharedReadsDisable bool `json:",omitempty"`
 	// MaxLineLength is the longest line, in bytes without its "\n" but with
-	// the "\r" of a CRLF ending, that reads pass on whole; a longer line is
-	// cut into pieces of this length.
+	// the "\r" of a CRLF ending, that file reads pass on whole; a longer line
+	// is cut into pieces of this length. journal: targets do not use it yet:
+	// their reader (internal/io/journal) reads entries of up to 1 MiB whole
+	// and does not cut them at MaxLineLength.
 	MaxLineLength int
 	// The user permissions.
 	Permissions Permissions `json:",omitempty"`

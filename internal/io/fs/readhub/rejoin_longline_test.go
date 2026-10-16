@@ -42,8 +42,13 @@ func lastPieceBefore(text string, partial int) string {
 
 // appendPacedSplit appends lines like appendPaced, but writes each batch in
 // two parts split in the middle of one of its lines, and waits until fast got
-// the pieces of that line before the split, so that the shared reader reads
-// the batch with an unfinished line at the end of a read.
+// the pieces of that line before the split, so that the shared reader ends a
+// read with an unfinished line and publishes its first pieces before the rest
+// is written. Subscribed sessions get the line in two chunks then. The split
+// does not decide where a session is evicted: every cut line is two queue
+// items (its long line warning and the chunk it starts), so a full queue
+// overflows at a line end long before the split line (see
+// TestEvictionInTheMiddleOfACutLine for an eviction there).
 func appendPacedSplit(t *testing.T, file *testFile, fast *lastLineProcessor, lines []string) {
 	t.Helper()
 	const batch = 1500
@@ -70,11 +75,14 @@ func appendPacedSplit(t *testing.T, file *testFile, fast *lastLineProcessor, lin
 	}
 }
 
-// An evicted session that cuts long lines, with bursts of lines written in
+// A session that cuts long lines, evicted by bursts of cut lines written in
 // parts split in the middle of a line, gets the same pieces with the same
-// numbers from its private reader and after it rejoined as a private follow
-// read of the same MaxLineLength, across several eviction and rejoin cycles.
-func TestEvictedSessionRejoinsAcrossCutLines(t *testing.T) {
+// numbers and long line warnings as a private follow read of the same
+// MaxLineLength, from the shared reader, its private reader and after it
+// rejoined, across several eviction and rejoin cycles. The evictions happen
+// at the end of a line (see appendPacedSplit); after a rejoin, a cut line
+// written in two parts reaches the session through the shared reader.
+func TestEvictedSessionRejoinsAcrossBurstsOfCutLines(t *testing.T) {
 	logger := &capturingLogger{}
 	hub := newRejoiningHub(logger)
 	// Set before any session joins, so every reader of the hub cuts at it.
@@ -114,11 +122,121 @@ func TestEvictedSessionRejoinsAcrossCutLines(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	assertSameStream(t, slow.recorder, private)
-	if n := logger.count("INFO", "evicted a slow subscriber"); n < cycles {
-		t.Errorf("logged %d evictions, want at least %d", n, cycles)
+	// The bursts evict the fast session too, as each cut line is two queue
+	// items; it is subscribed again at the end.
+	waitFor(t, "fast session to be subscribed again", func() bool {
+		return sessionSubscribed(hub, file.path, "fast")
+	})
+}
+
+// TestEvictionInTheMiddleOfACutLine evicts a session right after the first
+// piece of a cut line, deliberately: its queue of two items holds that line's
+// long line warning and the chunk of its first piece, which the shared reader
+// published at the end of a read that ended in the line, while the session is
+// held up in an earlier line. The chunk with the rest of the line does not
+// fit. The session's private reader then starts in the middle of the line,
+// where the shared reader cut it, and the session must still get the same
+// pieces with the same numbers as a private follow read of the same
+// MaxLineLength, and one long line warning per cut line, also after it
+// rejoined. Every other write waits for the sessions to get it, so that only
+// that one eviction happens: the fast session is never evicted.
+func TestEvictionInTheMiddleOfACutLine(t *testing.T) {
+	logger := &capturingLogger{}
+	hub := New(Options{Logger: logger, RetryInterval: 10 * time.Millisecond,
+		QueueChunks: 2, MaxLineLength: cutLineLength})
+	hub.seams.rejoinMinDelay = 20 * time.Millisecond
+	hub.seams.rejoinMaxDelay = 100 * time.Millisecond
+	file := newTestFile(t)
+	start, err := endOfFile(file.target())
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The paced writes kept the fast session in the shared read throughout.
+	private := limitedPrivateFollower(t, file, lcontext.LContext{}, regex.NewNoop(), start, cutLineLength, nil)
+	fast := startFastFollower(t, hub, file)
+	waitFor(t, "fast session to join", func() bool { return sessionSubscribed(hub, file.path, "fast") })
+	pauser := &pauser{}
+	messages := make(chan string, 16)
+	slow := startPausableFollowerWithMessages(t, hub, file, lcontext.LContext{}, regex.NewNoop(), pauser, messages)
+	waitFor(t, "slow session to join", func() bool { return sessionSubscribed(hub, file.path, "slow") })
+
+	cut := evictAtACut(t, hub, file, fast, pauser)
+	if n := logger.count("INFO", "evicted a slow subscriber"); n != 1 {
+		t.Fatalf("logged %d evictions, want the slow session's one", n)
+	}
+	pauser.resume()
+	// The eviction landed on the cut: the private reader goes on there.
+	waitFor(t, "slow session to follow privately from the cut", func() bool {
+		return logger.count("INFO", "Following privately after eviction from the shared read",
+			fmt.Sprintf(" offset %d\n", start.offset+cut)) == 1
+	})
+	rejoinAfterACut(t, hub, file, fast, slow, private)
+
+	// Let a wrong extra line or warning, should there be one, arrive too.
+	time.Sleep(100 * time.Millisecond)
+	assertSameStream(t, slow.recorder, private)
+	if n := logger.count("INFO", "evicted a slow subscriber"); n != 1 {
+		t.Errorf("logged %d evictions, want only the slow session's one", n)
+	}
 	if !sessionSubscribed(hub, file.path, "fast") {
-		t.Error("the fast session is no longer subscribed to the shared read")
+		t.Error("the fast session is not subscribed to the shared read")
 	}
+	// The three cut lines, the first warned about by the shared reader only.
+	if n := len(messages); n != 3 {
+		t.Errorf("slow session got %d long line warnings, want 3", n)
+	}
+}
+
+// evictAtACut holds slow up in a line, has the shared reader publish the
+// first piece of a cut line at the end of a read, which fills the queue of
+// two, and then the rest of the line, which evicts slow. It returns the
+// offset of the cut from the end of the file before it wrote, where slow's
+// read got to.
+func evictAtACut(t *testing.T, hub *Hub, file *testFile, fast *lastLineProcessor, pauser *pauser) int64 {
+	t.Helper()
+	held := pauser.pauseAt("pause")
+	file.appendRaw("pause\n")
+	waitFor(t, "fast session to get the pause line", func() bool { return fast.saw("pause") })
+	select {
+	case <-held:
+	case <-time.After(waitTimeout):
+		t.Fatal("timed out waiting for the slow session to be held up")
+	}
+	long := strings.Repeat("A", cutLineLength) + strings.Repeat("B", cutLineLength) +
+		strings.Repeat("C", cutLineLength) + "DDDD"
+	// A read of the line's first 40 bytes: the warning and the chunk of the
+	// first piece, two items, fill slow's queue.
+	file.appendRaw(long[:cutLineLength+8])
+	waitFor(t, "fast session to get the first piece", func() bool {
+		return fast.saw(strings.Repeat("A", cutLineLength))
+	})
+	// The chunk of the other pieces does not fit.
+	file.appendRaw(long[cutLineLength+8:] + "\n")
+	waitFor(t, "fast session to get the last piece", func() bool { return fast.saw("DDDD") })
+	waitFor(t, "slow session to be evicted", func() bool { return !sessionSubscribed(hub, file.path, "slow") })
+	return int64(len("pause\n") + cutLineLength)
+}
+
+// rejoinAfterACut writes a cut line the evicted slow session reads privately,
+// waits until it rejoined, and writes a cut line in two parts and a last line
+// through the shared reader, each once both sessions got the one before.
+func rejoinAfterACut(t *testing.T, hub *Hub, file *testFile, fast *lastLineProcessor,
+	slow *follower, private *recorder) {
+
+	t.Helper()
+	file.appendRaw(strings.Repeat("E", cutLineLength) + strings.Repeat("F", cutLineLength) + "GGGGGG\nafter\n")
+	waitFor(t, "both sessions to get the line after", func() bool {
+		return fast.saw("after") && slow.recorder.hasLine("after")
+	})
+	waitWithin(t, 3*waitTimeout, "slow session to rejoin", func() bool {
+		return sessionSubscribed(hub, file.path, "slow")
+	})
+	head := "tail " + strings.Repeat("y", 30)
+	file.appendRaw(head)
+	waitFor(t, "both sessions to get the first piece", func() bool {
+		return fast.saw(head[:cutLineLength]) && slow.recorder.hasLine(head[:cutLineLength])
+	})
+	file.appendRaw(strings.Repeat("z", 40) + "\ntail end\n")
+	waitFor(t, "every reader to get the last line", func() bool {
+		return fast.saw("tail end") && slow.recorder.hasLine("tail end") && private.hasLine("tail end")
+	})
 }
