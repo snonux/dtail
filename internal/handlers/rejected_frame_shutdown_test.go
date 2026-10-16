@@ -16,12 +16,14 @@ import (
 )
 
 // rejectedFrame is a command frame the dispatcher rejects before any handler
-// runs (commandDispatcher.handleCommand), with the message that reports it
-// and the frames the client answers the close handshake with.
+// runs (commandDispatcher.handleCommand), with the message that reports it,
+// whether the session then ends with the close handshake, and the frames the
+// client answers that handshake with.
 type rejectedFrame struct {
-	frame  string
-	report string
-	ack    string
+	frame     string
+	report    string
+	handshake bool
+	ack       string
 }
 
 // mismatchReport is the error message of a frame of protocol version 99.0.
@@ -36,30 +38,37 @@ func encodeMismatchCommand(command string) string {
 // rejectedFrames are the command frames commandDispatcher.handleCommand
 // rejects before any handler runs, each with what reports the rejection to
 // the client: the failed-command message, or for a protocol version
-// mismatch, which gets none, its error message. A client of the other
-// protocol version acknowledges the close in its own version; here it also
-// sends its command once more first, which must get no error message after
-// the close handshake (commandDispatcher.rejectProtocolVersion).
+// mismatch, which gets none, its error message. A session of another
+// protocol version ends without the close handshake
+// (commandDispatcher.rejectProtocolVersion); its client here sends its
+// command twice, and the second frame must get no error message, as the
+// session is closing then.
 func rejectedFrames() map[string]rejectedFrame {
 	ack := encodeTestCommand(".ack close connection")
 	mismatch := encodeMismatchCommand("cat test.log .")
 	return map[string]rejectedFrame{
 		"invalid timeout prefix": {encodeTestCommand("timeout x cat test.log ."),
-			protocol.HiddenCommandFailedPrefix + commandFailureRejected, ack},
+			protocol.HiddenCommandFailedPrefix + commandFailureRejected, true, ack},
 		"unparsable options": {encodeTestCommand("cat:bogus test.log ."),
-			protocol.HiddenCommandFailedPrefix + commandFailureRejected, ack},
+			protocol.HiddenCommandFailedPrefix + commandFailureRejected, true, ack},
 		"undecodable frame": {"protocol " + protocol.ProtocolCompat + " base64 !!!;",
-			protocol.HiddenCommandFailedPrefix + commandFailureProtocol, ack},
-		"protocol version mismatch": {mismatch, mismatchReport,
-			mismatch + encodeMismatchCommand(".ack close connection")},
+			protocol.HiddenCommandFailedPrefix + commandFailureProtocol, true, ack},
+		"protocol version mismatch": {mismatch + mismatch, mismatchReport, false,
+			encodeMismatchCommand(".ack close connection")},
 	}
 }
 
 // checkRejectedFrameSession fails unless stream, all bytes of a session
 // whose only command frame was rejected, holds the rejection's report
-// exactly once before exactly one close handshake, and nothing after it.
+// exactly once, followed, if the rejection ends the session with the close
+// handshake, by exactly one close handshake and nothing after it, and
+// otherwise by no close handshake at all (checkMismatchSession).
 func checkRejectedFrameSession(t *testing.T, stream string, rejected rejectedFrame) {
 	t.Helper()
+	if !rejected.handshake {
+		checkMismatchSession(t, stream)
+		return
+	}
 	if closes := strings.Count(stream, ".syn close connection"); closes != 1 {
 		t.Fatalf("%d close handshakes, want 1: %q", closes, stream)
 	}
@@ -77,6 +86,42 @@ func checkRejectedFrameSession(t *testing.T, stream string, rejected rejectedFra
 	}
 }
 
+// checkMismatchSession fails unless stream, all bytes of a session whose
+// command frames were all of another protocol version, ends with the
+// mismatch error, sent exactly once, and holds no close handshake: the
+// server ends such a session without it (closeWithoutHandshake).
+func checkMismatchSession(t *testing.T, stream string) {
+	t.Helper()
+	if strings.Contains(stream, ".syn close connection") {
+		t.Fatalf("close handshake in a session of another protocol version: %q", stream)
+	}
+	if reports := strings.Count(stream, mismatchReport); reports != 1 {
+		t.Fatalf("%d mismatch errors, want 1: %q", reports, stream)
+	}
+	_, afterReport, _ := strings.Cut(stream, mismatchReport)
+	if want := ", please update DTail server" + string([]byte{protocol.MessageDelimiter}); afterReport != want {
+		t.Fatalf("output after the mismatch error %q, want %q", afterReport, want)
+	}
+}
+
+// checkCloseAcknowledgement fails unless handler received the client's close
+// acknowledgement, if the rejection ends the session with the close
+// handshake, or did not receive one, if it ends it without.
+func checkCloseAcknowledgement(t *testing.T, ackCloseReceived <-chan struct{},
+	rejected rejectedFrame, stream string) {
+	t.Helper()
+	select {
+	case <-ackCloseReceived:
+		if !rejected.handshake {
+			t.Fatalf("close acknowledged in a session without close handshake: %q", stream)
+		}
+	default:
+		if rejected.handshake {
+			t.Fatalf("session ended without the close acknowledgement: %q", stream)
+		}
+	}
+}
+
 // TestServerHandlerRejectedOnlyCommandEndsSession: a session whose only
 // command frame is rejected before any handler ran admits no command, so no
 // command finishes it; the dispatcher's rejection hook
@@ -85,12 +130,10 @@ func checkRejectedFrameSession(t *testing.T, stream string, rejected rejectedFra
 // until IdleSessionTimeoutS. The session must end well under a second
 // (runFailingFramesSession), with the report before exactly one close
 // handshake and nothing after it, for older, escaped-only and control-frame
-// clients. A client of another protocol version acknowledges the close in
-// its own version, which must end the session as quickly
-// (commandDispatcher.rejectProtocolVersion); before, that acknowledgement
-// was rejected like any frame of that version, so the session waited for
-// the close acknowledgement timeout (5 s) and sent mismatch errors after
-// its close handshake.
+// clients. A command of another protocol version ends the session as
+// quickly, after its error but without the close handshake
+// (commandDispatcher.rejectProtocolVersion); see also
+// TestServerHandlerVersionMismatchEndsSessionWithoutHandshake.
 func TestServerHandlerRejectedOnlyCommandEndsSession(t *testing.T) {
 	clients := map[string][]string{
 		"control-frame client": {protocol.EscapedFramingCommand, protocol.ControlFramesCommand},
@@ -105,13 +148,43 @@ func TestServerHandlerRejectedOnlyCommandEndsSession(t *testing.T) {
 				stream := runFailingFramesSessionAcking(t, handler, protocol.HiddenCapabilitiesPrefix,
 					encodeTestCommands(first...)+rejected.frame, rejected.ack)
 				checkRejectedFrameSession(t, stream, rejected)
-				select {
-				case <-handler.ackCloseReceived:
-				default:
-					t.Fatalf("session ended without the close acknowledgement: %q", stream)
-				}
+				checkCloseAcknowledgement(t, handler.ackCloseReceived, rejected, stream)
 			})
 		}
+	}
+}
+
+// TestServerHandlerVersionMismatchEndsSessionWithoutHandshake: every frame
+// of a client of another protocol version is rejected, including the
+// framing requests a current client sends first, so the session stays raw
+// while such a client already chose marked framing from the capabilities
+// frame: it would print an unmarked ".syn close connection" as payload and
+// never acknowledge it, so the session waited for the close acknowledgement
+// timeout (5 s). The server must instead send the mismatch error once and
+// end the session at once without the close handshake
+// (ServerHandler.versionRejected), for older, escaped-only and control-frame
+// clients of that version, which then see an incomplete session.
+func TestServerHandlerVersionMismatchEndsSessionWithoutHandshake(t *testing.T) {
+	clients := map[string][]string{
+		"older client":         nil,
+		"escaped-only client":  {protocol.EscapedFramingCommand},
+		"control-frame client": {protocol.EscapedFramingCommand, protocol.ControlFramesCommand},
+	}
+	for client, first := range clients {
+		t.Run(client, func(t *testing.T) {
+			var frames strings.Builder
+			for _, command := range append(append([]string(nil), first...), "cat test.log .") {
+				frames.WriteString(encodeMismatchCommand(command))
+			}
+			handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
+			stream := runFailingFramesSessionAcking(t, handler, protocol.HiddenCapabilitiesPrefix,
+				frames.String(), encodeMismatchCommand(".ack close connection"))
+			_, afterCapabilities, _ := strings.Cut(stream, protocol.HiddenCapabilitiesPrefix)
+			checkMismatchSession(t, afterCapabilities)
+			if handler.framing() != protocol.RawFraming {
+				t.Fatalf("framing %v after rejected framing requests, want raw", handler.framing())
+			}
+		})
 	}
 }
 
@@ -142,9 +215,11 @@ func TestServerHandlerRejectedCommandInBatchDoesNotEndSessionEarly(t *testing.T)
 // TestHealthHandlerRejectedFrameEndsSession: a health session whose command
 // frame is rejected before any handler ran ends at once
 // (HealthHandler.frameRejected), with the rejection's report before exactly
-// one close handshake and nothing after it, also for a client of another
-// protocol version acknowledging the close in its own version. Before, no
-// handler ran and the session stayed open until the client gave up.
+// one close handshake and nothing after it; for a client of another protocol
+// version (HealthHandler.versionRejected), after the mismatch error, without
+// the close handshake. The health client reports CRITICAL either way, as it
+// gets no health OK. Before, no handler ran and the session stayed open
+// until the client gave up.
 func TestHealthHandlerRejectedFrameEndsSession(t *testing.T) {
 	for name, rejected := range rejectedFrames() {
 		t.Run(name, func(t *testing.T) {
@@ -155,11 +230,7 @@ func TestHealthHandlerRejectedFrameEndsSession(t *testing.T) {
 			}
 			stream := runFailingFramesSessionAcking(t, handler, "", rejected.frame, rejected.ack)
 			checkRejectedFrameSession(t, stream, rejected)
-			select {
-			case <-handler.ackCloseReceived:
-			default:
-				t.Fatalf("session ended without the close acknowledgement: %q", stream)
-			}
+			checkCloseAcknowledgement(t, handler.ackCloseReceived, rejected, stream)
 		})
 	}
 }

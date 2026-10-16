@@ -185,6 +185,35 @@ func (h *baseHandler) shutdown(ctx context.Context) {
 	h.Logger().Info(h.user, "shutdown() called", "activeCommands", activeCommands,
 		"outputMode", h.output.enabled())
 
+	h.drainSessionOutput(ctx)
+	h.requestCloseSync(ctx)
+	h.waitForCloseAcknowledgement(ctx)
+	h.cancelCommands()
+	h.done.Shutdown()
+}
+
+// closeWithoutHandshake drains output like shutdown and then closes the
+// session without the close handshake (no ".syn close connection", no wait
+// for its acknowledgement). It ends sessions whose client speaks another
+// protocol version (commandDispatcher.rejectProtocolVersion), which can not
+// be relied on to recognize or acknowledge the handshake. The client sees
+// the queued error and then the end of the session without its close
+// handshake, i.e. an incomplete session. Read still hands out everything
+// queued before it reports EOF.
+func (h *baseHandler) closeWithoutHandshake(ctx context.Context) {
+	if ctx == nil {
+		panic("handlers: nil close context")
+	}
+	h.Logger().Info(h.user, "Closing session of another protocol version without close handshake")
+	h.drainSessionOutput(ctx)
+	h.cancelCommands()
+	h.done.Shutdown()
+}
+
+// drainSessionOutput flushes the session's direct output, shuts its output
+// aggregate down and waits until the client read everything queued, or the
+// flush timeout passed; flush errors are reported to the client.
+func (h *baseHandler) drainSessionOutput(ctx context.Context) {
 	if h.output.enabled() {
 		if err := h.flushOutput(ctx); err != nil {
 			h.reportFlushError(0, fmt.Errorf("flush direct output: %w", err))
@@ -200,11 +229,6 @@ func (h *baseHandler) shutdown(ctx context.Context) {
 	if err := h.flushContext(ctx); err != nil {
 		h.reportFlushError(0, err)
 	}
-
-	h.requestCloseSync(ctx)
-	h.waitForCloseAcknowledgement(ctx)
-	h.cancelCommands()
-	h.done.Shutdown()
 }
 
 // Reasons a session command reports with reportCommandFailure; the read

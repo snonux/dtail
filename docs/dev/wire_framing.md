@@ -180,20 +180,29 @@ working with every other one:
    the output, on a goroutine of its own (`ServerHandler.finishUserCommand`),
    so the client's close acknowledgement is handled at once instead of
    after the 5 s acknowledgement timeout. A command frame the server
-   rejects before any handler ran (a protocol version mismatch, a frame
-   that does not decode, an invalid `timeout N` prefix or options that do
-   not parse) admits no command, so none finishes; when it leaves the
-   session without work (no other command, pending read, open input batch
-   or `SESSION`), it starts the same shutdown the same way
-   (`ServerHandler.frameRejected`), right after its error and failure
-   report, instead of leaving the session open until `IdleSessionTimeoutS`;
-   a health session (`HealthHandler.frameRejected`) does so for any
-   rejected frame. A client of another protocol version acknowledges that
-   close in its own version: the server accepts a frame of any version that
-   decodes to exactly `.ack close connection` as the acknowledgement, and
-   once the close was started it sends no further mismatch errors, so
-   nothing follows `.syn close connection`
-   (`commandDispatcher.rejectProtocolVersion`).
+   rejects before any handler ran (a frame that does not decode, an
+   invalid `timeout N` prefix or options that do not parse) admits no
+   command, so none finishes; when it leaves the session without work (no
+   other command, pending read, open input batch or `SESSION`), it starts
+   the same shutdown the same way (`ServerHandler.frameRejected`), right
+   after its error and failure report, instead of leaving the session open
+   until `IdleSessionTimeoutS`; a health session
+   (`HealthHandler.frameRejected`) does so for any rejected frame. A frame
+   of another protocol version (or none) gets its mismatch error and then,
+   under the same conditions, ends the session without the close handshake
+   (`ServerHandler.versionRejected`, `HealthHandler.versionRejected`,
+   `baseHandler.closeWithoutHandshake`): the server flushes the error and
+   closes the session, with no `.syn close connection` and no wait for an
+   acknowledgement. Such a client can not be relied on to handle the
+   handshake: a current client of another version sends its framing
+   requests in that version too, so the server rejects them and the
+   session stays raw, while the client already chose marked framing from
+   the capabilities frame and would print the unmarked close request as
+   payload and never acknowledge it. Clients of every version thus see the
+   error and an incomplete session at once (`dcat`/`dgrep` exit 1, a
+   scheduled job counts a transport failure, `dtailhealth` reports
+   CRITICAL). Once the session is closing, further frames of another
+   version get no error message (`commandDispatcher.rejectProtocolVersion`).
    Settling before the command has a
    cost: its replies may follow a frame queued before it, e.g. the close
    handshake of a dserver shutting down in the session's first moment, as

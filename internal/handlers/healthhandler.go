@@ -16,10 +16,12 @@ type HealthHandler struct {
 	*baseHandler
 	// shutdownStarted claims the session's one shutdown, started by its
 	// health command (handleHealthCommand) or by a rejected command frame
-	// (frameRejected). The client's close acknowledgement, a command frame
-	// too, then only completes that shutdown instead of starting another,
-	// whose flush would fail once the first one canceled the commands and
-	// report that after the close handshake.
+	// (frameRejected, versionRejected). The client's close
+	// acknowledgement, a command frame too, then only completes that
+	// shutdown instead of starting another, whose flush would fail once the
+	// first one canceled the commands and report that after the close
+	// handshake. It also makes the dispatcher drop later frames of another
+	// protocol version without an error (sessionClosingCb).
 	shutdownStarted atomic.Bool
 }
 
@@ -44,6 +46,7 @@ func NewHealthHandler(ctx context.Context, user *user.User, maxFrameSize int, ho
 	}
 	h.handleCommandCb = h.handleHealthCommand
 	h.frameRejectedCb = h.frameRejected
+	h.versionRejectedCb = h.versionRejected
 	h.sessionClosingCb = h.shutdownStarted.Load
 
 	s := strings.Split(hostname, ".")
@@ -52,21 +55,36 @@ func NewHealthHandler(ctx context.Context, user *user.User, maxFrameSize int, ho
 }
 
 // frameRejected ends a health session whose command frame the dispatcher
-// rejected before any handler ran (commandDispatcher.frameRejected: protocol
-// version mismatch, undecodable frame, invalid timeout prefix or unparsable
-// options). A health session serves one health command and no handler runs
-// for such a frame, so without this the session stayed open until the client
-// gave up. The rejection's error is already queued, so the close handshake
-// follows it. The shutdown starts once, on a goroutine of its own: this runs
-// on the command input goroutine, which must stay free to handle the
-// client's close acknowledgement.
+// rejected before any handler ran (commandDispatcher.frameRejected:
+// undecodable frame, invalid timeout prefix or unparsable options). A health
+// session serves one health command and no handler runs for such a frame, so
+// without this the session stayed open until the client gave up. The
+// rejection's error is already queued, so the close handshake follows it.
 func (h *HealthHandler) frameRejected() {
+	h.startEnd(h.shutdown)
+}
+
+// versionRejected ends a health session after a command frame of another
+// protocol version (or none) was rejected
+// (commandDispatcher.rejectProtocolVersion), like frameRejected, but without
+// the close handshake (closeWithoutHandshake), which such a client may not
+// recognize or acknowledge. The health client still reads the mismatch error
+// and reports the check as failed.
+func (h *HealthHandler) versionRejected() {
+	h.startEnd(h.closeWithoutHandshake)
+}
+
+// startEnd claims the session's one shutdown and runs end, which closes the
+// session, on a goroutine of its own: the rejection hooks run on the command
+// input goroutine, which must stay free to handle the client's close
+// acknowledgement.
+func (h *HealthHandler) startEnd(end func(context.Context)) {
 	if !h.shutdownStarted.CompareAndSwap(false, true) {
 		return
 	}
 	go func() {
 		defer recoverHandlerPanic(h.Logger(), h.user, "health shutdown", h.abortAfterPanic)
-		h.shutdown(h.connCtx)
+		end(h.connCtx)
 	}()
 }
 

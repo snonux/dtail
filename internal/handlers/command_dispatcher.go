@@ -20,6 +20,7 @@ type handleCommandCb func(context.Context, lcontext.LContext, int, []string, str
 type prepareCommandContextCb func(context.Context, string) (context.Context, func())
 type commandRejectedCb func(context.Context, string)
 type frameRejectedCb func()
+type versionRejectedCb func()
 type sessionClosingCb func() bool
 
 type commandCancelKeyType struct{}
@@ -38,16 +39,23 @@ type commandDispatcher struct {
 	// rejected before its handler ran, by command name.
 	commandRejectedCb commandRejectedCb
 	// frameRejectedCb, if set, runs after handleCommand rejected a command
-	// frame before any handler ran (protocol version mismatch, undecodable
-	// frame, or a dispatchCommand error such as an invalid timeout prefix
-	// or unparsable options) and queued its error and failure report. No
-	// command was admitted for such a frame, so no command finishes and
-	// nothing else would notice that the session may have no work left.
+	// frame of the session's protocol version before any handler ran
+	// (undecodable frame, or a dispatchCommand error such as an invalid
+	// timeout prefix or unparsable options) and queued its error and
+	// failure report. No command was admitted for such a frame, so no
+	// command finishes and nothing else would notice that the session may
+	// have no work left.
 	frameRejectedCb frameRejectedCb
-	// sessionClosingCb, if set, reports whether the session's close
-	// handshake was already started (or claimed to start). A frame of
-	// another protocol version arriving then gets no error message, so that
-	// nothing of the session follows its ".syn close connection".
+	// versionRejectedCb, if set, runs after handleCommand rejected a command
+	// frame of another protocol version (or none) and queued its error
+	// (rejectProtocolVersion). Such a session ends without the close
+	// handshake.
+	versionRejectedCb versionRejectedCb
+	// sessionClosingCb, if set, reports whether the session's end (with or
+	// without the close handshake) was already started or claimed. A frame
+	// of another protocol version arriving then gets no error message, so
+	// that nothing of the session follows its ".syn close connection" or
+	// its end.
 	sessionClosingCb sessionClosingCb
 
 	codec          protocolCodec
@@ -155,7 +163,7 @@ func (d *commandDispatcher) handleCommand(command string) {
 	args, argc, add, err := d.codec.handleProtocolVersion(strings.Split(command, " "))
 	if err != nil {
 		h.settleFramingBeforeCommand(false, argc, args)
-		d.rejectProtocolVersion(args, argc, add, err)
+		d.rejectProtocolVersion(add, err)
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
@@ -178,29 +186,31 @@ func (d *commandDispatcher) handleCommand(command string) {
 }
 
 // rejectProtocolVersion handles a command frame of another protocol version
-// (or none). Such a session can still end cleanly: the rejection starts its
-// idle shutdown (frameRejected), and the client acknowledges the close
-// handshake in its own protocol version, so a frame that decodes to exactly
-// ".ack close connection" completes the handshake instead of being rejected
-// (protocolCodec.isCloseAcknowledgement); otherwise the shutdown would wait
-// for the full close acknowledgement timeout (5 s). Once the session's close
-// was started, further frames of that version get no error message either,
-// so nothing follows the session's ".syn close connection". There is no
-// failed-command message here at all: a client of another protocol version
-// may not know hidden messages or their framing.
-func (d *commandDispatcher) rejectProtocolVersion(args []string, argc int, add string, err error) {
+// (or none). It queues the mismatch error and lets versionRejectedCb end the
+// session without the close handshake (ServerHandler.versionRejected): a
+// client of another protocol version can not be relied on to read the
+// handshake's ".syn close connection" as such or to acknowledge it. A
+// current client of another version has requested escaped and control
+// framing in its own version, so the server rejected those requests and the
+// session stays raw, while the client already chose marked framing from the
+// capabilities frame: it prints the unmarked close request as payload and
+// never acknowledges it, so the session would wait for the close
+// acknowledgement timeout (5 s). Ending the session after the error instead
+// shows clients of every version the error and an incomplete session at
+// once. There is no failed-command message here: a client of another
+// protocol version may not know hidden messages or their framing. Once the
+// session is closing, further frames of that version get no error message,
+// so nothing of the session follows its end or its close handshake.
+func (d *commandDispatcher) rejectProtocolVersion(add string, err error) {
 	h := d.handler
-	if d.codec.isCloseAcknowledgement(args, argc) {
-		h.Logger().Debug(h.user, "Close acknowledgement of another protocol version")
-		h.acknowledgeClose()
-		return
-	}
 	if d.sessionClosingCb != nil && d.sessionClosingCb() {
 		h.Logger().Debug(h.user, "Dropping frame of another protocol version after the close", err)
 		return
 	}
 	h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err)+add)
-	d.frameRejected()
+	if d.versionRejectedCb != nil {
+		d.versionRejectedCb()
+	}
 }
 
 // frameRejected tells frameRejectedCb, if set, that handleCommand rejected a
@@ -359,7 +369,7 @@ func (d *commandDispatcher) beginCommand(admittedSessionWork bool) bool {
 }
 
 // beginShutdownWork admits a session shutdown that runs on a goroutine of
-// its own (ServerHandler.startIdleShutdown) into commandWg, like a command,
+// its own (ServerHandler.startIdleEnd) into commandWg, like a command,
 // so that Shutdown and GracefulShutdownContext wait for it as they wait for
 // the shutdown a finished command hands over (finishUserCommand). Like
 // beginCommand it adds under commandMu, and only while command admission is

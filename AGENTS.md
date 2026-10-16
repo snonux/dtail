@@ -470,7 +470,12 @@ passes the result to `baseClient.sessionStatus`. A
 reported failed command (`2`) outweighs it. Servers of every protocol version
 (since v1.0.0, also the in-process server of serverless mode) send the close
 handshake after a completed session's output, so no capability gates this;
-`--max` stops on the server, which then closes normally.
+`--max` stops on the server, which then closes normally. A session whose
+frames are of another protocol version is no completed one: dserver sends the
+mismatch error and ends it without the close handshake
+(`handlers.baseHandler.closeWithoutHandshake`), as such a client may not
+recognize or acknowledge it, so the client shows the error and treats the
+session as cut short at once instead of after the 5 s acknowledgement timeout.
 Known gap: in `--plain` server mode a payload line starting with `.syn
 command failed` or a payload line `.syn close connection` is payload (printed,
 exit unchanged) when client and server negotiated control frames
