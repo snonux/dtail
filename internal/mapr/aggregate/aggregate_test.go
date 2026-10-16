@@ -324,7 +324,9 @@ func TestAggregateShutdownSerializesWithPendingRequest(t *testing.T) {
 // canceled snapshot is merged back without overwriting newer overwrite-style
 // values. This guards against stale last()/len() values clobbering more recent
 // updates that arrived after swapGroupSets. checkRemainingSet compares the
-// exact key sets, so the re-merge must also create no extra key.
+// exact key sets, so the re-merge must also create no extra key. The old and
+// new len() strings differ in length, so the numeric len() value also shows
+// which set won and that it came from the same set as the string.
 func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 	agg, err := newAggregateFromTextForTest(`from STATS select count($time),`+
 		`last($message),len($message) from - group by $service`, logging.NopLogger{})
@@ -345,16 +347,16 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 	// the same group advanced.
 	cancelSerializeWithNewerLiveSets(t, agg, map[string]*mapr.AggregateSet{
 		"svc": {Samples: 2,
-			FValues: map[string]float64{count: 2, length: float64(len("new-len"))},
-			SValues: map[string]string{last: "new-last", length: "new-len"}},
+			FValues: map[string]float64{count: 2, length: float64(len("newer-len"))},
+			SValues: map[string]string{last: "new-last", length: "newer-len"}},
 	})
 
 	agg.serializer.groupMu.Lock()
 	set := agg.serializer.groupSets["svc"]
 	agg.serializer.groupMu.Unlock()
 	checkRemainingSet(t, "svc", set, 3,
-		map[string]float64{count: 3, length: float64(len("new-len"))},
-		map[string]string{last: "new-last", length: "new-len"})
+		map[string]float64{count: 3, length: float64(len("newer-len"))},
+		map[string]string{last: "new-last", length: "newer-len"})
 }
 
 // TestAggregateDoSerializeReMergesSparseFieldsOnCtxCancel drives a real
