@@ -15,17 +15,20 @@ const serverFileCommentPrefix = "#"
 // lines starting with '#' after trimming are skipped. Without that, a trailing
 // blank line, an empty separator line or an indented entry became an empty or
 // whitespace-wrapped address, which the client rejects, aborting the whole
-// client before it connected to any server.
+// client before it connected to any server. Whitespace around the file path
+// is ignored as well (see serverListFilePath). A file with no server entry
+// yields an empty list, which the client rejects unless it runs serverless.
 func (d *Discovery) ServerListFromFILE() (servers []string, retErr error) {
-	d.logger.Debug("Retrieving server list from file", d.server)
+	path := serverListFilePath(d.server)
+	d.logger.Debug("Retrieving server list from file", path)
 
-	file, err := os.Open(d.server)
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open server discovery file %q: %w", d.server, err)
+		return nil, fmt.Errorf("open server discovery file %q: %w", path, err)
 	}
 	defer func() {
 		if err := file.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("close server discovery file %q: %w", d.server, err)
+			retErr = fmt.Errorf("close server discovery file %q: %w", path, err)
 		}
 	}()
 
@@ -38,7 +41,7 @@ func (d *Discovery) ServerListFromFILE() (servers []string, retErr error) {
 		servers = append(servers, server)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan server discovery file %q: %w", d.server, err)
+		return nil, fmt.Errorf("scan server discovery file %q: %w", path, err)
 	}
 
 	return servers, nil

@@ -154,6 +154,20 @@ func (c *baseClient) closeAuth() error {
 	return closer.Close()
 }
 
+// errNoServers is the error of a client that is not serverless and whose
+// server discovery yielded no server, e.g. a --servers value of only
+// whitespace and commas, a server list file of only blank and comment lines,
+// or a discovery regex no server matches. Such a client would otherwise run
+// no session at all and exit 0 with no output, and dtailhealth would report
+// OK.
+var errNoServers = errors.New("no server to connect to")
+
+// makeConnections discovers the servers and creates one connection per
+// server. A client that is not serverless fails with errNoServers when the
+// discovery yields no server. Scheduled and continuous jobs fail the same
+// way when their client is created: the scheduler counts that as a failed
+// run and backs the job off, writing no outfile, just as it does for a
+// scheduled query that ran on no server (see scheduledQueryOutcome).
 func (c *baseClient) makeConnections() error {
 	if c.profile.newHandler == nil {
 		return errors.New("client handler factory is required")
@@ -169,6 +183,9 @@ func (c *baseClient) makeConnections() error {
 	servers, err := discoveryService.ServerList()
 	if err != nil {
 		return fmt.Errorf("discover servers: %w", err)
+	}
+	if len(servers) == 0 && !c.Serverless {
+		return fmt.Errorf("discover servers: %w", errNoServers)
 	}
 	for _, server := range servers {
 		connection, connectionErr := c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)

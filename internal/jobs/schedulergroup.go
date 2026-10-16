@@ -238,8 +238,9 @@ func (s *scheduler) groupLimit(ctx context.Context, args config.Args, limits *gr
 	return s.discoverGroupLimit(ctx, args, newGroupLimits())
 }
 
-// dynamicServerList mirrors discovery's implicit file selection as well as
-// its explicit FILE module. Checking the path on every wave also notices a
+// dynamicServerList mirrors discovery's implicit file selection (the shared
+// discovery.IsServerListFile, which ignores whitespace around the path) as
+// well as its explicit FILE module. Checking the path on every wave also notices a
 // file that appears after the first wave.
 func dynamicServerList(args config.Args) bool {
 	method, _, _ := strings.Cut(args.Discovery, ":")
@@ -249,8 +250,7 @@ func dynamicServerList(args config.Args) bool {
 	if method != "" {
 		return false
 	}
-	_, err := os.Stat(args.ServersStr)
-	return err == nil
+	return discovery.IsServerListFile(args.ServersStr)
 }
 
 // discoverGroupLimit discovers the servers of args and returns the group

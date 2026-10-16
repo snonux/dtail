@@ -95,8 +95,15 @@ func (d *Discovery) initRegex() error {
 }
 
 // ServerList to connect to via DTail client. The FILE and COMMA modules
-// already trim their entries and skip empty ones, so the regex filter and the
-// deduplication below see "host" and " host" as the same server.
+// already trim their entries and skip empty ones, so the deduplication below
+// sees "host" and " host" as the same server. The regex filter applies to the
+// entries of a discovery module only: a /regex/ server value is no server list
+// (initRegex clears it), so no FILE or COMMA entry ever reaches the filter
+// without an explicit module.
+//
+// The list can be empty, e.g. a server list file with only comment lines or a
+// regex no server matches. ServerList returns it as it is; the client rejects
+// it unless it runs serverless (see baseClient.makeConnections).
 func (d *Discovery) ServerList() ([]string, error) {
 	servers, err := d.serverListFromModule()
 	if err != nil {
@@ -122,7 +129,7 @@ func (d *Discovery) serverListFromModule() ([]string, error) {
 	if d.server == "" && d.regex != nil {
 		return []string{}, nil
 	}
-	if _, err := os.Stat(d.server); err == nil {
+	if IsServerListFile(d.server) {
 		// Appears to be a file name, now try to read from that file.
 		return d.ServerListFromFILE()
 	}
@@ -160,6 +167,23 @@ func (d *Discovery) serverListFromReflectedModule() ([]string, error) {
 		panic(fmt.Sprintf("discovery method %s does not return error", methodName))
 	}
 	return nil, fmt.Errorf("run server discovery module %q: %w", d.module, err)
+}
+
+// IsServerListFile reports whether server names an existing file, which
+// ServerList then reads as a server list file when no discovery module is
+// given. Whitespace around the value is ignored like around every server
+// entry, so "servers.txt " is the file servers.txt and not the host
+// "servers.txt". The scheduler uses the same check to tell whether the server
+// list of a job can change between its waves.
+func IsServerListFile(server string) bool {
+	_, err := os.Stat(serverListFilePath(server))
+	return err == nil
+}
+
+// serverListFilePath returns the path of the server list file server names:
+// server without surrounding whitespace.
+func serverListFilePath(server string) string {
+	return strings.TrimSpace(server)
 }
 
 // trimServerEntry trims surrounding whitespace from one raw entry of the FILE

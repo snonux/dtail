@@ -25,7 +25,7 @@ The following example demonstrates how to follow logs of multiple servers at onc
 
 The server list file has one server (`HOST` or `HOST:PORT`) per line.
 Whitespace around an entry is ignored, and so are blank lines and lines
-starting with `#`, e.g.:
+starting with `#` (a `#` after an entry starts no comment), e.g.:
 
 ```
 # web tier
@@ -40,6 +40,10 @@ Hint: you can also provide a comma-separated server list, e.g.:
 `--servers server1.example.org,server2.example.org:PORT,...`
 Spaces around the commas and empty entries are ignored, so
 `--servers 'server1.example.org, server2.example.org'` works as well.
+A server list (file or comma-separated) that names no server at all, e.g.
+a file of only comment lines or `--servers ' '`, is an error (`no server to
+connect to`); `dtailhealth` reports it as `CRITICAL`. Whitespace around the
+path of a server list file is ignored too.
 
 ![dtail](dtail.gif "Tail example")
 

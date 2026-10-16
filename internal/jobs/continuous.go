@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -97,10 +96,7 @@ func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 	now := c.now()
 	files := fillDatesAt(job.Files, now)
 	outfile := fillDatesAt(job.Outfile, now)
-	servers := strings.Join(job.Servers, ",")
-	if servers == "" {
-		servers = c.cfg.Server.SSHBindAddress
-	}
+	servers := jobServersStr(job.Servers, c.cfg.Server.SSHBindAddress)
 
 	args := config.Args{
 		ConnectionsPerCPU: config.DefaultConnectionsPerCPU,

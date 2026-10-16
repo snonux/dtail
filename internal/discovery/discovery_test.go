@@ -95,7 +95,6 @@ func TestNewParsesModuleOptionsWithAdditionalColons(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -165,10 +164,33 @@ func TestServerListIgnoresEmptyServerEntries(t *testing.T) {
 			server: " alpha , beta",
 			want:   []string{"alpha", "beta"},
 		},
+		{
+			name:   "explicit comma module keeps the empty-input sentinel",
+			method: "comma",
+			server: "",
+			want:   []string{""},
+		},
+		{
+			name:   "explicit comma module whitespace-only input is empty",
+			method: "comma",
+			server: " , ",
+			want:   []string{},
+		},
+		// Trimming only removes surrounding whitespace: bad entries still
+		// reach the client's address parser unchanged and fail there.
+		{
+			name:   "invalid port reaches the parser",
+			server: " host:notaport ",
+			want:   []string{"host:notaport"},
+		},
+		{
+			name:   "inner whitespace is kept",
+			server: "alpha beta, gamma",
+			want:   []string{"alpha beta", "gamma"},
+		},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -254,10 +276,13 @@ func TestServerListFromFileSkipsBlankAndCommentLines(t *testing.T) {
 		{name: "dedup after trimming", content: "alpha\n alpha\nalpha \n", want: []string{"alpha"}},
 		{name: "only blank and comment lines", content: "\n# none\n  \n", want: []string{}},
 		{name: "explicit file module", method: "file", content: "\nalpha\n", want: []string{"alpha"}},
+		// A '#' starts a comment only at the start of a line: an inline
+		// comment is part of the entry and fails in the address parser.
+		{name: "inline comment is no comment", content: "host # c\n", want: []string{"host # c"}},
+		{name: "invalid port reaches the parser", content: "host:notaport\n", want: []string{"host:notaport"}},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -277,5 +302,39 @@ func TestServerListFromFileSkipsBlankAndCommentLines(t *testing.T) {
 				t.Fatalf("ServerList() = %q, want %q", servers, tt.want)
 			}
 		})
+	}
+}
+
+// TestServerListIgnoresWhitespaceAroundTheFilePath checks that a server
+// value naming a server list file with surrounding whitespace is read as that
+// file, without and with the explicit file module, and not dialled as the
+// host "servers.txt ".
+func TestServerListIgnoresWhitespaceAroundTheFilePath(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "servers.txt")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o600); err != nil {
+		t.Fatalf("write server list file: %v", err)
+	}
+	for _, method := range []string{"", "file"} {
+		for _, server := range []string{path + " ", "\t" + path + "\n"} {
+			if method == "" && !IsServerListFile(server) {
+				t.Fatalf("IsServerListFile(%q) = false, want true", server)
+			}
+			finder, err := New(method, server, ServerOrder(99), testLogger)
+			if err != nil {
+				t.Fatalf("New(%q, %q) error = %v", method, server, err)
+			}
+			servers, err := finder.ServerList()
+			if err != nil {
+				t.Fatalf("ServerList(%q, %q) error = %v", method, server, err)
+			}
+			if want := []string{"alpha", "beta"}; !reflect.DeepEqual(servers, want) {
+				t.Fatalf("ServerList(%q, %q) = %q, want %q", method, server, servers, want)
+			}
+		}
+	}
+	if IsServerListFile(path + ".missing") {
+		t.Fatal("IsServerListFile of a missing file = true, want false")
 	}
 }

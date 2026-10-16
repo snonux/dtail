@@ -3,6 +3,7 @@ package jobs
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/mimecast/dtail/internal/clients"
@@ -23,6 +24,26 @@ func New(cfg config.RuntimeConfig, loggers clients.LoggerDependencies, colorizer
 		scheduler:  newScheduler(cfg, loggers, colorizer),
 		continuous: newContinuous(cfg, loggers, colorizer),
 	}
+}
+
+// jobServersStr returns the client's --servers value for a scheduled or
+// continuous job with the configured servers: the servers trimmed of
+// surrounding whitespace, with empty entries dropped, joined with commas. If
+// no server is left (no Servers, or only blank entries), it returns
+// bindAddress, the SSHBindAddress of this dserver, as an empty Servers means
+// this dserver itself. Without the trimming a list like [" "] became the
+// --servers value " ", which names no server and so failed every run.
+func jobServersStr(servers []string, bindAddress string) string {
+	kept := make([]string, 0, len(servers))
+	for _, server := range servers {
+		if server = strings.TrimSpace(server); server != "" {
+			kept = append(kept, server)
+		}
+	}
+	if len(kept) == 0 {
+		return bindAddress
+	}
+	return strings.Join(kept, ",")
 }
 
 func firstColorizer(colorizers []*brush.Brush) *brush.Brush {

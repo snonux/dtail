@@ -205,7 +205,10 @@ type scheduledOutcome struct {
 // scheduledQueryOutcome returns how the scheduled query ended: it did not
 // complete unless the connections ended with status 0, ctxErr (the error of
 // the client's context by then) is nil, there was a connection at all, and
-// every session completed (see sessionOutcome).
+// every session completed (see sessionOutcome). A client whose discovery
+// yields no server already fails when it is created (errNoServers), which
+// the scheduler treats as a failed run as well; the check for no connection
+// stays as a guard, so that a query that ran nowhere never writes a result.
 func (c *MaprClient) scheduledQueryOutcome(ctxErr error, status int) scheduledOutcome {
 	if reason := incompleteQueryReason(ctxErr, status); reason != "" {
 		return scheduledOutcome{incomplete: reason}
