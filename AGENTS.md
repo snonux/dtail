@@ -273,7 +273,9 @@ negotiate escaped framing (`internal/protocol/framing.go`; design in
   advertised it, only when the request is the session's first command frame, a
   later or repeated one is ignored and logged, and only after its capabilities
   frame was encoded); every later frame body has 0xAC replaced by `FF 01` and
-  0xFF by `FF 02`, in time linear in the body however many bytes are escaped.
+  0xFF by `FF 02`, in time linear in the body however many bytes are escaped
+  and with the escaped body sized exactly (counted first), so a dense 1 MiB
+  body costs one allocation of its escaped size.
   The client decides from the session's first frame only: if it is the
   capabilities frame listing the capability, every later frame is decoded as
   escaped; a later frame that reads like a capabilities frame never switches

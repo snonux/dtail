@@ -3,6 +3,7 @@ package protocol
 import (
 	"bytes"
 	"math"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -388,4 +389,52 @@ func BenchmarkFramingEncodeDensePayload(b *testing.B) {
 			}
 		})
 	}
+}
+
+// TestEscapedFramingSizesDenseBodiesExactly: escaping a long body into an
+// empty buffer allocates its storage once, of the escaped size, however many
+// of its bytes are escaped. An escaper that grew dst by the raw length and
+// then appended past it reallocated while appending and grew dst again on
+// Write: 5 to 7 allocations of about 6 to 11 MB in all for these bodies.
+func TestEscapedFramingSizesDenseBodiesExactly(t *testing.T) {
+	for name, body := range denseEscapeBodies(1 << 20) {
+		t.Run(name, func(t *testing.T) {
+			escapedLen := len(referenceEscape(body))
+			dst := new(bytes.Buffer)
+			EscapedFraming.Write(dst, body)
+			if dst.Len() != escapedLen {
+				t.Fatalf("escaped %d bytes, want %d", dst.Len(), escapedLen)
+			}
+			// bytes.Buffer rounds a grow up only a little (to its size class),
+			// so the storage stays close to the escaped size.
+			if dst.Cap() > escapedLen+escapedLen/8 {
+				t.Errorf("buffer capacity %d for %d escaped bytes", dst.Cap(), escapedLen)
+			}
+			// One allocation for the buffer header and one for its storage,
+			// which the race detector makes bytes.Buffer allocate twice.
+			maxAllocs, maxBytes := 2.0, uint64(escapedLen+escapedLen/8)
+			if raceEnabled {
+				maxAllocs, maxBytes = 3, 2*maxBytes
+			}
+			allocs := testing.AllocsPerRun(1, func() { EscapedFraming.Write(new(bytes.Buffer), body) })
+			if allocs > maxAllocs {
+				t.Errorf("escaping 1 MiB allocated %v objects, want at most %v", allocs, maxAllocs)
+			}
+			allocated := allocatedBytes(func() { EscapedFraming.Write(new(bytes.Buffer), body) })
+			if allocated > maxBytes {
+				t.Errorf("escaping 1 MiB allocated %d bytes, want at most %d for %d escaped bytes",
+					allocated, maxBytes, escapedLen)
+			}
+		})
+	}
+}
+
+// allocatedBytes returns the bytes the heap allocated while running f.
+func allocatedBytes(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
 }

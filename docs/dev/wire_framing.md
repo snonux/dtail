@@ -41,10 +41,16 @@ as the delimiter. Decoding (`Framing.DecodeFrame`) returns frames without
 Escaping and decoding take time linear in the body length whatever share of
 the bytes must be escaped. The escaper (`escapeScanner`) keeps the positions
 of the next `0xAC` and the next `0xFF` apart and only searches again for the
-kind it just escaped, so every byte is scanned at most once per kind; a body
-without either byte costs two `IndexByte` passes and one copy. (An earlier
-version searched the rest of the body for both bytes at every escape, which
-took about 50 s for one 1 MiB line of `0xFF` and stalled the session.)
+kind it just escaped, so every byte is scanned at most once per kind. Before
+it escapes a long body, `writeEscaped` counts the bytes to escape (two
+vectorised `bytes.Count` passes), grows the frame buffer once to the exact
+escaped length and writes the escaped body into it, so a dense 1 MiB body
+costs one allocation of its escaped size (at most 2 MiB); a body without
+either byte costs the two counts and one copy. (An earlier version searched
+the rest of the body for both bytes at every escape, which took about 50 s for
+one 1 MiB line of `0xFF` and stalled the session; the next one grew the buffer
+by the raw length only and reallocated while appending, 5 to 7 allocations of
+6 to 11 MB in all for a dense 1 MiB body.)
 
 ## Escaped frames and the output buffer cap
 
