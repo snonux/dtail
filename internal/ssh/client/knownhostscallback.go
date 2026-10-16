@@ -266,6 +266,8 @@ func (c *KnownHostsCallback) trustAll() bool {
 	}
 }
 
+// promptAddHosts answers one batch of unknown hosts: without asking in
+// trust-all mode, otherwise by asking on stdin.
 func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	var servers []string
 	for _, host := range hosts {
@@ -284,65 +286,85 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 		c.logUnlockedUpdate(unlocked)
 		return
 	}
+	c.askAddHosts(hosts, servers)
+}
 
+// askAddHosts asks on stdin whether to trust hosts and answers their
+// handshakes accordingly.
+func (c *KnownHostsCallback) askAddHosts(hosts []unknownHost, servers []string) {
 	question := fmt.Sprintf("Encountered %d unknown hosts: '%s'\n%s",
 		len(servers),
 		strings.Join(servers, ","),
 		"Do you want to trust these hosts?",
 	)
 	p := prompt.New(question, c.promptLogger)
+	p.Add(c.yesAnswer(hosts))
+	p.Add(c.allAnswer(hosts))
+	p.Add(c.noAnswer(hosts))
+	p.Add(detailsAnswer(hosts))
+	p.Ask(os.Stdin)
+}
 
-	// The prompt pauses logging while it runs the callbacks, so their
-	// results are logged from the end callbacks once logging has resumed.
-	var trustUnlocked, trustErr error
-	a := prompt.Answer{
+// yesAnswer trusts the hosts of this batch only. The prompt pauses logging
+// while it runs the callbacks, so their results are logged from the end
+// callbacks once logging has resumed (likewise for the other answers).
+func (c *KnownHostsCallback) yesAnswer(hosts []unknownHost) prompt.Answer {
+	var unlocked, err error
+	return prompt.Answer{
 		Long:  "yes",
 		Short: "y",
 		Callback: func() {
-			trustUnlocked, trustErr = c.trustHosts(hosts)
-			if trustErr != nil {
+			unlocked, err = c.trustHosts(hosts)
+			if err != nil {
 				c.dontTrustHosts(hosts)
 			}
 		},
-		EndCallback: func() {
-			c.logTrustHostsResult(trustUnlocked, trustErr)
-		},
+		EndCallback: func() { c.logTrustHostsResult(unlocked, err) },
 	}
-	p.Add(a)
+}
 
-	var trustAllUnlocked, trustAllErr error
-	a = prompt.Answer{
+// allAnswer trusts the hosts of this batch and switches to trust-all mode for
+// every later unknown host. The order is: update known_hosts, then close
+// trustAllHostsCh, then answer the handshakes. So by the time any handshake of
+// this batch returns from Wrap, trust-all mode is already visible (trustAll
+// reports true, and PromptAddHosts uses the short trust-all window for the
+// next host). If the update fails, trust-all mode stays off and the hosts are
+// not trusted.
+func (c *KnownHostsCallback) allAnswer(hosts []unknownHost) prompt.Answer {
+	var unlocked, err error
+	return prompt.Answer{
 		Long:  "all",
 		Short: "a",
 		Callback: func() {
-			trustAllUnlocked, trustAllErr = c.trustHosts(hosts)
-			if trustAllErr != nil {
+			unlocked, err = c.updateKnownHosts(hosts)
+			if err != nil {
 				c.dontTrustHosts(hosts)
 				return
 			}
 			// Mark trust-all atomically so that concurrent "all" callbacks
 			// from other batches do not double-close the channel.
 			c.closeTrustAllHostsCh()
+			c.answerHosts(hosts, trustHost)
 		},
-		EndCallback: func() {
-			c.logTrustHostsResult(trustAllUnlocked, trustAllErr)
-		},
+		EndCallback: func() { c.logTrustHostsResult(unlocked, err) },
 	}
-	p.Add(a)
+}
 
-	a = prompt.Answer{
-		Long:  "no",
-		Short: "n",
-		Callback: func() {
-			c.dontTrustHosts(hosts)
-		},
+// noAnswer rejects the hosts of this batch.
+func (c *KnownHostsCallback) noAnswer(hosts []unknownHost) prompt.Answer {
+	return prompt.Answer{
+		Long:     "no",
+		Short:    "n",
+		Callback: func() { c.dontTrustHosts(hosts) },
 		EndCallback: func() {
 			c.logger.Info("Didn't add hosts to known hosts file", c.knownHostsPath)
 		},
 	}
-	p.Add(a)
+}
 
-	a = prompt.Answer{
+// detailsAnswer prints the known_hosts lines of the batch and asks again.
+func detailsAnswer(hosts []unknownHost) prompt.Answer {
+	return prompt.Answer{
 		Long:     "details",
 		Short:    "d",
 		AskAgain: true,
@@ -353,9 +375,6 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 			}
 		},
 	}
-	p.Add(a)
-
-	p.Ask(os.Stdin)
 }
 
 func (c *KnownHostsCallback) logTrustHostsResult(unlocked, err error) {
@@ -383,16 +402,24 @@ func (c *KnownHostsCallback) logUnlockedUpdate(unlocked error) {
 
 // trustHosts adds hosts to known_hosts and then trusts them. A nil err with a
 // non-nil unlocked means the update succeeded without the lock, for the reason
-// in unlocked; if err is non-nil it already includes that reason.
+// in unlocked; if err is non-nil it already includes that reason. The "all"
+// answer does the same two steps itself, with trust-all mode enabled between
+// them (see allAnswer).
 func (c *KnownHostsCallback) trustHosts(hosts []unknownHost) (unlocked, err error) {
 	unlocked, err = c.updateKnownHosts(hosts)
 	if err != nil {
 		return unlocked, err
 	}
-	for _, unknown := range hosts {
-		unknown.responseCh <- trustHost
-	}
+	c.answerHosts(hosts, trustHost)
 	return unlocked, nil
+}
+
+// answerHosts sends resp to the handshake of every host, letting each blocked
+// Wrap call return.
+func (c *KnownHostsCallback) answerHosts(hosts []unknownHost, resp response) {
+	for _, unknown := range hosts {
+		unknown.responseCh <- resp
+	}
 }
 
 // updateKnownHosts rewrites known_hosts with hosts first, followed by every
@@ -515,9 +542,7 @@ func closeKnownHostsFile(fd *os.File, path string) error {
 }
 
 func (c *KnownHostsCallback) dontTrustHosts(hosts []unknownHost) {
-	for _, unknown := range hosts {
-		unknown.responseCh <- dontTrustHost
-	}
+	c.answerHosts(hosts, dontTrustHost)
 }
 
 // Untrusted returns true if the host is not trusted. False otherwise.

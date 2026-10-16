@@ -216,6 +216,8 @@ func TestPromptAddHostsAllAnswerSwitchesToTrustAll(t *testing.T) {
 		errCh := make(chan error, 2)
 		go func() { errCh <- callUnknownHost(ctx, callback, 0) }()
 		waitForHosts(t, errCh, 1, time.After(interactiveMaxWait), "interactive")
+		// Deterministic: the "all" answer enables trust-all mode before it
+		// lets the handshake return (see allAnswer).
 		if !callback.trustAll() {
 			t.Fatal("trust-all mode is off after an \"all\" answer")
 		}
@@ -253,30 +255,36 @@ func TestPromptAddHostsInteractiveAsksAfterDebounce(t *testing.T) {
 // TestPromptAddHostsInteractiveKeepsDebounce is the negative counterpart:
 // without trust-all mode the unknown host still waits for the interactive
 // debounce, and cancelling ctx during that wait aborts the handshake callback
-// and stops PromptAddHosts. No prompt input is needed, as nothing is asked.
+// and stops PromptAddHosts. Nothing should be asked, but stdin is replaced by
+// an empty input anyway: should the test be delayed past the debounce, the
+// prompt reads EOF (answering "no") instead of the real stdin.
 func TestPromptAddHostsInteractiveKeepsDebounce(t *testing.T) {
 	callback := newBatchTestCallback(t, false)
-	ctx, stop := startPromptAddHosts(t, callback)
+	withPromptInput(t, "", func() {
+		ctx, stop := startPromptAddHosts(t, callback)
+		// Stop before withPromptInput restores os.Stdin, which the prompt reads.
+		defer stop()
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- callUnknownHost(ctx, callback, 0) }()
+		errCh := make(chan error, 1)
+		go func() { errCh <- callUnknownHost(ctx, callback, 0) }()
 
-	select {
-	case err := <-errCh:
-		t.Fatalf("interactive host key callback returned before the prompt debounce: %v", err)
-	case <-time.After(unknownHostsPromptDelay / 4):
-	}
-	stop()
-
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("expected context.Canceled after cancel, got %v", err)
+		select {
+		case err := <-errCh:
+			t.Fatalf("interactive host key callback returned before the prompt debounce: %v", err)
+		case <-time.After(unknownHostsPromptDelay / 4):
 		}
-	case <-time.After(time.Second):
-		t.Fatal("interactive host key callback did not return after ctx cancel")
-	}
-	assertKnownHostsEmpty(t, callback.knownHostsPath)
+		stop()
+
+		select {
+		case err := <-errCh:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("expected context.Canceled after cancel, got %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("interactive host key callback did not return after ctx cancel")
+		}
+		assertKnownHostsEmpty(t, callback.knownHostsPath)
+	})
 }
 
 // trustBatchCountingLogger counts the trust-all batches promptAddHosts
