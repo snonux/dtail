@@ -248,6 +248,29 @@ func TestNewMaprClientDerivesModeAndRegex(t *testing.T) {
 	}
 }
 
+// TestNewMaprClientIgnoresInvert pins that dtail --invert --query reads the
+// lines of the query's table, not the other lines, in the base client and in
+// the session spec sent to servers alike.
+func TestNewMaprClientIgnoresInvert(t *testing.T) {
+	client, err := NewMaprClient(config.Args{
+		Mode:              omode.TailClient,
+		QueryStr:          "from STATS select count(*)",
+		RegexInvert:       true,
+		Serverless:        true,
+		ConnectionsPerCPU: 1,
+	}, clientTestRuntimeConfig(), DefaultMode, LoggerDependencies{})
+	if err != nil {
+		t.Fatalf("NewMaprClient() error = %v", err)
+	}
+	if client.RegexInvert || client.sessionSpec.RegexInvert {
+		t.Fatalf("invert = client %v, session spec %v, want false for both",
+			client.RegexInvert, client.sessionSpec.RegexInvert)
+	}
+	if !client.Regex.MatchString("INFO|1|MAPREDUCE:STATS|a=b") {
+		t.Fatalf("regex %q does not match a STATS line", client.RegexStr)
+	}
+}
+
 func TestMaprClientCumulativePolicy(t *testing.T) {
 	t.Parallel()
 

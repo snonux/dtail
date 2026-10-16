@@ -300,12 +300,14 @@ func (r Regex) Pattern() string {
 //
 // The wire form is "regex:<flags> <pattern>", the flags and the pattern
 // separated by the first space. An empty string means no regex and is a noop
-// regex. A string without a space is flags with an empty pattern: a sender
-// emits "regex:invert,literal " for an inverted empty pattern, and the server
-// splits its SESSION commands at runs of whitespace (see
-// handlers.commandDispatcher.handleRawCommand), which drops that trailing
-// space. Taking the remaining "regex:invert,literal" for a noop would match
-// every line, where the inverted empty pattern matches none.
+// regex. A string without a space is read as flags with an empty pattern:
+// Serialize ends an empty pattern's regex in a space ("regex:invert,literal "
+// for an inverted empty pattern), and a receiver which splits a command into
+// words at runs of whitespace and joins them again loses that trailing space.
+// Taking the remaining "regex:invert,literal" for a noop would match every
+// line, where the inverted empty pattern matches none. Flags which do not
+// parse ("regex:bogus", or "regex:" without a flag) are an error, with or
+// without a pattern.
 func Deserialize(str string) (Regex, error) {
 	if str == "" {
 		return NewNoop(), nil

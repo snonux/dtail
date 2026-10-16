@@ -16,6 +16,7 @@ import (
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -478,16 +479,19 @@ func buildInteractiveSessionSpec(args config.Args, logger logging.Logger) (Sessi
 	return spec, nil
 }
 
+// normalizeInteractiveArgs derives the line filter of an interactive query
+// from the query (applyQueryRegex), so a reloaded query reads the lines of its
+// own table, never inverted.
 func normalizeInteractiveArgs(args config.Args, logger logging.Logger) (config.Args, error) {
 	if !isInteractiveQueryMode(args) {
 		return args, nil
 	}
 
-	_, regexValue, err := maprRegexFromQueryString(args.QueryStr, logger)
+	query, err := mapr.NewQuery(args.QueryStr, logging.OrNop(logger))
 	if err != nil {
 		return args, err
 	}
-	args.RegexStr = regexValue
+	applyQueryRegex(&args, query)
 	return args, nil
 }
 

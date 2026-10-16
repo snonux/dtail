@@ -195,20 +195,9 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	defer func() { r.releasePendingInputReservation(ctx) }()
 	r.generation = sessionGenerationFromContext(ctx)
 
-	// The regex starts at args[2]. It may be a single word: a SESSION command
-	// is split at runs of whitespace, which drops the empty pattern of
-	// "regex:invert ", and regex.Deserialize reads the flags alone as one. A
-	// single third word which is no regex has always been ignored.
-	re := regex.NewNoop()
-	if argc >= 4 || (argc == 3 && strings.HasPrefix(args[2], "regex")) {
-		deserializedRegex, err := regex.Deserialize(strings.Join(args[2:], " "))
-		if err != nil {
-			r.sendServerMessage(ctx, r.logger.Error(r.logContext,
-				"Unable to parse command", err))
-			r.reportFailure(ctx, readFailureCommand)
-			return
-		}
-		re = deserializedRegex
+	re, ok := r.parseRegex(ctx, argc, args)
+	if !ok {
+		return
 	}
 	if argc < 3 {
 		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
@@ -232,6 +221,36 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 		r.logger.Debug("Reading data from file(s)")
 		r.readGlob(ctx, ltx, args[1], re, retries)
 	}
+}
+
+// parseRegex returns the regex of a read command, which starts at args[2] and
+// is normally two words, the flags and the pattern ("regex:invert foo"), and
+// is a noop regex without them. It reports false, after telling the client,
+// when the regex does not deserialize.
+//
+// The lone third word branch is a defensive tolerance, whichever way the
+// dispatcher splits commands: a serialized empty pattern ends the command in a
+// space ("regex:invert,literal "), and a split at runs of whitespace would drop
+// that empty last word, turning an inverted empty pattern (no line) into a noop
+// (every line). So a lone third word starting with "regex:" is read by
+// regex.Deserialize as flags with an empty pattern; flags it cannot parse
+// ("regex:bogus", or "regex:" without a flag) fail the command with "Unable to
+// parse command", as they do with a pattern. Any other lone third word (e.g.
+// "." or "regexfoo") is no regex and is ignored, as it always was: the command
+// matches every line.
+func (r *readCommand) parseRegex(ctx context.Context, argc int, args []string) (regex.Regex, bool) {
+	hasRegex := argc >= 4 || (argc == 3 && strings.HasPrefix(args[2], "regex:"))
+	if !hasRegex {
+		return regex.NewNoop(), true
+	}
+	re, err := regex.Deserialize(strings.Join(args[2:], " "))
+	if err != nil {
+		r.sendServerMessage(ctx, r.logger.Error(r.logContext,
+			"Unable to parse command", err))
+		r.reportFailure(ctx, readFailureCommand)
+		return regex.Regex{}, false
+	}
+	return re, true
 }
 
 func (r *readCommand) adoptPendingInputReservation(reservation *pendingInputReservation) {

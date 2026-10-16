@@ -246,7 +246,13 @@ A few more one-liners:
 # Prints all lines NOT matching the regex
 ```
 
-The patterns `''`, `.` and `.*` (`dtail` and `dgrep` default to `.`) select every line, empty lines included. With `--invert` they are matched like any other regex, as `grep -v` does: `--invert --grep '.*'` (or `''`) prints no line, and `--invert --grep .` (also `--invert` without `--grep`) prints only the empty lines. A line ending in `\r\n` is not empty.
+The patterns `.` (the default of `dtail` and `dgrep`), `.*` and the empty pattern select every line, empty lines included. With `--invert` they are matched like any other regex, as `grep -v` does: `--invert --grep '.*'` prints no line, and `--invert --grep .` (also `--invert` without `--grep` or `--regex`) prints only the empty lines. A line ending in `\r\n` is not empty.
+
+The empty pattern can only be given in some places: `--grep ''` is ignored, which leaves the default `.`, and `dgrep --regex ''` is rejected (`no regex specified`). `dtail --regex ''` and an interactive `:reload --regex=''` do use it, and inverted it prints no line, like `.*`.
+
+With `--query`, `dtail` reads the lines of the query's table (every line for `from .` or no table), whatever `--regex` or `--grep` say, and it ignores `--invert` with a warning: inverting the table filter would feed the other tables' lines, or only the empty lines, into the aggregation.
+
+Mixed versions: the inverted `.` and `.*` (and `''`) are honoured where the regex is built by a current DTail. In the default command mode the client builds it, so a current client gets the behaviour above from an older `dserver` too. With `--interactive-query` and a server advertising `query-update-v1` (`SESSION START`), `dserver` builds it from the session spec, so a current client talking to an older `dserver` still prints every line. An older client is the other way round: a current `dserver` honours its `--invert` in an interactive session, but not in the default command mode. Serverless runs always behave as above.
 
 ```shell
 % dcat --servers serverlist.txt --trustAllHosts /etc/hostname

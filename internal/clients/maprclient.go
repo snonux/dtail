@@ -79,6 +79,7 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 	// serverless mode, so the warning reaches the user's stderr even though the
 	// actual field resolution happens server-side.
 	warnUnknownQueryVariables(os.Stderr, query, loggers.Client)
+	warnIgnoredInvert(os.Stderr, args, loggers.Client)
 
 	// Don't retry connection if in tail mode and no outfile specified.
 	retry := args.Mode == omode.TailClient && !query.HasOutfile()
@@ -88,7 +89,7 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 		mode:    maprClientMode,
 	}
 
-	args.RegexStr = maprRegexForQuery(query)
+	applyQueryRegex(&args, query)
 	base, initErr := newBaseClient(args, cfg, loggers, firstColorizer(colorizers), clientProfile{
 		newHandler: func(server string) handlers.Handler {
 			return handlers.NewMaprHandler(server, c.session, loggers.Client)
@@ -469,7 +470,7 @@ func (c *MaprClient) isCumulative(query *mapr.Query) bool {
 }
 
 func (c *MaprClient) setRegexForQuery(query *mapr.Query) {
-	c.RegexStr = maprRegexForQuery(query)
+	applyQueryRegex(&c.Args, query)
 }
 
 // warnUnknownQueryVariables writes a plan-time warning to w for each

@@ -2,10 +2,17 @@ package clients
 
 import (
 	"fmt"
+	"io"
 
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 )
+
+// ignoredInvertWarning tells the user that dtail dropped --invert because a
+// mapreduce query was given (see applyQueryRegex).
+const ignoredInvertWarning = "WARN: Ignoring --invert: a mapreduce query (--query) " +
+	"selects the lines of its table itself"
 
 func maprRegexForQuery(query *mapr.Query) string {
 	if query == nil {
@@ -22,10 +29,25 @@ func maprRegexForQuery(query *mapr.Query) string {
 	}
 }
 
-func maprRegexFromQueryString(queryStr string, logger logging.Logger) (*mapr.Query, string, error) {
-	query, err := mapr.NewQuery(queryStr, logging.OrNop(logger))
-	if err != nil {
-		return nil, "", err
+// applyQueryRegex sets the line filter of a mapreduce query on args: the
+// regex is derived from the query's table (maprRegexForQuery) and replaces any
+// --regex, and RegexInvert is cleared. The filter only selects the lines the
+// query aggregates, so inverting it has no sensible meaning: for a named table
+// it would feed every other line into the aggregation, and for the tables ""
+// and "." (every line) only the empty lines. dtail therefore accepts --invert
+// together with --query and ignores it, with a warning (warnIgnoredInvert).
+func applyQueryRegex(args *config.Args, query *mapr.Query) {
+	args.RegexStr = maprRegexForQuery(query)
+	args.RegexInvert = false
+}
+
+// warnIgnoredInvert writes ignoredInvertWarning to w when args asks to invert
+// the regex of a mapreduce query, which applyQueryRegex ignores.
+func warnIgnoredInvert(w io.Writer, args config.Args, logger logging.Logger) {
+	if !args.RegexInvert {
+		return
 	}
-	return query, maprRegexForQuery(query), nil
+	if _, err := fmt.Fprintln(w, ignoredInvertWarning); err != nil {
+		logger.Debug("Unable to write ignored invert warning", err)
+	}
 }
