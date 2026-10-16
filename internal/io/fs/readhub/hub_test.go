@@ -967,6 +967,7 @@ func TestFailedHandOverMovesTheRemainingSessionToAPrivateRead(t *testing.T) {
 	waitFor(t, "lines after the failure", func() bool { return other.recorder.hasLine("after the failure 2") })
 	select {
 	case err := <-other.done:
+		other.done <- nil // checked here; see checkSessionEnd
 		t.Fatalf("Follow() = %v after a failed hand-over, want the session to go on", err)
 	default:
 	}

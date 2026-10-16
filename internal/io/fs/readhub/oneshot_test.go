@@ -376,6 +376,7 @@ func TestReadOnceCancelledMemberReleasesTheGroup(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	select {
 	case err := <-healthy.done:
+		healthy.done <- nil // checked here; see checkSessionEnd
 		t.Fatalf("the healthy member finished while the other one blocked the read: %v", err)
 	default:
 	}
