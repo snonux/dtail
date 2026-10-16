@@ -216,16 +216,25 @@ func (s *serializer) release() {
 	s.permit <- struct{}{}
 }
 
+// mergeRemaining puts the groups an interrupted serialization could not send
+// back into the live group sets. A group that was aggregated again meanwhile
+// has a newer live set: that one is merged into the older unsent set (and the
+// unsent set takes its place), so the client's merge rule applies here too:
+// the newer last()/len() value wins, and only fields a set carries are merged.
 func (s *serializer) mergeRemaining(remaining map[string]*mapr.AggregateSet) {
 	s.groupMu.Lock()
 	defer s.groupMu.Unlock()
-	for key, set := range remaining {
-		existing, ok := s.groupSets[key]
-		if !ok {
-			s.groupSets[key] = set
-			continue
+	for key, unsent := range remaining {
+		live, ok := s.groupSets[key]
+		if ok {
+			if err := unsent.Merge(s.query, live); err != nil {
+				// Only an unknown aggregation fails, which the query parser
+				// rejects; keep the live set rather than a partial merge.
+				s.logger.Error("Aggregate re-merge failed", err.Error(), "group", key)
+				continue
+			}
 		}
-		mergeCancelledSnapshot(s.query, existing, set, s.logger)
+		s.groupSets[key] = unsent
 	}
 	s.logger.Warn("Aggregate serialize interrupted; re-merged unsent groups",
 		"remaining", len(remaining))

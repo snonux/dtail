@@ -34,37 +34,21 @@ func (s *AggregateSet) String() string {
 		s.Samples, s.FValues, s.SValues)
 }
 
-// Merge one aggregate set into this one.
+// Merge one aggregate set into this one. set is treated as the newer of the
+// two: where both carry a last() or len() value, set's value wins.
+//
+// A field is merged only when set carries its storage key. A set has a key
+// only when a line of its group had the field (sparse fields, where clauses
+// not requiring it, a later interval, or another server's lines), so an
+// absent key means "no value", not 0 or "": merging it as one would turn
+// min() of positive or max() of negative values into 0 and blank last() and
+// len(). Skipping it also keeps additive operations from creating keys no
+// line ever had; they render as 0 either way.
 func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 	s.Samples += set.Samples
 	for _, sc := range query.Select {
-		storage := sc.FieldStorage
-		switch sc.Operation {
-		case Count:
-			fallthrough
-		case Sum:
-			fallthrough
-		case Avg:
-			fallthrough
-		case Percentage:
-			fallthrough
-		case Percentile:
-			value := set.FValues[storage]
-			s.addFloat(storage, value)
-		case Min:
-			value := set.FValues[storage]
-			s.addFloatMin(storage, value)
-		case Max:
-			value := set.FValues[storage]
-			s.addFloatMax(storage, value)
-		case Last:
-			value := set.SValues[storage]
-			s.setString(storage, value)
-		case Len:
-			s.setString(storage, set.SValues[storage])
-			s.setFloat(storage, set.FValues[storage])
-		default:
-			return fmt.Errorf("unknown aggregation method '%v'", sc.Operation)
+		if err := s.mergeField(sc.FieldStorage, sc.Operation, set); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -110,6 +94,39 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// mergeField merges the value of one storage key of set into s, if set has
+// one (see Merge).
+func (s *AggregateSet) mergeField(storage string, op AggregateOperation, set *AggregateSet) error {
+	switch op {
+	case Count, Sum, Avg, Percentage, Percentile:
+		if value, ok := set.FValues[storage]; ok {
+			s.addFloat(storage, value)
+		}
+	case Min:
+		if value, ok := set.FValues[storage]; ok {
+			s.addFloatMin(storage, value)
+		}
+	case Max:
+		if value, ok := set.FValues[storage]; ok {
+			s.addFloatMax(storage, value)
+		}
+	case Last:
+		if value, ok := set.SValues[storage]; ok {
+			s.setString(storage, value)
+		}
+	case Len:
+		// Aggregate stores a len() value as the string and its length under
+		// the same key, so the string's presence stands for both.
+		if value, ok := set.SValues[storage]; ok {
+			s.setString(storage, value)
+			s.setFloat(storage, set.FValues[storage])
+		}
+	default:
+		return fmt.Errorf("unknown aggregation method '%v'", op)
+	}
+	return nil
 }
 
 // Add a float value.

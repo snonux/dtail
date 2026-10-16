@@ -85,6 +85,14 @@ FUNCTION := md5sum|maskdigits
 * The field given to `order by`/`rorder by` must also appear in the `select`
   clause, otherwise the query fails to parse with an error.
 * If no `interval` clause is given, results are aggregated every 5 seconds.
+* An aggregation only sees the lines of a group that have its field. A line
+  without the field (sparse `key=value` fields, a `where` clause not
+  requiring it) leaves `min`, `max`, `last` and `len` of that field as they
+  are, and so does a server or an interval of a follow query whose lines of
+  the group all lack it: the results of all servers and intervals are merged
+  field by field, and a field without a value is never taken as `0` or an
+  empty string. `last` and `len` keep the most recently received value. A
+  field no line of the group had shows as `0` (or empty for `last`).
 * Available fields (variables and barewords) vary from the log format used. Check out the [log format](./logformats.md) documentation for more information.
 * `percentage(field)` returns the selected group's share of the total for that field across all groups. For non-negative inputs, the result is between 0 and 100; with mixed positive and negative values, it can fall outside that range.
 * `percentile(field)` returns the percentile rank of the selected group's value among all grouped values for that field, also expressed as a value between 0 and 100. Equal values share the same rank.

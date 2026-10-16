@@ -528,52 +528,6 @@ func (a *Aggregate) doSerialize(ctx context.Context) {
 	a.serializer.serialize(ctx)
 }
 
-func mergeCancelledSnapshot(query *mapr.Query, live, snapshot *mapr.AggregateSet,
-	logger logging.Logger) {
-	live.Samples += snapshot.Samples
-	for _, sc := range query.Select {
-		storage := sc.FieldStorage
-		switch sc.Operation {
-		case mapr.Count, mapr.Sum, mapr.Avg, mapr.Percentage, mapr.Percentile:
-			live.FValues[storage] += snapshot.FValues[storage]
-		case mapr.Min:
-			liveValue, ok := live.FValues[storage]
-			if !ok {
-				live.FValues[storage] = snapshot.FValues[storage]
-				continue
-			}
-			if snapshotValue := snapshot.FValues[storage]; snapshotValue < liveValue {
-				live.FValues[storage] = snapshotValue
-			}
-		case mapr.Max:
-			liveValue, ok := live.FValues[storage]
-			if !ok {
-				live.FValues[storage] = snapshot.FValues[storage]
-				continue
-			}
-			if snapshotValue := snapshot.FValues[storage]; snapshotValue > liveValue {
-				live.FValues[storage] = snapshotValue
-			}
-		case mapr.Last:
-			if _, ok := live.SValues[storage]; !ok {
-				if snapshotValue, ok := snapshot.SValues[storage]; ok {
-					live.SValues[storage] = snapshotValue
-				}
-			}
-		case mapr.Len:
-			if _, ok := live.SValues[storage]; !ok {
-				if snapshotValue, ok := snapshot.SValues[storage]; ok {
-					live.SValues[storage] = snapshotValue
-					live.FValues[storage] = snapshot.FValues[storage]
-				}
-			}
-		default:
-			logger.Error("Aggregate re-merge encountered unsupported aggregation",
-				"operation", sc.Operation, "storage", storage)
-		}
-	}
-}
-
 // Processor implements the line processor interface for aggregation. Each
 // input file gets its own Processor, fed by a single reader goroutine, and the
 // Processor batches that file's lines locally: no lock is taken per line, and
