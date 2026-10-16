@@ -23,10 +23,22 @@ import (
 // (sessionFramer.readMaprMessage), so the queue bounds how many groups one
 // write can carry: a 200k-group result took about 149k write(2) calls
 // without coalescing, 10-19k with 10 slots, 6.6k with 64 and 2.2-2.7k with
-// 256 (about 10% less dserver CPU time than with 10 slots). A queued message
-// is one serialized group, typically well below 1 KiB; the aggregate holds
-// every group in memory while it serializes them anyway, so the queue adds
-// at most 256 copies of groups to that.
+// 256 (about 10% less dserver CPU time than with 10 slots).
+//
+// The queue is bounded by count, not by bytes, and lies outside
+// OutputBufferMaxBytes, which only bounds read payload. A queued message is
+// one serialized group: its group key and one value per select field. These
+// are typically a few dozen bytes, but a key or a value such as last() of a
+// field is taken from a log line and can be up to MaxLineLength bytes (1 MiB
+// by default) each. In the worst case a session holds (256 + 16 + 1)
+// messages of that size outside OutputBufferMaxBytes: this queue, the
+// 16-entry forwarding channel of the map command
+// (newGeneratedMaprMessagesChannel) and the message its forwarder holds,
+// i.e. up to 273 * (1 + select fields) * MaxLineLength bytes, plus up to
+// one Read buffer and one frame in sessionFramer.readBuf. That is a share
+// of what the aggregate itself already holds, unbounded, for every group
+// while it serializes them. A byte budget is left out deliberately: such
+// groups need a query grouping by or selecting values of near-maximal lines.
 const maprMessageQueueSize = 256
 
 type baseHandlerConfig struct {

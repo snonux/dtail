@@ -512,6 +512,14 @@ validation flags them as stale, while the runtime still ignores them.
   read would have taken it anyway (no payload, flush error or server message
   pending), filters each by its generation, and changes no byte of the stream.
   A 200k-group result went from about 149k write(2) calls to about 2.2-2.7k.
+  The rest of a batch that does not fit into one read goes out with the
+  groups queued behind it, not alone in a tiny write of its own.
+  The queue is bounded by count only and lies outside `OutputBufferMaxBytes`:
+  a group's key and values (e.g. `last()`) can each be up to `MaxLineLength`
+  bytes, so a session can hold up to (256 + 16 + 1) x (1 + select fields) x
+  `MaxLineLength` bytes of queued groups (the session queue, the map command's
+  16-entry forwarding channel and the forwarder's message in hand). Typical
+  groups are a few dozen bytes; the aggregate itself holds all groups anyway.
 
 **Output limits and deadlines (server config):**
 The output path exposes four optional settings: `OutputBufferMaxBytes`,

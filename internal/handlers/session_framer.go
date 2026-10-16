@@ -57,6 +57,11 @@ type sessionFramer struct {
 	framingSettled     chan struct{}
 	framingSettledOnce sync.Once
 	settledObserved    bool
+	// maprTail is set while readBuf holds the rest of a coalesced mapr batch
+	// (readMaprMessage) that did not fit into the Read buffer, so that the
+	// next Read frames the mapr messages queued meanwhile behind it
+	// (drainPending). Only the output goroutine (Read) touches it.
+	maprTail bool
 }
 
 func newSessionFramer(handler *baseHandler, maxCommandFrameSize int) *sessionFramer {
@@ -70,7 +75,8 @@ func newSessionFramer(handler *baseHandler, maxCommandFrameSize int) *sessionFra
 
 // Read emits one or more bytes from the next coordinated output item; a
 // MapReduce message takes the mapr messages queued behind it along
-// (readMaprMessage).
+// (readMaprMessage), and so does the rest of such a batch that did not fit
+// into the previous Read (drainPending).
 func (f *sessionFramer) Read(p []byte) (n int, err error) {
 	c := f.handler.outputCoordinator
 	c.ensureFlushChannels()
@@ -91,7 +97,7 @@ func (f *sessionFramer) Read(p []byte) (n int, err error) {
 	}()
 
 	if f.readBuf.Len() > 0 {
-		return f.drainReadBuf(p), nil
+		return f.drainPending(p), nil
 	}
 
 	for {
@@ -201,19 +207,49 @@ func (f *sessionFramer) encodeControl(framing protocol.Framing, message string) 
 // Read would have taken it as well (outputCoordinator.tryReadQueuedMapr),
 // and each message is still filtered by its generation on its own. The last
 // frame may not fit into p; its rest stays in readBuf, which the next Read
-// drains before anything else, as for any frame longer than p.
+// drains before anything else, as for any frame longer than p, and fills up
+// with the mapr messages queued by then (drainPending, maprTail).
 func (f *sessionFramer) readMaprMessage(p []byte, message string) int {
 	framing := f.framing()
 	f.encodeMaprMessage(framing, message)
+	f.coalesceQueuedMapr(framing, len(p))
+	return f.drainMaprBatch(p)
+}
+
+// drainPending returns the bytes a previous Read encoded but could not
+// return. When they are the rest of a coalesced mapr batch (maprTail), the
+// mapr messages queued since are framed behind them first, under the same
+// rule as in readMaprMessage: the next Read would have taken those messages
+// right after the rest anyway. Otherwise the rest of a full batch would go
+// out alone, as an extra tiny SSH write per batch. The rest of any other
+// frame (e.g. a long server message) is returned on its own, as before.
+func (f *sessionFramer) drainPending(p []byte) int {
+	if !f.maprTail {
+		return f.drainReadBuf(p)
+	}
+	f.coalesceQueuedMapr(f.framing(), len(p))
+	return f.drainMaprBatch(p)
+}
+
+// coalesceQueuedMapr frames queued mapr messages behind readBuf until it
+// holds at least limit bytes or no message can be taken.
+func (f *sessionFramer) coalesceQueuedMapr(framing protocol.Framing, limit int) {
 	c := f.handler.outputCoordinator
-	for f.readBuf.Len() < len(p) {
+	for f.readBuf.Len() < limit {
 		queued, ok := c.tryReadQueuedMapr()
 		if !ok {
-			break
+			return
 		}
 		f.encodeMaprMessage(framing, queued)
 	}
-	return f.drainReadBuf(p)
+}
+
+// drainMaprBatch returns the first len(p) bytes of a coalesced mapr batch
+// and records whether a rest of it stays in readBuf (maprTail).
+func (f *sessionFramer) drainMaprBatch(p []byte) int {
+	n := f.drainReadBuf(p)
+	f.maprTail = f.readBuf.Len() > 0
+	return n
 }
 
 // encodeMaprMessage appends the aggregate frame of message to readBuf,
