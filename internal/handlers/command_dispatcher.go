@@ -117,18 +117,22 @@ func (d *commandDispatcher) handleCommand(command string) {
 	h := d.handler
 	h.Logger().Debug(h.user, commandForLog(command))
 
-	// The session framing is settled after this returns, not before
-	// (sessionFramer.settleFramingAfterCommand), so the replies a command
-	// queues while it is handled go out before frames queued earlier on
-	// their own, such as the close handshake of a dserver shutting down.
+	// A command that can not switch the session framing settles it before
+	// it is handled, whenever it was not settled yet
+	// (sessionFramer.settleFramingBeforeCommand): handling it may wait for
+	// output, which Read must not hold back meanwhile. The framing requests
+	// settle it themselves, or after they were handled
+	// (sessionFramer.settleFramingAfterCommand).
 	args, argc, add, err := d.codec.handleProtocolVersion(strings.Split(command, " "))
 	if err != nil {
+		h.settleFramingBeforeCommand(false, argc, args)
 		// No failed-command message here: a client of another protocol
 		// version may not know hidden messages or their framing.
 		h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err)+add)
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
+	h.settleFramingBeforeCommand(err == nil, argc, args)
 	if err != nil {
 		h.sendln(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err))
 		h.reportCommandFailure(commandFailureProtocol)

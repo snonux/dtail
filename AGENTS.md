@@ -343,8 +343,10 @@ negotiate escaped framing (`internal/protocol/framing.go`; design in
   byte-identical to escaped framing. The client uses it when the first frame
   lists both capabilities; then every unmarked frame is payload. dserver
   encodes no frame after the capabilities frame until the session framing
-  settled (`sessionFramer.awaitFramingSettled`: after a command that is no
-  framing request, after the second command, or at session end), so e.g. the
+  settled (`sessionFramer.awaitFramingSettled`: before a command that can no
+  longer change it, i.e. a first command other than the escaped framing
+  request or a second one other than the control frames request, after the
+  framing requests, or at session end), so e.g. the
   close handshake of a dserver shutting down before the requests arrived is
   still marked. A framing request with a `timeout N` prefix is ignored. Any other
   client/server combination (older ones, or with escaped framing only) keeps

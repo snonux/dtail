@@ -199,6 +199,13 @@ func assertSessionFraming(t *testing.T, handler *ServerHandler, stream []byte, w
 // escaped for one sending only the escaped framing request, raw for one
 // sending none. Each client acknowledges it, so the session ends without
 // waiting for the acknowledgement timeout (5 s).
+//
+// The test does not pin where the close handshake goes relative to the
+// AUTHKEY reply: a command that can not switch the framing settles it before
+// it is handled, so its reply may follow the close handshake. That is
+// harmless, as on master (where the close handshake always went out first):
+// a client acknowledges the close whatever frames follow it, and goes on
+// handling those until the session ends.
 func TestServerHandlerFramesAnEarlyCloseInTheSettledFraming(t *testing.T) {
 	escaped, control := protocol.EscapedFramingCommand, protocol.ControlFramesCommand
 	tests := []struct {
@@ -220,13 +227,34 @@ func TestServerHandlerFramesAnEarlyCloseInTheSettledFraming(t *testing.T) {
 			if handler.framing() != test.wantFraming {
 				t.Fatalf("session framing = %s, want %s", handler.framing(), test.wantFraming)
 			}
-			frames := splitMarkedFrames(stream, test.wantFraming)
-			last := frames[len(frames)-1]
-			if last.body != ".syn close connection" || last.control != test.wantFraming.MarksControl() {
-				t.Fatalf("last frame = %+v, want the close handshake marked only under %s: %q",
-					last, protocol.EscapedControlFraming, stream)
-			}
+			assertCloseFrameFraming(t, stream, test.wantFraming)
 		})
+	}
+}
+
+// assertCloseFrameFraming fails the test unless stream, decoded in framing
+// after its raw capabilities frame, holds exactly one close handshake frame,
+// marked exactly when framing marks control frames, and no frame other
+// than a control message is marked.
+func assertCloseFrameFraming(t *testing.T, stream []byte, framing protocol.Framing) {
+	t.Helper()
+	frames := splitMarkedFrames(stream, framing)
+	closeFrames := 0
+	for _, frame := range frames[1:] {
+		if frame.body == ".syn close connection" {
+			closeFrames++
+			if frame.control != framing.MarksControl() {
+				t.Fatalf("close handshake marked = %v, want framing %s: %q",
+					frame.control, framing, stream)
+			}
+			continue
+		}
+		if frame.control && !protocol.IsControlMessage(frame.body) {
+			t.Fatalf("frame %q marked as control under %s: %q", frame.body, framing, stream)
+		}
+	}
+	if closeFrames != 1 {
+		t.Fatalf("got %d close handshake frames, want 1: %q", closeFrames, stream)
 	}
 }
 

@@ -165,14 +165,25 @@ working with every other one:
    message the server sends on its own before the client's commands arrive,
    such as the close handshake of a dserver shutting down in the session's
    first moment, waits until then and reaches a client of a marking session
-   marked. The framing settles once the server handled a command that is
-   no framing request (an older client's first command, an escaped-only
-   client's second one), so the replies that command queued go out before
-   such a close handshake; after an escaped framing request when the server
-   does not advertise `control-frames-v1` or the request switched nothing;
-   after the second command in any case; and when the session ends (e.g.
-   its input ended). Clients send the requests in one write, together with
-   or right before their first commands, so the frames are held back for no
+   marked. The framing settles before the server handles a command that
+   can no longer change it (`sessionFramer.settleFramingBeforeCommand`): a
+   first command that is not the escaped framing request (an older
+   client's first command), a second one that is not the control frames
+   request (an escaped-only client's second one), and a command frame that
+   does not decode. It settles before, not after, such a command because
+   handling it may wait for output: a `SESSION START` acks its spec only
+   once the server message channel has room, which its reads can fill
+   (e.g. with one `Unable to read file(s)` message per missing file), and
+   an unknown command or failed map query that is the session's only
+   command shuts the session down and flushes its output on the command
+   input goroutine. The replies of such a command may therefore follow a
+   close handshake queued before it, as they always did before control
+   frames existed; clients acknowledge the close either way. The framing
+   also settles after an escaped framing request when the server does not
+   advertise `control-frames-v1` or the request switched nothing, after
+   the second command in any case, and when the session ends (e.g. its
+   input ended). Clients send the requests in one write, together with or
+   right before their first commands, so the frames are held back for no
    noticeable time; a held back read does not count as an active one, so a
    flush with nothing queued does not wait for it either.
 5. The client decides the framing from the session's first frame only: if

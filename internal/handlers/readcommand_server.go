@@ -334,8 +334,8 @@ func (h *ServerHandler) newReadLineWriter(ctx context.Context, generation uint64
 	// (handleEscapedFramingRequest, handleControlFramesRequest), and both are
 	// handled before any read command. A read command that is itself the
 	// first or second command is no framing request, so the framing it sees
-	// is final already; the session settles it once that command was
-	// handled (sessionFramer.settleFramingAfterCommand). A framing request
+	// is final already; the session settled it before that command was
+	// handled (sessionFramer.settleFramingBeforeCommand). A framing request
 	// with a timeout prefix is ignored (commandDispatcher.dispatchCommand).
 	// The second switch changes control frames only; the payload bytes of a
 	// line frame are the same under EscapedFraming and

@@ -244,12 +244,44 @@ func (f *sessionFramer) enableControlFrames() bool {
 // settleFraming marks the session framing as final, so that Read goes on
 // encoding the frames after the capabilities frame. The command input
 // goroutine calls it as soon as no command can switch the framing any more:
-// when an escaped framing request leaves the session without a possible
-// control frames switch (ServerHandler.handleEscapedFramingRequest), when
-// the control frames request was handled, and after any command that leaves
-// no switch possible (settleFramingAfterCommand). It is idempotent.
+// before it handles a command that can not switch it while the framing
+// could still change (settleFramingBeforeCommand), when an escaped framing
+// request leaves the session without a possible control frames switch
+// (ServerHandler.handleEscapedFramingRequest), when the control frames
+// request was handled, and after any command that leaves no switch possible
+// (settleFramingAfterCommand). It is idempotent.
 func (f *sessionFramer) settleFraming() {
 	f.framingSettledOnce.Do(func() { close(f.framingSettled) })
+}
+
+// settleFramingBeforeCommand settles the framing before the command being
+// handled (the commandFrames-th) when it is no command that could still
+// switch the framing: a first command that is not the escaped framing
+// request leaves the session raw for good, and a second one that is not the
+// control frames request leaves it without control frames. decoded is false
+// when the command frame could not be decoded at all, which never switches
+// anything either. Later commands find the framing settled already.
+//
+// Settling before such a command, not only after it, matters because the
+// command input goroutine may wait for output while it handles the
+// command: a SESSION START queues its ack after it started its reads, whose
+// messages (e.g. one "Unable to read file(s)" per missing file) can fill the
+// server message channel first, so the ack waits for room, and an unknown
+// command or failed map query of an idle session shuts the session down and
+// flushes its output synchronously. Read must be able to drain meanwhile.
+// The cost is that the replies such a command queues may follow a frame
+// queued before it on its own, e.g. the close handshake of a dserver
+// shutting down in the session's first moment; that frame is still encoded
+// in the settled framing, and clients ack it either way.
+func (f *sessionFramer) settleFramingBeforeCommand(decoded bool, argc int, args []string) {
+	switch {
+	case !decoded:
+		f.settleFraming()
+	case f.commandFrames == 1 && !isEscapedFramingRequest(argc, args):
+		f.settleFraming()
+	case f.commandFrames == 2 && !isControlFramesRequest(argc, args):
+		f.settleFraming()
+	}
 }
 
 // settleFramingAfterCommand settles the framing after the command just
@@ -257,18 +289,9 @@ func (f *sessionFramer) settleFraming() {
 // EscapedFraming: then the second command may still be the control frames
 // request. Any other framing after the first command is final (a raw session
 // never switches later, as only the first command can make it escaped), as
-// is every framing after the second one.
-//
-// A command that is no framing request (an older client's first command, an
-// escaped-only client's second one) thus settles the framing only once it
-// was handled, not before: the replies it queued meanwhile, e.g. an AUTHKEY
-// reply, go out before a frame queued earlier on its own, such as the close
-// handshake of a dserver shutting down, which Read only emits once nothing
-// else is queued. Holding Read back while the command is handled costs
-// nothing: no command handled on the command input goroutine waits for
-// output. Reads, map queries and shutdowns run on goroutines of their own,
-// and a command queues at most a few replies itself, which the buffered
-// server message channel takes without blocking.
+// is every framing after the second one. It covers the framing requests
+// that switched nothing, e.g. an escaped framing request a session did not
+// advertise; settleFramingBeforeCommand covered every other command.
 func (f *sessionFramer) settleFramingAfterCommand() {
 	if f.commandFrames >= 2 || f.framing() != protocol.EscapedFraming {
 		f.settleFraming()
@@ -282,8 +305,8 @@ func (f *sessionFramer) settleFramingAfterCommand() {
 // enableEscapedFraming waits for it. Sessions without a capabilities frame
 // (the health handler) never wait. It never waits for long: clients send
 // the framing requests together with, or right before, their first commands,
-// older clients send no requests, so their first command settles the
-// framing, and a session whose input ends is shut down.
+// older clients send no requests, so the framing settles before their first
+// command is handled, and a session whose input ends is shut down.
 func (f *sessionFramer) awaitFramingSettled() {
 	if f.settledObserved {
 		return
