@@ -4,7 +4,7 @@ DTail Documentation
 ## Installation and Usage
 
 * To get a taste, please have a look at the [Usage Examples](./examples.md).
-* The [exit statuses of `dcat` and `dgrep`](./examples.md#exit-statuses-of-dcat-and-dgrep) tell missing, denied or unreadable files (`2`) from connection failures (`1`).
+* The [exit statuses of `dcat` and `dgrep`](./examples.md#exit-statuses-of-dcat-and-dgrep) tell missing, denied or unreadable files (`2`) from servers that could not be connected to or failed the SSH handshake (`1`).
 * Follow the [Quick Starting Guide](./quickstart.md) if you are looking into DTail your first time.
 * For a more sustainable setup, please follow the [Installation Guide](./installation.md).
 * To configure `dserver`, see the [Server Configuration Guide](./server-configuration.md) — read permissions, connection limits, journal reads, shared reads and scheduled jobs.

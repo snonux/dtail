@@ -20,6 +20,20 @@ const (
 	closeSync = ".syn close connection"
 )
 
+// oldServerWarning is the visible warning frame a server sends for a file
+// it could not read (see readCommand.readFileIfPermissions), the only sign of
+// the failure an old server without protocol.CapabilityCommandFailureV1
+// gives.
+var oldServerWarning = protocol.ServerMessageID + protocol.FieldSeparator() + "srv1" +
+	protocol.FieldSeparator() + protocol.EncodeTimedDiagnostic(unreadableFileWarning)
+
+// unreadableFileWarning is the warning of oldServerWarning.
+var unreadableFileWarning = protocol.TimedDiagnostic{
+	Level:     "WARN",
+	Timestamp: "1016-120000",
+	Details:   []any{"Unable to read file(s), check server logs"},
+}
+
 // TestSessionStatus covers how a connection's exit status follows from its
 // handler's status and the failed commands its server reported.
 func TestSessionStatus(t *testing.T) {
@@ -83,8 +97,10 @@ func TestStartExitStatus(t *testing.T) {
 		{name: "dcat, output too large", profile: readClientProfile(nil),
 			sessions: []messageSession{{messages: []string{capsNew, tooLarge, closeSync}}},
 			want:     ExitStatusFailedCommand},
-		{name: "dcat, old server without failure reports", profile: readClientProfile(nil),
-			sessions: []messageSession{{messages: []string{capsOld, closeSync}}}, want: 0},
+		// An old server warns of the missing file and closes the session
+		// normally, but reports no failed command: the status stays 0.
+		{name: "dcat, missing file on old server warns only", profile: readClientProfile(nil),
+			sessions: []messageSession{{messages: []string{capsOld, oldServerWarning, closeSync}}}, want: 0},
 		{name: "dcat, missing file on one of two servers", profile: readClientProfile(nil),
 			sessions: []messageSession{ok, readFailure}, want: ExitStatusFailedCommand},
 		{name: "dcat, connection failure", profile: readClientProfile(nil),

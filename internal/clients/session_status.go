@@ -11,9 +11,14 @@ import "github.com/mimecast/dtail/internal/clients/handlers"
 // each means the output is missing data that was asked for. It is the same
 // in serverless mode, whose in-process server reports failures the same way.
 // Servers without protocol.CapabilityCommandFailureV1 report no failures, so
-// with them the status stays the connection status. A connection failure
-// alone stays 1; the client exits with the highest status of all its
-// connections (see baseClient.runConnections).
+// with them the status stays the connection status. A connection status of
+// 1 (a refused or unreachable server, a failed SSH handshake, a journal
+// target the server does not support) stays 1 unless such a report raises
+// it; the client exits with the highest status of all its connections (see
+// baseClient.runConnections). A session cut short without the server's close
+// handshake (e.g. a SIGKILLed server mid-read) currently keeps status 0, as
+// ServerConnection.handle returns only the dispatch error and
+// SessionOutcome.Completed is not checked here.
 const ExitStatusFailedCommand = 2
 
 // sessionOutcomeReporter is a client handler that knows how its session
@@ -25,9 +30,10 @@ type sessionOutcomeReporter interface {
 // sessionStatus returns the exit status of a connection whose session ran
 // with handler: the handler's status, raised to the profile's
 // failedCommandStatus when that is set and the server reported a failed
-// command. The reports are counted whether or not the session completed:
-// a session cut short has a connection status of its own already, and the
-// higher of the two wins.
+// command. The reports are counted whether or not the session completed,
+// and the higher of the two statuses wins. A session cut short gets no
+// status of its own from this (see ExitStatusFailedCommand): only the
+// failures it reported before it ended raise its status.
 func (c *baseClient) sessionStatus(handler handlers.Handler) int {
 	status := handler.Status()
 	if c.profile.failedCommandStatus == 0 {

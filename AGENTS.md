@@ -351,7 +351,9 @@ the full payload size. Payload always still goes to STDOUT/terminal, unchanged.
 
 ### Client Exit Statuses (dcat, dgrep)
 `dcat` and `dgrep` exit `0` on success (`dgrep` also when no line matched, unlike
-`grep`), `1` when a connection failed or the client could not start, and `2`
+`grep`), `1` when a server could not be connected to (refused or unreachable),
+the SSH handshake failed, a server lacks `journal-v1` for a requested journal
+target, or the client could not start, and `2`
 (`clients.ExitStatusFailedCommand`, also the status of an invalid flag) when any
 server reported a failed command of the session with `.syn command failed
 <reason>` (capability `command-failure-v1`, `handlers.SessionOutcome.Failures`).
@@ -367,6 +369,17 @@ client (`clientProfile.failedCommandStatus`, set by `readClientProfile`):
 `dtail` follow mode, `dmap` (its scheduled modes handle failures, see "Failed
 scheduled jobs" below) and `dtailhealth` keep their statuses. Servers without
 `command-failure-v1` report nothing, so with them a missing file still exits `0`.
+Known gaps: a session cut short mid-read (no `.syn close connection`, e.g. a
+SIGKILLed dserver) currently exits `0`, as `ServerConnection.handle` returns
+only the dispatch error and the client does not check
+`SessionOutcome.Completed` (scheduled jobs do); in `--plain` server mode a
+payload line starting with `.syn command failed` is taken as a failure report
+(exit `2`) until the plain-mode framing bug is fixed. With
+`--interactive-query` the client keeps the failures of every workload of the
+session that reached it, also of workloads a `:reload` replaced; dserver drops
+queued messages of a stale generation (`outputCoordinator.shouldDropGeneration`),
+failure reports included, and a cancelled workload reports none
+(`readCommand.reportFailure`), so those do not count.
 User docs: `doc/examples.md` ("Exit statuses of `dcat` and `dgrep`").
 
 ### Output Path and MapReduce Operations

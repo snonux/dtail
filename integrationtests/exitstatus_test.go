@@ -28,13 +28,16 @@ type exitStatusFiles struct {
 }
 
 // exitStatusCase is one dcat or dgrep run and the exit status it must end
-// with; wantOutput, if set, must be in its output.
+// with; wantOutput, if set, must be in its output. The run uses --plain
+// unless framed is set, which keeps the default framed output (in server
+// mode REMOTE|... payload lines, hidden messages unambiguous from payload).
 type exitStatusCase struct {
 	name       string
 	cmd        string
 	args       []string
 	want       int
 	wantOutput string
+	framed     bool
 }
 
 // TestDCatDGrepExitStatus checks that dcat and dgrep exit with status 2 when
@@ -111,6 +114,8 @@ func exitStatusCases(t *testing.T, files exitStatusFiles) []exitStatusCase {
 		{name: "dcat missing file", cmd: "../dcat", args: []string{"--files", files.missing}, want: 2},
 		{name: "dcat readable and missing file", cmd: "../dcat",
 			args: []string{"--files", files.readable + "," + files.missing}, want: 2, wantOutput: exitStatusLine},
+		{name: "dcat readable and missing file, framed output", cmd: "../dcat", framed: true,
+			args: []string{"--files", files.readable + "," + files.missing}, want: 2, wantOutput: exitStatusLine},
 		{name: "dgrep match", cmd: "../dgrep", args: []string{"--grep", "exit", "--files", files.readable},
 			want: 0, wantOutput: exitStatusLine},
 		{name: "dgrep no match", cmd: "../dgrep",
@@ -128,15 +133,20 @@ func exitStatusCases(t *testing.T, files exitStatusFiles) []exitStatusCase {
 	return cases
 }
 
-// runExitStatusCases runs each case with the common flags and modeArgs
-// (none for serverless mode) and checks its exit status and output.
+// runExitStatusCases runs each case with the common flags (--plain unless
+// the case is framed) and modeArgs (none for serverless mode) and checks its
+// exit status and output.
 func runExitStatusCases(t *testing.T, logger *TestLogger, cases []exitStatusCase, modeArgs []string) {
 	t.Helper()
 	ctx := WithTestLogger(context.Background(), logger)
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			outFile := fmt.Sprintf("exitstatus_%d.stdout.tmp", i)
-			args := append([]string{"--plain", "--cfg", "none", "--logLevel", "error", "--noColor"}, modeArgs...)
+			args := []string{"--cfg", "none", "--logLevel", "error", "--noColor"}
+			if !tc.framed {
+				args = append([]string{"--plain"}, args...)
+			}
+			args = append(args, modeArgs...)
 			args = append(args, tc.args...)
 			exitCode, err := runCommand(ctx, t, outFile, tc.cmd, args...)
 			output := readTestFile(t, outFile)
