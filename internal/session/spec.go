@@ -97,12 +97,21 @@ func (s Spec) UpdateCommand(generation uint64) (string, error) {
 	return fmt.Sprintf("SESSION UPDATE %d %s", generation, payload), nil
 }
 
+// queryCommands returns the map command and one read command per file of a
+// query session. The read commands select the lines of the query's table with
+// s.Regex, which the client derives from the query, and never invert it, so
+// RegexInvert is ignored here: inverted, the filter would feed the other
+// tables' lines (or, for every-line tables, only the empty lines) into the
+// aggregation. Ignoring it in this one place covers both sides, as the client
+// builds its legacy command stream and dserver its SESSION START/UPDATE
+// commands with it, so a dserver also reads the right lines for an older
+// client that sends regex_invert with a query.
 func (s Spec) queryCommands() ([]string, error) {
 	if s.Mode != omode.MapClient && s.Mode != omode.TailClient {
 		return nil, fmt.Errorf("session spec query mode requires map or tail mode, got %s", s.Mode)
 	}
 
-	regexValue, err := s.serializedRegex()
+	regexValue, err := serializedRegex(s.Regex, false)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +140,7 @@ func (s Spec) readCommands(mode string) ([]string, error) {
 		return nil, fmt.Errorf("unsupported session mode %s", s.Mode)
 	}
 
-	regexValue, err := s.serializedRegex()
+	regexValue, err := serializedRegex(s.Regex, s.RegexInvert)
 	if err != nil {
 		return nil, err
 	}
@@ -144,13 +153,14 @@ func (s Spec) readCommands(mode string) ([]string, error) {
 	return commands, nil
 }
 
-func (s Spec) serializedRegex() (string, error) {
+// serializedRegex returns the wire form of the read commands' regex.
+func serializedRegex(pattern string, invert bool) (string, error) {
 	flag := regex.Default
-	if s.RegexInvert {
+	if invert {
 		flag = regex.Invert
 	}
 
-	re, err := regex.New(s.Regex, flag)
+	re, err := regex.New(pattern, flag)
 	if err != nil {
 		return "", err
 	}

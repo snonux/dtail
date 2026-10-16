@@ -436,11 +436,31 @@ func TestInteractiveControlWritersDescribeCurrentSession(t *testing.T) {
 	}
 	for _, want := range []string{
 		"mode=tail", "files=app.log,audit.log", `query="from STATS select count(*)"`,
-		`regex="ERROR"`, `options="plain=true"`, "timeout=7", "capable=1/2",
+		`regex="ERROR"`, "invert=false", `options="plain=true"`, "timeout=7", "capable=1/2",
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("state output = %q, want substring %q", output.String(), want)
 		}
+	}
+}
+
+// TestInteractiveStateShowsInvert pins that :show tells an inverted regex
+// apart: --invert carries over between reloads, and inverted, regex="" matches
+// no line instead of every line.
+func TestInteractiveStateShowsInvert(t *testing.T) {
+	t.Parallel()
+
+	client := &baseClient{
+		mu:          newBaseClientMu(),
+		Args:        config.Args{Mode: omode.GrepClient, RegexInvert: true},
+		sessionSpec: SessionSpec{Mode: omode.GrepClient, Files: []string{"app.log"}, RegexInvert: true},
+	}
+	var output bytes.Buffer
+	if err := client.writeInteractiveState(&output); err != nil {
+		t.Fatalf("writeInteractiveState() error = %v", err)
+	}
+	if want := `regex="" invert=true `; !strings.Contains(output.String(), want) {
+		t.Fatalf("state output = %q, want substring %q", output.String(), want)
 	}
 }
 

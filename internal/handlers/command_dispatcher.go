@@ -182,9 +182,12 @@ func (d *commandDispatcher) handleBase64(args []string, argc int) ([]string, int
 // command's regex is the rejoined args[2:], so splitting on runs of
 // whitespace (strings.Fields) would drop trailing blanks, collapse blank runs
 // and turn tabs into spaces in the pattern. The builder emits single spaces
-// between fields, so it needs no tolerance for extra ones; an empty pattern
-// is serialized as "regex:noop " and its trailing empty field rejoins to the
-// same noop regex the legacy path gets.
+// between fields, so it needs no tolerance for extra ones. An empty pattern
+// is serialized with a trailing space, "regex:noop " (every line) or, with
+// --invert, "regex:invert,literal " (no line), and its trailing empty field
+// rejoins to the same regex the legacy path gets; dropping that field would
+// leave readCommand.parseRegex to read the lone flags word as an empty
+// pattern.
 func (d *commandDispatcher) handleRawCommand(ctx context.Context, command string) error {
 	if command == "" {
 		return fmt.Errorf("empty command")

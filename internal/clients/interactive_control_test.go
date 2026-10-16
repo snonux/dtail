@@ -61,6 +61,10 @@ func TestParseInteractiveCommandForMapReloadDerivesRegex(t *testing.T) {
 		Mode:     omode.MapClient,
 		What:     "/var/log/app.log",
 		QueryStr: "select count(status) from stats group by status",
+		// A stale filter of the previous query and an --invert, which a
+		// query ignores, must not survive the reload.
+		RegexStr:    "\\|MAPREDUCE:STATS\\|",
+		RegexInvert: true,
 	}
 
 	command, err := parseInteractiveCommand(current,
@@ -78,6 +82,12 @@ func TestParseInteractiveCommandForMapReloadDerivesRegex(t *testing.T) {
 	}
 	if command.spec.Regex != "\\|MAPREDUCE:WARNINGS\\|" {
 		t.Fatalf("session spec regex = %q, want WARNINGS table regex", command.spec.Regex)
+	}
+	// The reloaded args carry the same filter as the spec, never inverted,
+	// as applyInteractiveReload stores them for reconnects and :show.
+	if command.next.RegexStr != command.spec.Regex || command.next.RegexInvert || command.spec.RegexInvert {
+		t.Fatalf("reloaded args = regex %q invert %v (spec invert %v), want %q not inverted",
+			command.next.RegexStr, command.next.RegexInvert, command.spec.RegexInvert, command.spec.Regex)
 	}
 }
 

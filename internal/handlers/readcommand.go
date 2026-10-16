@@ -224,8 +224,9 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 }
 
 // parseRegex returns the regex of a read command, which starts at args[2] and
-// is normally two words, the flags and the pattern ("regex:invert foo"), and
-// is a noop regex without them. It reports false, after telling the client,
+// is normally the flags word followed by the pattern ("regex:invert foo"; a
+// pattern with blanks spans several words, which are rejoined), and is a noop
+// regex without them. It reports false, after telling the client,
 // when the regex does not deserialize.
 //
 // The lone third word branch is a defensive tolerance, whichever way the

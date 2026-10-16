@@ -208,9 +208,11 @@ The controlling TTY accepts `:reload <flags>`, `:show`, `:help`, and `:quit`.
 `:reload` flags are tokenized POSIX-shell-like without expansion
 (`internal/clients/interactive_args.go`): single quotes are literal, double
 quotes keep backslashes except `\\`, `\"`, `\$` and ``\` ``, and `''`/`""` is
-an empty value (`--regex ''` clears the regex). `--grep` follows the CLI: a
-non-empty `--grep` wins over `--regex`; `--grep ''` (ignored by the CLI) is
-rejected with a hint to use `--regex ''`. Blank `--files`, blank `--query`
+an empty value (`--regex ''` clears the regex, so every line matches unless
+`--invert` is in effect, which carries over between reloads and then matches
+no line; `--invert=false` resets it, `:show` prints `invert=`). `--grep`
+follows the CLI: a non-empty `--grep` wins over `--regex`; `--grep ''`
+(ignored by the CLI) is rejected with a hint to use `--regex ''`. Blank `--files`, blank `--query`
 values and lines that are not valid UTF-8 are rejected. Full rules:
 `doc/interactive-query.md`.
 

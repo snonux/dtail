@@ -94,6 +94,40 @@ func TestSpecCommands(t *testing.T) {
 				"grep:plain=true audit.log regex:invert,literal DEBUG",
 			},
 		},
+		// Inverted, the match-all spellings "", "." and ".*" are real regexes
+		// (no line, only empty lines, no line), not the noop regex. The empty
+		// pattern ends the command in a space, which handleRawCommand keeps.
+		{
+			name: "inverted empty pattern",
+			spec: Spec{Mode: omode.GrepClient, Files: []string{"app.log"}, Regex: "", RegexInvert: true},
+			want: []string{"grep: app.log regex:invert,literal "},
+		},
+		{
+			name: "inverted dot",
+			spec: Spec{Mode: omode.GrepClient, Files: []string{"app.log"}, Regex: ".", RegexInvert: true},
+			want: []string{"grep: app.log regex:invert ."},
+		},
+		{
+			name: "inverted dot star",
+			spec: Spec{Mode: omode.GrepClient, Files: []string{"app.log"}, Regex: ".*", RegexInvert: true},
+			want: []string{"grep: app.log regex:invert .*"},
+		},
+		{
+			name: "query ignores invert",
+			spec: Spec{
+				Mode:        omode.TailClient,
+				Files:       []string{"stats.log", "any.log"},
+				Options:     "plain=true",
+				Query:       "from STATS select count(*)",
+				Regex:       `\|MAPREDUCE:STATS\|`,
+				RegexInvert: true,
+			},
+			want: []string{
+				"map:plain=true from STATS select count(*)",
+				`tail:plain=true stats.log regex:default \|MAPREDUCE:STATS\|`,
+				`tail:plain=true any.log regex:default \|MAPREDUCE:STATS\|`,
+			},
+		},
 		{
 			name: "map snapshot uses cat reads",
 			spec: Spec{

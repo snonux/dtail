@@ -14,7 +14,9 @@ The interactive session understands four control commands:
 
 * `:reload <flags>` apply a new workload by reusing the current session when
   the active servers support it
-* `:show` print the current interactive state, including capability counts
+* `:show` print the current interactive state (mode, files, query, regex,
+  whether the regex is inverted, options, timeout), including capability
+  counts
 * `:help` print the interactive command help text
 * `:quit` stop the interactive session
 
@@ -43,6 +45,12 @@ command lines: a non-empty `--grep` wins over `--regex` whatever their order.
 The command lines ignore `--grep ''`; a reload rejects it with an error
 instead of restarting the unchanged workload. Use `--regex ''` to clear the
 regex.
+
+`--invert` carries over between reloads like the other flags: a reload that
+does not give it keeps the current value (`:show` prints it as `invert=`).
+Inverted, the cleared regex `''` matches no line, and `.` only the empty
+lines; give `--invert=false` together with the new regex to match it
+positively again, e.g. `:reload --regex '' --invert=false` for every line.
 
 A reload must leave the session something to do: `--files` needs at least
 one non-blank file (`--files ''`, `--files ' '` and `--files ,` are rejected),
@@ -76,7 +84,9 @@ splits a command line, without any variable, command or glob expansion
 * Outside quotes, a backslash makes the next character literal, so `\d`
   becomes `d` there; `foo\ bar` is the one argument `foo bar`.
 * An empty quoted string is an empty value: `:reload --regex ''` clears the
-  regex, so every line matches again.
+  regex, so every line matches again, unless `--invert` is in effect (also
+  from an earlier reload or the command line): then no line matches. Add
+  `--invert=false` to match every line.
 * Quoted and unquoted parts next to each other form one argument, and an
   unterminated quote or a trailing backslash rejects the whole line with an
   error, leaving the current workload unchanged.

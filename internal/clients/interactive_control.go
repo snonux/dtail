@@ -260,12 +260,15 @@ func interactiveHelpText(args config.Args) string {
 			"--files /var/log/a.log,/var/log/b.log (comma-separated)."
 	case args.Mode == omode.GrepClient || args.Mode == omode.TailClient:
 		return prefix + "--regex '\\d+' (single quotes keep backslashes), " +
-			"--regex '' (empty value, matches every line)."
+			"--regex '' (empty value, matches every line, or none with --invert)."
 	default:
 		return prefix + "--files /var/log/a.log,/var/log/b.log (comma-separated)."
 	}
 }
 
+// writeInteractiveState answers :show with the current session spec. It
+// shows invert as well as regex, because --invert carries over between
+// reloads and decides what the empty regex matches (every line, or none).
 func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 	args, spec, connections := c.snapshotMutableState()
 	ready := 0
@@ -276,11 +279,12 @@ func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 	}
 
 	line := fmt.Sprintf(
-		"mode=%s files=%s query=%q regex=%q options=%q timeout=%d capable=%d/%d",
+		"mode=%s files=%s query=%q regex=%q invert=%t options=%q timeout=%d capable=%d/%d",
 		args.Mode,
 		strings.Join(spec.Files, ","),
 		spec.Query,
 		spec.Regex,
+		spec.RegexInvert,
 		spec.Options,
 		spec.Timeout,
 		ready,
@@ -345,7 +349,7 @@ func parseInteractiveReload(current config.Args, line string, logger logging.Log
 	if err != nil {
 		return interactiveCommand{}, err
 	}
-	nextSpec, err := buildInteractiveSessionSpec(nextArgs, logger)
+	nextArgs, nextSpec, err := buildInteractiveSessionSpec(nextArgs, logger)
 	if err != nil {
 		return interactiveCommand{}, err
 	}
@@ -466,22 +470,27 @@ func quoteInteractiveArgs(args []string) string {
 	return strings.Join(quoted, " ")
 }
 
-func buildInteractiveSessionSpec(args config.Args, logger logging.Logger) (SessionSpec, error) {
+// buildInteractiveSessionSpec normalizes the reloaded args
+// (normalizeInteractiveArgs) and returns them together with the session spec
+// built from them, after checking that the spec yields valid commands. The
+// caller stores both, so the client's args (read by reconnects and :show)
+// carry the same line filter as the spec sent to the servers.
+func buildInteractiveSessionSpec(args config.Args, logger logging.Logger) (config.Args, SessionSpec, error) {
 	normalizedArgs, err := normalizeInteractiveArgs(args, logger)
 	if err != nil {
-		return SessionSpec{}, err
+		return args, SessionSpec{}, err
 	}
 
 	spec := NewSessionSpec(normalizedArgs)
 	if _, commandErr := spec.Commands(); commandErr != nil {
-		return SessionSpec{}, commandErr
+		return args, SessionSpec{}, commandErr
 	}
-	return spec, nil
+	return normalizedArgs, spec, nil
 }
 
 // normalizeInteractiveArgs derives the line filter of an interactive query
 // from the query (applyQueryRegex), so a reloaded query reads the lines of its
-// own table, never inverted.
+// own table, never inverted. Other modes keep their args unchanged.
 func normalizeInteractiveArgs(args config.Args, logger logging.Logger) (config.Args, error) {
 	if !isInteractiveQueryMode(args) {
 		return args, nil

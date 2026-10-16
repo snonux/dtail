@@ -443,19 +443,19 @@ func (c *MaprClient) writeCurrentResultsToOutfile(snapshot maprclient.SessionSna
 	return nil
 }
 
+// commitSessionSpec is the profile commit of an interactive reload: it
+// switches the client-side aggregation to the reloaded query at the new
+// generation. It does not touch c.Args: reconnects read them concurrently
+// under the state lock, and applyInteractiveReload stores the reloaded args
+// (with the query and its normalized line filter, see
+// normalizeInteractiveArgs) under that lock right after this commit.
 func (c *MaprClient) commitSessionSpec(spec SessionSpec, generation uint64) error {
 	if spec.Query == "" {
 		return errors.New("missing mapreduce query")
 	}
 
-	query, err := c.session.CommitQuery(spec.Query, generation)
-	if err != nil {
-		return err
-	}
-
-	c.QueryStr = spec.Query
-	c.setRegexForQuery(query)
-	return nil
+	_, err := c.session.CommitQuery(spec.Query, generation)
+	return err
 }
 
 func (c *MaprClient) isCumulative(query *mapr.Query) bool {
@@ -467,10 +467,6 @@ func (c *MaprClient) isCumulative(query *mapr.Query) bool {
 	default:
 		return c.Mode == omode.MapClient || (query != nil && query.HasOutfile())
 	}
-}
-
-func (c *MaprClient) setRegexForQuery(query *mapr.Query) {
-	applyQueryRegex(&c.Args, query)
 }
 
 // warnUnknownQueryVariables writes a plan-time warning to w for each

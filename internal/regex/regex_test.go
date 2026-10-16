@@ -288,9 +288,11 @@ func TestNewMatchAllPatterns(t *testing.T) {
 }
 
 // TestDeserializeFlagsWithoutPattern pins that a regex whose empty pattern
-// lost its separating space, as a SESSION command split at runs of whitespace
-// does, keeps its flags instead of turning into a noop, while an empty string
-// still means no regex and anything else must still start with "regex".
+// lost its separating space, as it would if a receiver split a command at
+// runs of whitespace (DTail's dispatchers split at single spaces, so this is
+// a defensive tolerance), keeps its flags instead of turning into a noop,
+// while an empty string still means no regex and anything else must still
+// start with "regex".
 func TestDeserializeFlagsWithoutPattern(t *testing.T) {
 	t.Parallel()
 

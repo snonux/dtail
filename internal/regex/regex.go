@@ -147,10 +147,11 @@ func NewNoop() Regex {
 // pattern is compiled like any other, so that --invert selects the lines the
 // pattern does not match, as grep -v does. Inverted, "" and ".*" therefore
 // match no line, and "." matches only the lines without a character other
-// than a newline, i.e. empty lines: Go's "." does not match the "\n" which
-// ends a line handed to the filter, while the "\r" of an empty CRLF line is a
-// character, so such a line is not matched (grep -v . does not print it
-// either).
+// than a newline, i.e. empty lines: Go's "." does not match "\n", so the
+// newline, if any, which ends a line handed to the filter does not count
+// (snapshot reads hand it over, follow reads may strip it), while the "\r"
+// of an empty CRLF line is a character wherever it reaches the filter, so
+// such a line is not matched (grep -v . does not print it either).
 func New(regexStr string, flag Flag) (Regex, error) {
 	if flag != Invert && matchesEveryLine(regexStr) {
 		return NewNoop(), nil
