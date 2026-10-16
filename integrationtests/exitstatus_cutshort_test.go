@@ -28,23 +28,54 @@ const cutShortLines = 400000
 // clients.baseClient.reportCutShort).
 const cutShortError = "Session ended without the server's close handshake"
 
+// ctrlCHint is the hint the client prints for a first SIGINT (see
+// signal.runInterruptHandler); it pauses the client's output for
+// config.InterruptTimeoutS seconds.
+const ctrlCHint = "Hint: Hit Ctrl+C again to exit"
+
+// secondInterruptDelay is how long after the hint the test sends the second
+// SIGINT. It balances two margins: the second SIGINT must arrive within the
+// interrupt pause (3 s) that the first one started, which leaves 1.5 s, and
+// the client, which exits once that pause ended (about 3.2 s after the first
+// SIGINT), must exit before signal.forceExitAfter force-exits it 5 s after the
+// second one, which leaves about 3.3 s. Sending the pair 200 ms apart left
+// only about 1.8 s for the latter.
+const secondInterruptDelay = 1500 * time.Millisecond
+
 // cutShortRun is the result of runCutShortClient.
 type cutShortRun struct {
 	exitCode int
 	lines    int    // payload lines of the file in the output
 	output   string // the other lines of the output
+	// hint is closed once the output contained ctrlCHint.
+	hint     chan struct{}
+	hintSeen bool
+	// sinceSecondInterrupt is how long the client ran after the test sent
+	// its second SIGINT, 0 if it sent none.
+	sinceSecondInterrupt time.Duration
 }
 
-// cutShortStop stops a run once its first payload line arrived: killServer
-// SIGKILLs the dserver and waits until it exited, client is the client's
-// process, and clientDone is closed once the client's output ended.
-type cutShortStop func(killServer func(), client *os.Process, clientDone <-chan struct{})
+// cutShortControl is what a cutShortStop gets to stop a run with.
+type cutShortControl struct {
+	killServer func()      // SIGKILLs the dserver and waits until it exited
+	client     *os.Process // the client's process
+	clientDone <-chan struct{}
+	hint       <-chan struct{} // closed once the client printed ctrlCHint
+	// secondInterrupt receives the time the second SIGINT was sent (buffered).
+	secondInterrupt chan<- time.Time
+}
+
+// cutShortStop stops a run once its first payload line arrived. It must not
+// block: the test reads the client's output only after it returned.
+type cutShortStop func(control cutShortControl)
 
 // TestDCatDGrepExitStatusCutShort checks that dcat and dgrep exit with status
 // 1 when dserver is SIGKILLed in the middle of a read, so that the session
 // ends without the server's close handshake, with --plain and with framed
 // output, that the same read exits with status 0 when it completes, and that
-// a client stopped by SIGTERM or a double SIGINT keeps exit status 0.
+// a client stopped by SIGTERM or a double SIGINT keeps exit status 0 and
+// stops before the read completed (so a signal the client ignored, which lets
+// the read complete with status 0, does not pass).
 func TestDCatDGrepExitStatusCutShort(t *testing.T) {
 	if !config.Env("DTAIL_INTEGRATION_TEST_RUN_MODE") {
 		t.Log("Skipping")
@@ -76,10 +107,10 @@ func TestDCatDGrepExitStatusCutShort(t *testing.T) {
 		t.Run("dcat stopped by "+name, func(t *testing.T) {
 			run := runCutShortClient(t, testLogger, "../dcat", dcatArgs, stop)
 			t.Logf("dcat read %d of %d lines", run.lines, cutShortLines)
-			if run.exitCode != 0 || strings.Contains(run.output, cutShortError) {
-				t.Fatalf("dcat exit status = %d, want 0 and no %q; output:\n%s",
-					run.exitCode, cutShortError, run.output)
+			if run.sinceSecondInterrupt > 0 {
+				t.Logf("dcat exited %v after the second SIGINT", run.sinceSecondInterrupt)
 			}
+			checkCutShortStopped(t, run)
 		})
 	}
 }
@@ -120,35 +151,58 @@ func writeCutShortFile(t *testing.T) string {
 	return path
 }
 
+// checkCutShortStopped checks that a client the test stopped exited with
+// status 0 before the read completed, and without the cut-short error.
+func checkCutShortStopped(t *testing.T, run cutShortRun) {
+	t.Helper()
+	if run.exitCode != 0 && run.sinceSecondInterrupt >= 5*time.Second {
+		t.Fatalf("dcat exit status = %d %v after the second SIGINT: force-exited by "+
+			"signal.forceExitAfter, it did not stop in time; output:\n%s",
+			run.exitCode, run.sinceSecondInterrupt, run.output)
+	}
+	if run.exitCode != 0 || strings.Contains(run.output, cutShortError) {
+		t.Fatalf("dcat exit status = %d, want 0 and no %q; output:\n%s",
+			run.exitCode, cutShortError, run.output)
+	}
+	if run.lines >= cutShortLines {
+		t.Fatalf("dcat read all %d lines (Ctrl+C hint printed: %v): the signal did not "+
+			"stop the read; output:\n%s", run.lines, run.hintSeen, run.output)
+	}
+}
+
 // killCutShortServer SIGKILLs the dserver while it reads.
-func killCutShortServer(killServer func(), _ *os.Process, _ <-chan struct{}) {
-	killServer()
+func killCutShortServer(control cutShortControl) {
+	control.killServer()
 }
 
 // stopCutShortClientTerm sends the client SIGTERM.
-func stopCutShortClientTerm(_ func(), client *os.Process, _ <-chan struct{}) {
-	_ = client.Signal(syscall.SIGTERM)
+func stopCutShortClientTerm(control cutShortControl) {
+	_ = control.client.Signal(syscall.SIGTERM)
 }
 
-// stopCutShortClientInterrupt presses Ctrl+C twice: it sends the client two
-// SIGINTs, the second within the interrupt pause (config.InterruptTimeoutS)
-// that the first one starts, which stops the client. The client ignores a
-// first SIGINT while its stats loop is not ready to print the Ctrl+C hint,
-// so the pair is sent again if the client's output did not end within 10
-// seconds. The client exits about 3 seconds after the pair (the hint pauses
-// its output for the interrupt pause), and at the latest 5 seconds after it
-// (signal.forceExitAfter); a SIGINT after it stopped listening would kill it,
-// so the wait is longer than both.
-func stopCutShortClientInterrupt(_ func(), client *os.Process, clientDone <-chan struct{}) {
+// stopCutShortClientInterrupt presses Ctrl+C twice: it sends the client a
+// SIGINT and, secondInterruptDelay after the client printed ctrlCHint (which
+// pauses its output, so the read cannot complete meanwhile), a second one,
+// within the interrupt pause (config.InterruptTimeoutS) that the first one
+// started, which stops the client. The client ignores a first SIGINT while
+// its stats loop is not ready to print the hint, so the first one is sent
+// again if no hint arrived within 4 seconds: by then the pause timer of an
+// accepted first SIGINT (3 s) has expired, so a resent one is never taken as
+// the second. Once the second is sent, no further SIGINT is: the client stops
+// listening for them, and one more would kill it.
+func stopCutShortClientInterrupt(control cutShortControl) {
 	go func() {
 		for {
-			_ = client.Signal(os.Interrupt)
-			time.Sleep(200 * time.Millisecond)
-			_ = client.Signal(os.Interrupt)
+			_ = control.client.Signal(os.Interrupt)
 			select {
-			case <-clientDone:
+			case <-control.hint:
+				time.Sleep(secondInterruptDelay)
+				control.secondInterrupt <- time.Now()
+				_ = control.client.Signal(os.Interrupt)
 				return
-			case <-time.After(10 * time.Second):
+			case <-control.clientDone:
+				return
+			case <-time.After(4 * time.Second):
 			}
 		}
 	}()
@@ -176,7 +230,7 @@ func runCutShortClient(t *testing.T, logger *TestLogger, cmdStr string, args []s
 		"--servers", fmt.Sprintf("127.0.0.1:%d", port), "--trustAllHosts"}, args...)
 	cmd, output := startCutShortClient(ctx, t, cmdStr, args)
 	reader := bufio.NewReader(output)
-	var run cutShortRun
+	run := cutShortRun{hint: make(chan struct{})}
 	for run.lines == 0 {
 		line, err := reader.ReadString('\n')
 		run.add(line)
@@ -185,12 +239,19 @@ func runCutShortClient(t *testing.T, logger *TestLogger, cmdStr string, args []s
 		}
 	}
 	clientDone := make(chan struct{})
+	secondInterrupt := make(chan time.Time, 1)
 	if stop != nil {
-		stop(killServer, cmd.Process, clientDone)
+		stop(cutShortControl{killServer: killServer, client: cmd.Process,
+			clientDone: clientDone, hint: run.hint, secondInterrupt: secondInterrupt})
 	}
 	run.readAll(t, reader)
 	close(clientDone)
 	run.exitCode = exitCodeFromError(cmd.Wait())
+	select {
+	case sent := <-secondInterrupt:
+		run.sinceSecondInterrupt = time.Since(sent)
+	default:
+	}
 	return run
 }
 
@@ -217,11 +278,18 @@ func startCutShortClient(ctx context.Context, t *testing.T, cmdStr string, args 
 	return cmd, reader
 }
 
-// add counts line if it is a payload line of the file and keeps it otherwise.
+// add counts line if it is a payload line of the file and keeps it
+// otherwise, closing hint at the first ctrlCHint.
 func (r *cutShortRun) add(line string) {
 	if strings.Contains(line, exitStatusLine) {
 		r.lines++
-	} else if line != "" {
+		return
+	}
+	if strings.Contains(line, ctrlCHint) && !r.hintSeen {
+		r.hintSeen = true
+		close(r.hint)
+	}
+	if line != "" {
 		r.output += line
 	}
 }
