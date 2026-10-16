@@ -441,11 +441,17 @@ incomplete result`, which dserver only sends when a final result was cut off
 timeout, a dserver SIGTERM or a lost connection while it sent the final
 result, which then has no report. This is by design, so that it always
 writes what it received; instead it logs every reported failure that is no
-file read failure, and every session cut short while the client did not
-cancel it (SIGINT/SIGTERM, `:quit`), at WARN first (`The mapreduce result may
-be incomplete|<server>: <reason>; ...`, the reason for a session cut short
-being `the session ended before the server completed it`,
-`MaprClient.incompleteResultReasons` called by `MaprClient.finish`). Servers
+file read failure, and every session cut short that the client did not end
+itself, at WARN first (`The mapreduce result may be incomplete|<server>:
+<reason>; ...`, the reason for a session cut short being `the session ended
+before the server completed it`, `MaprClient.incompleteResultReasons` called
+by `MaprClient.finish`). Whether the client ended a session is decided per
+session at the moment it ended (`baseClient.runSession` records it next to the
+connection, reset by `replaceConnection`): it did if the context of
+`runConnections` was done by then, which SIGINT/SIGTERM and an
+`--interactive-query` `:quit` or control TTY end cancel. So `:quit` warns
+about nothing, while a server that went away mid-run is still warned about
+when the user presses Ctrl-C only later. Servers
 without `command-failure-v1` report nothing, so with them a missing file still
 exits `0`.
 A session cut short (it ended without `.syn close connection`,
@@ -455,11 +461,12 @@ via `clientProfile.cutShortStatus`, which only `readClientProfile` sets), and th
 client logs `Session ended without the server's close handshake, the output may
 be incomplete` for that server, unless the connection already reported an
 error (handler status above 0; client handlers start at `-1`). A session the
-client ended itself keeps its status: `baseClient.sessionStatus` checks the
-context of all connections (`runSession` passes `ctx`, not the per-connection
+client ended itself keeps its status: `baseClient.runSession` checks, when the
+session ended, the context of all connections (not the per-connection
 `connCtx`, which the connector cancels itself when its session ends), which
 SIGINT/SIGTERM (cancel of `Client.Start`'s context) and an `--interactive-query`
-`:quit` or control TTY end (cancel of `runConnections`' context) cancel. A
+`:quit` or control TTY end (cancel of `runConnections`' context) cancel, and
+passes the result to `baseClient.sessionStatus`. A
 reported failed command (`2`) outweighs it. Servers of every protocol version
 (since v1.0.0, also the in-process server of serverless mode) send the close
 handshake after a completed session's output, so no capability gates this;

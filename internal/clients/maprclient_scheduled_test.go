@@ -235,8 +235,9 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 // failed command that is no file read failure, e.g. a final result dserver
 // could not send in full, and about every session cut short (e.g. by the idle
 // timeout, a dserver SIGTERM or a lost connection during the final result)
-// unless the client canceled the sessions itself, and not about file read
-// failures or a clean run.
+// unless the client ended that session itself (endedByClient, recorded per
+// connection by baseClient.runSession), and not about file read failures or
+// a clean run.
 func TestMaprClientFinishWarnsOnReportedFailures(t *testing.T) {
 	t.Parallel()
 
@@ -246,9 +247,10 @@ func TestMaprClientFinishWarnsOnReportedFailures(t *testing.T) {
 	cutShortWarning := "The mapreduce result may be incomplete|srv2: the session ended before the server completed it"
 	tests := []struct {
 		name     string
-		ctxErr   error
 		outcomes []handlers.SessionOutcome
-		want     []string
+		// endedByClient[i] is whether the client ended session i itself.
+		endedByClient []bool
+		want          []string
 	}{
 		{name: "complete", outcomes: []handlers.SessionOutcome{{Completed: true}}},
 		{name: "file read failure", outcomes: []handlers.SessionOutcome{
@@ -258,12 +260,16 @@ func TestMaprClientFinishWarnsOnReportedFailures(t *testing.T) {
 			want: []string{"The mapreduce result may be incomplete|srv2: " + protocol.CommandFailureMapIncomplete}},
 		{name: "session cut short on the second server", outcomes: []handlers.SessionOutcome{
 			{Completed: true}, cutShort}, want: []string{cutShortWarning}},
-		{name: "session cut short after the client canceled", ctxErr: context.Canceled,
+		{name: "session ended by the client", endedByClient: []bool{true, true},
 			outcomes: []handlers.SessionOutcome{{Completed: true}, cutShort}},
+		// A server that went away before the client ended the other session.
+		{name: "session cut short before the client ended another", endedByClient: []bool{true, false},
+			outcomes: []handlers.SessionOutcome{cutShort, cutShort},
+			want:     []string{cutShortWarning}},
 		{name: "session cut short with a failed command", outcomes: []handlers.SessionOutcome{
 			{Completed: true}, {Failures: []string{protocol.CommandFailureMapIncomplete}}},
 			want: []string{cutShortWarning + "; srv2: " + protocol.CommandFailureMapIncomplete}},
-		{name: "failed command after the client canceled", ctxErr: context.Canceled,
+		{name: "failed command in a session ended by the client", endedByClient: []bool{true, true},
 			outcomes: []handlers.SessionOutcome{{Completed: true}, incompleteResult},
 			want:     []string{"The mapreduce result may be incomplete|srv2: " + protocol.CommandFailureMapIncomplete}},
 	}
@@ -280,7 +286,8 @@ func TestMaprClientFinishWarnsOnReportedFailures(t *testing.T) {
 					server: fmt.Sprintf("srv%d", i+1), handler: &statusTestHandler{outcome: outcome}})
 			}
 
-			if got := client.finish(tt.ctxErr, 0); got != 0 {
+			client.endedByClient = tt.endedByClient
+			if got := client.finish(nil, 0); got != 0 {
 				t.Fatalf("finish() status = %d, want 0", got)
 			}
 			assertScheduledTestFile(t, outfile, "count(foo)\n7\n")

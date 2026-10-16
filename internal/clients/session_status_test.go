@@ -48,7 +48,7 @@ func TestSessionStatus(t *testing.T) {
 		name      string
 		profile   clientProfile
 		handler   handlers.Handler
-		cancelled bool // the client cancelled its connections' context
+		cancelled bool // the client ended the session itself
 		want      int
 		logged    bool // the client logged an error for a session cut short
 	}{
@@ -86,14 +86,9 @@ func TestSessionStatus(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if tt.cancelled {
-				cancel()
-			}
 			logger := &reportHookLogger{}
 			client := &baseClient{profile: tt.profile, loggers: LoggerDependencies{Client: logger}}
-			if got := client.sessionStatus(ctx, tt.handler); got != tt.want {
+			if got := client.sessionStatus(tt.cancelled, tt.handler); got != tt.want {
 				t.Fatalf("sessionStatus() = %d, want %d", got, tt.want)
 			}
 			if logged := logger.errors.Load() > 0; logged != tt.logged {

@@ -40,6 +40,12 @@ type baseClient struct {
 	stats *stats
 	// We have one connection per remote server.
 	connections []connectors.Connector
+	// endedByClient[i] reports whether the client itself ended the last
+	// session of connections[i] (see runSession and sessionEndedByClient);
+	// replaceConnection resets it for the new connection. It may be shorter
+	// than connections (tests set connections directly): a missing entry is
+	// false, a session the client did not end, or one not ended yet.
+	endedByClient []bool
 	// SSH auth methods to use to connect to the remote servers.
 	sshAuthMethods []gossh.AuthMethod
 	// authCloser owns any ssh-agent connection acquired while building the
@@ -279,7 +285,7 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 	retryRandom := newRetryRandom(i)
 
 	for {
-		status = c.runSession(ctx, conn)
+		status = c.runSession(ctx, i, conn)
 
 		// Do we want to retry?
 		if !c.profile.retry {
@@ -315,18 +321,42 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 	}
 }
 
-// runSession runs one session of conn under a context of its own derived
-// from ctx and returns the connection's exit status from its handler, raised
-// for dcat and dgrep when the server reported a failed command or the session
-// was cut short (see sessionStatus); the client exits with the highest one.
-// sessionStatus takes ctx, not the session's context, which the connector
-// cancels itself when the session ends: only a cancellation by the client
-// itself tells a session it ended from one cut short.
-func (c *baseClient) runSession(ctx context.Context, conn connectors.Connector) int {
+// runSession runs one session of conn, connection i, under a context of its
+// own derived from ctx and returns the connection's exit status from its
+// handler, raised for dcat and dgrep when the server reported a failed
+// command or the session was cut short (see sessionStatus); the client exits
+// with the highest one.
+//
+// Once the session ended, runSession decides whether the client ended it
+// itself, i.e. ctx, the context of all of the client's connections, is done
+// by then: SIGINT/SIGTERM cancel the context of Client.Start, and :quit and
+// the end of the control TTY of an --interactive-query session cancel the
+// context of runConnections, which ctx is then. Not the session's context:
+// the connector cancels that itself when the session ends. The decision is
+// made at the moment this session ended, so a session cut short (e.g. a
+// server that went away) before a later cancel still counts as cut short.
+// It is recorded for connection i (see sessionEndedByClient), where
+// MaprClient.incompleteResultReasons reads it after all connections ended.
+func (c *baseClient) runSession(ctx context.Context, i int, conn connectors.Connector) int {
 	connCtx, cancel := context.WithCancel(ctx)
 	conn.Start(connCtx, cancel, c.throttleCh, c.stats.connectionsEstCh)
 	cancel()
-	return c.sessionStatus(ctx, conn.Handler())
+	endedByClient := ctx.Err() != nil
+	c.recordSessionEnd(i, endedByClient)
+	return c.sessionStatus(endedByClient, conn.Handler())
+}
+
+// recordSessionEnd records whether the client ended the last session of
+// connection i itself (see runSession).
+func (c *baseClient) recordSessionEnd(i int, endedByClient bool) {
+	mu := c.stateMu()
+	mu.Lock()
+	defer mu.Unlock()
+
+	if i >= len(c.endedByClient) {
+		c.endedByClient = append(c.endedByClient, make([]bool, i+1-len(c.endedByClient))...)
+	}
+	c.endedByClient[i] = endedByClient
 }
 
 func nextRetryDelay(current time.Duration) time.Duration {
@@ -437,6 +467,29 @@ func (c *baseClient) snapshotConnections() []connectors.Connector {
 	return append([]connectors.Connector(nil), c.connections...)
 }
 
+// connectionSession is a connection together with whether the client ended
+// its last session itself (see runSession).
+type connectionSession struct {
+	conn          connectors.Connector
+	endedByClient bool
+}
+
+// snapshotSessions returns every connection with whether the client ended
+// its last session itself, both read under one lock so that they stay in
+// step with replaceConnection.
+func (c *baseClient) snapshotSessions() []connectionSession {
+	mu := c.stateMu()
+	mu.RLock()
+	defer mu.RUnlock()
+
+	sessions := make([]connectionSession, len(c.connections))
+	for i, conn := range c.connections {
+		sessions[i].conn = conn
+		sessions[i].endedByClient = i < len(c.endedByClient) && c.endedByClient[i]
+	}
+	return sessions
+}
+
 func (c *baseClient) storeReloadState(args config.Args, spec SessionSpec) {
 	mu := c.stateMu()
 	mu.Lock()
@@ -446,12 +499,17 @@ func (c *baseClient) storeReloadState(args config.Args, spec SessionSpec) {
 	c.sessionSpec = spec
 }
 
+// replaceConnection replaces connection i by conn, a new connection whose
+// session has not ended yet, so the client did not end it either.
 func (c *baseClient) replaceConnection(i int, conn connectors.Connector) {
 	mu := c.stateMu()
 	mu.Lock()
 	defer mu.Unlock()
 
 	c.connections[i] = conn
+	if i < len(c.endedByClient) {
+		c.endedByClient[i] = false
+	}
 }
 
 func (c *baseClient) stateMu() *sync.RWMutex {

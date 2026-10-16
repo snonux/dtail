@@ -150,7 +150,9 @@ func (mode MaprClientMode) scheduled() bool {
 
 // finish publishes the final result after the connections and reporter ended,
 // consuming the remaining interval for a non-cumulative query. ctxErr is the
-// error of the client's context by then. As for interim reports, output errors
+// error of the client's context by then; only the scheduled modes use it
+// (interactive dmap decides per session whether the client ended it, see
+// incompleteResultReasons). As for interim reports, output errors
 // are logged; only scheduled modes change the exit status on publication errors.
 //
 // Outside the scheduled modes neither a failed command a server reported nor
@@ -165,7 +167,7 @@ func (c *MaprClient) finish(ctxErr error, status int) int {
 		return c.finishScheduled(ctxErr, status)
 	}
 
-	if reasons := c.incompleteResultReasons(ctxErr); len(reasons) > 0 {
+	if reasons := c.incompleteResultReasons(); len(reasons) > 0 {
 		c.clientLogger().Warn("The mapreduce result may be incomplete", strings.Join(reasons, "; "))
 	}
 	// Publish already-received data even if the connections were canceled.
@@ -277,26 +279,31 @@ const sessionCutShortReason = "ended before the server completed it"
 // incompleteResultReasons returns, each as "<server>: <reason>", why the
 // result of an interactive dmap may lack data: every failed command the
 // servers reported that is no file read failure (see
-// protocol.IsFileReadFailure), e.g. "map: incomplete result", and, unless
-// the client ended the sessions itself (ctxErr, the error of the client's
-// context by then, is not nil), every session cut short, e.g. by the idle
-// timeout, a dserver shut down with SIGTERM or a lost connection, while it
-// sent the final result. A session cut short has no "map: incomplete result"
-// report, as the server could not send it any more. Interactive dmap does
-// not fail on these, it only warns (see finish). File read failures are left
-// out: they mean that a file had no data to give (it was missing, not
-// permitted or unreadable), not that a command was rejected or data the
-// server read was lost on the way. A handler that cannot tell how its
-// session ended is left out too.
-func (c *MaprClient) incompleteResultReasons(ctxErr error) []string {
+// protocol.IsFileReadFailure), e.g. "map: incomplete result", and every
+// session cut short, e.g. by the idle timeout, a dserver shut down with
+// SIGTERM or a lost connection, while it sent the final result, unless the
+// client ended that session itself. Whether it did is decided per session at
+// the moment the session ended (see baseClient.runSession): SIGINT/SIGTERM
+// cancel the context of Start, and :quit and the end of the control TTY of
+// an --interactive-query session only the context of the connections, so the
+// context of Start cannot tell; and a session cut short before a later
+// cancel by the client still counts. A session cut short has no "map:
+// incomplete result" report, as the server could not send it any more.
+// Interactive dmap does not fail on these, it only warns (see finish). File
+// read failures are left out: they mean that a file had no data to give (it
+// was missing, not permitted or unreadable), not that a command was rejected
+// or data the server read was lost on the way. A handler that cannot tell
+// how its session ended is left out too.
+func (c *MaprClient) incompleteResultReasons() []string {
 	var reasons []string
-	for _, conn := range c.snapshotConnections() {
+	for _, session := range c.snapshotSessions() {
+		conn := session.conn
 		reporter, ok := conn.Handler().(sessionOutcomeReporter)
 		if !ok {
 			continue
 		}
 		outcome := reporter.Outcome()
-		if !outcome.Completed && ctxErr == nil {
+		if !outcome.Completed && !session.endedByClient {
 			reasons = append(reasons, conn.Server()+": the session "+sessionCutShortReason)
 		}
 		for _, reason := range outcome.Failures {

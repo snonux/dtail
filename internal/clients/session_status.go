@@ -1,8 +1,6 @@
 package clients
 
 import (
-	"context"
-
 	"github.com/mimecast/dtail/internal/clients/handlers"
 )
 
@@ -51,16 +49,15 @@ type sessionOutcomeReporter interface {
 }
 
 // sessionStatus returns the exit status of a connection whose session ran
-// with handler under ctx, the context of all of the client's connections (not
-// that of the one connection, which its connector cancels itself when the
-// session ends): the handler's status, raised to the profile's
-// failedCommandStatus when that is set and the server reported a failed
-// command, and to the profile's cutShortStatus when that is set and the
-// session was cut short (see exitStatusCutShort) while ctx was not done. The
-// reports are counted whether or not the session completed, and the highest
-// status wins. A handler that cannot tell how its session ended keeps its
-// status.
-func (c *baseClient) sessionStatus(ctx context.Context, handler handlers.Handler) int {
+// with handler, where endedByClient tells whether the client ended that
+// session itself (see baseClient.runSession): the handler's status, raised to
+// the profile's failedCommandStatus when that is set and the server reported
+// a failed command, and to the profile's cutShortStatus when that is set and
+// the session was cut short (see exitStatusCutShort) while the client did not
+// end it. The reports are counted whether or not the session completed, and
+// the highest status wins. A handler that cannot tell how its session ended
+// keeps its status.
+func (c *baseClient) sessionStatus(endedByClient bool, handler handlers.Handler) int {
 	status := handler.Status()
 	reporter, ok := handler.(sessionOutcomeReporter)
 	if !ok {
@@ -70,7 +67,7 @@ func (c *baseClient) sessionStatus(ctx context.Context, handler handlers.Handler
 	if c.profile.failedCommandStatus != 0 && len(outcome.Failures) > 0 {
 		status = max(status, c.profile.failedCommandStatus)
 	}
-	if c.profile.cutShortStatus != 0 && !outcome.Completed && ctx.Err() == nil {
+	if c.profile.cutShortStatus != 0 && !outcome.Completed && !endedByClient {
 		c.reportCutShort(handler)
 		status = max(status, c.profile.cutShortStatus)
 	}
