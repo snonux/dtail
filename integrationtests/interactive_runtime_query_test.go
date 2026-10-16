@@ -300,6 +300,77 @@ func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 	}
 }
 
+// TestDGrepInteractiveReloadQuoting checks the shell-like quoting of :reload
+// end to end: a single-quoted regex keeps its backslash (`'\d+ ms'` must not
+// become `d+ ms`, which would match "odd ms" instead of "latency 12 ms"), and
+// an empty quoted value clears the regex so every line matches again.
+func TestDGrepInteractiveReloadQuoting(t *testing.T) {
+	skipIfNotIntegrationTest(t)
+
+	testLogger := NewTestLogger("TestDGrepInteractiveReloadQuoting")
+	defer writeLogFileIgnoringError(testLogger)
+	cleanupTmpFiles(t)
+
+	ctx, cancel := createTestContextWithTimeout(t)
+	ctx = WithTestLogger(ctx, testLogger)
+	defer cancel()
+
+	inputFile := "interactive_dgrep_quoting.tmp"
+	if err := os.WriteFile(inputFile, []byte("ERROR first\nlatency 12 ms\nodd ms\n"), 0600); err != nil {
+		t.Fatalf("unable to create input file: %v", err)
+	}
+	cleanupFiles(t, inputFile, "interactive_dgrep_quoting.stdout.tmp")
+
+	port := startInteractiveTestServer(ctx, t)
+	clientOutput, err := runInteractivePTYCommand(ctx, []string{
+		"../dgrep", "--cfg", "none", "--logger", "stdout", "--logLevel", "info",
+		"--servers", fmt.Sprintf("localhost:%d", port), "--files", inputFile,
+		"--grep", "ERROR", "--plain", "--trustAllHosts", "--interactive-query",
+	}, []interactiveStep{
+		{WaitFor: "ERROR first", Input: `:reload --regex '\d+ ms'`},
+		{WaitFor: "latency 12 ms", Input: `:reload --regex ''`},
+		{WaitFor: "odd ms", Input: ":quit"},
+	})
+	if err != nil {
+		t.Fatalf("run interactive dgrep: %v\noutput:\n%s", err, clientOutput)
+	}
+
+	// Initial read, the '\d+ ms' read and the cleared-regex read.
+	for needle, want := range map[string]int{
+		"ERROR first":                 2,
+		"latency 12 ms":               2,
+		"odd ms":                      1,
+		"reload applied successfully": 2,
+	} {
+		if got := strings.Count(clientOutput, needle); got != want {
+			t.Fatalf("expected %d x %q in output, got %d:\n%s", want, needle, got, clientOutput)
+		}
+	}
+}
+
+// startInteractiveTestServer starts a dserver on a unique port for an
+// interactive test and returns the port once the server accepts connections.
+func startInteractiveTestServer(ctx context.Context, t *testing.T) int {
+	t.Helper()
+	port := getUniquePortNumber()
+	serverStdout, serverStderr, _, err := startCommand(ctx, t, "", "../dserver",
+		"--cfg", "none",
+		"--logger", "stdout",
+		"--logLevel", "info",
+		"--bindAddress", "localhost",
+		"--port", fmt.Sprintf("%d", port),
+	)
+	if err != nil {
+		t.Fatalf("start dserver: %v", err)
+	}
+	// Drain the server output so the server never blocks on a full pipe.
+	_ = startProcessOutputCollector(ctx, serverStdout, serverStderr)
+	if err := waitForServerReady(ctx, "localhost", port); err != nil {
+		t.Fatalf("wait for dserver: %v", err)
+	}
+	return port
+}
+
 func startProcessOutputCollector(ctx context.Context, stdoutCh, stderrCh <-chan string) *processOutputCollector {
 	collector := &processOutputCollector{}
 	collect := func(ch <-chan string) {

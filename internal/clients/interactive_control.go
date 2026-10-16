@@ -233,9 +233,13 @@ func (*baseClient) rollbackInteractiveReloadConnections(applied []interactiveRel
 	return rollbackErr
 }
 
+// writeInteractiveHelp prints the control commands and a summary of the
+// :reload quoting rules implemented by splitInteractiveArgs.
 func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
 	return writeControlLine(writer,
-		"Commands: :reload <flags>, :show, :help, :quit. Use quotes around multi-word values such as --query \"select count(status) from stats\".")
+		"Commands: :reload <flags>, :show, :help, :quit. Quote values as in a shell: "+
+			"--query \"select count(status) from stats\", --regex '\\d+' (single quotes keep backslashes), "+
+			"--regex '' (empty value).")
 }
 
 func (c *baseClient) writeInteractiveState(writer io.Writer) error {
@@ -312,18 +316,17 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 	case isInteractiveQueryMode(current):
 		fs.StringVar(&next.QueryStr, "query", current.QueryStr, "Map reduce query")
 	case current.Mode == omode.GrepClient || current.Mode == omode.TailClient:
-		var grep string
+		// --grep is an alias of --regex: both write the same field, so the
+		// last one given wins and an empty value (`--grep ''`) clears the
+		// regex like `--regex ''` does.
 		fs.StringVar(&next.RegexStr, "regex", current.RegexStr, "Regular expression")
-		fs.StringVar(&grep, "grep", "", "Alias for -regex")
+		fs.StringVar(&next.RegexStr, "grep", current.RegexStr, "Alias for -regex")
 		fs.BoolVar(&next.RegexInvert, "invert", current.RegexInvert, "Invert regex")
 		fs.IntVar(&next.BeforeContext, "before", current.BeforeContext, "Leading context lines")
 		fs.IntVar(&next.AfterContext, "after", current.AfterContext, "Trailing context lines")
 		fs.IntVar(&next.MaxCount, "max", current.MaxCount, "Maximum number of matches")
 		if err := fs.Parse(tokens); err != nil {
 			return current, err
-		}
-		if grep != "" {
-			next.RegexStr = grep
 		}
 		if len(fs.Args()) > 0 {
 			return current, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
@@ -372,55 +375,6 @@ func normalizeInteractiveArgs(args config.Args, logger logging.Logger) (config.A
 func isInteractiveQueryMode(args config.Args) bool {
 	return strings.TrimSpace(args.QueryStr) != "" &&
 		(args.Mode == omode.MapClient || args.Mode == omode.TailClient)
-}
-
-func splitInteractiveArgs(raw string) ([]string, error) {
-	var (
-		tokens  []string
-		current strings.Builder
-		inQuote rune
-		escaped bool
-	)
-
-	flush := func() {
-		if current.Len() == 0 {
-			return
-		}
-		tokens = append(tokens, current.String())
-		current.Reset()
-	}
-
-	for _, r := range raw {
-		switch {
-		case escaped:
-			current.WriteRune(r)
-			escaped = false
-		case r == '\\':
-			escaped = true
-		case inQuote != 0:
-			if r == inQuote {
-				inQuote = 0
-				continue
-			}
-			current.WriteRune(r)
-		case r == '\'' || r == '"':
-			inQuote = r
-		case r == ' ' || r == '\t':
-			flush()
-		default:
-			current.WriteRune(r)
-		}
-	}
-
-	if escaped {
-		return nil, errors.New("unterminated escape sequence")
-	}
-	if inQuote != 0 {
-		return nil, errors.New("unterminated quoted string")
-	}
-
-	flush()
-	return tokens, nil
 }
 
 func writeControlLine(writer io.Writer, message string) error {

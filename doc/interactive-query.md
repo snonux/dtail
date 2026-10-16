@@ -38,6 +38,28 @@ Mode-specific flags:
   the shared flags
 * `dcat`: the shared flags only
 
+`--grep` is an alias of `--regex`; when both are given, the last one wins.
+
+## Quoting
+
+The flags of a `:reload` line are split into arguments like a POSIX shell
+splits a command line, without any variable, command or glob expansion
+(`$line` and `*` stay as typed):
+
+* Spaces and tabs separate arguments; quote a value to keep its spaces.
+* Single quotes keep everything up to the closing quote literally,
+  backslashes included. Use them for regular expressions:
+  `:reload --regex '\d+ ms'` matches the regex `\d+ ms`.
+* Double quotes also keep backslashes, except that `\\` and `\"` stand for a
+  backslash and a double quote: `:reload --regex "a\.b"` is the regex `a\.b`.
+* Outside quotes, a backslash makes the next character literal, so `\d`
+  becomes `d` there; `/var/log/my\ app.log` is one argument.
+* An empty quoted string is an empty value: `:reload --regex ''` clears the
+  regex, so every line matches again.
+* Quoted and unquoted parts next to each other form one argument, and an
+  unterminated quote or a trailing backslash rejects the whole line with an
+  error, leaving the current workload unchanged.
+
 ## Examples
 
 Keep a `dtail` run open and switch the grep pattern in-flight:

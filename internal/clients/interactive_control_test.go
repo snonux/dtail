@@ -10,6 +10,7 @@ import (
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
@@ -86,6 +87,113 @@ func TestParseInteractiveCommandRejectsUnterminatedQuotes(t *testing.T) {
 	if _, err := parseInteractiveCommand(current,
 		`:reload --query "select count(status) from stats`, logging.NopLogger{}); err == nil {
 		t.Fatalf("expected parseInteractiveCommand() to reject unterminated quoted input")
+	}
+}
+
+func TestSplitInteractiveArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "plain words", raw: `--grep WARN --max 4`, want: []string{"--grep", "WARN", "--max", "4"}},
+		{name: "spaces and tabs", raw: "  --grep \t WARN  ", want: []string{"--grep", "WARN"}},
+		{name: "single quotes keep backslash", raw: `--regex '\d+'`, want: []string{"--regex", `\d+`}},
+		{name: "single quotes keep double quote", raw: `--regex 'say "hi"'`, want: []string{"--regex", `say "hi"`}},
+		{name: "single quotes end at quote after backslash", raw: `--regex 'a\'`, want: []string{"--regex", `a\`}},
+		{name: "double quotes keep other backslashes", raw: `--regex "a\.b\d"`, want: []string{"--regex", `a\.b\d`}},
+		{name: "double quotes escape backslash", raw: `--regex "a\\b"`, want: []string{"--regex", `a\b`}},
+		{name: "double quotes escape double quote", raw: `--regex "say \"hi\""`, want: []string{"--regex", `say "hi"`}},
+		{name: "double quotes keep single quote", raw: `--regex "it's"`, want: []string{"--regex", "it's"}},
+		{name: "double quotes keep dollar", raw: `--query "select count($line)"`, want: []string{"--query", "select count($line)"}},
+		{name: "unquoted backslash escapes space", raw: `--files /a\ b`, want: []string{"--files", "/a b"}},
+		{name: "unquoted backslash escapes quote", raw: `--regex it\'s`, want: []string{"--regex", "it's"}},
+		{name: "unquoted backslash escapes backslash", raw: `--regex a\\d`, want: []string{"--regex", `a\d`}},
+		{name: "empty single quotes", raw: `--regex ''`, want: []string{"--regex", ""}},
+		{name: "empty double quotes", raw: `--regex ""`, want: []string{"--regex", ""}},
+		{name: "empty value before flag", raw: `--regex '' --max 1`, want: []string{"--regex", "", "--max", "1"}},
+		{name: "empty value after equals", raw: `--regex=''`, want: []string{"--regex="}},
+		{name: "adjacent parts join", raw: `--files=/a' 'b"c"d`, want: []string{"--files=/a bcd"}},
+		{name: "adjacent empty quotes join", raw: `foo''bar`, want: []string{"foobar"}},
+		{name: "empty input", raw: "", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := splitInteractiveArgs(tt.raw)
+			if err != nil {
+				t.Fatalf("splitInteractiveArgs(%q) error = %v", tt.raw, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("splitInteractiveArgs(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitInteractiveArgsRejectsUnterminatedInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantErr string
+	}{
+		{name: "open single quote", raw: `--regex 'abc`, wantErr: "unterminated quoted string"},
+		{name: "open double quote", raw: `--regex "abc`, wantErr: "unterminated quoted string"},
+		{name: "lone single quote", raw: `'`, wantErr: "unterminated quoted string"},
+		{name: "escaped closing double quote", raw: `--regex "abc\"`, wantErr: "unterminated quoted string"},
+		{name: "backslash at end of double quote", raw: `--regex "abc\`, wantErr: "unterminated quoted string"},
+		{name: "trailing backslash", raw: `--regex abc\`, wantErr: "unterminated escape sequence"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := splitInteractiveArgs(tt.raw)
+			if err == nil {
+				t.Fatalf("splitInteractiveArgs(%q) = %q, want error %q", tt.raw, got, tt.wantErr)
+			}
+			if err.Error() != tt.wantErr {
+				t.Fatalf("splitInteractiveArgs(%q) error = %q, want %q", tt.raw, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseInteractiveCommandReloadRegexQuoting(t *testing.T) {
+	current := config.Args{
+		Mode:     omode.GrepClient,
+		What:     "/var/log/app.log",
+		RegexStr: "ERROR",
+		LContext: lcontext.LContext{MaxCount: 7},
+	}
+
+	tests := []struct {
+		name      string
+		line      string
+		wantRegex string
+		wantMax   int
+	}{
+		{name: "single-quoted backslash regex", line: `:reload --regex '\d+'`, wantRegex: `\d+`, wantMax: 7},
+		{name: "double-quoted backslash regex", line: `:reload --regex "a\.b"`, wantRegex: `a\.b`, wantMax: 7},
+		{name: "empty regex clears it", line: `:reload --regex ''`, wantRegex: "", wantMax: 7},
+		{name: "empty grep alias clears it", line: `:reload --grep ""`, wantRegex: "", wantMax: 7},
+		{name: "empty regex keeps following flag", line: `:reload --regex '' --max 1`, wantRegex: "", wantMax: 1},
+		{name: "last of regex and grep wins", line: `:reload --grep WARN --regex INFO`, wantRegex: "INFO", wantMax: 7},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command, err := parseInteractiveCommand(current, tt.line, logging.NopLogger{})
+			if err != nil {
+				t.Fatalf("parseInteractiveCommand(%q) error = %v", tt.line, err)
+			}
+			if command.next.RegexStr != tt.wantRegex || command.spec.Regex != tt.wantRegex {
+				t.Fatalf("regex = %q, spec regex = %q, want %q",
+					command.next.RegexStr, command.spec.Regex, tt.wantRegex)
+			}
+			if command.next.MaxCount != tt.wantMax {
+				t.Fatalf("max = %d, want %d", command.next.MaxCount, tt.wantMax)
+			}
+		})
 	}
 }
 
