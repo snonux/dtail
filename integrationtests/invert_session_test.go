@@ -16,6 +16,11 @@ import (
 // every line again. Each data line is counted at the end: the inverted
 // "alpha" read prints the other two lines, the inverted empty read prints
 // nothing, and the final positive empty read prints all three once more.
+//
+// The inverted empty read prints nothing whether it works or never ran, so
+// the --invert=false reload waits for the server to have finished it (see
+// signalAfterReads); otherwise that reload could cancel it before it read a
+// line and a broken read printing every line would go unnoticed.
 func TestDGrepInteractiveInvertCarriesOver(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 
@@ -33,7 +38,10 @@ func TestDGrepInteractiveInvertCarriesOver(t *testing.T) {
 	}
 	cleanupFiles(t, inputFile)
 
-	port, _ := startInteractiveTestServer(ctx, t)
+	port, serverLogs := startInteractiveTestServer(ctx, t)
+	readDone := "interactive_dgrep_invert_read_done.tmp"
+	cleanupFiles(t, readDone)
+	go signalAfterReads(ctx, serverLogs, 2, readDone)
 	clientOutput, err := runInteractivePTYCommand(ctx, []string{
 		"../dgrep", "--cfg", "none", "--logger", "stdout", "--logLevel", "info",
 		"--servers", fmt.Sprintf("localhost:%d", port), "--files", inputFile,
@@ -42,7 +50,7 @@ func TestDGrepInteractiveInvertCarriesOver(t *testing.T) {
 		{WaitFor: "gamma line", Input: ":show"},
 		{WaitFor: `regex="alpha" invert=true`, Input: ":reload --regex ''"},
 		{WaitFor: "reload applied successfully", Input: ":show"},
-		{WaitFor: `regex="" invert=true`, Input: ":reload --regex '' --invert=false"},
+		{WaitFor: `regex="" invert=true`, WaitForFile: readDone, Input: ":reload --regex '' --invert=false"},
 		{WaitFor: "alpha line", Input: ":show"},
 		{WaitFor: `regex="" invert=false`, Input: ":quit"},
 	})
@@ -59,6 +67,30 @@ func TestDGrepInteractiveInvertCarriesOver(t *testing.T) {
 			t.Fatalf("expected %d x %q in output, got %d:\n%s", want, needle, got, clientOutput)
 		}
 	}
+}
+
+// readsDoneDrain is how long signalAfterReads waits after the last read
+// finished: the read flushed its lines into the session output when the
+// server logs its end, and they still have to leave the output buffer before
+// a reload drops what is left of the old generation.
+const readsDoneDrain = 500 * time.Millisecond
+
+// signalAfterReads creates the file marker once the server logged the end of
+// reads read commands ("All files processed", logged once per read command,
+// also when a reload cancels it) and readsDoneDrain passed, so that a PTY
+// step waiting for marker (interactiveStep.WaitForFile) runs after them.
+func signalAfterReads(ctx context.Context, serverLogs *processOutputCollector, reads int, marker string) {
+	if waitForCollectorCount(ctx, serverLogs, "All files processed", reads) != nil {
+		return
+	}
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(readsDoneDrain):
+	}
+	// A failed write leaves the step waiting until its timeout, and the
+	// test's output assertions report the outcome.
+	_ = os.WriteFile(marker, nil, 0600)
 }
 
 // TestDTailInvertEmptyRegex follows a file with dtail, an empty --regex and
@@ -87,8 +119,12 @@ func TestDTailInvertEmptyRegex(t *testing.T) {
 	port, serverLogs := startInteractiveTestServer(ctx, t)
 	inverted := startDTailFollowClient(ctx, t, port, followFile, "")
 	control := startDTailFollowClient(ctx, t, port, followFile, "never-matching-regex")
-	if err := waitForCollectorCount(ctx, serverLogs, "Start reading", 2); err != nil {
-		t.Fatalf("wait for both follow reads: %v\nserver logs:\n%s", err, serverLogs.dump())
+	// Both sessions share one follow reader of the file. Once the second one
+	// joined, the start of each is fixed at the end of the (empty) file, so
+	// every line appended from now on reaches both sessions: the inverted one
+	// cannot skip the lines by starting after them.
+	if err := waitForCollectorCount(ctx, serverLogs, sharedFollowGainedLog+"2", 1); err != nil {
+		t.Fatalf("wait for both follow sessions: %v\nserver logs:\n%s", err, serverLogs.dump())
 	}
 
 	const needle = "invert-follow-line"

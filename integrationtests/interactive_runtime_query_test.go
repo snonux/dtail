@@ -15,14 +15,19 @@ import (
 
 type interactiveStep struct {
 	// At is a fixed delay (from the writer start) before Input is sent. It is
-	// only consulted when WaitFor is empty.
+	// only consulted when WaitFor and WaitForFile are empty.
 	At time.Duration
 	// WaitFor, when set, makes the step block until this substring appears in
 	// the accumulated PTY output before Input is sent (bounded by a timeout).
 	// This replaces racy fixed-offset timing with deterministic
 	// synchronization on observed output.
 	WaitFor string
-	Input   string
+	// WaitForFile, when set, makes the step block (after WaitFor) until this
+	// file exists before Input is sent (bounded by the same timeout). The test
+	// creates the file once an event outside the PTY output happened, e.g. a
+	// server log line, so a step can also wait for the server.
+	WaitForFile string
+	Input       string
 }
 
 // processOutputCollector collects the output lines of a process, see
@@ -553,7 +558,14 @@ def writer():
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.01)
-        else:
+        wait_for_file = step.get("wait_for_file") or ""
+        if wait_for_file:
+            deadline = time.monotonic() + WAIT_FOR_TIMEOUT
+            while not os.path.exists(wait_for_file):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
+        if not wait_for and not wait_for_file:
             wait = (step["at_ms"] / 1000.0) - (time.monotonic() - start)
             if wait > 0:
                 time.sleep(wait)
@@ -585,9 +597,10 @@ sys.exit(1)
 	encodedSteps := make([]map[string]any, 0, len(steps))
 	for _, step := range steps {
 		encodedSteps = append(encodedSteps, map[string]any{
-			"at_ms":    step.At.Milliseconds(),
-			"wait_for": step.WaitFor,
-			"input":    step.Input,
+			"at_ms":         step.At.Milliseconds(),
+			"wait_for":      step.WaitFor,
+			"wait_for_file": step.WaitForFile,
+			"input":         step.Input,
 		})
 	}
 
