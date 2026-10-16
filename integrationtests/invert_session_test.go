@@ -20,7 +20,11 @@ import (
 // The inverted empty read prints nothing whether it works or never ran, so
 // the --invert=false reload waits for the server to have finished it (see
 // signalAfterReads); otherwise that reload could cancel it before it read a
-// line and a broken read printing every line would go unnoticed.
+// line and a broken read printing every line would go unnoticed. The final
+// :show waits for the third read to finish too: a broken second read already
+// printed "alpha line", so waiting for that text alone could let :quit cancel
+// the third read, and the counts of a broken run (alpha 1, beta 2, gamma 2)
+// would then equal those of a working one.
 func TestDGrepInteractiveInvertCarriesOver(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 
@@ -42,6 +46,9 @@ func TestDGrepInteractiveInvertCarriesOver(t *testing.T) {
 	readDone := "interactive_dgrep_invert_read_done.tmp"
 	cleanupFiles(t, readDone)
 	go signalAfterReads(ctx, serverLogs, 2, readDone)
+	readDone3 := "interactive_dgrep_invert_read_done3.tmp"
+	cleanupFiles(t, readDone3)
+	go signalAfterReads(ctx, serverLogs, 3, readDone3)
 	clientOutput, err := runInteractivePTYCommand(ctx, []string{
 		"../dgrep", "--cfg", "none", "--logger", "stdout", "--logLevel", "info",
 		"--servers", fmt.Sprintf("localhost:%d", port), "--files", inputFile,
@@ -51,7 +58,7 @@ func TestDGrepInteractiveInvertCarriesOver(t *testing.T) {
 		{WaitFor: `regex="alpha" invert=true`, Input: ":reload --regex ''"},
 		{WaitFor: "reload applied successfully", Input: ":show"},
 		{WaitFor: `regex="" invert=true`, WaitForFile: readDone, Input: ":reload --regex '' --invert=false"},
-		{WaitFor: "alpha line", Input: ":show"},
+		{WaitFor: "alpha line", WaitForFile: readDone3, Input: ":show"},
 		{WaitFor: `regex="" invert=false`, Input: ":quit"},
 	})
 	if err != nil {
@@ -123,8 +130,13 @@ func TestDTailInvertEmptyRegex(t *testing.T) {
 	// joined, the start of each is fixed at the end of the (empty) file, so
 	// every line appended from now on reaches both sessions: the inverted one
 	// cannot skip the lines by starting after them.
-	if err := waitForCollectorCount(ctx, serverLogs, sharedFollowGainedLog+"2", 1); err != nil {
-		t.Fatalf("wait for both follow sessions: %v\nserver logs:\n%s", err, serverLogs.dump())
+	// The wait is bounded well below the test context, so a session that never
+	// joins fails fast with the server logs instead of at the test timeout.
+	joinCtx, joinCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer joinCancel()
+	if err := waitForCollectorCount(joinCtx, serverLogs, sharedFollowGainedLog+"2", 1); err != nil {
+		t.Fatalf("both follow sessions did not join the shared follow read within 30s: %v\nserver logs:\n%s",
+			err, serverLogs.dump())
 	}
 
 	const needle = "invert-follow-line"

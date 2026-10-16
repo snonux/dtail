@@ -91,6 +91,35 @@ func TestParseInteractiveCommandForMapReloadDerivesRegex(t *testing.T) {
 	}
 }
 
+// TestParseInteractiveReloadRejectsQueryInvert pins that a :reload of a query
+// session (dmap, and dtail started with --query) tells why it does not take
+// --invert instead of dropping it or failing with the flag package's generic
+// "flag provided but not defined", while --invert=false, which changes
+// nothing, is accepted.
+func TestParseInteractiveReloadRejectsQueryInvert(t *testing.T) {
+	for _, mode := range []omode.Mode{omode.MapClient, omode.TailClient} {
+		current := config.Args{
+			Mode:     mode,
+			What:     "/var/log/app.log",
+			QueryStr: "select count(status) from stats group by status",
+			RegexStr: "\\|MAPREDUCE:STATS\\|",
+		}
+		for _, line := range []string{":reload --invert --files /tmp/new.log", ":reload --invert=true --plain"} {
+			_, err := parseInteractiveCommand(current, line, logging.NopLogger{})
+			if !errors.Is(err, errReloadQueryInvert) {
+				t.Errorf("%s %q: error = %v, want %v", mode, line, err, errReloadQueryInvert)
+			}
+		}
+		command, err := parseInteractiveCommand(current, ":reload --invert=false --plain", logging.NopLogger{})
+		if err != nil {
+			t.Fatalf("%s: --invert=false error = %v", mode, err)
+		}
+		if command.next.RegexInvert || command.spec.RegexInvert {
+			t.Fatalf("%s: --invert=false reload inverts the query filter", mode)
+		}
+	}
+}
+
 func TestParseInteractiveCommandRejectsUnterminatedQuotes(t *testing.T) {
 	current := config.Args{
 		Mode:     omode.MapClient,

@@ -37,7 +37,9 @@ Mode-specific flags:
 * `dtail` (grep-driven) and `dgrep`: `--grep`/`--regex`, `--before`, `--after`,
   `--max`, `--invert`, plus the shared flags
 * `dmap`, and query-driven `dtail` (started with `--query`): `--query`, plus
-  the shared flags
+  the shared flags. `--invert` is rejected with a reason (a query selects
+  the lines of its table itself, so its filter is never inverted);
+  `--invert=false` is accepted and changes nothing
 * `dcat`: the shared flags only
 
 `--grep` is an alias of `--regex` and behaves as on the `dgrep` and `dtail`

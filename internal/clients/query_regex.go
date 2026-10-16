@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
@@ -9,10 +10,19 @@ import (
 	"github.com/mimecast/dtail/internal/mapr"
 )
 
-// ignoredInvertWarning tells the user that dtail dropped --invert because a
-// mapreduce query was given (see applyQueryRegex).
-const ignoredInvertWarning = "WARN: Ignoring --invert: a mapreduce query (--query) " +
-	"selects the lines of its table itself"
+// queryInvertReason says why --invert does not apply to a mapreduce query
+// (see applyQueryRegex).
+const queryInvertReason = "a mapreduce query (--query) selects the lines of its table itself"
+
+// ignoredInvertWarning tells the user that dtail dropped the --invert of its
+// command line because a mapreduce query was given.
+const ignoredInvertWarning = "WARN: Ignoring --invert: " + queryInvertReason
+
+// errReloadQueryInvert rejects `:reload --invert` in an interactive query
+// session (see validateInteractiveReloadArgs). The reload is rejected rather
+// than applied without the --invert, so the TTY says why and the current
+// workload keeps running, as for any other rejected reload.
+var errReloadQueryInvert = errors.New("--invert is not supported: " + queryInvertReason)
 
 func maprRegexForQuery(query *mapr.Query) string {
 	if query == nil {
@@ -36,6 +46,8 @@ func maprRegexForQuery(query *mapr.Query) string {
 // it would feed every other line into the aggregation, and for the tables ""
 // and "." (every line) only the empty lines. dtail therefore accepts --invert
 // together with --query and ignores it, with a warning (warnIgnoredInvert).
+// An interactive :reload of a query session rejects --invert instead
+// (errReloadQueryInvert), so it is never silently dropped there either.
 //
 // The read commands built from a query session spec ignore RegexInvert
 // anyway (session.Spec.queryCommands), so clearing it here is not needed for

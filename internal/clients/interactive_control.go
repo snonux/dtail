@@ -374,6 +374,9 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 	switch {
 	case isInteractiveQueryMode(current):
 		fs.StringVar(&next.QueryStr, "query", current.QueryStr, "Map reduce query")
+		// Bound only so that validateInteractiveReloadArgs can reject it
+		// with a reason instead of the flag package's "not defined".
+		fs.Bool("invert", false, "Rejected: a query selects its own lines")
 	case current.Mode == omode.GrepClient || current.Mode == omode.TailClient:
 		grep = bindInteractiveGrepFlags(fs, &next, current)
 	case current.Mode == omode.CatClient:
@@ -430,7 +433,9 @@ func bindInteractiveGrepFlags(fs *flag.FlagSet, next *config.Args, current confi
 // which --query could not even be reloaded anymore. An empty --grep is
 // rejected as well: the command lines ignore it, so a reload would restart
 // the unchanged workload (in dgrep reading and printing the file again)
-// although the user most likely meant to clear the regex. Values not given
+// although the user most likely meant to clear the regex. In a query session
+// --invert (unless --invert=false) is rejected with errReloadQueryInvert, as
+// the query's table filter is never inverted (applyQueryRegex). Values not given
 // on the line keep the current ones and are not checked, so e.g. a
 // serverless stdin session with no files can still reload other flags.
 func validateInteractiveReloadArgs(fs *flag.FlagSet, next config.Args) error {
@@ -444,6 +449,8 @@ func validateInteractiveReloadArgs(fs *flag.FlagSet, next config.Args) error {
 			err = fmt.Errorf("--query must not be blank, got %q", next.QueryStr)
 		case f.Name == "grep" && f.Value.String() == "":
 			err = errors.New("--grep '' is ignored; use --regex '' to clear the regex")
+		case f.Name == "invert" && isInteractiveQueryMode(next) && f.Value.String() == "true":
+			err = errReloadQueryInvert
 		}
 	})
 	return err
