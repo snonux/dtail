@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -134,6 +135,11 @@ func TestServerListIgnoresEmptyServerEntries(t *testing.T) {
 			want:   []string{},
 		},
 		{
+			name:   "regex with surrounding whitespace yields no phantom host",
+			server: " /web/ ",
+			want:   []string{},
+		},
+		{
 			name:   "comma list filters empty entries",
 			server: "alpha,,beta,",
 			want:   []string{"alpha", "beta"},
@@ -221,6 +227,30 @@ func TestServerListIgnoresEmptyServerEntries(t *testing.T) {
 	}
 }
 
+// TestNewTrimsARegexServerValue checks that whitespace around a /regex/
+// server value is ignored like around every server entry: the value is the
+// filter regex and not a host named "/web/".
+func TestNewTrimsARegexServerValue(t *testing.T) {
+	t.Parallel()
+
+	for _, server := range []string{"/web/", " /web/ ", "\t/web/\n"} {
+		d, err := New("", server, Shuffle, testLogger)
+		if err != nil {
+			t.Fatalf("New(%q) error = %v", server, err)
+		}
+		if d.regex == nil || d.regex.String() != "web" {
+			t.Fatalf("New(%q) regex = %v, want web", server, d.regex)
+		}
+		if d.server != "" {
+			t.Fatalf("New(%q) server = %q, want it cleared", server, d.server)
+		}
+		filtered := d.filterList([]string{"web1", "db1", "web2"})
+		if !slices.Equal(filtered, []string{"web1", "web2"}) {
+			t.Fatalf("New(%q) filter = %v, want [web1 web2]", server, filtered)
+		}
+	}
+}
+
 func TestNewReturnsDiscoveryInputErrors(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -229,6 +259,7 @@ func TestNewReturnsDiscoveryInputErrors(t *testing.T) {
 		want   string
 	}{
 		{name: "invalid regex", server: "/[/", want: "compile server discovery regex"},
+		{name: "invalid regex with surrounding whitespace", server: " /[/\t", want: "compile server discovery regex"},
 		{name: "unknown module", method: "bogus", server: "host", want: "unknown server discovery module"},
 	}
 

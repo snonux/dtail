@@ -64,7 +64,11 @@ func New(method, server string, order ServerOrder, logger logging.Logger) (*Disc
 		}
 	}
 
-	if strings.HasPrefix(server, "/") && strings.HasSuffix(server, "/") {
+	// Whitespace around a /regex/ value is ignored like around every server
+	// entry (see trimServerEntry), so " /web/ " filters by the regex web and
+	// does not end up as the host "/web/".
+	if isRegexServer(server) {
+		d.server = strings.TrimSpace(server)
 		if err := d.initRegex(); err != nil {
 			return nil, err
 		}
@@ -73,6 +77,15 @@ func New(method, server string, order ServerOrder, logger logging.Logger) (*Disc
 	return &d, nil
 }
 
+// isRegexServer reports whether the server value, without surrounding
+// whitespace, is a /regex/ filter rather than a server list.
+func isRegexServer(server string) bool {
+	trimmed := strings.TrimSpace(server)
+	return strings.HasPrefix(trimmed, "/") && strings.HasSuffix(trimmed, "/")
+}
+
+// initRegex compiles the server value, already trimmed and enclosed in
+// slashes, as the server filter regex and clears the server value.
 func (d *Discovery) initRegex() error {
 	var runes []rune
 	last := len(d.server) - 1

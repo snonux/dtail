@@ -158,6 +158,8 @@ func TestDynamicServerListIgnoresWhitespaceAroundTheFilePath(t *testing.T) {
 // blank lines). Creating the client fails with "no server to connect to",
 // which must be a failed run like any other: no outfile, the failure logged
 // and the job backed off, so the scheduler does not mistake it for success.
+// Both the creation failure and the failed run are logged at WARN, not at
+// ERROR (see logCreateFailure).
 func TestSchedulerBacksOffAJobWithNoServer(t *testing.T) {
 	dir := t.TempDir()
 	serverFile := filepath.Join(dir, "servers.txt")
@@ -182,7 +184,7 @@ func TestSchedulerBacksOffAJobWithNoServer(t *testing.T) {
 	cfg.Server.Schedule = []config.Scheduled{job}
 
 	s := newScheduler(cfg, jobTestLoggers)
-	logger := &exitLogger{}
+	logger := &levelLogger{}
 	s.logger = logger
 	now := time.Date(2026, 9, 22, 1, 0, 0, 0, time.Local)
 	s.now = func() time.Time { return now }
@@ -205,10 +207,53 @@ func TestSchedulerBacksOffAJobWithNoServer(t *testing.T) {
 	if _, err := os.Stat(outfile); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("failed run left %s (stat error %v)", outfile, err)
 	}
-	wantLog := "Job noserver failed and wrote no outfile " + outfile + " (failure 1 in a row), it runs again " +
+	wantLog := "WARN Job noserver failed and wrote no outfile " + outfile + " (failure 1 in a row), it runs again " +
 		"from about 2026-09-22 01:01:00"
 	if !slices.Contains(logger.lines, wantLog) {
 		t.Fatalf("log = %q, want %q", logger.lines, wantLog)
+	}
+	wantCreate := "WARN Unable to create job noserver"
+	if !slices.ContainsFunc(logger.lines, func(line string) bool {
+		return strings.HasPrefix(line, wantCreate) && strings.Contains(line, "no server to connect to")
+	}) {
+		t.Fatalf("log = %q, want a line %q ... no server to connect to", logger.lines, wantCreate)
+	}
+	for _, line := range logger.lines {
+		if strings.HasPrefix(line, "ERROR ") {
+			t.Fatalf("log has an ERROR line %q, want WARN only", line)
+		}
+	}
+}
+
+// TestLogCreateFailureLevels checks that a client creation failure because
+// discovery found no server (clients.ErrNoServers, also when wrapped) is
+// logged at WARN and any other failure at ERROR.
+func TestLogCreateFailureLevels(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "wrapped no servers",
+			err:  fmt.Errorf("unable to create client: %w", clients.ErrNoServers),
+			want: "WARN Unable to create job alpha",
+		},
+		{
+			name: "other error",
+			err:  errors.New("parse server address"),
+			want: "ERROR Unable to create job alpha",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logger := &levelLogger{}
+			logCreateFailure(logger, "alpha", tt.err)
+			if len(logger.lines) != 1 || !strings.HasPrefix(logger.lines[0], tt.want) ||
+				!strings.Contains(logger.lines[0], tt.err.Error()) {
+				t.Fatalf("log = %q, want one line %q ... %q", logger.lines, tt.want, tt.err)
+			}
+		})
 	}
 }
 

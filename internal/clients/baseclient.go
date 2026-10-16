@@ -213,8 +213,10 @@ func (c *baseClient) makeConnections() error {
 // that it fails with ErrNoServers like a --servers value of only whitespace
 // does, and not with an empty server address. The caller rejects an empty
 // result whether or not the client is serverless: a serverless client always
-// has the sentinel, unless its server value names a server list file with no
-// entry (a file named "serverless"), and then it would do nothing as well.
+// has one entry, the sentinel "" (an empty server value) or the word
+// "serverless" (the COMMA module returns --servers serverless as it is),
+// unless its server value names a server list file with no entry (a file
+// named "serverless"), and then it would do nothing as well.
 func connectableServers(servers []string, serverless bool) []string {
 	if serverless {
 		return servers

@@ -456,7 +456,7 @@
               },
               "Servers": {
                 "type": "array",
-                "description": "Servers to query, passed to the Discovery module, joined with commas. Whitespace around entries is trimmed and empty entries are dropped. When empty, or only blank entries, the job queries this dserver itself: its SSHBindAddress at Common.SSHPort, or the loopback address (127.0.0.1, or ::1 for ::) when it listens on every address (empty, 0.0.0.0 or ::).",
+                "description": "Servers to query, passed to the Discovery module, joined with commas. Whitespace around entries is trimmed and empty entries are dropped. When empty, or only blank entries, the job queries this dserver itself: its SSHBindAddress at Common.SSHPort, or the loopback address (127.0.0.1, or ::1 for ::) when it listens on every address (empty, 0.0.0.0, ::ffff:0.0.0.0 or ::); AllowFrom must then permit the loopback address.",
                 "items": {
                   "type": "string"
                 }
@@ -522,7 +522,7 @@
               },
               "Servers": {
                 "type": "array",
-                "description": "Servers to query, passed to the Discovery module, joined with commas. Whitespace around entries is trimmed and empty entries are dropped. When empty, or only blank entries, the job queries this dserver itself: its SSHBindAddress at Common.SSHPort, or the loopback address (127.0.0.1, or ::1 for ::) when it listens on every address (empty, 0.0.0.0 or ::).",
+                "description": "Servers to query, passed to the Discovery module, joined with commas. Whitespace around entries is trimmed and empty entries are dropped. When empty, or only blank entries, the job queries this dserver itself: its SSHBindAddress at Common.SSHPort, or the loopback address (127.0.0.1, or ::1 for ::) when it listens on every address (empty, 0.0.0.0, ::ffff:0.0.0.0 or ::); AllowFrom must then permit the loopback address.",
                 "items": {
                   "type": "string"
                 }
