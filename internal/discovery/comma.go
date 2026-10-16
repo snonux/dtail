@@ -9,9 +9,10 @@ import "strings"
 // discovery module the client then runs serverless (config sets
 // Args.Serverless for an empty --servers without --discovery, see
 // transformClient) and opens a single serverless session for that entry.
-// With a discovery module the client is not serverless, and the entry ""
-// fails as an empty server address. Input of only whitespace and commas
-// yields an empty list, which the client rejects as no server to connect to.
+// With a discovery module the client is not serverless and drops the entry
+// "", so it fails as no server to connect to (see
+// clients.connectableServers), just like input of only whitespace and
+// commas, which yields an empty list.
 func (d *Discovery) ServerListFromCOMMA() ([]string, error) {
 	d.logger.Debug("Retrieving server list from comma separated list", d.server)
 

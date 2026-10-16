@@ -3,15 +3,19 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/clients"
+	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 const testBindAddress = "127.0.0.1"
@@ -42,6 +46,49 @@ func TestJobServersStr(t *testing.T) {
 				t.Fatalf("jobServersStr(%q) = %q, want %q", tt.servers, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestJobServersStrDialsLoopbackForAnUnspecifiedBindAddress checks the
+// fallback for a job with empty Servers on a dserver listening on every
+// address: the bind address "" (which used to give the --servers value "" and
+// fail every run) and the unspecified addresses map to the loopback address of
+// their family. The client adds the configured SSHPort to the address. Any
+// other bind address is used as it is.
+func TestJobServersStrDialsLoopbackForAnUnspecifiedBindAddress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		bindAddress string
+		want        string
+	}{
+		{bindAddress: "", want: "127.0.0.1"},
+		{bindAddress: "0.0.0.0", want: "127.0.0.1"},
+		{bindAddress: "::ffff:0.0.0.0", want: "127.0.0.1"},
+		{bindAddress: "::", want: "::1"},
+		{bindAddress: "192.0.2.10", want: "192.0.2.10"},
+		{bindAddress: "::1", want: "::1"},
+		{bindAddress: "dserver.example", want: "dserver.example"},
+	}
+
+	for _, tt := range tests {
+		if got := jobServersStr([]string{" "}, tt.bindAddress); got != tt.want {
+			t.Errorf("jobServersStr with bind address %q = %q, want %q", tt.bindAddress, got, tt.want)
+		}
+	}
+}
+
+// TestJobsOnAnEmptyBindAddressDialThisDServer checks that the client of a
+// job with empty Servers on a dserver with the bind address "" connects to
+// the loopback address at the configured SSHPort, instead of failing to
+// parse the server address "".
+func TestJobsOnAnEmptyBindAddressDialThisDServer(t *testing.T) {
+	t.Parallel()
+
+	const port = 2345
+	host, gotPort, err := connectors.ParseServerAddress(jobServersStr(nil, ""), port)
+	if err != nil || host != "127.0.0.1" || gotPort != port {
+		t.Fatalf("job server = %q:%d (%v), want 127.0.0.1:%d", host, gotPort, err, port)
 	}
 }
 
@@ -162,5 +209,70 @@ func TestSchedulerBacksOffAJobWithNoServer(t *testing.T) {
 		"from about 2026-09-22 01:01:00"
 	if !slices.Contains(logger.lines, wantLog) {
 		t.Fatalf("log = %q, want %q", logger.lines, wantLog)
+	}
+}
+
+// levelLogger records the WARN and ERROR lines it is given, each prefixed
+// with its level.
+type levelLogger struct {
+	logging.NopLogger
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *levelLogger) Warn(args ...any) string { return l.record("WARN", args) }
+
+func (l *levelLogger) Error(args ...any) string { return l.record("ERROR", args) }
+
+func (l *levelLogger) record(level string, args []any) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, level+" "+fmt.Sprint(args...))
+	return ""
+}
+
+// TestContinuousJobWithNoServerWritesNoOutfile runs a continuous job with a
+// real mapreduce client whose server list file names no server (only comment
+// and blank lines). Creating the client fails with "no server to connect
+// to": the job writes no outfile (it used to overwrite the outfile with empty
+// results) and logs the failure at WARN; the retry loop runs it again a
+// minute later.
+func TestContinuousJobWithNoServerWritesNoOutfile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	serverFile := filepath.Join(dir, "servers.txt")
+	if err := os.WriteFile(serverFile, []byte("# no servers yet\n\n"), 0o600); err != nil {
+		t.Fatalf("write server list file: %v", err)
+	}
+	outfile := filepath.Join(dir, "result.csv")
+	cfg := config.RuntimeConfig{
+		Server: config.NewDefaultServerConfigForTest(),
+		Client: &config.ClientConfig{},
+		Common: &config.CommonConfig{HostnameOverride: "test-host"},
+	}
+	job := config.Continuous{}
+	job.Name = "noserver"
+	job.Servers = []string{serverFile}
+	job.Files = filepath.Join(dir, "app.log")
+	job.Query = "from STATS select count($line) group by $hostname"
+	job.Outfile = outfile
+
+	c := newContinuous(cfg, jobTestLoggers)
+	logger := &levelLogger{}
+	c.logger = logger
+	c.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
+		args.KnownHostsPath = filepath.Join(dir, "known_hosts")
+		return clients.NewMaprClient(args, cfg, mode, jobTestLoggers)
+	}
+
+	c.runJob(context.Background(), &job)
+	if _, err := os.Stat(outfile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("job with no server left %s (stat error %v)", outfile, err)
+	}
+	want := "WARN Unable to create job noserver"
+	if len(logger.lines) != 1 || !strings.HasPrefix(logger.lines[0], want) ||
+		!strings.Contains(logger.lines[0], "no server to connect to") {
+		t.Fatalf("log = %q, want one line %q ... no server to connect to", logger.lines, want)
 	}
 }

@@ -194,7 +194,7 @@ func (s *scheduler) runDueJob(ctx context.Context, due dueJob) {
 	}
 	client, err := s.newMaprClient(due.args, mode)
 	if err != nil {
-		s.log().Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
+		logCreateFailure(s.log(), job.Name, err)
 		now := s.now()
 		s.logFailure(due, s.backoff.fail(due, due.final, now, now, due.rangeEnd))
 		return

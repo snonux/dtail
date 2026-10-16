@@ -7,6 +7,7 @@ import (
 	"io"
 	"math/rand"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -154,20 +155,23 @@ func (c *baseClient) closeAuth() error {
 	return closer.Close()
 }
 
-// errNoServers is the error of a client that is not serverless and whose
-// server discovery yielded no server, e.g. a --servers value of only
-// whitespace and commas, a server list file of only blank and comment lines,
-// or a discovery regex no server matches. Such a client would otherwise run
-// no session at all and exit 0 with no output, and dtailhealth would report
-// OK.
-var errNoServers = errors.New("no server to connect to")
+// ErrNoServers is the error of a client whose server discovery yielded no
+// server to connect to, e.g. a --servers value of only whitespace and commas,
+// an empty --servers value with a discovery module, a server list file of
+// only blank and comment lines, or a discovery regex no server matches. Such
+// a client would otherwise run no session at all and exit 0 with no output,
+// and dtailhealth would report OK. It is exported so that the background
+// jobs can tell this configuration problem from other creation failures.
+var ErrNoServers = errors.New("no server to connect to")
 
 // makeConnections discovers the servers and creates one connection per
-// server. A client that is not serverless fails with errNoServers when the
-// discovery yields no server. Scheduled and continuous jobs fail the same
-// way when their client is created: the scheduler counts that as a failed
-// run and backs the job off, writing no outfile, just as it does for a
-// scheduled query that ran on no server (see scheduledQueryOutcome).
+// server. It fails with ErrNoServers when no server is left to connect to
+// (see connectableServers). Scheduled and continuous jobs fail the same way
+// when their client is created: the scheduler counts that as a failed run
+// and backs the job off, writing no outfile, just as it does for a scheduled
+// query that ran on no server (see scheduledQueryOutcome); a continuous job
+// writes no outfile either and is tried again at its next retry, every
+// minute, without a backoff.
 func (c *baseClient) makeConnections() error {
 	if c.profile.newHandler == nil {
 		return errors.New("client handler factory is required")
@@ -180,12 +184,13 @@ func (c *baseClient) makeConnections() error {
 	if err != nil {
 		return fmt.Errorf("configure server discovery: %w", err)
 	}
-	servers, err := discoveryService.ServerList()
+	discovered, err := discoveryService.ServerList()
 	if err != nil {
 		return fmt.Errorf("discover servers: %w", err)
 	}
-	if len(servers) == 0 && !c.Serverless {
-		return fmt.Errorf("discover servers: %w", errNoServers)
+	servers := connectableServers(discovered, c.Serverless)
+	if len(servers) == 0 {
+		return fmt.Errorf("discover servers: %w", ErrNoServers)
 	}
 	for _, server := range servers {
 		connection, connectionErr := c.makeConnection(server, c.sshAuthMethods, c.hostKeyCallback)
@@ -197,6 +202,24 @@ func (c *baseClient) makeConnections() error {
 
 	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause(), c.clientLogger())
 	return nil
+}
+
+// connectableServers returns the discovered servers a client connects to.
+// The entry "" names no server: it is the serverless sentinel the COMMA
+// module returns for an empty server value (see
+// discovery.ServerListFromCOMMA), and a serverless client opens its single
+// session for it. A client that is not serverless (an empty --servers value
+// with a discovery module, e.g. --discovery comma --servers "") drops it, so
+// that it fails with ErrNoServers like a --servers value of only whitespace
+// does, and not with an empty server address. The caller rejects an empty
+// result whether or not the client is serverless: a serverless client always
+// has the sentinel, unless its server value names a server list file with no
+// entry (a file named "serverless"), and then it would do nothing as well.
+func connectableServers(servers []string, serverless bool) []string {
+	if serverless {
+		return servers
+	}
+	return slices.DeleteFunc(servers, func(server string) bool { return server == "" })
 }
 
 func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status int) {

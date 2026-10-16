@@ -91,32 +91,44 @@ func TestMakeConnectionsIgnoresBlankServerEntries(t *testing.T) {
 	}
 }
 
-// TestMakeConnectionsRejectsNoServer checks that a client that is not
-// serverless fails when its discovery yields no server, instead of running
-// no session and exiting 0 with no output (and dtailhealth reporting OK). A
-// serverless client still gets its single serverless session.
+// TestMakeConnectionsRejectsNoServer checks that a client fails when its
+// discovery yields no server, instead of running no session and exiting 0
+// with no output (and dtailhealth reporting OK). An empty server value with a
+// discovery module fails the same way, not with the empty server address "".
+// The check does not depend on serverless mode: a serverless client whose
+// discovery yields nothing fails too. A serverless client with the empty
+// server value still gets its single serverless session.
 func TestMakeConnectionsRejectsNoServer(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		servers func(*testing.T) string
+		name       string
+		discovery  string
+		serverless bool
+		servers    func(*testing.T) string
 	}{
 		{name: "blank server value", servers: func(*testing.T) string { return " " }},
 		{name: "only commas and spaces", servers: func(*testing.T) string { return " , ," }},
 		{name: "file of only comment and blank lines",
 			servers: func(t *testing.T) string { return writeServerFile(t, "# none\n\n  \n") }},
 		{name: "regex without a discovery module", servers: func(*testing.T) string { return "/alpha/" }},
+		{name: "empty server value with the comma module", discovery: "comma",
+			servers: func(*testing.T) string { return "" }},
+		{name: "blank server value with the comma module", discovery: "comma",
+			servers: func(*testing.T) string { return " " }},
+		{name: "serverless with a blank server value", serverless: true,
+			servers: func(*testing.T) string { return " " }},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var dialled []string
-			c := newDiscoveryTestClient(tt.servers(t), false, &dialled)
+			c := newDiscoveryTestClient(tt.servers(t), tt.serverless, &dialled)
+			c.Discovery = tt.discovery
 			err := c.makeConnections()
-			if !errors.Is(err, errNoServers) || !strings.Contains(err.Error(), "discover servers: no server to connect to") {
-				t.Fatalf("makeConnections() error = %v, want %v", err, errNoServers)
+			if !errors.Is(err, ErrNoServers) || !strings.Contains(err.Error(), "discover servers: no server to connect to") {
+				t.Fatalf("makeConnections() error = %v, want %v", err, ErrNoServers)
 			}
 			if len(dialled) != 0 || len(c.connections) != 0 {
 				t.Fatalf("connections to %q (%d), want none", dialled, len(c.connections))
@@ -183,8 +195,8 @@ func TestNewHealthClientRejectsNoServer(t *testing.T) {
 		args.KnownHostsPath = filepath.Join(t.TempDir(), "known_hosts")
 		args.NoAuthKey = true
 		client, err := NewHealthClient(args, clientTestRuntimeConfig(), LoggerDependencies{})
-		if !errors.Is(err, errNoServers) || client != nil {
-			t.Fatalf("NewHealthClient(%q) = %v, %v, want error %v", servers, client, err, errNoServers)
+		if !errors.Is(err, ErrNoServers) || client != nil {
+			t.Fatalf("NewHealthClient(%q) = %v, %v, want error %v", servers, client, err, ErrNoServers)
 		}
 	}
 }

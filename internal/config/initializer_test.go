@@ -680,3 +680,45 @@ func TestSetupLoggingPrecedence(t *testing.T) {
 		})
 	}
 }
+
+// TestTransformSelectsServerlessModeIgnoringWhitespace checks the serverless
+// detection of the clients and of dtailhealth: the empty --servers value and
+// "serverless" in any case select serverless mode, whitespace around
+// "serverless" included (it used to dial the host "serverless"), while a
+// value of only whitespace or with a discovery module does not.
+func TestTransformSelectsServerlessModeIgnoringWhitespace(t *testing.T) {
+	tests := []struct {
+		servers   string
+		discovery string
+		want      bool
+	}{
+		{servers: "", want: true},
+		{servers: "serverless", want: true},
+		{servers: "SERVERLESS", want: true},
+		{servers: " serverless", want: true},
+		{servers: "\tServerless \n", want: true},
+		{servers: " ", want: false},
+		{servers: "alpha", want: false},
+		{servers: "serverless,alpha", want: false},
+		{servers: "", discovery: "comma", want: false},
+		{servers: " serverless ", discovery: "comma", want: false},
+	}
+
+	transforms := map[string]func(*initializer, *Args, []string) error{
+		"client": transformClient, "healthcheck": transformHealthCheck,
+	}
+	for name, transform := range transforms {
+		for _, tt := range tests {
+			in := initializer{Common: newDefaultCommonConfig(), Server: newDefaultServerConfig(),
+				Client: newDefaultClientConfig()}
+			args := Args{ServersStr: tt.servers, Discovery: tt.discovery}
+			if err := transform(&in, &args, nil); err != nil {
+				t.Fatalf("%s transform(%q) error = %v", name, tt.servers, err)
+			}
+			if args.Serverless != tt.want {
+				t.Errorf("%s transform(servers %q, discovery %q) Serverless = %v, want %v",
+					name, tt.servers, tt.discovery, args.Serverless, tt.want)
+			}
+		}
+	}
+}

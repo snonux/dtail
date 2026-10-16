@@ -591,7 +591,14 @@ an older dserver (no `command-failure-v1`) only has the close handshake:
 killed or shut down servers and lost connections are still detected, failed
 reads on such a server are not (they still give a header-only or partial
 outfile, as before). Continuous jobs and interactive `dmap` with an outfile
-keep writing interim and final results whatever the exit status.
+keep writing interim and final results whatever the exit status. A job whose
+server discovery yields no server at all (e.g. a server list file of only
+blank and comment lines; empty `Servers` mean this dserver, see `jobServersStr`
+in `internal/jobs/runner.go`) fails when its client is created
+(`clients.ErrNoServers`, `no server to connect to`, logged at WARN as `Unable
+to create job <name>`): a scheduled job counts that as a failed run as above,
+and a continuous job writes no outfile and runs again at its next retry,
+every minute, without a backoff.
 
 **Best Practices for High-Concurrency MapReduce:**
 1. Increase MaxConcurrentCats in the server configuration to match workload

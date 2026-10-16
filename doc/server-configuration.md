@@ -188,7 +188,7 @@ Job fields (both job types share them unless noted):
 | `Files` | both | Comma-separated file list or glob to read. Supports the date placeholders below. |
 | `Query` | both | A [DTail query language](./querylanguage.md) MapReduce query. |
 | `Outfile` | both | Where the MapReduce result is written. Supports the date placeholders below. |
-| `Servers` | both | Server list, joined with commas into the client's `--servers` value. Whitespace around entries and empty entries are ignored. A single entry naming an existing file is read as a server list file (one server per line; blank lines and `#` comment lines are ignored). Empty, or only blank entries, means this `dserver` itself. |
+| `Servers` | both | Server list, joined with commas into the client's `--servers` value. Whitespace around entries and empty entries are ignored. Without a `Discovery` module, a single entry naming an existing file is read as a server list file (one server per line; blank lines, `#` comment lines and a leading UTF-8 byte order mark are ignored). Empty, or only blank entries, means this `dserver` itself: its `Server.SSHBindAddress` at `Common.SSHPort`, or the loopback address (`127.0.0.1`, or `::1` for `::`) when it listens on every address (`""`, `0.0.0.0` or `::`). |
 | `Discovery` | both | Optional server discovery module, e.g. `comma:server1,server2` or `file:/path/to/serverlist`. |
 | `AllowFrom` | both | Optional list of addresses the job's SSH connections are accepted from (hostnames are resolved). |
 | `TimeRange` | `Schedule` only | `[startHour, endHour]` (24h clock); the job runs when `startHour <= hour < endHour`. `[0, 24]` means the whole day. |
@@ -217,6 +217,13 @@ and writes no outfile for that period.
 
 Continuous jobs and interactive `dmap` with an outfile keep writing interim
 and final results whatever the exit status.
+
+A job whose servers name no server at all, e.g. a server list file of only
+blank and comment lines, fails before it connects anywhere (`no server to
+connect to`, logged at `WARN` as `Unable to create job <name>`). A scheduled
+job counts that as a failed run (see above). A continuous job writes no
+outfile, so an earlier outfile is not overwritten with empty results, and it
+runs again a minute later, as after any other exit, without a backoff.
 
 ## A minimal example configuration
 

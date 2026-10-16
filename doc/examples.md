@@ -42,8 +42,11 @@ Spaces around the commas and empty entries are ignored, so
 `--servers 'server1.example.org, server2.example.org'` works as well.
 A server list (file or comma-separated) that names no server at all, e.g.
 a file of only comment lines or `--servers ' '`, is an error (`no server to
-connect to`); `dtailhealth` reports it as `CRITICAL`. Whitespace around the
-path of a server list file is ignored too.
+connect to`); `dtailhealth` reports it as `CRITICAL`. So is a `--discovery`
+module, or a `/regex/` filter, that yields no server, and an empty
+`--servers ''` together with `--discovery`. Whitespace around the path of a
+server list file is ignored too, and so is a UTF-8 byte order mark at the
+start of the file.
 
 ![dtail](dtail.gif "Tail example")
 
@@ -148,7 +151,7 @@ Until now, all examples so far required to have remote server(s) to connect to. 
 
 The serverless mode does not require any `dserver` up and running and therefore there is no networking/SSH involved. 
 
-All commands shown so far also work in a serverless mode. All what needs to be done is to omit a server list. The DTail client then starts in serverless mode. The explicit spelling `--servers serverless` works as well. Note that serverless mode defaults to log level `warn` unless you override it (e.g. with `--logLevel info`).
+All commands shown so far also work in a serverless mode. All what needs to be done is to omit a server list. The DTail client then starts in serverless mode. The explicit spelling `--servers serverless` works as well (in any case, and with whitespace around it ignored). Note that serverless mode defaults to log level `warn` unless you override it (e.g. with `--logLevel info`).
 
 ### Serverless map-reduce query
 

@@ -96,14 +96,18 @@ func (d *Discovery) initRegex() error {
 
 // ServerList to connect to via DTail client. The FILE and COMMA modules
 // already trim their entries and skip empty ones, so the deduplication below
-// sees "host" and " host" as the same server. The regex filter applies to the
-// entries of a discovery module only: a /regex/ server value is no server list
-// (initRegex clears it), so no FILE or COMMA entry ever reaches the filter
-// without an explicit module.
+// sees "host" and " host" as the same server. The regex filter only has
+// entries to filter from a custom discovery module, one that does not read
+// the server value: a /regex/ server value is no server list (initRegex
+// clears it), so the FILE and COMMA modules, explicit or implied, see an
+// empty server value. Without a module the result is then empty, the
+// explicit COMMA module yields only the serverless sentinel "" (which the
+// filter rarely keeps, and a client that is not serverless drops anyway) and
+// the explicit FILE module fails to open the file "".
 //
 // The list can be empty, e.g. a server list file with only comment lines or a
 // regex no server matches. ServerList returns it as it is; the client rejects
-// it unless it runs serverless (see baseClient.makeConnections).
+// it (see baseClient.makeConnections).
 func (d *Discovery) ServerList() ([]string, error) {
 	servers, err := d.serverListFromModule()
 	if err != nil {

@@ -256,9 +256,10 @@ func TestServerListReturnsFileReadError(t *testing.T) {
 }
 
 // TestServerListFromFileSkipsBlankAndCommentLines covers server list files
-// with blank lines, indented entries, CRLF line endings and comments. Each
-// of these used to yield an empty or whitespace-wrapped address that aborted
-// the whole client before it connected to any server.
+// with blank lines, indented entries, CRLF line endings, comments and a
+// leading UTF-8 byte order mark. Each of these used to yield an empty,
+// whitespace-wrapped or otherwise invalid address that aborted the whole
+// client before it connected to any server.
 func TestServerListFromFileSkipsBlankAndCommentLines(t *testing.T) {
 	t.Parallel()
 
@@ -276,6 +277,12 @@ func TestServerListFromFileSkipsBlankAndCommentLines(t *testing.T) {
 		{name: "dedup after trimming", content: "alpha\n alpha\nalpha \n", want: []string{"alpha"}},
 		{name: "only blank and comment lines", content: "\n# none\n  \n", want: []string{}},
 		{name: "explicit file module", method: "file", content: "\nalpha\n", want: []string{"alpha"}},
+		// Editors may write a UTF-8 byte order mark, which TrimSpace keeps.
+		{name: "utf-8 bom", content: "\uFEFFalpha\nbeta\n", want: []string{"alpha", "beta"}},
+		{name: "utf-8 bom before a comment", content: "\uFEFF# servers\nalpha\n", want: []string{"alpha"}},
+		{name: "utf-8 bom before padding", content: "\uFEFF  alpha\n", want: []string{"alpha"}},
+		{name: "bom only stripped at the start", content: "alpha\n\uFEFFbeta\n",
+			want: []string{"alpha", "\uFEFFbeta"}},
 		// A '#' starts a comment only at the start of a line: an inline
 		// comment is part of the entry and fails in the address parser.
 		{name: "inline comment is no comment", content: "host # c\n", want: []string{"host # c"}},
