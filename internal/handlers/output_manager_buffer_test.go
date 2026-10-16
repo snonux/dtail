@@ -213,12 +213,12 @@ func TestDefaultOutputBufferAdmitsMaximumFormattedLine(t *testing.T) {
 }
 
 func TestOutputBufferConfigRejectsCapBelowMaximumLineEnvelope(t *testing.T) {
-	err := validateOutputBufferConfig(&config.ServerConfig{
+	err := ValidateOutputBufferConfig(&config.ServerConfig{
 		MaxLineLength:        1024,
 		OutputBufferMaxBytes: 1024,
 	})
 	if err == nil {
-		t.Fatal("validateOutputBufferConfig accepted a cap with no room for framing")
+		t.Fatal("ValidateOutputBufferConfig accepted a cap with no room for framing")
 	}
 }
 
@@ -245,15 +245,15 @@ func TestOutputBufferConfigRejectsOverflowingMaxLineLength(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateOutputBufferConfig(&config.ServerConfig{
+			err := ValidateOutputBufferConfig(&config.ServerConfig{
 				MaxLineLength:        tt.maxLineLength,
 				OutputBufferMaxBytes: tt.bufferMax,
 			})
 			switch {
 			case tt.wantErr == "" && err != nil:
-				t.Fatalf("validateOutputBufferConfig() = %v, want nil", err)
+				t.Fatalf("ValidateOutputBufferConfig() = %v, want nil", err)
 			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
-				t.Fatalf("validateOutputBufferConfig() = %v, want an error containing %q", err, tt.wantErr)
+				t.Fatalf("ValidateOutputBufferConfig() = %v, want an error containing %q", err, tt.wantErr)
 			}
 		})
 	}

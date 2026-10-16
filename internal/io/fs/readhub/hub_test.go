@@ -746,35 +746,8 @@ func TestFollowMatchesPrivateFollowRead(t *testing.T) {
 			re := mustRegex(t, "ERROR|sync")
 
 			shared := startFollower(t, hub, file, ltx, re, "glob")
-			private := &recorder{}
-			ctx, cancel := context.WithCancel(context.Background())
-			privateDone := make(chan error, 1)
-			reader, err := fs.NewReadFile(fs.ReadOptions{
-				Mode: omode.TailClient, FilePath: file.path, GlobID: "glob", SeekEOF: true,
-				Logger: logging.NopLogger{},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			go func() { privateDone <- reader.Start(ctx, ltx, private.newProcessor(), re) }()
-			defer func() {
-				cancel()
-				<-privateDone
-			}()
-
-			// Append sync lines until both readers have seen the same one.
-			var marker string
-			for i := 0; marker == ""; i++ {
-				text := fmt.Sprintf("sync %d", i)
-				file.appendLines(text)
-				time.Sleep(50 * time.Millisecond)
-				if shared.recorder.hasLine(text) && private.hasLine(text) {
-					marker = text
-				}
-				if i > 200 {
-					t.Fatal("the readers never saw a common sync line")
-				}
-			}
+			private := startPrivateFollower(t, file, ltx, re, 0, nil)
+			marker := syncWithPrivate(t, file, shared, private)
 
 			lines := []string{"INFO 1", "ERROR 2", "INFO 3", "INFO 4", "INFO 5", "ERROR 6", "", "INFO 7", "ERROR 8", "last"}
 			file.appendLines(lines...)
@@ -794,6 +767,48 @@ func TestFollowMatchesPrivateFollowRead(t *testing.T) {
 				t.Errorf("shared line number steps = %v, private = %v", gotSteps, wantSteps)
 			}
 		})
+	}
+}
+
+// startPrivateFollower follows the test file with a private follow reader of
+// MaxLineLength maxLineLength (0 for the default) that sends its server
+// messages to messages, if given, until the test ends.
+func startPrivateFollower(t *testing.T, file *testFile, ltx lcontext.LContext, re regex.Regex,
+	maxLineLength int, messages chan<- string) *recorder {
+
+	t.Helper()
+	private := &recorder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	privateDone := make(chan error, 1)
+	reader, err := fs.NewReadFile(fs.ReadOptions{
+		Mode: omode.TailClient, FilePath: file.path, GlobID: "glob", SeekEOF: true,
+		MaxLineLength: maxLineLength, ServerMessages: messages, Logger: logging.NopLogger{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { privateDone <- reader.Start(ctx, ltx, private.newProcessor(), re) }()
+	t.Cleanup(func() {
+		cancel()
+		<-privateDone
+	})
+	return private
+}
+
+// syncWithPrivate appends sync lines until the shared session and the private
+// reader have seen the same one, and returns it.
+func syncWithPrivate(t *testing.T, file *testFile, shared *follower, private *recorder) string {
+	t.Helper()
+	for i := 0; ; i++ {
+		text := fmt.Sprintf("sync %d", i)
+		file.appendLines(text)
+		time.Sleep(50 * time.Millisecond)
+		if shared.recorder.hasLine(text) && private.hasLine(text) {
+			return text
+		}
+		if i > 200 {
+			t.Fatal("the readers never saw a common sync line")
+		}
 	}
 }
 

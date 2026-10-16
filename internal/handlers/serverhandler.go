@@ -85,8 +85,10 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 	if dependencies.AuthKeyStore == nil {
 		return nil, fmt.Errorf("create server handler: auth-key store must not be nil")
 	}
-	if err := validateOutputBufferConfig(serverCfg); err != nil {
-		return nil, err
+	// dserver checks this once at startup already (server.New); the check
+	// stays here for every other runtime that builds a handler.
+	if err := ValidateOutputBufferConfig(serverCfg); err != nil {
+		return nil, fmt.Errorf("create server handler: %w", err)
 	}
 
 	h := ServerHandler{
@@ -124,22 +126,25 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 	return &h, nil
 }
 
-// validateOutputBufferConfig prevents a valid maximum-length line from being
-// rejected after protocol framing. Zero values use the safe defaults. A
+// ValidateOutputBufferConfig checks that OutputBufferMaxBytes leaves room for
+// a line of MaxLineLength bytes after protocol framing, so that a valid
+// maximum-length line is not rejected. Zero values use the safe defaults. A
 // MaxLineLength so large that the required minimum does not fit an int is
 // rejected as well: the minimum would otherwise wrap around to a negative
-// number and let every OutputBufferMaxBytes pass.
-func validateOutputBufferConfig(serverCfg *config.ServerConfig) error {
+// number and let every OutputBufferMaxBytes pass. dserver calls it once at
+// startup, so that such a configuration fails there instead of refusing every
+// session, and NewServerHandler calls it for every handler.
+func ValidateOutputBufferConfig(serverCfg *config.ServerConfig) error {
 	maxLineLength := positiveIntOrDefault(serverCfg.MaxLineLength, 1024*1024)
 	bufferMaxBytes := positiveIntOrDefault(serverCfg.OutputBufferMaxBytes, defaultOutputBufferMaxBytes)
 	minimum, ok := minimumOutputBufferMaxBytes(maxLineLength)
 	if !ok {
-		return fmt.Errorf("create server handler: MaxLineLength %d is too large: "+
+		return fmt.Errorf("MaxLineLength %d is too large: "+
 			"OutputBufferMaxBytes must be at least MaxLineLength + %d, which exceeds the largest supported value %d",
 			maxLineLength, outputBufferLineOverhead, math.MaxInt)
 	}
 	if bufferMaxBytes < minimum {
-		return fmt.Errorf("create server handler: OutputBufferMaxBytes %d must be at least %d for MaxLineLength %d",
+		return fmt.Errorf("OutputBufferMaxBytes %d must be at least %d for MaxLineLength %d",
 			bufferMaxBytes, minimum, maxLineLength)
 	}
 	return nil

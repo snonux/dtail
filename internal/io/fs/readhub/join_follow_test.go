@@ -463,7 +463,9 @@ func TestPrivateReadInASplitLineDoesNotWarnAgain(t *testing.T) {
 			// session joined there.
 			read.atLineEnd = atLineEnd
 
-			readPrivatelyUntil(t, read, rec, strings.Repeat("b", 2*maxLineLength))
+			// The rest of the line is longer than the limit, so the read cuts
+			// its first maxLineLength bytes off (and keeps the others pending).
+			readPrivatelyUntil(t, read, rec, strings.Repeat("b", maxLineLength))
 			want := 0
 			if !atLineEnd {
 				want = 1

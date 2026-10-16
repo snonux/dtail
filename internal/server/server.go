@@ -99,6 +99,12 @@ func New(cfg config.RuntimeConfig, loggers handlers.HandlerLoggers, backgroundJo
 		panic("Missing runtime server/common configuration")
 	}
 
+	// Fail fast on an output buffer configuration every session would be
+	// refused for (NewServerHandler checks it again per session).
+	if err := handlers.ValidateOutputBufferConfig(cfg.Server); err != nil {
+		return nil, fmt.Errorf("invalid server configuration: %w", err)
+	}
+
 	logger.Info("Starting server", version.String())
 	hostname, err := cfg.Hostname()
 	if err != nil {
