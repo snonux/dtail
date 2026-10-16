@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -369,7 +370,10 @@ func TestHandleSessionCommandRejectsInvalidQuerySession(t *testing.T) {
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "START", payload}, func() {})
 
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckErrorPrefix+"invalid session spec" {
+	// The acknowledgement says why the query was rejected.
+	message := readServerMessage(t, handler.serverMessages)
+	if !strings.HasPrefix(message, sessionAckErrorPrefix+"invalid session spec: ") ||
+		!strings.Contains(message, "invalid query") {
 		t.Fatalf("unexpected invalid query-session error: %q", message)
 	}
 }
@@ -644,5 +648,18 @@ func waitForContextDone(ctx context.Context, t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for context cancellation")
+	}
+}
+
+// TestSessionErrorReasonKeepsTheFraming checks that a query error put into a
+// session error acknowledgement can not split or end the message: the
+// delimiter byte appears in '¬' and as the last byte of '€'.
+func TestSessionErrorReasonKeepsTheFraming(t *testing.T) {
+	got := sessionErrorReason(errors.New("invalid query: 'a¬b€c\nd'"))
+	if want := "invalid query: 'a b c d'"; got != want {
+		t.Fatalf("sessionErrorReason = %q, want %q", got, want)
+	}
+	if strings.IndexByte(got, protocol.MessageDelimiter) >= 0 {
+		t.Fatalf("sessionErrorReason = %q contains the message delimiter", got)
 	}
 }

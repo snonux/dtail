@@ -43,6 +43,9 @@ type ServerHandler struct {
 	// lists protocol.CapabilityEscapedFramingV1, the only case in which the
 	// client's protocol.EscapedFramingCommand switches the session framing.
 	escapedFramingAdvertised bool
+	// mapQueryFailures records which command streams had a failed map
+	// command, so that their reads are rejected (see mapqueryfailure.go).
+	mapQueryFailures mapQueryFailures
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
 }
@@ -408,6 +411,9 @@ func (h *ServerHandler) makeReadCommandHandler(mode omode.Mode, tailBackoff int)
 			command = newReadCommand(h, mode)
 		}
 		command.adoptPendingInputReservation(reservation)
+		// Decided at dispatch: commands are dispatched in the order they
+		// arrive, so a map command sent before this read already failed.
+		command.mapQueryFailed = h.mapQueryFailures.failed(sessionGenerationFromContext(ctx))
 		if reservation == nil {
 			batch := commandBatchFromContext(ctx)
 			if batch == nil {
@@ -433,9 +439,11 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 		h.sendln(h.serverMessages, err.Error())
 		h.Logger().Error(h.user, err)
 		h.reportCommandFailure(commandFailureMapQuery)
+		h.mapQueryFailures.mark(sessionGenerationFromContext(ctx))
 		commandFinished()
 		return
 	}
+	h.mapQueryFailures.clear(sessionGenerationFromContext(ctx))
 
 	maprMessages, closeMaprMessages := h.newGeneratedMaprMessagesChannel(sessionGenerationFromContext(ctx))
 	// Bind the destination before publishing the aggregate pointer. Graceful

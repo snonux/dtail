@@ -101,12 +101,37 @@ FUNCTION := md5sum|maskdigits
   * A current client rejects it whatever version the dservers have, so it
     never sends the query; a scheduled or continuous job with such a query
     logs the error instead of starting and writes no outfile.
-  * An older client does not reject it and sends it to the dservers. A
-    current dserver answers with the parse error (reported as
-    `map: invalid query`) and sends no results, so that server contributes no
-    rows instead of wrong numbers; an outfile the older client writes has
-    no rows from it. An older dserver still aggregates the query with the
-    wrong numbers described above.
+  * An older client does not reject it and sends it to the dservers. An
+    older dserver still aggregates the query with the wrong numbers
+    described above. A current dserver answers with the parse error and
+    sends no results and no log lines, so that server contributes no rows
+    instead of wrong numbers:
+    * With the plain command stream (`dmap`, `dtail --query`, continuous and
+      scheduled jobs), the dserver reports the failed map command (hidden
+      reason `map: invalid query`), rejects the session's read commands
+      (each with an error line and the same reason) and ends the session
+      with its normal close handshake. An older `dmap` writes an outfile
+      without rows from that server (header-only when every server is a
+      current dserver) and exits 0; an older `dtail --query` reconnects and
+      shows the error again on every reconnect, without any log lines.
+    * With `--interactive-query` (`SESSION START`), the dserver rejects the
+      session with `.syn session err invalid session spec: <parse error>`,
+      which the client shows as `session request rejected: invalid session
+      spec: ...` (older dservers sent no parse error after `invalid session
+      spec`). It does not fall back to the plain command stream and streams
+      nothing; `dtail` reconnects and shows the error again. A `:reload` with
+      such a query is rejected with the same error and the running query
+      keeps running.
+    * A scheduled job runs the client of the dserver scheduling it. If that
+      dserver is older but has capability `command-failure-v1`, the
+      `map: invalid query` failure is a transport failure (see "Failed
+      scheduled jobs" in `AGENTS.md`): the job writes no outfile, is backed
+      off, and its final runs after the TimeRange fail the same way, so the
+      scheduler gives up on the outfile 24 hours after the TimeRange ended,
+      for every date period. If the scheduling dserver predates
+      `command-failure-v1`, it only sees a completed session and writes an
+      outfile without rows from the current dservers (header-only when all
+      of them are current, else only the wrong rows of older dservers).
 * If no `interval` clause is given, results are aggregated every 5 seconds.
 * An aggregation only sees the lines of a group that have its field (sparse
   `key=value` fields, a `where` clause not requiring it). The client merges

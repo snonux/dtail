@@ -47,6 +47,9 @@ type readCommand struct {
 	// failureReported is set once the client was told that this command
 	// failed (see reportFailure).
 	failureReported atomic.Bool
+	// mapQueryFailed is set at dispatch when the map command of this read's
+	// command stream failed, so the read is rejected (see mapQueryFailures).
+	mapQueryFailed bool
 }
 
 // Reasons a read command reports with reportFailure. They name no path and no
@@ -189,12 +192,17 @@ func newReadCommandWithDependencies(dependencies readCommandDependencies, mode o
 
 func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	argc int, args []string, retries int) {
-	// If parsing, glob expansion, retry cancellation, or another early-return
-	// path prevents this command from resolving concrete inputs, release its
-	// dispatch-time reservation here. Once an input is resolved, readPipe or
-	// readFiles transfers the reservation and this becomes a no-op.
+	// If a failed map command of the session, parsing, glob expansion, retry
+	// cancellation, or another early-return path prevents this command from
+	// resolving concrete inputs, release its dispatch-time reservation here.
+	// Once an input is resolved, readPipe or readFiles transfers the
+	// reservation and this becomes a no-op.
 	defer func() { r.releasePendingInputReservation(ctx) }()
 	r.generation = sessionGenerationFromContext(ctx)
+	if r.mapQueryFailed {
+		r.rejectAfterMapQueryFailure(ctx, args)
+		return
+	}
 
 	re, ok := r.parseRegex(ctx, argc, args)
 	if !ok {

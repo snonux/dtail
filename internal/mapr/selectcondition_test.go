@@ -60,6 +60,12 @@ func TestParseQueryAcceptsDistinctSelect(t *testing.T) {
 		"select count($x),count(x),count(`x`) from STATS",
 		"select `count(x)`,count($x),`sum(x)` from STATS",
 		"select count(x) from STATS group by x order by count(x)",
+		// The group by field selected next to an aggregation of it.
+		"select x,count(x) from STATS group by x",
+		"select $hostname,count($hostname),sum(lat) from STATS group by $hostname",
+		// A field used in the where clause and in the select clause.
+		"select lat,count(lat) from STATS where lat > 10 group by lat",
+		"select status,count(lat) from STATS where status eq ok group by status",
 	}
 	for _, query := range queries {
 		q, err := NewQuery(query, logging.NopLogger{})

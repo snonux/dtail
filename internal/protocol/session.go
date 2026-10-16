@@ -28,7 +28,9 @@ const (
 	CommandFailureRejected = "command: rejected"
 	// CommandFailureUnknown: a command is unknown.
 	CommandFailureUnknown = "command: unknown command"
-	// CommandFailureMapQuery: a map query is invalid.
+	// CommandFailureMapQuery: a map query is invalid. It is also reported
+	// for each read command following the failed map command of a command
+	// stream, as dserver does not run those reads.
 	CommandFailureMapQuery = "map: invalid query"
 	// CommandFailureReadCommand: a read command could not be parsed.
 	CommandFailureReadCommand = "read: unable to parse command"

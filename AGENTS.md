@@ -612,6 +612,10 @@ failure are told apart:
   frames that did not fit the session's output buffer (see the output limits
   above); it is no file read failure, as the file was read. A scheduled job's
   server-side MapReduce sends aggregates, not line frames, so it cannot get it.
+  dserver does not run the read commands that follow a failed map command of
+  the same command stream (legacy stream or session generation,
+  `internal/handlers/mapqueryfailure.go`): each reports `map: invalid query`
+  too, so no line is streamed as plain payload in place of MapReduce results.
 - **File read failures**, reported by dservers advertising capability
   `command-failure-v1` with the hidden message `.syn command failed <reason>`
   (fixed reasons from `internal/protocol/session.go`, no paths or error

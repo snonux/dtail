@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -9,12 +10,15 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/session"
 )
 
@@ -121,7 +125,7 @@ func validateSessionSpec(spec session.Spec, logger logging.Logger) error {
 	}
 	if spec.Query != "" {
 		if _, err := mapr.NewQuery(spec.Query, logger); err != nil {
-			return fmt.Errorf("invalid session spec")
+			return fmt.Errorf("invalid session spec: %s", sessionErrorReason(err))
 		}
 	}
 
@@ -222,6 +226,24 @@ func sessionCommandContext(connCtx, parent context.Context) context.Context {
 	return ctx
 }
 
+// sessionErrorReason returns err's text for a session error acknowledgement.
+// Clients, also older ones, take the whole rest of the acknowledgement as the
+// error and show it, so it may say why a query was rejected. The query comes
+// from the client's JSON spec and may contain characters that would break the
+// message framing, which has no escaping: control characters and every
+// character whose UTF-8 encoding contains the message delimiter byte are
+// replaced with blanks.
+func sessionErrorReason(err error) string {
+	return strings.Map(func(r rune) rune {
+		var encoded [utf8.UTFMax]byte
+		n := utf8.EncodeRune(encoded[:], r)
+		if unicode.IsControl(r) || bytes.IndexByte(encoded[:n], protocol.MessageDelimiter) >= 0 {
+			return ' '
+		}
+		return r
+	}, err.Error())
+}
+
 func validateSessionOptions(raw string) error {
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -280,6 +302,14 @@ func (h *ServerHandler) dispatchSessionCommands(ctx context.Context, commands []
 		}
 		if admission != nil && !admission.admitted {
 			return fmt.Errorf("server is shutting down")
+		}
+		// validateSessionSpec parsed the query already, so this is a later
+		// failure of the map command (e.g. creating its aggregate). Its reads
+		// are rejected (see mapQueryFailures); stop dispatching them and let
+		// the caller reject the request rather than acknowledge a workload
+		// without its aggregate.
+		if h.mapQueryFailures.failed(sessionGenerationFromContext(ctx)) {
+			return fmt.Errorf("invalid session query")
 		}
 	}
 	return nil
