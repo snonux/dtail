@@ -56,6 +56,9 @@ splits a command line, without any variable, command or glob expansion
 (`$line` and `*` stay as typed):
 
 * Spaces and tabs separate arguments; quote a value to keep its spaces.
+  A value reaches the servers with its blanks exactly as typed (a trailing
+  blank, a run of blanks and a tab stay what they are), so
+  `:reload --regex 'x  y'` matches `x  y` but not `x y`.
 * Single quotes keep everything up to the closing quote literally,
   backslashes included. Use them for regular expressions:
   `:reload --regex '\d+ ms'` matches the regex `\d+ ms`.
@@ -65,18 +68,25 @@ splits a command line, without any variable, command or glob expansion
   `"\$"` is `$`. (A shell's backslash-newline continuation does not apply,
   as each control line is read on its own.)
 * Outside quotes, a backslash makes the next character literal, so `\d`
-  becomes `d` there; `/var/log/my\ app.log` is one argument.
+  becomes `d` there; `foo\ bar` is the one argument `foo bar`.
 * An empty quoted string is an empty value: `:reload --regex ''` clears the
   regex, so every line matches again.
 * Quoted and unquoted parts next to each other form one argument, and an
   unterminated quote or a trailing backslash rejects the whole line with an
   error, leaving the current workload unchanged.
-* Non-ASCII text is passed through byte for byte. A line that is not valid
-  UTF-8 is rejected with an error, as the update sent to the servers is JSON,
-  which cannot carry invalid UTF-8 unchanged.
+* Non-ASCII text is passed through byte for byte. A `:reload` line that is
+  not valid UTF-8 is rejected with an error, as the update sent to the
+  servers is JSON, which cannot carry invalid UTF-8 unchanged. The check
+  covers `:reload` lines only: the initial workload from the command-line
+  flags is not checked, and when it starts with `SESSION START` (see below)
+  invalid bytes in its values reach the servers as U+FFFD.
 * Only leading blanks and the line ending are removed before splitting, so
   an escaped trailing blank stays part of the value: `--regex foo\ ` (with
   a space after the backslash) is the regex `foo ` with the trailing space.
+* File paths containing spaces cannot be read: the servers split each read
+  command on spaces, so such a path would arrive as several arguments. To
+  read several files, list them comma-separated, e.g.
+  `:reload --files /var/log/a.log,/var/log/b.log`.
 
 ## Examples
 

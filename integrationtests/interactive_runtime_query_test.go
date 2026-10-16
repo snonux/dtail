@@ -262,10 +262,21 @@ func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 }
 
 // TestDGrepInteractiveReloadQuoting checks the shell-like quoting of :reload
-// end to end: a single-quoted regex keeps its backslash (`'\d+ ms'` must not
-// become `d+ ms`, which would match "odd ms" instead of "latency 12 ms"), and
-// an empty quoted value clears the regex so every line matches again. An
-// empty --files value is rejected instead of cancelling the read for nothing.
+// end to end, and that the server keeps the blanks of a regex sent with
+// SESSION START or UPDATE:
+//
+//   - the initial `x  y` regex (two spaces, via SESSION START) and a
+//     reloaded 'p  q' must not collapse to `x y` and `p q`;
+//   - `foo\ ` keeps its escaped trailing blank, so it matches "foo bar end"
+//     but not "foobar end";
+//   - a single-quoted regex keeps its backslash (`'\d+ ms'` must not become
+//     `d+ ms`, which would match "odd ms" instead of "latency 12 ms");
+//   - an empty quoted value clears the regex so every line matches again;
+//   - an empty --files value is rejected instead of cancelling the read for
+//     nothing.
+//
+// The needles are data lines which the PTY echo of the typed :reload lines
+// does not contain.
 func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 
@@ -278,7 +289,9 @@ func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 	defer cancel()
 
 	inputFile := "interactive_dgrep_quoting.tmp"
-	if err := os.WriteFile(inputFile, []byte("ERROR first\nlatency 12 ms\nodd ms\n"), 0600); err != nil {
+	input := "ERROR first\nx y end\nx  y end\nfoobar end\nfoo bar end\n" +
+		"p q end\np  q end\nlatency 12 ms\nodd ms\n"
+	if err := os.WriteFile(inputFile, []byte(input), 0600); err != nil {
 		t.Fatalf("unable to create input file: %v", err)
 	}
 	cleanupFiles(t, inputFile, "interactive_dgrep_quoting.stdout.tmp")
@@ -287,9 +300,11 @@ func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 	clientOutput, err := runInteractivePTYCommand(ctx, []string{
 		"../dgrep", "--cfg", "none", "--logger", "stdout", "--logLevel", "info",
 		"--servers", fmt.Sprintf("localhost:%d", port), "--files", inputFile,
-		"--grep", "ERROR", "--plain", "--trustAllHosts", "--interactive-query",
+		"--grep", "x  y", "--plain", "--trustAllHosts", "--interactive-query",
 	}, []interactiveStep{
-		{WaitFor: "ERROR first", Input: `:reload --regex '\d+ ms'`},
+		{WaitFor: "x  y end", Input: `:reload --regex 'p  q'`},
+		{WaitFor: "p  q end", Input: `:reload --regex foo\ `},
+		{WaitFor: "foo bar end", Input: `:reload --regex '\d+ ms'`},
 		{WaitFor: "latency 12 ms", Input: `:reload --regex ''`},
 		{WaitFor: "odd ms", Input: `:reload --files ''`},
 		{WaitFor: "interactive query error: --files needs at least one non-blank file", Input: ":quit"},
@@ -297,13 +312,26 @@ func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run interactive dgrep: %v\noutput:\n%s", err, clientOutput)
 	}
+	assertInteractiveQuotingOutput(t, clientOutput)
+}
 
-	// Initial read, the '\d+ ms' read and the cleared-regex read.
+// assertInteractiveQuotingOutput checks the output of
+// TestDGrepInteractiveReloadQuoting: each line is printed once by the read
+// its regex selects and once more by the final cleared-regex read, which
+// alone prints the lines no other regex matched.
+func assertInteractiveQuotingOutput(t *testing.T, clientOutput string) {
+	t.Helper()
 	for needle, want := range map[string]int{
-		"ERROR first":                 2,
+		"ERROR first":                 1,
+		"x  y end":                    2,
+		"x y end":                     1,
+		"p  q end":                    2,
+		"p q end":                     1,
+		"foo bar end":                 2,
+		"foobar end":                  1,
 		"latency 12 ms":               2,
 		"odd ms":                      1,
-		"reload applied successfully": 2,
+		"reload applied successfully": 4,
 		// The rejected empty --files reload neither applies nor reads again.
 		"interactive query error: --files needs at least one non-blank file": 1,
 	} {

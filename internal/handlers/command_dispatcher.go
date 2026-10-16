@@ -174,11 +174,22 @@ func (d *commandDispatcher) handleBase64(args []string, argc int) ([]string, int
 	return d.codec.handleBase64(args, argc)
 }
 
+// handleRawCommand dispatches one command of a SESSION START/UPDATE spec,
+// which session.Spec.Commands built, without protocol or base64 framing.
+//
+// It splits on single spaces exactly like the base64-decoded legacy path in
+// handleCommand, which gets the same commands from the same builder. A read
+// command's regex is the rejoined args[2:], so splitting on runs of
+// whitespace (strings.Fields) would drop trailing blanks, collapse blank runs
+// and turn tabs into spaces in the pattern. The builder emits single spaces
+// between fields, so it needs no tolerance for extra ones; an empty pattern
+// is serialized as "regex:noop " and its trailing empty field rejoins to the
+// same noop regex the legacy path gets.
 func (d *commandDispatcher) handleRawCommand(ctx context.Context, command string) error {
-	args := strings.Fields(command)
-	if len(args) == 0 {
+	if command == "" {
 		return fmt.Errorf("empty command")
 	}
+	args := strings.Split(command, " ")
 	return d.dispatchCommand(ctx, args, len(args))
 }
 

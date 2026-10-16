@@ -21,8 +21,8 @@ import (
 //     The shell's fifth case, a backslash-newline line continuation, cannot
 //     occur because the control TTY delivers one line at a time.
 //   - Quoted parts and unquoted parts join into one token when adjacent
-//     (`--files=/a' 'b` is "--files=/a b"), and an empty quoted string (a
-//     pair of single or of double quotes) is an empty argument, so that
+//     (`--regex=foo' 'bar` is "--regex=foo bar"), and an empty quoted string
+//     (a pair of single or of double quotes) is an empty argument, so that
 //     `--regex ""` sets the regex to "". That is why the tokenizer tracks
 //     whether a token was started separately from its length.
 //

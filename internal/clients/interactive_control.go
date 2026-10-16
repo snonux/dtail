@@ -104,35 +104,13 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 			continue
 		}
 
-		switch command.kind {
-		case "help":
-			if helpErr := c.writeInteractiveHelp(tty); helpErr != nil {
-				return helpErr
-			}
-		case "show":
-			if stateErr := c.writeInteractiveState(tty); stateErr != nil {
-				return stateErr
-			}
-		case "quit":
-			if quitErr := writeControlLine(tty, "quitting interactive session"); quitErr != nil {
-				return quitErr
-			}
+		quit, runErr := c.runInteractiveCommand(tty, command)
+		if runErr != nil {
+			return runErr
+		}
+		if quit {
 			cancel()
 			return nil
-		case "reload":
-			if reloadErr := c.applyInteractiveReload(command.next, command.spec); reloadErr != nil {
-				if writeErr := writeControlLine(tty, "reload failed: "+reloadErr.Error()); writeErr != nil {
-					return writeErr
-				}
-				continue
-			}
-			if successWriteErr := writeControlLine(tty, "reload applied successfully"); successWriteErr != nil {
-				return successWriteErr
-			}
-		default:
-			if unsupportedErr := writeControlLine(tty, "unsupported command"); unsupportedErr != nil {
-				return unsupportedErr
-			}
 		}
 	}
 
@@ -140,6 +118,28 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 		return err
 	}
 	return nil
+}
+
+// runInteractiveCommand runs one parsed control command and writes its
+// answer to the TTY. It reports quit for :quit, after which the caller
+// cancels the interactive session. A failed reload is answered on the TTY and
+// is no error: only a failed TTY write ends the control loop.
+func (c *baseClient) runInteractiveCommand(tty io.Writer, command interactiveCommand) (quit bool, err error) {
+	switch command.kind {
+	case "help":
+		return false, c.writeInteractiveHelp(tty)
+	case "show":
+		return false, c.writeInteractiveState(tty)
+	case "quit":
+		return true, writeControlLine(tty, "quitting interactive session")
+	case "reload":
+		if reloadErr := c.applyInteractiveReload(command.next, command.spec); reloadErr != nil {
+			return false, writeControlLine(tty, "reload failed: "+reloadErr.Error())
+		}
+		return false, writeControlLine(tty, "reload applied successfully")
+	default:
+		return false, writeControlLine(tty, "unsupported command")
+	}
 }
 
 func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec SessionSpec) error {
@@ -248,18 +248,20 @@ func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
 
 // interactiveHelpText returns the :help line for the given arguments. The
 // example matches the flags parseInteractiveReloadArgs accepts in that mode,
-// so that e.g. dmap or dcat do not suggest a --regex they would reject.
+// so that e.g. dmap or dcat do not suggest a --regex they would reject. The
+// --files examples contain no spaces: the servers split each read command on
+// spaces, so a path with a space cannot be read.
 func interactiveHelpText(args config.Args) string {
 	const prefix = "Commands: :reload <flags>, :show, :help, :quit. Quote values as in a shell: "
 	switch {
 	case isInteractiveQueryMode(args):
 		return prefix + "--query \"select count(status) from stats\" (double quotes keep spaces), " +
-			"--files '/var/log/my app.log'."
+			"--files /var/log/a.log,/var/log/b.log (comma-separated)."
 	case args.Mode == omode.GrepClient || args.Mode == omode.TailClient:
 		return prefix + "--regex '\\d+' (single quotes keep backslashes), " +
 			"--regex '' (empty value, matches every line)."
 	default:
-		return prefix + "--files '/var/log/my app.log' (quotes keep spaces)."
+		return prefix + "--files /var/log/a.log,/var/log/b.log (comma-separated)."
 	}
 }
 
@@ -299,11 +301,21 @@ func parseInteractiveCommand(current config.Args, line string, logger logging.Lo
 		return interactiveCommand{kind: "show"}, nil
 	case trimmed == ":quit":
 		return interactiveCommand{kind: "quit"}, nil
-	case strings.HasPrefix(trimmed, ":reload"):
+	case isInteractiveReloadLine(trimmed):
 		return parseInteractiveReload(current, line, logger)
 	default:
 		return interactiveCommand{}, fmt.Errorf("unknown command %q", trimmed)
 	}
+}
+
+// isInteractiveReloadLine reports whether the trimmed control line is the
+// :reload command: ":reload" alone or followed by a blank (a space or a tab,
+// the separators of splitInteractiveArgs). Anything else starting with
+// ":reload", such as ":reloadx" or ":reload--regex=x", is an unknown command.
+func isInteractiveReloadLine(trimmed string) bool {
+	const command = ":reload"
+	rest, found := strings.CutPrefix(trimmed, command)
+	return found && (rest == "" || rest[0] == ' ' || rest[0] == '\t')
 }
 
 // parseInteractiveReload parses a :reload line into the next arguments and

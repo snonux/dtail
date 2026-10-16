@@ -297,7 +297,7 @@ func TestInteractiveHelpTextMatchesMode(t *testing.T) {
 		{name: "dtail", args: config.Args{Mode: omode.TailClient}, wantExample: `--regex '\d+'`},
 		{name: "dtail query", args: config.Args{Mode: omode.TailClient, QueryStr: query}, wantExample: "--query"},
 		{name: "dmap", args: config.Args{Mode: omode.MapClient, QueryStr: query}, wantExample: "--query"},
-		{name: "dcat", args: config.Args{Mode: omode.CatClient}, wantExample: "--files '/var/log/my app.log'"},
+		{name: "dcat", args: config.Args{Mode: omode.CatClient}, wantExample: "--files /var/log/a.log,/var/log/b.log"},
 	}
 
 	for _, tt := range tests {
@@ -309,12 +309,72 @@ func TestInteractiveHelpTextMatchesMode(t *testing.T) {
 			if !strings.Contains(help, tt.wantExample) {
 				t.Fatalf("help %q lacks example %q", help, tt.wantExample)
 			}
+			// A path with a space cannot be read (the servers split read
+			// commands on spaces), so no example may suggest one.
+			if strings.Contains(help, "my app") || strings.Contains(help, `\ `) {
+				t.Fatalf("help %q suggests a file path with a space", help)
+			}
 			// Only the grep-driven modes accept --regex.
 			grepMode := tt.wantExample == `--regex '\d+'`
 			if strings.Contains(help, "--regex") != grepMode {
 				t.Fatalf("help %q: mentions --regex = %v, want %v", help, !grepMode, grepMode)
 			}
 		})
+	}
+}
+
+// TestParseInteractiveCommandToleratesSurroundingBlanks checks that the
+// commands without flags are recognised with surrounding spaces, tabs and a
+// trailing carriage return, as the control loop passes lines on untrimmed.
+func TestParseInteractiveCommandToleratesSurroundingBlanks(t *testing.T) {
+	current := config.Args{Mode: omode.GrepClient, What: "/var/log/app.log"}
+	for _, kind := range []string{"show", "help", "quit"} {
+		for _, line := range []string{
+			":" + kind,
+			"  :" + kind + "  ",
+			"\t:" + kind + "\t",
+			":" + kind + "\r",
+			" \t:" + kind + " \t\r",
+		} {
+			command, err := parseInteractiveCommand(current, line, logging.NopLogger{})
+			if err != nil {
+				t.Fatalf("parseInteractiveCommand(%q) error = %v", line, err)
+			}
+			if command.kind != kind {
+				t.Fatalf("parseInteractiveCommand(%q) kind = %q, want %q", line, command.kind, kind)
+			}
+		}
+	}
+}
+
+// TestParseInteractiveCommandRequiresExactReload checks that only ":reload"
+// alone or followed by a space or tab is the reload command.
+func TestParseInteractiveCommandRequiresExactReload(t *testing.T) {
+	current := config.Args{Mode: omode.GrepClient, What: "/var/log/app.log", RegexStr: "ERROR"}
+
+	for _, line := range []string{":reload --regex WARN", ":reload\t--regex WARN", "\t:reload --regex WARN\r"} {
+		command, err := parseInteractiveCommand(current, line, logging.NopLogger{})
+		if err != nil {
+			t.Fatalf("parseInteractiveCommand(%q) error = %v", line, err)
+		}
+		if command.kind != "reload" || command.next.RegexStr != "WARN" {
+			t.Fatalf("parseInteractiveCommand(%q) = kind %q regex %q, want reload WARN",
+				line, command.kind, command.next.RegexStr)
+		}
+	}
+
+	for _, line := range []string{":reload", " :reload\r", ":reload \t"} {
+		_, err := parseInteractiveCommand(current, line, logging.NopLogger{})
+		if err == nil || !strings.Contains(err.Error(), "reload requires flags") {
+			t.Fatalf("parseInteractiveCommand(%q) error = %v, want reload requires flags", line, err)
+		}
+	}
+
+	for _, line := range []string{":reloadx", ":reload--regex=x", ":reloads --regex x", ":reload,--regex x"} {
+		_, err := parseInteractiveCommand(current, line, logging.NopLogger{})
+		if err == nil || !strings.Contains(err.Error(), "unknown command") {
+			t.Fatalf("parseInteractiveCommand(%q) error = %v, want unknown command", line, err)
+		}
 	}
 }
 
