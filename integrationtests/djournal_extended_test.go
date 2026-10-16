@@ -622,7 +622,7 @@ func newDJournalExtendedEnv(t *testing.T, scenario journaltest.Scenario,
 		t.Fatalf("write journal extended authorized_keys cache: %v", err)
 	}
 	server := map[string]any{
-		"HostKeyFile": filepath.Join(tmpDir, "ssh_host_key"),
+		"HostKeyFile": suiteHostKeyPath(t),
 		"Permissions": map[string]any{
 			"Default": permissions,
 		},

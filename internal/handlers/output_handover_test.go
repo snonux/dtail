@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -773,97 +772,141 @@ func TestNetworkWriterHandoverRespectsCapEndToEnd(t *testing.T) {
 	}
 }
 
+// concurrentReloadTimeout bounds TestStaleGenerationDroppedUnderConcurrentReload
+// as a whole. The test takes about a second; the bound only matters on a
+// loaded machine (several -race suites at once).
+const concurrentReloadTimeout = 2 * time.Minute
+
+// reloadTestLines is how many records the generation 2 writer writes.
+const reloadTestLines = 20000
+
+// reloadTest is the state shared by the writers and the reader of
+// TestStaleGenerationDroppedUnderConcurrentReload.
+type reloadTest struct {
+	t       *testing.T
+	state   *sessionCommandState
+	manager *outputManager
+	stop    chan struct{}
+	writers sync.WaitGroup
+}
+
+// write runs a writer of generation that writes lines records tagged tag,
+// until it wrote them all, its generation became stale or the test stops.
+func (r *reloadTest) write(generation uint64, lines int, tag string) {
+	defer r.writers.Done()
+	w := NewNetworkWriter(context.Background(), protocol.RawFraming, nil, nil, "testhost", true, false,
+		generation, r.state.currentGeneration, handlerTestLogger)
+	w.enqueueOutput = r.manager.enqueue
+	for i := 0; i < lines && r.state.currentGeneration() == generation; i++ {
+		select {
+		case <-r.stop:
+			return
+		default:
+		}
+		if err := w.WriteLineData([]byte(fmt.Sprintf("%s-%06d-%s", tag, i, strings.Repeat("y", 100))),
+			uint64(i), "app.log"); err != nil {
+			r.t.Errorf("generation %d write: %v", generation, err)
+			return
+		}
+	}
+	if err := w.Flush(); err != nil {
+		r.t.Errorf("generation %d flush: %v", generation, err)
+	}
+}
+
+// shouldDrop is the session's stale generation check.
+func (r *reloadTest) shouldDrop(generation uint64) bool {
+	active := r.state.currentGeneration()
+	return generation != 0 && active != 0 && generation != active
+}
+
+// read reads like the session output goroutine does (outputCoordinator.next):
+// it waits for a state change whenever the manager has nothing to deliver,
+// instead of spinning on tryRead. When 512 KiB of generation 1 output were
+// read, it reloads to generation 2 and starts its writer; it returns what it
+// read before and after the reload once every generation 2 record arrived.
+func (r *reloadTest) read(deadline <-chan time.Time) (before, after []byte) {
+	buf := make([]byte, 5003)
+	g2Records, counted := 0, 0
+	for !r.reloaded() || g2Records < reloadTestLines {
+		changed, _ := r.manager.readWait()
+		reloaded := r.reloaded()
+		n, handled := r.manager.tryRead(buf, &userserver.User{Name: "reload-test"}, r.shouldDrop)
+		if reloaded {
+			after = append(after, buf[:n]...)
+			// Count only the new bytes, plus the two before them a record
+			// prefix split over two reads may start in.
+			from := max(counted-2, 0)
+			g2Records += bytes.Count(after[from:], []byte("g2-"))
+			counted = len(after)
+		} else {
+			before = append(before, buf[:n]...)
+		}
+		if !reloaded && len(before) > 512*1024 {
+			r.reload()
+		}
+		if !handled {
+			select {
+			case <-changed:
+			case <-deadline:
+				close(r.stop)
+				r.t.Fatalf("timed out; %d bytes and %d of %d generation 2 records read after the reload",
+					len(after), g2Records, reloadTestLines)
+			}
+		}
+	}
+	return before, after
+}
+
+func (r *reloadTest) reloaded() bool { return r.state.currentGeneration() == 2 }
+
+// reload makes generation 2 the active one and starts its writer.
+func (r *reloadTest) reload() {
+	r.state.mu.Lock()
+	r.state.generation.Store(2)
+	r.state.mu.Unlock()
+	r.writers.Add(1)
+	go r.write(2, reloadTestLines, "g2")
+}
+
 // After a reload, a reader that has observed the new generation must not
 // deliver records of the old one (except the rest of a record whose prefix was
-// already sent), while writers of both generations run concurrently.
+// already sent), while writers of both generations run concurrently. Every
+// record of the new generation arrives exactly once.
 func TestStaleGenerationDroppedUnderConcurrentReload(t *testing.T) {
 	var state sessionCommandState
 	state.mu.Lock()
 	state.active = true
 	state.generation.Store(1)
 	state.mu.Unlock()
+	r := &reloadTest{t: t, state: &state, manager: newHandoverTestManager(4 * 72 * 1024),
+		stop: make(chan struct{})}
 
-	manager := newHandoverTestManager(4 * 72 * 1024)
-	newWriter := func(generation uint64) *NetworkWriter {
-		w := NewNetworkWriter(context.Background(), protocol.RawFraming, nil, nil, "testhost", true, false,
-			generation, state.currentGeneration, handlerTestLogger)
-		w.enqueueOutput = manager.enqueue
-		return w
-	}
-
-	var flipped atomic.Bool
-	stop := make(chan struct{})
-	var writers sync.WaitGroup
-	writeGeneration := func(generation uint64, lines int, tag string) {
-		defer writers.Done()
-		w := newWriter(generation)
-		for i := 0; i < lines && state.currentGeneration() == generation; i++ {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if err := w.WriteLineData([]byte(fmt.Sprintf("%s-%06d-%s", tag, i, strings.Repeat("y", 100))),
-				uint64(i), "app.log"); err != nil {
-				t.Errorf("generation %d write: %v", generation, err)
-				return
-			}
-		}
-		if err := w.Flush(); err != nil {
-			t.Errorf("generation %d flush: %v", generation, err)
-		}
-	}
-
-	writers.Add(1)
-	go writeGeneration(1, 1<<30, "g1") // Runs until it becomes stale.
-
-	shouldDrop := func(generation uint64) bool {
-		active := state.currentGeneration()
-		return generation != 0 && active != 0 && generation != active
-	}
+	r.writers.Add(1)
+	go r.write(1, 1<<30, "g1") // Runs until it becomes stale.
+	before, after := r.read(time.After(concurrentReloadTimeout))
+	close(r.stop)
+	r.writers.Wait()
 	buf := make([]byte, 5003)
-	var before, after []byte
-	const gen2Lines = 20000
-	gen2Started := false
-	deadline := time.After(20 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			close(stop)
-			t.Fatalf("timed out; %d bytes read after the reload", len(after))
-		default:
-		}
-		observed := flipped.Load()
-		n, _ := manager.tryRead(buf, &userserver.User{Name: "reload-test"}, shouldDrop)
-		if observed {
-			after = append(after, buf[:n]...)
-		} else {
-			before = append(before, buf[:n]...)
-		}
-		if !gen2Started && len(before) > 512*1024 {
-			state.mu.Lock()
-			state.generation.Store(2)
-			state.mu.Unlock()
-			flipped.Store(true)
-			gen2Started = true
-			writers.Add(1)
-			go writeGeneration(2, gen2Lines, "g2")
-		}
-		if gen2Started && bytes.Count(after, []byte("g2-")) == gen2Lines {
-			break
-		}
-	}
-	close(stop)
-	writers.Wait()
-	for manager.bufferedLen() > 0 {
-		n, _ := manager.tryRead(buf, &userserver.User{Name: "reload-test"}, shouldDrop)
+	for r.manager.bufferedLen() > 0 {
+		n, _ := r.manager.tryRead(buf, &userserver.User{Name: "reload-test"}, r.shouldDrop)
 		after = append(after, buf[:n]...)
 	}
 
 	if !bytes.Contains(before, []byte("g1-")) {
 		t.Fatal("no generation 1 output before the reload")
 	}
-	// At most the unfinished record of generation 1 may be completed first.
+	assertOnlyGeneration2AfterReload(t, after)
+	if retained, buffered, entries := managerAccounting(r.manager); buffered != 0 || entries != 0 || retained != 0 {
+		t.Fatalf("after drain retained/buffered/entries = %d/%d/%d, want 0/0/0", retained, buffered, entries)
+	}
+}
+
+// assertOnlyGeneration2AfterReload fails unless after holds every generation
+// 2 record once and, apart from the completed rest of the generation 1 record
+// it may start with, nothing else.
+func assertOnlyGeneration2AfterReload(t *testing.T, after []byte) {
+	t.Helper()
 	records := bytes.Split(after, []byte{protocol.MessageDelimiter})
 	if len(records) > 0 && !bytes.HasPrefix(records[0], []byte("g2-")) {
 		records = records[1:]
@@ -873,8 +916,8 @@ func TestStaleGenerationDroppedUnderConcurrentReload(t *testing.T) {
 			t.Fatalf("record %d after the reload is stale: %.40q", i, record)
 		}
 	}
-	if retained, buffered, entries := managerAccounting(manager); buffered != 0 || entries != 0 || retained != 0 {
-		t.Fatalf("after drain retained/buffered/entries = %d/%d/%d, want 0/0/0", retained, buffered, entries)
+	if n := bytes.Count(after, []byte("g2-")); n != reloadTestLines {
+		t.Fatalf("read %d generation 2 records after the reload, want %d", n, reloadTestLines)
 	}
 }
 

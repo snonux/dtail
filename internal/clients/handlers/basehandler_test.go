@@ -87,6 +87,27 @@ func TestHandleCapabilitiesMessage(t *testing.T) {
 	}
 }
 
+// TestWaitForCapabilitiesPrefersArrivedCapabilities checks that capabilities
+// that already arrived are reported even when the session is done and the
+// timer would expire at once: a plain select would pick among those ready
+// cases at random.
+func TestWaitForCapabilitiesPrefersArrivedCapabilities(t *testing.T) {
+	handler := baseHandler{
+		done:           internal.NewDone(),
+		capabilities:   make(map[string]struct{}),
+		capabilitiesCh: make(chan struct{}),
+		sessionAcks:    make(chan SessionAck, 1),
+	}
+	handler.handleHiddenMessage(".syn capabilities query-update-v1")
+	handler.done.Shutdown()
+
+	for i := 0; i < 100; i++ {
+		if !handler.WaitForCapabilities(time.Nanosecond) {
+			t.Fatalf("attempt %d: expected arrived capabilities to win", i)
+		}
+	}
+}
+
 func TestWaitForCapabilitiesTimeout(t *testing.T) {
 	handler := baseHandler{
 		done:           internal.NewDone(),

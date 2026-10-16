@@ -583,18 +583,24 @@ func (h *baseHandler) Done() <-chan struct{} {
 	return h.done.Done()
 }
 
+// WaitForCapabilities reports whether the server's capabilities arrived,
+// waiting up to timeout for them. Capabilities that already arrived win
+// without any wait: the non-blocking check comes first because a select with
+// several ready cases picks one at random, so a closed capabilities channel
+// could otherwise lose against an expired timer (a descheduled goroutine under
+// load) or an already finished session.
 func (h *baseHandler) WaitForCapabilities(timeout time.Duration) bool {
 	if h.capabilitiesCh == nil {
 		return false
 	}
 
+	select {
+	case <-h.capabilitiesCh:
+		return true
+	default:
+	}
 	if timeout <= 0 {
-		select {
-		case <-h.capabilitiesCh:
-			return true
-		default:
-			return false
-		}
+		return false
 	}
 
 	timer := time.NewTimer(timeout)

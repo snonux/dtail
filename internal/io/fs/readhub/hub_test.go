@@ -23,7 +23,15 @@ import (
 	"github.com/mimecast/dtail/internal/regex"
 )
 
-const waitTimeout = 10 * time.Second
+// waitTimeout is the one bound of the package's tests for anything they wait
+// for; waits that include several whole burst reads use a multiple of it.
+// Every use is an upper bound on an expected event, so a passing test never
+// waits for it. It is generous because the reads behind these waits are CPU
+// bound: under the race detector, filtering a 20,000 line burst (see burst)
+// with a regex takes a session about a second on an idle machine and several
+// times that when several -race suites share the CPUs, which used to exceed a
+// 10 s bound ("timed out waiting for slow session to read the new file").
+const waitTimeout = 60 * time.Second
 
 // event is one call a recordingProcessor saw.
 type event struct {
@@ -85,9 +93,16 @@ func (r *recorder) lineNums() []uint64 {
 	return nums
 }
 
+// hasLine reports whether a line with text was recorded. Tests poll it while
+// sessions read whole bursts, so it scans in place, from the newest event,
+// where the line waited for usually is, instead of copying every event and
+// line text on each poll: under the race detector on a loaded machine those
+// copies took CPU time from the reads the test waits for.
 func (r *recorder) hasLine(text string) bool {
-	for _, got := range r.lines() {
-		if got == text {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.events) - 1; i >= 0; i-- {
+		if e := r.events[i]; e.kind == "line" && e.text == text {
 			return true
 		}
 	}

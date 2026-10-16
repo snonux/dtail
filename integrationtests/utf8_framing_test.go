@@ -299,7 +299,7 @@ func longLinesConfig(t *testing.T) (string, map[string]string) {
 		"Common": map[string]any{"HostnameOverride": "integrationtest"},
 		"Server": map[string]any{
 			"AuthorizedKeysPath":   os.Getenv("DTAIL_AUTH_KEY_PATH") + ".pub",
-			"HostKeyPath":          filepath.Join(tmpDir, "ssh_host_key"),
+			"HostKeyPath":          suiteHostKeyPath(t),
 			"MaxLineLength":        longLineLength,
 			"OutputBufferMaxBytes": 2 * 1024 * 1024,
 		},
