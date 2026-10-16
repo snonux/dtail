@@ -94,10 +94,11 @@ func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 // Should a message reach the client cut short (e.g. a frame split inside a
 // last() string), a count is then lost only together with its sum or right
 // after it, never because of a string written between the two, so the client
-// falls back to the message's Samples for at most that one avg() field. Returns true when the serialized message was successfully sent,
-// and false when the context was cancelled before the send completed. Callers
-// that own the source state (e.g. Aggregate) must re-merge unsent sets so
-// data is not silently lost.
+// falls back to the message's Samples for at most that one avg() field.
+// Returns true when the serialized message was successfully sent, and false
+// when the context was cancelled before the send completed. Callers that own
+// the source state (e.g. Aggregate) must re-merge unsent sets so data is not
+// silently lost.
 func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<- string,
 	logger logging.Logger) bool {
 
