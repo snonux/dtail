@@ -186,7 +186,14 @@ working with every other one:
    session without work (no other command, pending read, open input batch
    or `SESSION`), it starts the same shutdown the same way
    (`ServerHandler.frameRejected`), right after its error and failure
-   report, instead of leaving the session open until `IdleSessionTimeoutS`.
+   report, instead of leaving the session open until `IdleSessionTimeoutS`;
+   a health session (`HealthHandler.frameRejected`) does so for any
+   rejected frame. A client of another protocol version acknowledges that
+   close in its own version: the server accepts a frame of any version that
+   decodes to exactly `.ack close connection` as the acknowledgement, and
+   once the close was started it sends no further mismatch errors, so
+   nothing follows `.syn close connection`
+   (`commandDispatcher.rejectProtocolVersion`).
    Settling before the command has a
    cost: its replies may follow a frame queued before it, e.g. the close
    handshake of a dserver shutting down in the session's first moment, as

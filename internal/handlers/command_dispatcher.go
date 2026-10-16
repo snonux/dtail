@@ -20,6 +20,7 @@ type handleCommandCb func(context.Context, lcontext.LContext, int, []string, str
 type prepareCommandContextCb func(context.Context, string) (context.Context, func())
 type commandRejectedCb func(context.Context, string)
 type frameRejectedCb func()
+type sessionClosingCb func() bool
 
 type commandCancelKeyType struct{}
 type sessionCommandAdmissionKeyType struct{}
@@ -43,6 +44,11 @@ type commandDispatcher struct {
 	// command was admitted for such a frame, so no command finishes and
 	// nothing else would notice that the session may have no work left.
 	frameRejectedCb frameRejectedCb
+	// sessionClosingCb, if set, reports whether the session's close
+	// handshake was already started (or claimed to start). A frame of
+	// another protocol version arriving then gets no error message, so that
+	// nothing of the session follows its ".syn close connection".
+	sessionClosingCb sessionClosingCb
 
 	codec          protocolCodec
 	activeCommands int32
@@ -149,10 +155,7 @@ func (d *commandDispatcher) handleCommand(command string) {
 	args, argc, add, err := d.codec.handleProtocolVersion(strings.Split(command, " "))
 	if err != nil {
 		h.settleFramingBeforeCommand(false, argc, args)
-		// No failed-command message here: a client of another protocol
-		// version may not know hidden messages or their framing.
-		h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err)+add)
-		d.frameRejected()
+		d.rejectProtocolVersion(args, argc, add, err)
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
@@ -172,6 +175,32 @@ func (d *commandDispatcher) handleCommand(command string) {
 		h.reportCommandFailure(commandFailureRejected)
 		d.frameRejected()
 	}
+}
+
+// rejectProtocolVersion handles a command frame of another protocol version
+// (or none). Such a session can still end cleanly: the rejection starts its
+// idle shutdown (frameRejected), and the client acknowledges the close
+// handshake in its own protocol version, so a frame that decodes to exactly
+// ".ack close connection" completes the handshake instead of being rejected
+// (protocolCodec.isCloseAcknowledgement); otherwise the shutdown would wait
+// for the full close acknowledgement timeout (5 s). Once the session's close
+// was started, further frames of that version get no error message either,
+// so nothing follows the session's ".syn close connection". There is no
+// failed-command message here at all: a client of another protocol version
+// may not know hidden messages or their framing.
+func (d *commandDispatcher) rejectProtocolVersion(args []string, argc int, add string, err error) {
+	h := d.handler
+	if d.codec.isCloseAcknowledgement(args, argc) {
+		h.Logger().Debug(h.user, "Close acknowledgement of another protocol version")
+		h.acknowledgeClose()
+		return
+	}
+	if d.sessionClosingCb != nil && d.sessionClosingCb() {
+		h.Logger().Debug(h.user, "Dropping frame of another protocol version after the close", err)
+		return
+	}
+	h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err)+add)
+	d.frameRejected()
 }
 
 // frameRejected tells frameRejectedCb, if set, that handleCommand rejected a
@@ -326,6 +355,25 @@ func (d *commandDispatcher) beginCommand(admittedSessionWork bool) bool {
 	d.commandWg.Add(1)
 	d.commandInitWg.Add(1)
 	atomic.AddInt32(&d.activeCommands, 1)
+	return true
+}
+
+// beginShutdownWork admits a session shutdown that runs on a goroutine of
+// its own (ServerHandler.startIdleShutdown) into commandWg, like a command,
+// so that Shutdown and GracefulShutdownContext wait for it as they wait for
+// the shutdown a finished command hands over (finishUserCommand). Like
+// beginCommand it adds under commandMu, and only while command admission is
+// open: Shutdown and GracefulShutdownContext seal admission under commandMu
+// before they wait, so no Add can race their Wait. It reports false once
+// admission is sealed; the teardown that sealed it then ends the session.
+// The caller must call finishCommand once the shutdown returned.
+func (d *commandDispatcher) beginShutdownWork() bool {
+	d.commandMu.Lock()
+	defer d.commandMu.Unlock()
+	if d.aborting || d.stopping {
+		return false
+	}
+	d.commandWg.Add(1)
 	return true
 }
 

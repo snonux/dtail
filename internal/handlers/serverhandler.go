@@ -131,6 +131,7 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 	h.prepareCommandContextCb = h.prepareCommandContext
 	h.commandRejectedCb = h.commandRejected
 	h.frameRejectedCb = h.frameRejected
+	h.sessionClosingCb = h.idleShutdownStarted.Load
 	h.commands = h.newCommandRegistry()
 	h.output.configure(h.outputManagerConfig(), loggers.Diagnostics)
 	h.activeGeneration = h.sessionState.currentGeneration
@@ -451,11 +452,25 @@ func (h *ServerHandler) frameRejected() {
 // which also handles the client's close acknowledgement: a shutdown on it
 // would wait for the acknowledgement timeout (5 s). The claim is made here,
 // synchronously, while the counts it depends on are still current.
+//
+// The shutdown holds a commandWg slot (beginShutdownWork) while it runs,
+// like the one finishUserCommand hands over, so Shutdown and
+// GracefulShutdownContext wait for it. That cannot deadlock: Shutdown closes
+// h.done before it waits, and every wait of h.shutdown (flush, close
+// request, close acknowledgement) also ends on h.done; GracefulShutdownContext
+// falls back to Shutdown when its context ends. If command admission was
+// sealed after the claim, the teardown that sealed it ends the session and
+// no idle shutdown runs.
 func (h *ServerHandler) startIdleShutdown(ctx context.Context) {
 	if !h.claimIdleShutdown(h.PendingAndActive()) {
 		return
 	}
+	if !h.beginShutdownWork() {
+		h.Logger().Debug(h.user, "Not starting the idle shutdown of a stopping session")
+		return
+	}
 	go func() {
+		defer h.finishCommand()
 		defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
 		h.shutdown(ctx)
 	}()

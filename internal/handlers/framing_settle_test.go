@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -128,10 +129,23 @@ func runFailingCommandSession(t *testing.T, handler *ServerHandler, first []stri
 // client.
 func runFailingFramesSession(t *testing.T, handler *ServerHandler, frames string) string {
 	t.Helper()
+	return runFailingFramesSessionAcking(t, handler, protocol.HiddenCapabilitiesPrefix,
+		frames, encodeTestCommand(".ack close connection"))
+}
+
+// runFailingFramesSessionAcking is runFailingFramesSession, but answers the
+// close handshake with ack (startTestReaderAcking), and waits for greeting,
+// unless empty, before it writes frames: a ServerHandler first sends its
+// capabilities, a HealthHandler nothing.
+func runFailingFramesSessionAcking(t *testing.T, handler io.ReadWriter,
+	greeting, frames, ack string) string {
+	t.Helper()
 	output := &testOutput{}
 	var writeMu sync.Mutex
-	readerDone := startTestReader(handler, output, &writeMu)
-	output.waitForContains(t, protocol.HiddenCapabilitiesPrefix, 5*time.Second)
+	readerDone := startTestReaderAcking(handler, output, &writeMu, ack)
+	if greeting != "" {
+		output.waitForContains(t, greeting, 5*time.Second)
+	}
 
 	started := time.Now()
 	writeTestFramesWithin(t, handler, &writeMu, 10*time.Second, frames)
@@ -167,7 +181,7 @@ func encodeTestCommands(commands ...string) string {
 // writeTestFramesWithin writes frames in one write and fails the test unless
 // the write returns within timeout, i.e. unless the command input goroutine
 // handled them all.
-func writeTestFramesWithin(t *testing.T, handler *ServerHandler, writeMu *sync.Mutex,
+func writeTestFramesWithin(t *testing.T, handler io.Writer, writeMu *sync.Mutex,
 	timeout time.Duration, frames string) {
 	t.Helper()
 	written := make(chan error, 1)

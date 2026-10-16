@@ -55,6 +55,20 @@ func (c protocolCodec) handleProtocolVersion(args []string) ([]string, int, stri
 	return args[2:], argc - 2, add, nil
 }
 
+// isCloseAcknowledgement reports whether args, a command frame that
+// handleProtocolVersion rejected for its protocol version, is the close
+// acknowledgement: "protocol <version> base64 <payload>" whose payload
+// decodes to exactly ".ack close connection". Clients of every protocol
+// version acknowledge the close handshake in such a frame, in their own
+// version (internal/clients/handlers baseHandler.SendMessage).
+func (c protocolCodec) isCloseAcknowledgement(args []string, argc int) bool {
+	if argc != 4 || args[0] != "protocol" {
+		return false
+	}
+	decoded, _, err := c.handleBase64(args[2:], argc-2)
+	return err == nil && strings.Join(decoded, " ") == ".ack close connection"
+}
+
 func parseProtocolCompat(version string) (int, int) {
 	major := 0
 	minor := 0
