@@ -336,8 +336,7 @@ func setupAdditionalArgs(args *Args, additionalArgs []string) {
 func transformClient(in *initializer, args *Args, additionalArgs []string) error {
 	applyStringOverride(&args.KnownHostsPath, &in.Client.KnownHostsPath)
 	// Serverless mode.
-	if args.Discovery == "" && (args.ServersStr == "" ||
-		strings.ToLower(args.ServersStr) == "serverless") {
+	if args.Discovery == "" && isServerlessServers(args.ServersStr) {
 		// We are not connecting to any servers.
 		args.Serverless = true
 		if args.LogLevel == DefaultLogLevel {
@@ -345,6 +344,17 @@ func transformClient(in *initializer, args *Args, additionalArgs []string) error
 		}
 	}
 	return nil
+}
+
+// isServerlessServers reports whether the --servers value servers selects
+// serverless mode when no discovery module is given: the empty value, or the
+// word "serverless" in any case. Whitespace around "serverless" is ignored,
+// as around every server entry (see discovery.trimServerEntry); without that,
+// " serverless" was dialled as the host "serverless". A value of only
+// whitespace stays no serverless value: it names no server, so the client
+// fails with no server to connect to.
+func isServerlessServers(servers string) bool {
+	return servers == "" || strings.EqualFold(strings.TrimSpace(servers), "serverless")
 }
 
 func transformServer(in *initializer, args *Args, additionalArgs []string) error {
@@ -358,8 +368,7 @@ func transformServer(in *initializer, args *Args, additionalArgs []string) error
 
 func transformHealthCheck(in *initializer, args *Args, additionalArgs []string) error {
 	// Serverless mode.
-	if args.Discovery == "" && (args.ServersStr == "" ||
-		strings.ToLower(args.ServersStr) == "serverless") {
+	if args.Discovery == "" && isServerlessServers(args.ServersStr) {
 		// We are not connecting to any servers.
 		args.Serverless = true
 		in.Common.LogLevel = "warn"

@@ -3,7 +3,6 @@ package jobs
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -97,10 +96,7 @@ func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 	now := c.now()
 	files := fillDatesAt(job.Files, now)
 	outfile := fillDatesAt(job.Outfile, now)
-	servers := strings.Join(job.Servers, ",")
-	if servers == "" {
-		servers = c.cfg.Server.SSHBindAddress
-	}
+	servers := jobServersStr(job.Servers, c.cfg.Server.SSHBindAddress)
 
 	args := config.Args{
 		ConnectionsPerCPU: config.DefaultConnectionsPerCPU,
@@ -116,9 +112,12 @@ func (c *continuous) runJob(ctx context.Context, job *config.Continuous) {
 
 	args.SSHAuthMethods = append(args.SSHAuthMethods, gossh.Password(job.Name))
 	args.QueryStr = fmt.Sprintf("%s outfile %s", job.Query, outfile)
+	// A client whose discovery yields no server fails here with
+	// clients.ErrNoServers, so the job writes no outfile (it used to
+	// overwrite it with empty results) and runs again at the next retry.
 	client, err := c.newMaprClient(args, clients.NonCumulativeMode)
 	if err != nil {
-		c.log().Error(fmt.Sprintf("Unable to create job %s", job.Name), err)
+		logCreateFailure(c.log(), job.Name, err)
 		return
 	}
 

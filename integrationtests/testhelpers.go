@@ -174,39 +174,62 @@ func startTestServer(ctx context.Context, t *testing.T, cfg *ServerConfig) error
 	return waitForServerReady(ctx, cfg.BindAddress, cfg.Port)
 }
 
+// serverReadyTimeout bounds how long waitForServerReady waits for a dserver
+// to answer dtailhealth, unless the test's own context ends sooner. A started
+// server answers within milliseconds; the bound is generous because it only
+// matters on a loaded machine (several -race suites at once), where a server
+// process may get little CPU. Startup no longer includes generating an RSA
+// host key, the step that used to exceed the former 10 s bound under load:
+// TestMain prepares the suite's key once (prepareSuiteHostKey).
+const serverReadyTimeout = 60 * time.Second
+
+// serverReadyPollInterval is the pause between two dtailhealth probes.
+const serverReadyPollInterval = 50 * time.Millisecond
+
+// waitForServerReady probes the dserver at bindAddress:port with dtailhealth
+// until it reports the server healthy, ctx ends or serverReadyTimeout passed.
 func waitForServerReady(ctx context.Context, bindAddress string, port int) error {
 	address := fmt.Sprintf("%s:%d", bindAddress, port)
-	deadline := time.Now().Add(10 * time.Second)
+	waitCtx, cancel := context.WithTimeout(ctx, serverReadyTimeout)
+	defer cancel()
 	var lastErr error
 	var lastOutput string
 
 	for {
-		cmd := exec.CommandContext(ctx, "../dtailhealth", "--server", address, "--no-auth-key")
+		cmd := exec.CommandContext(waitCtx, "../dtailhealth", "--server", address, "--no-auth-key")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			return nil
 		}
-		lastErr = err
-		lastOutput = strings.TrimSpace(string(out))
-
-		if ctx.Err() != nil {
-			return fmt.Errorf("wait for dserver %s: %w", address, ctx.Err())
-		}
-		if time.Now().After(deadline) {
-			if lastOutput != "" {
-				return fmt.Errorf("timed out waiting for dserver %s: %w (%s)", address, lastErr, lastOutput)
-			}
-			return fmt.Errorf("timed out waiting for dserver %s: %w", address, lastErr)
+		// A probe killed because the wait ended says nothing about the
+		// server; keep the result of the last complete one.
+		if waitCtx.Err() == nil || lastErr == nil {
+			lastErr = err
+			lastOutput = strings.TrimSpace(string(out))
 		}
 
-		timer := time.NewTimer(50 * time.Millisecond)
+		timer := time.NewTimer(serverReadyPollInterval)
 		select {
-		case <-ctx.Done():
+		case <-waitCtx.Done():
 			timer.Stop()
-			return fmt.Errorf("wait for dserver %s: %w", address, ctx.Err())
+			return serverReadyError(ctx, address, lastErr, lastOutput)
 		case <-timer.C:
 		}
 	}
+}
+
+// serverReadyError describes why waitForServerReady gave up: the test's
+// context ended, or the server did not get ready within serverReadyTimeout.
+func serverReadyError(ctx context.Context, address string, lastErr error, lastOutput string) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("wait for dserver %s: %w", address, ctx.Err())
+	}
+	if lastOutput != "" {
+		return fmt.Errorf("timed out after %v waiting for dserver %s: %w (%s)",
+			serverReadyTimeout, address, lastErr, lastOutput)
+	}
+	return fmt.Errorf("timed out after %v waiting for dserver %s: %w",
+		serverReadyTimeout, address, lastErr)
 }
 
 // createTestContext creates a context with cancel that will be cleaned up automatically

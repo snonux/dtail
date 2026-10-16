@@ -59,10 +59,11 @@ var errOutputFlushTimeout = errors.New("timed out flushing output")
 // tryRead). These run concurrently, so all mutable state is guarded by mu:
 // mode, queue, buffer, eof, eofAck, eofEmptySince and epoch must only be
 // accessed while holding mu. The configuration fields (bufferMaxBytes,
-// flushTimeout, ...) are
-// deliberately not guarded: configure() runs exactly once from the handler
-// constructor before any goroutine can touch the manager, so goroutine
-// creation establishes the necessary happens-before edge.
+// flushTimeout, ...) are set without locking: configure() runs exactly once
+// from the handler constructor before any goroutine can touch the manager,
+// so goroutine creation establishes the necessary happens-before edge. The
+// one exception is bufferMaxBytes, which raiseBufferMaxBytes may raise later
+// and which is therefore only read and written under mu after configure.
 type outputManager struct {
 	logger logging.Logger
 	mu     sync.Mutex
@@ -91,6 +92,18 @@ type outputManager struct {
 	eofAckQuietPeriod time.Duration
 
 	eofEmptySince time.Time
+}
+
+// raiseBufferMaxBytes raises the session's buffer cap to minimum when it is
+// lower; it never lowers the cap. A session switching to escaped framing
+// calls it (see escapedOutputBufferMaxBytes). bufferMaxBytes is only read
+// under mu once the manager is in use, so raising it under mu is safe.
+func (t *outputManager) raiseBufferMaxBytes(minimum int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if minimum > t.resolvedBufferMaxBytes() {
+		t.bufferMaxBytes = minimum
+	}
 }
 
 // configure sets the tunables. It must be called before the manager is used

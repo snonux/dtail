@@ -215,6 +215,34 @@ func (c *outputCoordinator) tryReadQueued() (outputReadResult, bool) {
 	}
 }
 
+// tryReadQueuedMapr takes the next queued MapReduce message without
+// blocking, for sessionFramer.readMaprMessage to frame it into the same Read
+// as the mapr message before it. It takes one only where next would take it
+// as well: while no payload, flush error, deferred or queued server message
+// is pending, all of which next delivers before a mapr message. Flush
+// requests and the close handshake come after the queued mapr messages
+// anyway (tryReadQueued), so they need no check. A message racing in after
+// a check is delivered by the next Read, as it would be without coalescing.
+//
+// The hasDeferredServer check is defensive and unreachable today: only
+// prioritizeFlushError defers a server message, on the output goroutine,
+// and the deferred message is taken by the tryReadQueued pass of the next
+// Read before any mapr message, so no mapr batch (readMaprMessage) or rest
+// of one (drainPending) is framed while a server message is deferred. It
+// keeps that ordering should a later change defer messages elsewhere.
+func (c *outputCoordinator) tryReadQueuedMapr() (string, bool) {
+	if len(c.flushErrors) > 0 || c.hasDeferredServer || len(c.serverMessages) > 0 ||
+		c.output.bufferedLen() > 0 {
+		return "", false
+	}
+	select {
+	case message := <-c.maprMessages:
+		return message, true
+	default:
+		return "", false
+	}
+}
+
 func (c *outputCoordinator) prioritizeFlushError(message string) outputReadResult {
 	select {
 	case flushError := <-c.flushErrors:

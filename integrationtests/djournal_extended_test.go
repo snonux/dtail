@@ -62,6 +62,9 @@ func TestDJournalExtendedWithServer(t *testing.T) {
 	t.Run("DMapJournal", func(t *testing.T) {
 		testDJournalExtendedDMap(t, testLogger)
 	})
+	t.Run("LongEntryCutAtMaxLineLength", func(t *testing.T) {
+		testDJournalExtendedLongEntry(t, testLogger)
+	})
 }
 
 func testDJournalExtendedMixedSources(t *testing.T, logger *TestLogger) {
@@ -141,9 +144,10 @@ func testDJournalExtendedPermissions(t *testing.T, logger *TestLogger) {
 	}, nil)
 	denyServer := startDJournalExtendedServer(t, logger, denyEnv.configFile, denyEnv.mock.Env(), "debug", false)
 	denyOut := "djournal_extended_permission_deny.stdout.tmp"
-	// A permission-denied dcat exits cleanly after receiving the server WARN, so
-	// its error is not meaningful here; the assertion is on the server logs.
-	_, _ = runCommand(denyServer.ctx, t, denyOut, "../dcat",
+	// A permission-denied dcat exits with status 2 after receiving the server
+	// WARN and its failed command report (the server advertises
+	// command-failure-v1); the other assertions are on the server logs.
+	denyExit, denyErr := runCommand(denyServer.ctx, t, denyOut, "../dcat",
 		"--cfg", "none",
 		"--logLevel", "error",
 		"--servers", denyServer.address,
@@ -152,6 +156,10 @@ func testDJournalExtendedPermissions(t *testing.T, logger *TestLogger) {
 		"--noColor",
 	)
 	denyOutput := readTestFile(t, denyOut)
+	if denyExit != 2 {
+		t.Fatalf("permission-denied dcat exit status = %d (%v), want 2; output:\n%s",
+			denyExit, denyErr, denyOutput)
+	}
 	// Poll the server logs rather than reading them synchronously: the server
 	// runs with the (buffered) stdout logger, so the "No permission" diagnostic
 	// can lag the client's exit by up to the logger's idle-flush interval.
@@ -479,6 +487,89 @@ func testDJournalExtendedDMapForMode(t *testing.T, logger *TestLogger,
 	return got
 }
 
+// testDJournalExtendedLongEntry reads a journal entry longer than 2 MiB,
+// which used to end the journal read with "bufio.Scanner: token too long",
+// and one of exactly 1 MiB. The journal read must cut its entries like a file
+// read cuts its lines, so dcat prints the journal exactly like a file of the
+// same content, and the client gets the long-line warning about the journal.
+// It runs with the default MaxLineLength (1 MiB: only the long entry is cut,
+// one warning) and with 4096, which proves that Server.MaxLineLength reaches
+// the journal reader: the 1 MiB entry, whole by default, is cut too and warned
+// about again.
+func testDJournalExtendedLongEntry(t *testing.T, logger *TestLogger) {
+	cases := []struct {
+		name         string
+		serverFields map[string]any
+		wantWarnings int
+	}{
+		{name: "DefaultLimit", wantWarnings: 1},
+		{name: "Limit4096", serverFields: map[string]any{"MaxLineLength": 4096}, wantWarnings: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			testDJournalExtendedLongEntryWith(t, logger, tc.name, tc.serverFields, tc.wantWarnings)
+		})
+	}
+}
+
+func testDJournalExtendedLongEntryWith(t *testing.T, logger *TestLogger, name string,
+	serverFields map[string]any, wantWarnings int) {
+
+	entries := []string{
+		"journal long before",
+		strings.Repeat("z", 2*1024*1024+100),
+		strings.Repeat("w", 1024*1024),
+		"journal long after",
+	}
+	regularFile := filepath.Join(t.TempDir(), "long.log")
+	if err := os.WriteFile(regularFile, []byte(strings.Join(entries, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write long regular file: %v", err)
+	}
+	env := newDJournalExtendedEnv(t, journaltest.Scenario{
+		Units: map[string]journaltest.Invocation{"extended.service": {Lines: entries}},
+	}, []string{permissionForPath(regularFile), "readfiles:^journal:extended\\.service$"}, serverFields)
+	// Not in integration mode, which forces a MaxLineLength of 1024.
+	server := startDJournalExtendedServerForMode(t, logger, env, "info", dJournalExtendedServerModes()[0])
+
+	dcat := func(source, files string) string {
+		t.Helper()
+		outFile := fmt.Sprintf("djournal_extended_long_%s_%s.stdout.tmp", name, source)
+		if _, err := runCommand(server.ctx, t, outFile, "../dcat", "--plain", "--cfg", "none",
+			"--logLevel", "error", "--servers", server.address, "--files", files,
+			"--trustAllHosts", "--noColor"); err != nil {
+			t.Fatalf("dcat %s failed: %v\nserver logs:\n%s", source, err, server.logs.String())
+		}
+		return readTestFile(t, outFile)
+	}
+	journalOutput, journalWarnings := splitLongLineWarnings(dcat("journal", journalExtendedSpec))
+	fileOutput, _ := splitLongLineWarnings(dcat("file", regularFile))
+	if !strings.HasPrefix(journalOutput, entries[0]+"\n") ||
+		!strings.HasSuffix(journalOutput, entries[3]+"\n") || journalOutput != fileOutput {
+		t.Fatalf("journal output (%d bytes) differs from file output (%d bytes)",
+			len(journalOutput), len(fileOutput))
+	}
+	if len(journalWarnings) != wantWarnings || !strings.Contains(journalWarnings[0], journalExtendedSpec) {
+		t.Fatalf("journal long-line warnings = %q, want %d about %s",
+			journalWarnings, wantWarnings, journalExtendedSpec)
+	}
+}
+
+// splitLongLineWarnings returns output without its long-line warnings, which
+// name the source and so differ between a file and a journal read, and the
+// warnings.
+func splitLongLineWarnings(output string) (string, []string) {
+	var payload strings.Builder
+	var warnings []string
+	for _, line := range strings.SplitAfter(output, "\n") {
+		if strings.HasPrefix(line, "WARN|") && strings.Contains(line, "Long log line") {
+			warnings = append(warnings, line)
+			continue
+		}
+		payload.WriteString(line)
+	}
+	return payload.String(), warnings
+}
+
 type dJournalExtendedServerMode struct {
 	name               string
 	env                map[string]string
@@ -531,7 +622,7 @@ func newDJournalExtendedEnv(t *testing.T, scenario journaltest.Scenario,
 		t.Fatalf("write journal extended authorized_keys cache: %v", err)
 	}
 	server := map[string]any{
-		"HostKeyFile": filepath.Join(tmpDir, "ssh_host_key"),
+		"HostKeyFile": suiteHostKeyPath(t),
 		"Permissions": map[string]any{
 			"Default": permissions,
 		},
