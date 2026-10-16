@@ -68,7 +68,9 @@ func newSessionFramer(handler *baseHandler, maxCommandFrameSize int) *sessionFra
 	}
 }
 
-// Read emits one or more bytes from the next coordinated output item.
+// Read emits one or more bytes from the next coordinated output item; a
+// MapReduce message takes the mapr messages queued behind it along
+// (readMaprMessage).
 func (f *sessionFramer) Read(p []byte) (n int, err error) {
 	c := f.handler.outputCoordinator
 	c.ensureFlushChannels()
@@ -188,18 +190,45 @@ func (f *sessionFramer) encodeControl(framing protocol.Framing, message string) 
 	}
 }
 
+// readMaprMessage frames a MapReduce message together with the mapr
+// messages queued behind it, up to len(p) bytes, so that one Read, and with
+// it one SSH channel write (one packet, one write(2) and one client read),
+// carries many of them. A GroupSet serializes every group as a message of
+// its own, and a high-cardinality query (200k groups) otherwise spends about
+// a third of dserver's CPU time in per-packet flush syscalls.
+//
+// Coalescing changes no order: it only takes a mapr message where the next
+// Read would have taken it as well (outputCoordinator.tryReadQueuedMapr),
+// and each message is still filtered by its generation on its own. The last
+// frame may not fit into p; its rest stays in readBuf, which the next Read
+// drains before anything else, as for any frame longer than p.
 func (f *sessionFramer) readMaprMessage(p []byte, message string) int {
+	framing := f.framing()
+	f.encodeMaprMessage(framing, message)
+	c := f.handler.outputCoordinator
+	for f.readBuf.Len() < len(p) {
+		queued, ok := c.tryReadQueuedMapr()
+		if !ok {
+			break
+		}
+		f.encodeMaprMessage(framing, queued)
+	}
+	return f.drainReadBuf(p)
+}
+
+// encodeMaprMessage appends the aggregate frame of message to readBuf,
+// unless message belongs to a generation the session no longer delivers.
+func (f *sessionFramer) encodeMaprMessage(framing protocol.Framing, message string) {
 	h := f.handler
 	generation, decodedMessage := decodeGeneratedMessage(message)
 	if h.shouldDropGeneration(generation) {
-		return 0
+		return
 	}
-	f.framing().EncodeMessage(&f.readBuf, protocol.Message{
+	framing.EncodeMessage(&f.readBuf, protocol.Message{
 		Kind:     protocol.MessageAggregate,
 		Hostname: h.hostname,
 		Content:  decodedMessage,
 	})
-	return f.drainReadBuf(p)
 }
 
 // framing returns the framing of the frames the session encodes from now on.

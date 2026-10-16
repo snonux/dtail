@@ -504,6 +504,14 @@ validation flags them as stale, while the runtime still ignores them.
 - Batch processing reduces lock contention
 - Memory pooling reduces garbage collection pressure
 - Same output format and accuracy regardless of workload
+- Results are sent as one aggregate frame per group, but a session output read
+  frames every already queued group, up to the read buffer (32 KiB from the
+  SSH copy), into one SSH channel write (`sessionFramer.readMaprMessage`,
+  `outputCoordinator.tryReadQueuedMapr`; the per-session queue holds
+  `maprMessageQueueSize` = 256 groups). It takes a group only where the next
+  read would have taken it anyway (no payload, flush error or server message
+  pending), filters each by its generation, and changes no byte of the stream.
+  A 200k-group result went from about 149k write(2) calls to about 2.2-2.7k.
 
 **Output limits and deadlines (server config):**
 The output path exposes four optional settings: `OutputBufferMaxBytes`,

@@ -17,6 +17,18 @@ import (
 	user "github.com/mimecast/dtail/internal/sessionuser"
 )
 
+// maprMessageQueueSize is the default capacity of the session's queue of
+// MapReduce messages (one per serialized group). Read frames all queued mapr
+// messages up to its buffer size into one SSH channel write
+// (sessionFramer.readMaprMessage), so the queue bounds how many groups one
+// write can carry: a 200k-group result took about 149k write(2) calls
+// without coalescing, 10-19k with 10 slots, 6.6k with 64 and 2.2-2.7k with
+// 256 (about 10% less dserver CPU time than with 10 slots). A queued message
+// is one serialized group, typically well below 1 KiB; the aggregate holds
+// every group in memory while it serializes them anyway, so the queue adds
+// at most 256 copies of groups to that.
+const maprMessageQueueSize = 256
+
 type baseHandlerConfig struct {
 	logger       logging.Logger
 	readerLogger logging.Logger
@@ -71,7 +83,7 @@ func newBaseHandler(connCtx context.Context, cfg baseHandlerConfig) *baseHandler
 	}
 	maprMessages := cfg.maprMessages
 	if maprMessages == nil {
-		maprMessages = make(chan string, 10)
+		maprMessages = make(chan string, maprMessageQueueSize)
 	}
 
 	h := &baseHandler{
