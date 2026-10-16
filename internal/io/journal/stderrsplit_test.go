@@ -75,6 +75,72 @@ func TestScanJournalStderrTruncatesLongLines(t *testing.T) {
 	}
 }
 
+// TestScanJournalStderrExactLimitLines checks lines at the limit when they
+// are the first stderr line and arrive in 64 KiB reads, so that the buffer
+// holds exactly maxStderrTokenSize bytes without the newline after 16 reads:
+// a line of exactly the limit, and one of the limit minus one ended by
+// "\r\n", are forwarded whole and unmarked; one byte more is truncated.
+func TestScanJournalStderrExactLimitLines(t *testing.T) {
+	exact := strings.Repeat("f", maxStderrTokenSize)
+	crlf := strings.Repeat("c", maxStderrTokenSize-1)
+	over := strings.Repeat("o", maxStderrTokenSize+1)
+	cases := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{name: "ExactLimit", input: exact + "\nafter\n", want: []string{exact, "after"}},
+		{name: "ExactLimitAtEOF", input: exact, want: []string{exact}},
+		{name: "LimitMinusOneCRLF", input: crlf + "\r\nafter\n", want: []string{crlf, "after"}},
+		{
+			name:  "LimitPlusOne",
+			input: over + "\nafter\n",
+			want:  []string{over[:maxStderrTokenSize] + stderrTruncatedNote, "after"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got []string
+			err := scanJournalStderr(context.Background(), &chunkReader{data: tc.input, size: 64 * 1024},
+				func(message string) { got = append(got, message) })
+			if err != nil {
+				t.Fatalf("scan stderr: %v", err)
+			}
+			want := make([]string, len(tc.want))
+			for i, line := range tc.want {
+				want[i] = "journalctl stderr: " + line + "\n"
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("stderr messages: got %s, want %s", describeLines(got), describeLines(want))
+			}
+		})
+	}
+}
+
+// TestStderrSplitCRLFLineAtLimit checks split on its own with a whole line
+// in data, as a buffer larger than the limit delivers it: a "\r\n" line of
+// exactly limit bytes is whole and loses its "\r", one byte more is cut.
+func TestStderrSplitCRLFLineAtLimit(t *testing.T) {
+	const limit = 8
+	cases := []struct {
+		input     string
+		token     string
+		truncated bool
+	}{
+		{input: "12345678\r\n", token: "12345678"},
+		{input: "123456789\r\n", token: "12345678", truncated: true},
+	}
+	for _, tc := range cases {
+		splitter := &stderrLineSplitter{limit: limit}
+		advance, token, err := splitter.split([]byte(tc.input), false)
+		if err != nil || advance != len(tc.input) || string(token) != tc.token ||
+			splitter.truncated != tc.truncated {
+			t.Fatalf("split(%q) = %d, %q, %v, truncated %v; want %d, %q, nil, truncated %v",
+				tc.input, advance, token, err, splitter.truncated, len(tc.input), tc.token, tc.truncated)
+		}
+	}
+}
+
 // TestStartKeepsReadingAfterLongStderrLine checks the whole reader: a
 // journalctl stderr line above maxStderrTokenSize no longer ends the read
 // with "scan journalctl stderr: bufio.Scanner: token too long".

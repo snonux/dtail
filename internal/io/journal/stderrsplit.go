@@ -25,10 +25,13 @@ type stderrLineSplitter struct {
 	truncated bool
 }
 
-// split is the bufio.SplitFunc of the splitter. The scanner's buffer must
-// hold at least limit bytes and be capped by limit (scanner.Buffer), so that
-// the scanner calls split with limit or more bytes before it gives up on a
-// line without newline.
+// split is the bufio.SplitFunc of the splitter. The scanner's buffer must be
+// capped at limit+1 bytes (scanner.Buffer), so that the scanner calls split
+// with more than limit bytes before it gives up on a line without newline: a
+// line of exactly limit bytes is only known to fit once its newline is in
+// the buffer, which needs room for limit+1 bytes. A line of exactly limit
+// bytes ended by "\r\n" needs limit+2 bytes and so is cut (without its "\r")
+// and marked truncated.
 func (s *stderrLineSplitter) split(data []byte, atEOF bool) (int, []byte, error) {
 	s.truncated = false
 	if i := bytes.IndexByte(data, '\n'); i >= 0 {
@@ -36,18 +39,22 @@ func (s *stderrLineSplitter) split(data []byte, atEOF bool) (int, []byte, error)
 			s.discarding = false
 			return i + 1, nil, nil
 		}
-		if i > s.limit {
+		line := dropCR(data[:i])
+		if len(line) > s.limit {
 			// A whole line above the limit can reach split at once when the
-			// buffer is larger than the limit.
+			// buffer is larger than the limit. A "\r" before the newline does
+			// not count, so a "\r\n" line of up to limit bytes is whole.
 			s.truncated = true
-			return i + 1, data[:s.limit], nil
+			return i + 1, line[:s.limit], nil
 		}
-		return i + 1, dropCR(data[:i]), nil
+		return i + 1, line, nil
 	}
 	if s.discarding {
 		return len(data), nil, nil
 	}
-	if len(data) >= s.limit {
+	// Exactly limit bytes without a newline may still be a whole line whose
+	// newline is the next byte, so only more than limit bytes cut the line.
+	if len(data) > s.limit {
 		s.discarding = true
 		s.truncated = true
 		return len(data), data[:s.limit], nil

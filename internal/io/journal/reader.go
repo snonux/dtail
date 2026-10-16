@@ -499,7 +499,10 @@ func scanJournalStderr(ctx context.Context, stderr io.Reader, emit func(string))
 	defer pool.PutScannerBuffer(bufPtr)
 
 	splitter := &stderrLineSplitter{limit: maxStderrTokenSize}
-	scanner.Buffer(*bufPtr, maxStderrTokenSize)
+	// limit+1 (the size of the pooled buffer) lets a line of exactly
+	// maxStderrTokenSize bytes reach split together with its newline, so it
+	// is forwarded whole, not marked truncated (see stderrLineSplitter.split).
+	scanner.Buffer(*bufPtr, maxStderrTokenSize+1)
 	scanner.Split(splitter.split)
 	for scanner.Scan() {
 		select {
