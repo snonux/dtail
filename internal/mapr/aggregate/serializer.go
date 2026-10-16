@@ -135,7 +135,10 @@ func (s *serializer) serialize(ctx context.Context) bool {
 // one: the groups it could not send are dropped instead of re-merged, and
 // their number is returned with whether every group was handed over (see
 // Aggregate.FinalResultInterrupted). Groups still held because ctx ended
-// before the permit was acquired are counted too.
+// before the permit was acquired are counted too. The count excludes the
+// groups of a periodic serialization still in flight (it holds the permit and
+// its own snapshot of them): such a pass sends them, or re-merges the ones it
+// could not send, which this count then includes once the merge happened.
 func (s *serializer) serializeFinal(ctx context.Context) (unsent int, ok bool) {
 	remaining, ok := s.send(ctx)
 	if ok {

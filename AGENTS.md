@@ -436,10 +436,18 @@ client (`clientProfile.failedCommandStatus`, set by `readClientProfile`):
 scheduled jobs" below) and `dtailhealth` keep their statuses; interactive
 `dmap` thus exits `0` and writes its outfile also after a reported `map:
 incomplete result`, which dserver only sends when a final result was cut off
-(see "Server-Side MapReduce" below), but it logs every reported failure that
-is no file read failure at WARN first (`The mapreduce result may be
-incomplete|<server>: <reason>; ...`, `MaprClient.finish`). Servers without
-`command-failure-v1` report nothing, so with them a missing file still exits `0`.
+(see "Server-Side MapReduce" below), and also after a session cut short
+(below; `dmap` does not set `cutShortStatus` either), e.g. by the idle
+timeout, a dserver SIGTERM or a lost connection while it sent the final
+result, which then has no report. This is by design, so that it always
+writes what it received; instead it logs every reported failure that is no
+file read failure, and every session cut short while the client did not
+cancel it (SIGINT/SIGTERM, `:quit`), at WARN first (`The mapreduce result may
+be incomplete|<server>: <reason>; ...`, the reason for a session cut short
+being `the session ended before the server completed it`,
+`MaprClient.incompleteResultReasons` called by `MaprClient.finish`). Servers
+without `command-failure-v1` report nothing, so with them a missing file still
+exits `0`.
 A session cut short (it ended without `.syn close connection`,
 `handlers.SessionOutcome.Completed` false: e.g. a dserver SIGKILLed, crashed or
 stopped mid-read, or a lost connection) exits `1` (`clients.exitStatusCutShort`
@@ -546,12 +554,17 @@ validation flags them as stale, while the runtime still ignores them.
   `internal/handlers/basehandler.go`) before the close handshake, so a
   scheduled job writes no outfile. With the deadline gone, the context ends
   listed above tear the session down rather than close it gracefully, so a
-  client normally sees a session cut short instead; the report covers any
-  path that still ends a final result early and then closes normally.
-  Interactive `dmap` keeps its exit status and its outfile but warns (see
-  "Client Exit Statuses" below). Each final serialization logs `Aggregate
-  final serialization started` with its group count at INFO.
-  `integrationtests/dmap_slow_client_test.go` stops a client for 15 s once
+  client normally sees a session cut short instead (a scheduled job then
+  writes no outfile either); the report covers any path that still ends a
+  final result early and then closes normally. Interactive `dmap` keeps its
+  exit status (`0`) and writes its outfile in both cases, but warns about
+  the reported failure as well as about the session cut short (see "Client
+  Exit Statuses" below). Each final serialization logs `Aggregate final
+  serialization started` with its group count at INFO; the count (like the
+  unsent count of the WARN) excludes the groups a periodic serialization
+  still in flight took for its own snapshot, which that pass sends or
+  re-merges. `integrationtests/dmap_slow_client_test.go` (query with
+  `interval 3600`, so no periodic pass runs) stops a client for 15 s once
   that line shows all 100,000 groups still to be sent, and requires every
   group in the outfile and no interrupted serialization in the server log.
 

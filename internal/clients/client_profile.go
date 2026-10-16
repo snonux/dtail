@@ -13,15 +13,17 @@ type clientProfile struct {
 	// failedCommandStatus is the least exit status of a connection whose
 	// server reported a failed command (see sessionStatus); 0 leaves the
 	// handler's status as it is, so that dtail's follow mode, dmap (whose
-	// scheduled modes handle the failures themselves) and dtailhealth keep
-	// their exit statuses.
+	// scheduled modes handle the failures themselves and whose interactive
+	// mode only warns, see MaprClient.finish) and dtailhealth keep their
+	// exit statuses.
 	failedCommandStatus int
 	// cutShortStatus is the least exit status of a connection whose session
 	// ended without the server's close handshake although the client did not
 	// end it itself (see sessionStatus and exitStatusCutShort); 0 leaves the
 	// handler's status as it is, so that dtail's follow mode (which
-	// reconnects), dmap (whose scheduled modes check the outcome themselves)
-	// and dtailhealth keep their exit statuses.
+	// reconnects), dmap (whose scheduled modes check the outcome themselves
+	// and whose interactive mode only warns, see MaprClient.finish) and
+	// dtailhealth keep their exit statuses.
 	cutShortStatus int
 }
 

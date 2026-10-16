@@ -105,8 +105,10 @@ func TestAggregateFinalSerializationHasNoDeadline(t *testing.T) {
 				if got := <-received; got != finalTestGroups {
 					t.Fatalf("consumer received %d groups, want %d", got, finalTestGroups)
 				}
-				if !a.FinalResultComplete() {
-					t.Fatal("FinalResultComplete() = false after every group was sent")
+				if got := finalResultState(a.finalResult.Load()); got != finalResultComplete ||
+					a.FinalResultInterrupted() {
+					t.Fatalf("final result state = %d, FinalResultInterrupted() = %v after every group "+
+						"was sent, want complete, false", got, a.FinalResultInterrupted())
 				}
 				if minimum := 10 * time.Second; elapsed <= minimum {
 					t.Fatalf("final serialization took %v, want more than %v to cover the former deadline",
@@ -140,9 +142,8 @@ func TestAggregateFinalSerializationCanceledIsIncomplete(t *testing.T) {
 
 		a.Shutdown(ctx)
 
-		if a.FinalResultComplete() || !a.FinalResultInterrupted() {
-			t.Fatalf("FinalResultComplete() = %v, FinalResultInterrupted() = %v after a canceled "+
-				"final serialization, want false, true", a.FinalResultComplete(), a.FinalResultInterrupted())
+		if !a.FinalResultInterrupted() {
+			t.Fatal("FinalResultInterrupted() = false after a canceled final serialization")
 		}
 		if got := a.countGroups(); got != 0 {
 			t.Fatalf("groups kept after the final serialization = %d, want 0 (dropped, not re-merged)", got)
@@ -160,14 +161,14 @@ func TestAggregateFinalSerializationCanceledIsIncomplete(t *testing.T) {
 // complete nor an interrupted final result: there is nothing to report.
 func TestAggregateFinalResultWithoutFinalization(t *testing.T) {
 	a := newFinalTestAggregate(t, 1)
-	if a.FinalResultComplete() || a.FinalResultInterrupted() {
-		t.Fatal("final result complete or interrupted before finalization")
+	if got := finalResultState(a.finalResult.Load()); got != finalResultNone || a.FinalResultInterrupted() {
+		t.Fatalf("final result state = %d before finalization, want none", got)
 	}
 	a.Abort()
 	a.PrepareOutput(context.Background(), make(chan string, 1))
 	a.Shutdown(context.Background())
-	if a.FinalResultComplete() || a.FinalResultInterrupted() {
-		t.Fatal("final result complete or interrupted after Abort won the terminal state")
+	if got := finalResultState(a.finalResult.Load()); got != finalResultNone || a.FinalResultInterrupted() {
+		t.Fatalf("final result state = %d after Abort won the terminal state, want none", got)
 	}
 }
 
@@ -194,4 +195,22 @@ func (l *finalWarnRecorder) warnings() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return slices.Clone(l.lines)
+}
+
+// TestWaitProcessorsPrefersFinishedInput pins that a processor join that is
+// complete wins over an ended finalization context, so a session canceled
+// right after its input ended is not reported as cut off before that.
+func TestWaitProcessorsPrefersFinishedInput(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	if waitProcessors(ctx, done) {
+		t.Fatal("waitProcessors() = true with processors still running and ctx ended")
+	}
+	close(done)
+	for range 1000 {
+		if !waitProcessors(ctx, done) {
+			t.Fatal("waitProcessors() = false with processors done and ctx ended")
+		}
+	}
 }

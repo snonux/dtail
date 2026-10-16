@@ -46,7 +46,11 @@ func TestDMapSlowClientGetsEveryGroup(t *testing.T) {
 	writeSlowClientInput(t, inFile)
 
 	server := startSharedReadServer(t, sharedReadModes()[0], nil)
-	query := fmt.Sprintf("from STATS select count($line),user group by user outfile %s", csvFile)
+	// interval 3600: no periodic serialization runs during the test (the
+	// default interval is 5 s, which a loaded host could reach before the
+	// final one), so the final serialization sends every group itself.
+	query := fmt.Sprintf("from STATS select count($line),user group by user interval 3600 outfile %s",
+		csvFile)
 	client := startSlowDMapClient(t, server.address, inFile, query, outFile)
 	pauseDuringFinalResult(t, server, inFile, client)
 
@@ -61,8 +65,8 @@ func TestDMapSlowClientGetsEveryGroup(t *testing.T) {
 
 // pauseDuringFinalResult stops the client as soon as dserver started reading
 // inFile for it, so that it drains none of the result, waits until dserver's
-// final serialization started (the read of the input takes well under the 5
-// s interval of the periodic serialization) and continues the client
+// final serialization started (the query's interval keeps any periodic
+// serialization from running first) and continues the client
 // slowClientPause later. While the client is stopped the final serialization
 // can send no more than the SSH channel window and the session's queues
 // hold, so it is blocked for the whole pause.
@@ -74,7 +78,8 @@ func pauseDuringFinalResult(t *testing.T, server *sharedReadServer, inFile strin
 	}
 	server.waitForLog(t, "Aggregate final serialization started", 1)
 	// Every group is still to be sent: no periodic serialization took any
-	// of them (and blocked on the stopped client) before the final one.
+	// of them (and blocked on the stopped client) before the final one, whose
+	// count would exclude them.
 	server.requireLogCount(t, fmt.Sprintf("Aggregate final serialization started|groups|%d", slowClientGroups), 1)
 	time.Sleep(slowClientPause)
 	if err := client.Process.Signal(syscall.SIGCONT); err != nil {

@@ -153,18 +153,20 @@ func (mode MaprClientMode) scheduled() bool {
 // error of the client's context by then. As for interim reports, output errors
 // are logged; only scheduled modes change the exit status on publication errors.
 //
-// Outside the scheduled modes a failed command a server reported does not
-// change the exit status or keep the result from being written (dmap opts out
-// of the failed command status, see clientProfile.failedCommandStatus), but
-// every one that is no file read failure, e.g. "map: incomplete result", is
-// logged at WARN first, so the user learns that the result may lack data.
+// Outside the scheduled modes neither a failed command a server reported nor
+// a session cut short changes the exit status or keeps the result from being
+// written (dmap opts out of the failed command and cut-short statuses, see
+// clientProfile.failedCommandStatus and cutShortStatus, so that it always
+// writes what it received). Every one of them that may have lost data (see
+// incompleteResultReasons) is logged at WARN first instead, so the user
+// learns that the result may lack data.
 func (c *MaprClient) finish(ctxErr error, status int) int {
 	if c.mode.scheduled() {
 		return c.finishScheduled(ctxErr, status)
 	}
 
-	if failures := c.reportedCommandFailures(); len(failures) > 0 {
-		c.clientLogger().Warn("The mapreduce result may be incomplete", strings.Join(failures, "; "))
+	if reasons := c.incompleteResultReasons(ctxErr); len(reasons) > 0 {
+		c.clientLogger().Warn("The mapreduce result may be incomplete", strings.Join(reasons, "; "))
 	}
 	// Publish already-received data even if the connections were canceled.
 	c.clientLogger().Debug("Writing final mapreduce result")
@@ -257,7 +259,7 @@ func sessionOutcome(server string, handler handlers.Handler) (incomplete string,
 	}
 	outcome := reporter.Outcome()
 	if !outcome.Completed {
-		return fmt.Sprintf("the session with %s ended before the server completed it", server), nil
+		return fmt.Sprintf("the session with %s %s", server, sessionCutShortReason), nil
 	}
 	for _, reason := range outcome.Failures {
 		if !protocol.IsFileReadFailure(reason) {
@@ -268,26 +270,42 @@ func sessionOutcome(server string, handler handlers.Handler) (incomplete string,
 	return "", fileFailures
 }
 
-// reportedCommandFailures returns the failed commands the servers reported
-// that are no file read failures (see protocol.IsFileReadFailure), each as
-// "<server>: <reason>". Interactive dmap does not fail on them, it only warns
-// (see finish). File read failures are left out: they mean that a file had
-// no data to give (it was missing, not permitted or unreadable), not that a
-// command was rejected or data the server read was lost on the way.
-func (c *MaprClient) reportedCommandFailures() []string {
-	var failures []string
+// sessionCutShortReason is why a session that ended without the server's
+// close handshake (handlers.SessionOutcome Completed is false) may lack data.
+const sessionCutShortReason = "ended before the server completed it"
+
+// incompleteResultReasons returns, each as "<server>: <reason>", why the
+// result of an interactive dmap may lack data: every failed command the
+// servers reported that is no file read failure (see
+// protocol.IsFileReadFailure), e.g. "map: incomplete result", and, unless
+// the client ended the sessions itself (ctxErr, the error of the client's
+// context by then, is not nil), every session cut short, e.g. by the idle
+// timeout, a dserver shut down with SIGTERM or a lost connection, while it
+// sent the final result. A session cut short has no "map: incomplete result"
+// report, as the server could not send it any more. Interactive dmap does
+// not fail on these, it only warns (see finish). File read failures are left
+// out: they mean that a file had no data to give (it was missing, not
+// permitted or unreadable), not that a command was rejected or data the
+// server read was lost on the way. A handler that cannot tell how its
+// session ended is left out too.
+func (c *MaprClient) incompleteResultReasons(ctxErr error) []string {
+	var reasons []string
 	for _, conn := range c.snapshotConnections() {
 		reporter, ok := conn.Handler().(sessionOutcomeReporter)
 		if !ok {
 			continue
 		}
-		for _, reason := range reporter.Outcome().Failures {
+		outcome := reporter.Outcome()
+		if !outcome.Completed && ctxErr == nil {
+			reasons = append(reasons, conn.Server()+": the session "+sessionCutShortReason)
+		}
+		for _, reason := range outcome.Failures {
 			if !protocol.IsFileReadFailure(reason) {
-				failures = append(failures, conn.Server()+": "+reason)
+				reasons = append(reasons, conn.Server()+": "+reason)
 			}
 		}
 	}
-	return failures
+	return reasons
 }
 
 // incompleteQueryReason returns why a query whose connections ended with

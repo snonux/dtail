@@ -72,8 +72,8 @@ type Aggregate struct {
 	// finalization, but it must use the graceful caller's output context.
 	finalizationCtx context.Context
 	// finalResult is the outcome of the final serialization, a
-	// finalResultState set once by the finalizer (see FinalResultComplete
-	// and FinalResultInterrupted).
+	// finalResultState set once by the finalizer (see
+	// FinalResultInterrupted).
 	finalResult           atomic.Uint32
 	finalizationOwnerHook func()
 	serializationLoopHook func()
@@ -174,14 +174,6 @@ func (a *Aggregate) Shutdown(ctx context.Context) {
 	a.shutdown(ctx, false)
 }
 
-// FinalResultComplete reports whether the final serialization ran to its end
-// and handed every group to the output channel. It is false while the
-// finalization still runs, when it never ran (e.g. Abort won the terminal
-// state) and when it was interrupted.
-func (a *Aggregate) FinalResultComplete() bool {
-	return finalResultState(a.finalResult.Load()) == finalResultComplete
-}
-
 // FinalResultInterrupted reports whether the final serialization ran but
 // ended before every group was handed to the output channel: the
 // finalization context ended while it waited for the processors or part way
@@ -239,16 +231,16 @@ func (a *Aggregate) finalize(ctx context.Context) {
 	processorsDone := a.sealProcessors()
 	a.done.Shutdown()
 	a.stopSerializeTicker()
-	// Every processor drains its own batch in Close before it releases its
-	// registration, so once processorsDone is closed all accepted lines have
-	// reached the serializer.
-	select {
-	case <-processorsDone:
-	case <-ctx.Done():
+	if !waitProcessors(ctx, processorsDone) {
 		a.finalResult.Store(uint32(finalResultInterrupted))
 		a.logger.Warn("Aggregate finalization canceled before its input ended; final result incomplete")
 		return
 	}
+	// The count is of the groups the final serialization is about to send.
+	// It excludes the groups a periodic serialization still in flight took
+	// for its snapshot (the ticker is stopped, but a pass that already began
+	// runs on): those reach the client through that pass, or are re-merged
+	// and sent by the final one should that pass be interrupted.
 	a.logger.Info("Aggregate final serialization started", "groups", a.countGroups())
 	// Unlike a periodic serialization, the final one does not re-merge the
 	// groups it could not send: nothing would send them any more. Its single
@@ -261,6 +253,28 @@ func (a *Aggregate) finalize(ctx context.Context) {
 		return
 	}
 	a.finalResult.Store(uint32(finalResultComplete))
+}
+
+// waitProcessors waits until processorsDone is closed or ctx ends, and
+// reports whether the processors are done. Every processor drains its own
+// batch in Close before it releases its registration, so once processorsDone
+// is closed all accepted lines have reached the serializer. A processor join
+// that is complete wins over an ended ctx: a select picks among ready cases
+// at random, so after ctx ended processorsDone is checked once more, and the
+// result is not reported as cut off before its input ended when no input was
+// lost. The final serialization then observes the ended ctx itself.
+func waitProcessors(ctx context.Context, processorsDone <-chan struct{}) bool {
+	select {
+	case <-processorsDone:
+		return true
+	case <-ctx.Done():
+	}
+	select {
+	case <-processorsDone:
+		return true
+	default:
+		return false
+	}
 }
 
 // PrepareShutdown claims final serialization and binds the output lifetime
