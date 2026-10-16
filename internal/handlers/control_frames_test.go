@@ -144,17 +144,50 @@ func TestServerHandlerHonoursOnlyASecondControlFramesRequest(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			handler := newFramingTestServerHandler(t, test.capabilities)
 			stream := runCatSessionAfter(t, handler, path, "plain=true", test.first...)
-			if handler.framing() != test.wantFraming {
-				t.Fatalf("session framing = %s, want %s", handler.framing(), test.wantFraming)
-			}
-			// The close handshake, the session's last frame, is marked only
-			// when the session marks control frames.
-			marked := bytes.HasSuffix(stream, []byte("\xac\xff\x03.syn close connection\xac"))
-			if marked != test.wantFraming.MarksControl() {
-				t.Fatalf("close handshake marked = %v, want framing %s: %q",
-					marked, test.wantFraming, stream)
-			}
+			assertSessionFraming(t, handler, stream, test.wantFraming)
 		})
+	}
+}
+
+// TestServerHandlerIgnoresFramingRequestsWithATimeoutPrefix: a framing
+// request with a timeout prefix, which strips the prefix before the request
+// is handled, switches nothing; the session keeps its framing as for any
+// request it does not honour.
+func TestServerHandlerIgnoresFramingRequestsWithATimeoutPrefix(t *testing.T) {
+	path := writeControlLookalikeFile(t)
+	escaped, control := protocol.EscapedFramingCommand, protocol.ControlFramesCommand
+	tests := []struct {
+		name        string
+		first       []string
+		wantFraming protocol.Framing
+	}{
+		{name: "escaped framing request", first: []string{"timeout 5 " + escaped, control},
+			wantFraming: protocol.RawFraming},
+		{name: "control frames request", first: []string{escaped, "timeout 5 " + control},
+			wantFraming: protocol.EscapedFraming},
+		{name: "zero timeout", first: []string{escaped, "timeout 0 " + control},
+			wantFraming: protocol.EscapedFraming},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
+			stream := runCatSessionAfter(t, handler, path, "plain=true", test.first...)
+			assertSessionFraming(t, handler, stream, test.wantFraming)
+		})
+	}
+}
+
+// assertSessionFraming fails the test unless handler ended in want, and the
+// close handshake, the last frame of stream, is marked exactly when want
+// marks control frames.
+func assertSessionFraming(t *testing.T, handler *ServerHandler, stream []byte, want protocol.Framing) {
+	t.Helper()
+	if handler.framing() != want {
+		t.Fatalf("session framing = %s, want %s", handler.framing(), want)
+	}
+	marked := bytes.HasSuffix(stream, []byte("\xac\xff\x03.syn close connection\xac"))
+	if marked != want.MarksControl() {
+		t.Fatalf("close handshake marked = %v, want framing %s: %q", marked, want, stream)
 	}
 }
 
@@ -239,8 +272,15 @@ func runEarlyCloseSession(t *testing.T, handler *ServerHandler, commands ...stri
 	default:
 		t.Fatalf("client never acknowledged the close: %q", output.String())
 	}
-	if elapsed := time.Since(started); elapsed > 4*time.Second {
-		t.Fatalf("session took %s to end, want no wait for a timeout", elapsed)
+	// The shutdown flushes the session output while Read holds the close
+	// handshake back. A held Read is no active read, so that flush with
+	// nothing queued returns at once instead of waiting for the flush
+	// timeout and reporting a flush error to the client.
+	if strings.Contains(output.String(), "Unable to flush session output") {
+		t.Fatalf("shutdown flush waited for the held back Read: %q", output.String())
+	}
+	if elapsed := time.Since(started); elapsed >= defaultOutputFlushTimeout/2 {
+		t.Fatalf("session took %s to end, want no wait for a flush or ack timeout", elapsed)
 	}
 	return []byte(output.String())
 }

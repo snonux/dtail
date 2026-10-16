@@ -244,12 +244,10 @@ func (f *sessionFramer) enableControlFrames() bool {
 // settleFraming marks the session framing as final, so that Read goes on
 // encoding the frames after the capabilities frame. The command input
 // goroutine calls it as soon as no command can switch the framing any more:
-// before it handles a command that is no framing request
-// (commandDispatcher.handleCommand), when an escaped framing request leaves
-// the session without a possible control frames switch
-// (ServerHandler.handleEscapedFramingRequest), when the control frames
-// request was handled, and after the second command in any case
-// (settleFramingAfterCommand). It is idempotent.
+// when an escaped framing request leaves the session without a possible
+// control frames switch (ServerHandler.handleEscapedFramingRequest), when
+// the control frames request was handled, and after any command that leaves
+// no switch possible (settleFramingAfterCommand). It is idempotent.
 func (f *sessionFramer) settleFraming() {
 	f.framingSettledOnce.Do(func() { close(f.framingSettled) })
 }
@@ -260,6 +258,17 @@ func (f *sessionFramer) settleFraming() {
 // request. Any other framing after the first command is final (a raw session
 // never switches later, as only the first command can make it escaped), as
 // is every framing after the second one.
+//
+// A command that is no framing request (an older client's first command, an
+// escaped-only client's second one) thus settles the framing only once it
+// was handled, not before: the replies it queued meanwhile, e.g. an AUTHKEY
+// reply, go out before a frame queued earlier on its own, such as the close
+// handshake of a dserver shutting down, which Read only emits once nothing
+// else is queued. Holding Read back while the command is handled costs
+// nothing: no command handled on the command input goroutine waits for
+// output. Reads, map queries and shutdowns run on goroutines of their own,
+// and a command queues at most a few replies itself, which the buffered
+// server message channel takes without blocking.
 func (f *sessionFramer) settleFramingAfterCommand() {
 	if f.commandFrames >= 2 || f.framing() != protocol.EscapedFraming {
 		f.settleFraming()

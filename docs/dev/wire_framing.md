@@ -156,17 +156,21 @@ working with every other one:
    (`ServerHandler.handleControlFramesRequest`,
    `sessionFramer.enableControlFrames`); a request that is not the second
    command, or reaches a session that is not escaped, is ignored and logged.
+   Either request is honoured only as the exact command frame clients send:
+   one with a `timeout N` prefix is ignored and logged too
+   (`commandDispatcher.dispatchCommand`).
    The server encodes no frame after the capabilities frame until the
    session framing has settled (`sessionFramer.awaitFramingSettled`), so
    every frame is encoded in the framing the client decided on: a control
    message the server sends on its own before the client's commands arrive,
    such as the close handshake of a dserver shutting down in the session's
    first moment, waits until then and reaches a client of a marking session
-   marked. The framing settles before the server handles a command that is
+   marked. The framing settles once the server handled a command that is
    no framing request (an older client's first command, an escaped-only
-   client's second one), after an escaped framing request when the server
-   does not advertise `control-frames-v1` or the request switched nothing,
-   after the second command in any case, and when the session ends (e.g.
+   client's second one), so the replies that command queued go out before
+   such a close handshake; after an escaped framing request when the server
+   does not advertise `control-frames-v1` or the request switched nothing;
+   after the second command in any case; and when the session ends (e.g.
    its input ended). Clients send the requests in one write, together with
    or right before their first commands, so the frames are held back for no
    noticeable time; a held back read does not count as an active one, so a

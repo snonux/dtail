@@ -117,23 +117,18 @@ func (d *commandDispatcher) handleCommand(command string) {
 	h := d.handler
 	h.Logger().Debug(h.user, commandForLog(command))
 
+	// The session framing is settled after this returns, not before
+	// (sessionFramer.settleFramingAfterCommand), so the replies a command
+	// queues while it is handled go out before frames queued earlier on
+	// their own, such as the close handshake of a dserver shutting down.
 	args, argc, add, err := d.codec.handleProtocolVersion(strings.Split(command, " "))
 	if err != nil {
 		// No failed-command message here: a client of another protocol
 		// version may not know hidden messages or their framing.
-		h.settleFraming()
 		h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err)+add)
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
-	// A command that is no framing request can not switch the session
-	// framing, and none after it can (see sessionFramer.settleFraming), so
-	// the frames held back since the capabilities frame may go out before it
-	// is handled. Settling first also keeps such a command from waiting for
-	// output that Read still holds back.
-	if err != nil || !isFramingRequest(argc, args) {
-		h.settleFraming()
-	}
 	if err != nil {
 		h.sendln(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err))
 		h.reportCommandFailure(commandFailureProtocol)
@@ -150,9 +145,20 @@ func (d *commandDispatcher) handleCommand(command string) {
 }
 
 func (d *commandDispatcher) dispatchCommand(ctx context.Context, args []string, argc int) error {
+	prefixedArgc := argc
 	ctx, args, argc, err := applyCommandTimeout(ctx, args, argc)
 	if err != nil {
 		return err
+	}
+	if argc != prefixedArgc && isFramingRequest(argc, args) {
+		// Clients send the framing requests exactly as
+		// protocol.EscapedFramingCommand and protocol.ControlFramesCommand.
+		// A timeout prefix makes one some other command, which is ignored
+		// like any request the session does not honour, so that only those
+		// exact frames can switch the session framing.
+		d.handler.Logger().Warn(d.handler.user, "Ignoring framing request with a timeout prefix")
+		cancelCommandContext(ctx)
+		return nil
 	}
 
 	parts := strings.SplitN(args[0], ":", 2)
