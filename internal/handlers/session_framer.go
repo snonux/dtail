@@ -132,7 +132,7 @@ func (f *sessionFramer) readServerMessage(p []byte, message string) int {
 		}
 		return f.drainReadBuf(p)
 	}
-	if h.serverless || h.plain && (message == "" || message == "\n") {
+	if h.serverless || isEmptyServerMessage(message) {
 		return 0
 	}
 	kind := protocol.MessageServer

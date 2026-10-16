@@ -166,7 +166,7 @@ func (w *DirectWriter) writeServerMessage(hostname string, plain bool, message s
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
 
-	if plain && (message == "" || message == "\n") {
+	if isEmptyServerMessage(message) {
 		return nil
 	}
 

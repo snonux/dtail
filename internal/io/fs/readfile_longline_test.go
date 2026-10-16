@@ -137,13 +137,16 @@ func assertLongLineRead(t *testing.T, path string, tt longLineCase) {
 
 // assertLongLineWarnings checks that messages holds exactly want server
 // messages. A reader of these tests sends no other message than the long-line
-// warning, whose text comes from the test logger (just its newline here).
+// warning. The test logger logs nothing, like a logger whose level filters
+// warnings out, so its text is the fallback wording of logging.WarnMessage,
+// which still tells the client of the split line.
 func assertLongLineWarnings(t *testing.T, messages chan string, want int) {
 	t.Helper()
 	close(messages)
 	got := 0
 	for message := range messages {
-		if message != LongLineWarning(testLogger, "") {
+		if !strings.HasPrefix(message, "WARN|") ||
+			!strings.HasSuffix(message, "|Long log line, splitting into multiple lines\n") {
 			t.Fatalf("unexpected server message %q", message)
 		}
 		got++

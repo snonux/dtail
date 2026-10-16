@@ -294,9 +294,12 @@ func (f *ReadFile) lineLimit() int {
 
 // LongLineWarning formats the message a reader sends to the client, through
 // its ServerMessages channel, when it splits a line of filePath because the
-// line is longer than the maximum line length.
+// line is longer than the maximum line length. It logs the warning through
+// logger and words it for the client whatever the logger's level (see
+// logging.WarnMessage), so the client gets it even from a dserver at
+// --logLevel error.
 func LongLineWarning(logger logging.Logger, filePath string) string {
-	return logging.OrNop(logger).Warn(filePath, "Long log line, splitting into multiple lines") + "\n"
+	return logging.WarnMessage(logger, filePath, "Long log line, splitting into multiple lines") + "\n"
 }
 
 // warnAboutLongLine warns the client about a long line, unless it did so

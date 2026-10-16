@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -57,7 +58,7 @@ func (f *mapQueryFailures) failed(generation uint64) bool {
 // scheduled job writes no outfile (see protocol.IsFileReadFailure). The
 // message names the file as the user gave it (see rejectedReadPath).
 func (r *readCommand) rejectAfterMapQueryFailure(ctx context.Context, args []string) {
-	r.sendServerMessage(ctx, r.logger.Error(r.logContext,
+	r.sendServerMessage(ctx, logging.ErrorMessage(r.logger, r.logContext,
 		"Not reading, the session's map query failed", rejectedReadPath(args)))
 	r.reportFailure(ctx, protocol.CommandFailureMapQuery)
 }

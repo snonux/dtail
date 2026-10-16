@@ -209,7 +209,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 	if argc < 3 {
-		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 			"Unable to parse command", args, argc))
 		r.reportFailure(ctx, readFailureCommand)
 		return
@@ -247,7 +247,7 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 func (r *readCommand) parsePath(ctx context.Context, word string) (string, bool) {
 	path, err := protocol.DecodeReadPath(word)
 	if err != nil {
-		r.sendServerMessage(ctx, r.logger.Error(r.logContext,
+		r.sendServerMessage(ctx, logging.ErrorMessage(r.logger, r.logContext,
 			"Unable to parse command", err))
 		r.reportFailure(ctx, readFailureCommand)
 		return "", false
@@ -278,7 +278,7 @@ func (r *readCommand) parseRegex(ctx context.Context, argc int, args []string) (
 	}
 	re, err := regex.Deserialize(strings.Join(args[2:], " "))
 	if err != nil {
-		r.sendServerMessage(ctx, r.logger.Error(r.logContext,
+		r.sendServerMessage(ctx, logging.ErrorMessage(r.logger, r.logContext,
 			"Unable to parse command", err))
 		r.reportFailure(ctx, readFailureCommand)
 		return regex.Regex{}, false
@@ -354,7 +354,7 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 
 		if numPaths := len(paths); numPaths == 0 {
 			r.logger.Error(r.logContext, "No such file(s) to read", glob)
-			r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+			r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 				"Unable to read file(s), check server logs"))
 			select {
 			case <-ctx.Done():
@@ -374,7 +374,7 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		if maxTargets := r.timings.maxGlobTargets; len(paths) > maxTargets {
 			r.logger.Warn(r.logContext, "Glob expansion exceeded cap, truncating",
 				"glob", glob, "matched", len(paths), "cap", maxTargets)
-			r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+			r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 				"Glob expansion exceeded server limit, only first targets served",
 				"limit", maxTargets, "matched", len(paths)))
 			r.reportFailure(ctx, readFailureGlobCapped)
@@ -385,7 +385,7 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 
-	r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+	r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 		"Giving up to read file(s)"))
 	r.reportFailure(ctx, readFailureNoFile)
 }
@@ -429,7 +429,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	// directories) read nothing, like a glob that matched no path.
 	if int(skipped.Load()) == len(paths) {
 		r.logger.Error(r.logContext, "No regular file(s) to read", glob)
-		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 			"Unable to read file(s), check server logs"))
 		r.reportFailure(ctx, readFailureNoFile)
 	}
@@ -492,17 +492,17 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 		return true
 	case errors.Is(err, os.ErrNotExist):
 		r.logger.Error(r.logContext, "File to read does not exist (anymore)", path, globID, err)
-		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 			"Unable to read file(s), check server logs"))
 		r.reportFailure(ctx, readFailureNoFile)
 	case errors.Is(err, user.ErrReadPermissionDenied):
 		r.logger.Error(r.logContext, "No permission to read file", path, globID)
-		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 			"Unable to read file(s), check server logs"))
 		r.reportFailure(ctx, readFailurePermission)
 	default:
 		r.logger.Error(r.logContext, "Unable to read file", path, globID, err)
-		r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 			"Unable to read file(s), check server logs"))
 		r.reportFailure(ctx, readFailureReadingFile)
 	}
@@ -555,7 +555,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		if target != nil && target.Kind == fs.JournalKind {
 			message = "Unable to read journal"
 		}
-		r.sendServerMessage(ctx, r.logger.Warn(r.logContext, message, err))
+		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext, message, err))
 		r.reportFailure(ctx, readFailureReader)
 		return
 	}
@@ -698,7 +698,7 @@ func (r *readCommand) makeGlobID(ctx context.Context, path, glob string) string 
 		return pathParts[len(pathParts)-1]
 	}
 
-	r.sendServerMessage(ctx, r.logger.Warn("Empty file path given?", path, glob))
+	r.sendServerMessage(ctx, logging.WarnMessage(r.logger, "Empty file path given?", path, glob))
 	return ""
 }
 
@@ -725,7 +725,7 @@ func (r *readCommand) reportReadError(ctx context.Context, err error) {
 		r.reportFailure(ctx, readFailureReadingFile)
 		return
 	}
-	r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+	r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
 		"Dropped output too large for the session output buffer, check server logs", err))
 	r.reportFailure(ctx, readFailureOutput)
 }

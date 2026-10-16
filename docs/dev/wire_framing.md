@@ -13,6 +13,15 @@ in serverless mode) is a sequence of frames. Each frame ends with
 
 The client-to-server direction is unchanged: `protocol 4.1 base64 <command>;`.
 
+The message of a `SERVER` frame that carries a diagnostic (a missing file,
+the glob cap, a protocol version mismatch, a long line split, ...) is the
+diagnostic as the server's logger formats it, e.g.
+`WARN|1016-141259|user@host|Unable to read file(s), check server logs`. It is
+worded with `logging.WarnMessage` / `logging.ErrorMessage`, which log it at
+its level but return its text whatever the server's `--logLevel`, so a
+dserver at `--logLevel error` or `none` still tells the client. A server
+message without text (`""` or `"\n"`) is never framed, in any output mode.
+
 ## The problem with 0xAC
 
 `0xAC` is `'¬'` truncated to a byte. It is also a UTF-8 continuation byte and

@@ -9,6 +9,7 @@ import (
 	"github.com/mimecast/dtail/internal/io/fs/readhub"
 	"github.com/mimecast/dtail/internal/io/line"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/regex"
 )
@@ -110,7 +111,7 @@ func (r *readCommand) restartPrivately(ctx context.Context, ltx lcontext.LContex
 	r.logger.Info(options.path, options.globID, "Reading file again")
 	reader, err := makeReader(options, omode.TailClient, false)
 	if err != nil {
-		r.sendServerMessage(ctx, r.logger.Warn(r.logContext, "Unable to create file reader", err))
+		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext, "Unable to create file reader", err))
 		r.reportFailure(ctx, readFailureReader)
 		return
 	}

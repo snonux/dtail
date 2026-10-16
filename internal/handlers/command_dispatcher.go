@@ -11,6 +11,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 )
 
 const maxCommandTimeoutSeconds = 24 * 60 * 60
@@ -120,12 +121,12 @@ func (d *commandDispatcher) handleCommand(command string) {
 	if err != nil {
 		// No failed-command message here: a client of another protocol
 		// version may not know hidden messages or their framing.
-		h.send(h.serverMessages, h.Logger().Error(h.user, err)+add)
+		h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err)+add)
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
 	if err != nil {
-		h.sendln(h.serverMessages, h.Logger().Error(h.user, err))
+		h.sendln(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err))
 		h.reportCommandFailure(commandFailureProtocol)
 		return
 	}
@@ -134,7 +135,7 @@ func (d *commandDispatcher) handleCommand(command string) {
 	ctx = withCommandCancel(ctx, cancel)
 	if dispatchErr := d.dispatchCommand(ctx, args, argc); dispatchErr != nil {
 		cancel()
-		h.sendln(h.serverMessages, h.Logger().Error(h.user, dispatchErr))
+		h.sendln(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, dispatchErr))
 		h.reportCommandFailure(commandFailureRejected)
 	}
 }
@@ -213,7 +214,7 @@ func (d *commandDispatcher) handleAckCommand(argc int, args []string) {
 	h := d.handler
 	if argc < 3 {
 		if !d.quiet {
-			h.sendln(h.serverMessages, h.Logger().Warn(h.user,
+			h.sendln(h.serverMessages, logging.WarnMessage(h.Logger(), h.user,
 				"Unable to parse command", args, argc))
 		}
 		return

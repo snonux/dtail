@@ -53,6 +53,7 @@ type Colorizer interface {
 }
 
 var _ logging.Logger = (*DLog)(nil)
+var _ logging.MessageLogger = (*DLog)(nil)
 
 // newDLog creates a new DTail logger.
 func newDLog(sourceProcess, sourcePackage source.Source, cfg config.RuntimeConfig,
@@ -165,6 +166,20 @@ func (d *DLog) Error(args ...any) string {
 // Warn logs a warning message.
 func (d *DLog) Warn(args ...any) string {
 	return d.log(Warn, args)
+}
+
+// ErrorMessage logs args at error level like Error and returns the formatted
+// line even when the logger's level filters error messages out, for the
+// diagnostics a server also sends to its client (see logging.MessageLogger).
+func (d *DLog) ErrorMessage(args ...any) string {
+	return d.message(Error, args)
+}
+
+// WarnMessage logs args at warn level like Warn and returns the formatted line
+// even when the logger's level filters warnings out, for the diagnostics a
+// server also sends to its client (see logging.MessageLogger).
+func (d *DLog) WarnMessage(args ...any) string {
+	return d.message(Warn, args)
 }
 
 // Info logging.
@@ -370,6 +385,24 @@ func (d *DLog) log(level level, args []any) string {
 	if d.maxLevel < level {
 		return ""
 	}
+	message := d.format(level, args)
+	d.write(message)
+	return message
+}
+
+// message formats args at level and writes the result to the sink when level
+// is enabled, like log, but returns the formatted text in either case (see
+// logging.MessageLogger).
+func (d *DLog) message(level level, args []any) string {
+	message := d.format(level, args)
+	if d.maxLevel >= level {
+		d.write(message)
+	}
+	return message
+}
+
+// format renders args at level as one diagnostic line without writing it.
+func (d *DLog) format(level level, args []any) string {
 	encoded := pool.BuilderBuffer.Get().(*strings.Builder)
 	defer pool.RecycleBuilderBuffer(encoded)
 
@@ -393,15 +426,18 @@ func (d *DLog) log(level level, args []any) string {
 			Details:   args,
 		})
 	}
-	message := encoded.String()
+	// String aliases the builder's buffer, which the deferred recycle's Reset
+	// detaches rather than overwrites, so the returned text stays valid.
+	return encoded.String()
+}
 
+// write sends a formatted diagnostic line to the diagnostic sink.
+func (d *DLog) write(message string) {
 	if !d.shouldColorize() {
 		d.logger.Log(message)
-		return message
+		return
 	}
-
 	d.logger.LogWithColors(message, d.colorizer.Colorfy(message))
-	return message
 }
 
 func (d *DLog) shouldColorize() bool {

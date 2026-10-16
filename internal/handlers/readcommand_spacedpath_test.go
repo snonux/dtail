@@ -155,11 +155,15 @@ func TestReadCommandRejectsInvalidEncodedPath(t *testing.T) {
 	for _, word := range []string{protocol.EncodedReadPathPrefix + "!!!", protocol.EncodedReadPathPrefix} {
 		t.Run(word, func(t *testing.T) {
 			handler := newSpacedPathTestHandler(t, []string{"readfiles:.*"}, nil)
-			// The test logger formats no message text, so only the hidden
-			// failed-command reason identifies the parse failure.
+			// The test logger logs nothing, but the client still gets the
+			// message text (see logging.ErrorMessage) along with the hidden
+			// failed-command reason.
 			output := runLegacyCommandsOn(t, handler, []string{"cat: " + word + " regex:noop "})
 			if want := protocol.HiddenCommandFailedPrefix + protocol.CommandFailureReadCommand; !strings.Contains(output, want) {
 				t.Fatalf("invalid encoded path %q did not report %q: %q", word, want, output)
+			}
+			if want := "Unable to parse command"; !strings.Contains(output, want) {
+				t.Fatalf("invalid encoded path %q did not tell the client %q: %q", word, want, output)
 			}
 		})
 	}

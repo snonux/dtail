@@ -248,7 +248,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 
 	handler, found := h.commands[commandName]
 	if !found {
-		h.sendln(h.serverMessages, h.Logger().Error(h.user,
+		h.sendln(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user,
 			"Received unknown user command", commandName, argc, argsForLog(args)))
 		h.reportCommandFailure(commandFailureUnknown)
 		commandFinished()

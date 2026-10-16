@@ -51,7 +51,7 @@ func (h *HealthHandler) handleHealthCommand(ctx context.Context,
 	case ".ack":
 		h.handleAckCommand(argc, args)
 	default:
-		h.send(h.serverMessages, h.Logger().Error(h.user,
+		h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user,
 			"Received unknown health command", commandName, argc, args))
 	}
 	h.shutdown(ctx)
