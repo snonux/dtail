@@ -489,6 +489,15 @@ validation flags them as stale, while the runtime still ignores them.
 - For MapReduce in server mode: lines are processed directly without channels.
 - For MapReduce in serverless/client mode: the server-side direct processing does
   not apply — client-side aggregation runs on the client.
+- Client receive of aggregate messages (`internal/clients/handlers/maprhandler.go`,
+  `internal/mapr/client/aggregate.go`): frames are cut with `bytes.IndexByte`,
+  each message is validated and copied into a reused queue (`Aggregate.Add`),
+  and at the end of every `Write` call the queue is aggregated, in arrival
+  order and each message on its own, straight into the global group set under
+  one non-blocking lock attempt (`GlobalGroupSet.UpdateNoblock`); a missed
+  attempt keeps the queue for the next call (waiting for the lock only once
+  4 MiB are queued) and `Flush` on shutdown waits. The result therefore does
+  not depend on how messages were batched or on lock contention.
 
 **Server-Side MapReduce (dserver):**
 - Lines are processed directly without channel overhead

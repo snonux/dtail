@@ -198,3 +198,27 @@ func DecodeMessage(payload string) (Message, error) {
 		return Message{Kind: MessagePlain, Content: payload}, nil
 	}
 }
+
+// aggregateTag is the leading field of an aggregate message with its
+// separator.
+var aggregateTag = []byte(AggregateMessageID + fieldDelimiter)
+
+// CutAggregateContent tells whether payload is an aggregate message and
+// returns its content, for the client's per-message receive path: it
+// classifies payload exactly like DecodeMessage, but without converting it to
+// a string or splitting it. content aliases payload. isAggregate is false for
+// any other message; err is set (and content nil) for an aggregate message
+// that lacks the hostname field's separator, which DecodeMessage rejects as
+// malformed with the same error.
+func CutAggregateContent(payload []byte) (content []byte, isAggregate bool, err error) {
+	rest, ok := bytes.CutPrefix(payload, aggregateTag)
+	if !ok {
+		return nil, false, nil
+	}
+	// fieldDelimiter is a single byte.
+	hostnameEnd := bytes.IndexByte(rest, fieldDelimiter[0])
+	if hostnameEnd < 0 {
+		return nil, true, fmt.Errorf("decode message: malformed %s frame", AggregateMessageID)
+	}
+	return rest[hostnameEnd+1:], true, nil
+}

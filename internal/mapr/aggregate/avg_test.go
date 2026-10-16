@@ -93,8 +93,8 @@ func checkClientAvg(t *testing.T, message, wantAvg string) {
 	}
 	state := client.NewSessionState(query, logging.NopLogger{})
 	clientAggregate := client.NewAggregate("srv1", state, logging.NopLogger{})
-	if err = clientAggregate.Aggregate(message); err != nil {
-		t.Fatalf("client Aggregate(%q) error = %v", message, err)
+	if err = clientAggregate.Add([]byte(message)); err != nil {
+		t.Fatalf("client Add(%q) error = %v", message, err)
 	}
 	if err = clientAggregate.Flush(); err != nil {
 		t.Fatalf("client Flush() error = %v", err)

@@ -306,31 +306,46 @@ func (h *baseHandler) decideFraming(first []byte) {
 // newlines are ordinary payload bytes. Each message is decoded in the session
 // framing (decodeFrame) before it is handled; under escaped framing no
 // payload byte equals the delimiter, so a line containing e.g. '€' (whose
-// UTF-8 encoding ends in the delimiter byte 0xAC) stays one message. Each
-// chunk is scanned with
-// bytes.IndexByte instead of byte by byte. A message that lies completely
-// inside p is handled as a sub-slice of p without copying; only the unfinished
-// tail of a chunk is kept in receiveBuf until a later chunk completes it.
-// handleMessage and everything below it must not retain the slice (io.Writer
-// forbids retaining p).
+// UTF-8 encoding ends in the delimiter byte 0xAC) stays one message. The
+// frames are cut out of the stream by scanFrames. handleMessage and
+// everything below it must not retain the slice (io.Writer forbids retaining
+// p).
 func (h *baseHandler) Write(p []byte) (n int, err error) {
-	n = len(p)
+	h.scanFrames(p, h.handleFrame)
+	return len(p), nil
+}
+
+// handleFrame decodes and handles one received frame.
+func (h *baseHandler) handleFrame(frame []byte) {
+	h.handleMessage(h.decodeFrame(frame))
+}
+
+// scanFrames calls handle with every frame that p completes, without its
+// protocol.MessageDelimiter and not yet decoded (decodeFrame), in stream
+// order. p is scanned with bytes.IndexByte instead of byte by byte; under
+// escaped framing the delimiter byte only ever ends a frame, so an escape
+// sequence (FrameEscape and its code) may be split across chunks like any
+// other bytes. A frame that lies completely inside p is passed as a sub-slice
+// of p without copying; only the unfinished tail of a chunk is kept in
+// receiveBuf until a later chunk completes it. The frame is only valid for
+// the duration of the handle call. Only Write calls it, on the single
+// stdout-copy goroutine.
+func (h *baseHandler) scanFrames(p []byte, handle func(frame []byte)) {
 	for len(p) > 0 {
 		end := bytes.IndexByte(p, protocol.MessageDelimiter)
 		if end < 0 {
 			h.receiveBuf.Write(p)
-			break
+			return
 		}
 		if h.receiveBuf.Len() == 0 {
-			h.handleMessage(h.decodeFrame(p[:end]))
+			handle(p[:end])
 		} else {
 			h.receiveBuf.Write(p[:end])
-			h.handleMessage(h.decodeFrame(h.receiveBuf.Bytes()))
+			handle(h.receiveBuf.Bytes())
 			h.receiveBuf.Reset()
 		}
 		p = p[end+1:]
 	}
-	return n, nil
 }
 
 // Send data to the dtail server via Reader interface.

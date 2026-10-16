@@ -73,8 +73,8 @@ func writeClientResult(t *testing.T, queryText string, messages ...string) strin
 	state := client.NewSessionState(query, logging.NopLogger{})
 	for i, message := range messages {
 		clientAggregate := client.NewAggregate("srv"+string(rune('1'+i)), state, logging.NopLogger{})
-		if err = clientAggregate.Aggregate(message); err != nil {
-			t.Fatalf("client Aggregate(%q) error = %v", message, err)
+		if err = clientAggregate.Add([]byte(message)); err != nil {
+			t.Fatalf("client Add(%q) error = %v", message, err)
 		}
 		if err = clientAggregate.Flush(); err != nil {
 			t.Fatalf("client Flush() error = %v", err)

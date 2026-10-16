@@ -101,7 +101,7 @@ func TestCompoundGroupTransportAndServerMerge(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if err := client.Aggregate(message.Content); err != nil {
+				if err := client.Add([]byte(message.Content)); err != nil {
 					t.Fatalf("legacy opaque-key decoder rejected aggregate: %v", err)
 				}
 			}
@@ -114,7 +114,7 @@ func TestCompoundGroupTransportAndServerMerge(t *testing.T) {
 	// with the corresponding new-server group. This fixture is the legacy
 	// wire format, independent of the server's current key builder.
 	legacy := maprclient.NewAggregate("legacy", state, logging.NopLogger{})
-	if err := legacy.Aggregate("αβ,λ∥1∥count(*)≔1∥a≔αβ∥b≔λ∥"); err != nil {
+	if err := legacy.Add([]byte("αβ,λ∥1∥count(*)≔1∥a≔αβ∥b≔λ∥")); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.Flush(); err != nil {

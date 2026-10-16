@@ -197,6 +197,13 @@ func (d *DLog) Debug(args ...any) string {
 	return d.log(Debug, args)
 }
 
+// DebugEnabled reports whether debug-level logging is active (see
+// logging.DebugEnabled), with the maxLevel comparison Debug itself makes. It
+// is nil-safe like TraceEnabled.
+func (d *DLog) DebugEnabled() bool {
+	return d != nil && d.maxLevel >= Debug
+}
+
 // TraceEnabled reports whether trace-level logging is currently active.
 //
 // It performs exactly the same maxLevel comparison as Trace's internal

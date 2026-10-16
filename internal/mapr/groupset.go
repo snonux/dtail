@@ -82,6 +82,19 @@ func (g *GroupSet) GetSet(groupKey string) *AggregateSet {
 	return set
 }
 
+// GetSetBytes gets a specific aggregate set from the group set like GetSet,
+// for a group key the caller holds as bytes, e.g. in a receive buffer. The
+// lookup does not allocate; only a group key the group set does not have yet
+// is copied, to be stored. groupKey is not retained.
+func (g *GroupSet) GetSetBytes(groupKey []byte) *AggregateSet {
+	if set, ok := g.sets[string(groupKey)]; ok {
+		return set
+	}
+	set := NewAggregateSet()
+	g.sets[string(groupKey)] = set
+	return set
+}
+
 // Serialize the group set (e.g. to send it over the wire). If the context is
 // cancelled mid-iteration, the remaining unsent aggregate sets are returned
 // so callers can retry them (for example, by re-merging them into the live

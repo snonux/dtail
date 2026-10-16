@@ -29,28 +29,41 @@ func (g *GlobalGroupSet) String() string {
 
 // Merge (blocking) a group set into the global group set.
 func (g *GlobalGroupSet) Merge(query *Query, group *GroupSet) error {
-	g.semaphore <- struct{}{}
-	defer func() { <-g.semaphore }()
-	return g.merge(query, group)
+	var err error
+	g.Update(func(set *GroupSet) { err = mergeGroupSet(query, set, group) })
+	return err
 }
 
-// MergeNoblock merges (non-blocking) a group set into the global group set.
-// The semaphore is released via defer so it is always returned even if
-// g.merge panics, mirroring the guarantee provided by the blocking Merge.
-func (g *GlobalGroupSet) MergeNoblock(query *Query, group *GroupSet) (bool, error) {
+// Update calls fn with the global group set while it holds the global group
+// set's lock, waiting for the lock if another merge or a result rendering
+// holds it. fn may aggregate into the group set (GetSet, GetSetBytes) but must
+// not call another GlobalGroupSet method, which would wait for the same lock.
+func (g *GlobalGroupSet) Update(fn func(*GroupSet)) {
+	g.semaphore <- struct{}{}
+	defer func() { <-g.semaphore }()
+	fn(&g.GroupSet)
+}
+
+// UpdateNoblock calls fn like Update, but only when the lock is free right
+// away, and reports whether it did. The client aggregates a server's messages
+// with it, so a connection never waits for another one or for the result
+// rendering; it keeps its messages and tries again later instead. The lock is
+// released via defer so it is returned even if fn panics, as in Update.
+func (g *GlobalGroupSet) UpdateNoblock(fn func(*GroupSet)) bool {
 	select {
 	case g.semaphore <- struct{}{}:
 		defer func() { <-g.semaphore }()
-		return true, g.merge(query, group)
+		fn(&g.GroupSet)
+		return true
 	default:
-		return false, nil
+		return false
 	}
 }
 
-// Merge a group set into the global group set.
-func (g *GlobalGroupSet) merge(query *Query, group *GroupSet) error {
+// mergeGroupSet merges every aggregate set of group into dst.
+func mergeGroupSet(query *Query, dst, group *GroupSet) error {
 	for groupKey, set := range group.sets {
-		s := g.GetSet(groupKey)
+		s := dst.GetSet(groupKey)
 		if err := s.Merge(query, set); err != nil {
 			return err
 		}
