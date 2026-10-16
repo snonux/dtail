@@ -62,6 +62,9 @@ func TestDJournalExtendedWithServer(t *testing.T) {
 	t.Run("DMapJournal", func(t *testing.T) {
 		testDJournalExtendedDMap(t, testLogger)
 	})
+	t.Run("LongEntryCutAtMaxLineLength", func(t *testing.T) {
+		testDJournalExtendedLongEntry(t, testLogger)
+	})
 }
 
 func testDJournalExtendedMixedSources(t *testing.T, logger *TestLogger) {
@@ -482,6 +485,67 @@ func testDJournalExtendedDMapForMode(t *testing.T, logger *TestLogger,
 	}
 	assertDMapTurboLogState(t, server.logs, mode)
 	return got
+}
+
+// testDJournalExtendedLongEntry reads, with the default MaxLineLength of
+// 1 MiB, a journal entry longer than 2 MiB, which used to end the journal
+// read with "bufio.Scanner: token too long", and one of exactly 1 MiB. The
+// journal read must cut the long entry at exactly 1 MiB like a file read cuts
+// its lines, so dcat prints the journal exactly like a file of the same
+// content, and the client gets the long-line warning about the journal.
+func testDJournalExtendedLongEntry(t *testing.T, logger *TestLogger) {
+	entries := []string{
+		"journal long before",
+		strings.Repeat("z", 2*1024*1024+100),
+		strings.Repeat("w", 1024*1024),
+		"journal long after",
+	}
+	regularFile := filepath.Join(t.TempDir(), "long.log")
+	if err := os.WriteFile(regularFile, []byte(strings.Join(entries, "\n")+"\n"), 0o600); err != nil {
+		t.Fatalf("write long regular file: %v", err)
+	}
+	env := newDJournalExtendedEnv(t, journaltest.Scenario{
+		Units: map[string]journaltest.Invocation{"extended.service": {Lines: entries}},
+	}, []string{permissionForPath(regularFile), "readfiles:^journal:extended\\.service$"}, nil)
+	// Not in integration mode, which forces a MaxLineLength of 1024.
+	server := startDJournalExtendedServerForMode(t, logger, env, "info", dJournalExtendedServerModes()[0])
+
+	dcat := func(name, files string) string {
+		t.Helper()
+		outFile := fmt.Sprintf("djournal_extended_long_%s.stdout.tmp", name)
+		if _, err := runCommand(server.ctx, t, outFile, "../dcat", "--plain", "--cfg", "none",
+			"--logLevel", "error", "--servers", server.address, "--files", files,
+			"--trustAllHosts", "--noColor"); err != nil {
+			t.Fatalf("dcat %s failed: %v\nserver logs:\n%s", name, err, server.logs.String())
+		}
+		return readTestFile(t, outFile)
+	}
+	journalOutput, journalWarnings := splitLongLineWarnings(dcat("journal", journalExtendedSpec))
+	fileOutput, _ := splitLongLineWarnings(dcat("file", regularFile))
+	if !strings.HasPrefix(journalOutput, entries[0]+"\n") ||
+		!strings.HasSuffix(journalOutput, entries[3]+"\n") || journalOutput != fileOutput {
+		t.Fatalf("journal output (%d bytes) differs from file output (%d bytes)",
+			len(journalOutput), len(fileOutput))
+	}
+	if len(journalWarnings) != 1 || !strings.Contains(journalWarnings[0], journalExtendedSpec) {
+		t.Fatalf("journal long-line warnings = %q, want one about %s", journalWarnings, journalExtendedSpec)
+	}
+}
+
+// splitLongLineWarnings returns output without its long-line warnings, which
+// name the source and so differ between a file and a journal read, and the
+// warnings.
+func splitLongLineWarnings(output string) (string, []string) {
+	var payload strings.Builder
+	var warnings []string
+	for _, line := range strings.SplitAfter(output, "\n") {
+		if strings.HasPrefix(line, "WARN|") && strings.Contains(line, "Long log line") {
+			warnings = append(warnings, line)
+			continue
+		}
+		payload.WriteString(line)
+	}
+	return payload.String(), warnings
 }
 
 type dJournalExtendedServerMode struct {

@@ -80,11 +80,8 @@ type ServerConfig struct {
 	SharedReadsDisable bool `json:",omitempty"`
 	// MaxLineLength is the longest line, in bytes without its "\n" but with
 	// the "\r" of a CRLF ending, that file reads pass on whole; a longer line
-	// is cut into pieces of this length. journal: targets do not use it yet:
-	// their reader (internal/io/journal) reads entries of up to 1 MiB whole
-	// and does not cut them at MaxLineLength, and a journal entry longer than
-	// 1 MiB currently ends the journal read with an error (bufio.Scanner:
-	// token too long) instead of being cut, until task 3f3 fixes this.
+	// is cut into pieces of this length. journal: targets cut their entries
+	// the same way (internal/io/journal, sharing fs.SplitLine).
 	MaxLineLength int
 	// The user permissions.
 	Permissions Permissions `json:",omitempty"`

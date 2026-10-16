@@ -287,11 +287,9 @@ func (f *ReadFile) Retry() bool {
 	return f.retry
 }
 
+// lineLimit returns the length a line is cut at (see LineLimit).
 func (f *ReadFile) lineLimit() int {
-	if f.maxLineLength <= 0 {
-		return defaultMaxLineLength
-	}
-	return f.maxLineLength
+	return LineLimit(f.maxLineLength)
 }
 
 // LongLineWarning formats the message a reader sends to the client, through
@@ -301,23 +299,18 @@ func LongLineWarning(logger logging.Logger, filePath string) string {
 	return logging.OrNop(logger).Warn(filePath, "Long log line, splitting into multiple lines") + "\n"
 }
 
+// warnAboutLongLine warns the client about a long line, unless it did so
+// already for the current sequence of cut pieces. It returns false when ctx
+// is done before the warning could be sent.
 func (f *ReadFile) warnAboutLongLine(ctx context.Context) bool {
 	if f.warnedAboutLongLine {
 		return true
 	}
-
-	if f.serverMessages == nil {
-		f.warnedAboutLongLine = true
-		return true
-	}
-
-	select {
-	case f.serverMessages <- LongLineWarning(f.logger, f.filePath):
-		f.warnedAboutLongLine = true
-		return true
-	case <-ctx.Done():
+	if !SendLongLineWarning(ctx, f.logger, f.filePath, f.serverMessages) {
 		return false
 	}
+	f.warnedAboutLongLine = true
+	return true
 }
 
 func (f *ReadFile) makeReader(ctx context.Context) (*bufio.Reader, *os.File, io.Closer, error) {

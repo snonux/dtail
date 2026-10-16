@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"time"
 
@@ -17,13 +16,6 @@ import (
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/regex"
 )
-
-// minReadScannerTokenSize is the smallest maximum token size of the snapshot
-// read scanner: the capacity of the pooled buffer it starts with, which holds
-// a line of the default MaxLineLength (1 MiB) and its newline. The actual
-// maximum follows the configured MaxLineLength (see scannerTokenLimit), so the
-// scanner never asks for a line longer than its buffer may grow.
-const minReadScannerTokenSize = pool.ScannerBufferCapacity
 
 // After a follow read found its file rotated away from the path, it reads the
 // old file to its end, then polls it rotationDrainPollInterval later for lines
@@ -145,76 +137,31 @@ func isEarlyStop(err error) bool {
 }
 
 // scannerTokenLimit returns the maximum token size of the snapshot read
-// scanner: one byte more than the line limit, so that a line of exactly
-// lineLimit() bytes fits together with its newline, but at least
-// minReadScannerTokenSize, the capacity of the pooled buffer.
-// scanLinesWithMaxLength asks for more data while it holds at most
-// lineLimit() bytes without a newline and cuts a line once it holds more, so
-// a scanner buffer of this size never fills up without a token; a smaller one
-// would make bufio.Scanner fail with ErrTooLong on a line longer than the
-// buffer but shorter than MaxLineLength (MaxLineLength above 1 MiB), ending
-// the read and losing every following line.
-//
-// The one extra byte matters when the buffer would otherwise fill at exactly
-// lineLimit() bytes: only the extra byte lets the scanner see whether a
-// newline follows, so that a line of exactly the limit stays whole. With the
-// default MaxLineLength, the pooled buffer has that byte already.
-//
-// The scanner grows its buffer by doubling, but never past this limit, so the
-// buffer a reader holds is at most about twice the longest line it read,
-// capped at MaxLineLength + 1 bytes.
+// scanner for the configured line limit (see ScannerTokenLimit).
 func (f *ReadFile) scannerTokenLimit() int {
-	limit := f.lineLimit()
-	if limit == math.MaxInt {
-		return limit
-	}
-	return max(limit+1, minReadScannerTokenSize)
+	return ScannerTokenLimit(f.lineLimit())
 }
 
 // scanLinesWithMaxLength is a custom split function for bufio.Scanner that
-// respects MaxLineLength: a line of up to lineLimit() bytes before its newline
-// (or the end of the input) is one token, a longer one is cut into chunks of
-// lineLimit() bytes. It is kept context-aware so long-line warnings can still
-// be dropped when the reader is canceled.
+// respects MaxLineLength (see SplitLine): a line of up to lineLimit() bytes
+// before its newline (or the end of the input) is one token, a longer one is
+// cut into chunks of lineLimit() bytes, after warning the client about the
+// long line (once per sequence of cut chunks). It is kept context-aware so
+// long-line warnings can still be dropped when the reader is canceled: it
+// returns the context's error then.
 func (f *ReadFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if atEOF && len(data) == 0 {
-		return 0, nil, nil
-	}
-
-	maxLineLen := f.lineLimit()
-	if i := bytes.IndexByte(data, '\n'); i >= 0 {
-		if i > maxLineLen {
-			return f.splitLongLine(ctx, data, maxLineLen)
+	advance, token, end := SplitLine(data, atEOF, f.lineLimit())
+	switch end {
+	case LineEndCut:
+		if !f.warnAboutLongLine(ctx) {
+			return 0, nil, ctx.Err()
 		}
+	case LineEndNewline:
 		// A full line within the limit ends a sequence of split chunks, so
 		// the next long line warns again.
 		f.warnedAboutLongLine = false
-		return i + 1, data[0 : i+1], nil
 	}
-
-	// Without a newline in sight, a line of up to maxLineLen bytes may still
-	// end with the next byte, so ask for more data (scannerTokenLimit leaves
-	// room for it) unless this is the final, non-terminated line; only more
-	// than maxLineLen bytes are a line too long, which matches the
-	// "i > maxLineLen" check above and the follow read.
-	if len(data) > maxLineLen {
-		return f.splitLongLine(ctx, data, maxLineLen)
-	}
-	if atEOF {
-		return len(data), data, nil
-	}
-	return 0, nil, nil
-}
-
-// splitLongLine returns the first maxLineLen bytes of data, the start of a
-// line longer than that, as a token of their own, after warning the client
-// about the long line (once per sequence of split chunks). It returns the
-// context's error instead when the reader is canceled during the warning.
-func (f *ReadFile) splitLongLine(ctx context.Context, data []byte, maxLineLen int) (int, []byte, error) {
-	if !f.warnAboutLongLine(ctx) {
-		return 0, nil, ctx.Err()
-	}
-	return maxLineLen, data[0:maxLineLen], nil
+	return advance, token, nil
 }
 
 // Start reads a log file using buffered line reading and a line processor.

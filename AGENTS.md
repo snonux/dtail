@@ -293,6 +293,7 @@ Journal targets use `journal:unit.service` syntax. Permission rules should match
 - The capability is advertised only on Linux when `journalctl` is available on `PATH`.
 - Journal reads use `journalctl` via `os/exec` only; there is no cgo or `libsystemd` path, and the feature is Linux-only at runtime.
 - Non-follow reads the current journal snapshot once. Follow mode adds `-f -n 0` and keeps restarting `journalctl` until canceled.
+- Entries are cut at `Server.MaxLineLength` exactly like file lines (shared `fs.SplitLine`/`fs.ScannerTokenLimit`, same long-line warning, passed via `journal.ReaderOptions.MaxLineLength`), so an entry over 1 MiB no longer fails with `bufio.Scanner: token too long`. An unterminated last entry of a `journalctl` run is still dropped (pieces cut off before it are kept).
 
 ### Wire Framing (server-to-client stream)
 Every server-to-client message (frame) ends with `protocol.MessageDelimiter`,
