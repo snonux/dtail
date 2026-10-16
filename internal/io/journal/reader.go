@@ -29,8 +29,11 @@ import (
 const (
 	defaultSourceID   = "journal"
 	journalctlCommand = "journalctl"
-	// maxStderrTokenSize is the longest journalctl stderr line the reader
-	// forwards; stdout entries follow MaxLineLength instead (see scanStdout).
+	// maxStderrTokenSize is the longest part of a journalctl stderr line the
+	// reader forwards: a longer line is forwarded cut to this length, with a
+	// note, and its rest is dropped (see stderrLineSplitter), so it neither
+	// fails nor cancels the journalctl run. stdout entries follow
+	// MaxLineLength instead (see scanStdout).
 	maxStderrTokenSize    = 1024 * 1024
 	processTerminateGrace = 200 * time.Millisecond
 )
@@ -484,19 +487,27 @@ func (r *Reader) scanStdout(ctx context.Context, stdout io.Reader, filter *journ
 	return nil
 }
 
+// scanJournalStderr emits journalctl's stderr lines as server messages until
+// stderr ends. It holds a pooled scanner buffer (1 MiB + 1 byte) for the whole
+// journalctl run, as scanStdout does. A line longer than maxStderrTokenSize is
+// emitted cut to that length with a note and the rest of it is dropped,
+// instead of failing the scan with bufio.ErrTooLong, which would cancel the
+// run.
 func scanJournalStderr(ctx context.Context, stderr io.Reader, emit func(string)) error {
 	scanner := bufio.NewScanner(stderr)
 	bufPtr := pool.GetScannerBuffer()
 	defer pool.PutScannerBuffer(bufPtr)
 
+	splitter := &stderrLineSplitter{limit: maxStderrTokenSize}
 	scanner.Buffer(*bufPtr, maxStderrTokenSize)
+	scanner.Split(splitter.split)
 	for scanner.Scan() {
 		select {
 		case <-ctx.Done():
 			return nil
 		default:
 		}
-		emit(fmt.Sprintf("journalctl stderr: %s\n", scanner.Text()))
+		emit(stderrMessage(scanner.Bytes(), splitter.truncated))
 	}
 	if err := scanner.Err(); err != nil {
 		if errors.Is(err, os.ErrClosed) {
