@@ -233,6 +233,12 @@ dgrep --regex ERROR --files /var/log/dserver/dserver.log
 dgrep --before 10 --after 10 --max 10 --grep ERROR /var/log/dserver/dserver.log
 ```
 
+### Server warnings and log levels
+
+The warnings a server sends to the client (a missing file, a glob matching more files than the server reads, a split long line, ...) do not depend on `dserver`'s `--logLevel`: a `dserver` running at `--logLevel error` or `none` still sends them with their full text, and its level only decides what `dserver` writes to its own log.
+
+In server mode the client prints these warnings as output lines, which its own `--logLevel` does not filter: framed as `SERVER|<host>|WARN|...` by default, and with `--plain` as the bare `WARN|...` line among the payload lines (so `dcat --plain` output redirected to a file can contain them). In serverless mode the client reads the files itself, and its warnings go through the client's logger, so its `--logLevel` filters them (serverless mode defaults to `warn`).
+
 ## Exit statuses of `dcat` and `dgrep`
 
 `dcat` and `dgrep` exit with one of these statuses, in server and in serverless mode alike:

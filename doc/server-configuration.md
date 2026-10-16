@@ -30,6 +30,14 @@ supported key; a unit test keeps it mechanically in sync with the code, so a
 new configuration field can not silently be missing from the schema. Unknown
 keys in old configuration files are ignored by the lenient config decoder.
 
+`dserver`'s log level (`--logLevel`, or `Common.LogLevel`) only decides what
+`dserver` writes to its own log. The warnings and errors it sends to clients
+(e.g. a missing file, a glob matching too many files, a split long line) do
+not depend on it: a `dserver` at `--logLevel error` or `none` still sends a
+client the missing-file warning, with its full text. How the client shows
+these warnings is described in
+[Server warnings and log levels](./examples.md#server-warnings-and-log-levels).
+
 ## Read permissions
 
 The `Server.Permissions` map controls which files each SSH user may read:
