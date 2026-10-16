@@ -23,8 +23,15 @@ import (
 // that frame is always raw and the client, which decodes every frame after
 // it as escaped, agrees with the server on every frame. An escaped session
 // switches on to EscapedControlFraming at most once, when the client asks
-// for it with the session's second command (enableControlFrames); the first
-// command, the escaped framing request, produced no frame in between.
+// for it with the session's second command (enableControlFrames).
+//
+// Read encodes no frame after the capabilities frame until the session
+// framing has settled (settleFraming, awaitFramingSettled), i.e. until no
+// later command can switch it any more. A client asking for marked control
+// frames decides so from the capabilities frame already, so a frame encoded
+// before the second command was handled, such as the close handshake of a
+// dserver shutting down in the session's first moment, would reach it in
+// the wrong framing.
 type sessionFramer struct {
 	handler  *baseHandler
 	readBuf  bytes.Buffer
@@ -44,6 +51,12 @@ type sessionFramer struct {
 	// capabilitiesFramed is closed once Read encoded the capabilities frame.
 	capabilitiesFramed     chan struct{}
 	capabilitiesFramedOnce sync.Once
+	// framingSettled is closed once no command can switch the session
+	// framing any more (settleFraming). settledObserved caches that for Read
+	// and is only touched by the output goroutine.
+	framingSettled     chan struct{}
+	framingSettledOnce sync.Once
+	settledObserved    bool
 }
 
 func newSessionFramer(handler *baseHandler, maxCommandFrameSize int) *sessionFramer {
@@ -51,6 +64,7 @@ func newSessionFramer(handler *baseHandler, maxCommandFrameSize int) *sessionFra
 		handler:             handler,
 		maxCommandFrameSize: maxCommandFrameSize,
 		capabilitiesFramed:  make(chan struct{}),
+		framingSettled:      make(chan struct{}),
 	}
 }
 
@@ -59,8 +73,14 @@ func (f *sessionFramer) Read(p []byte) (n int, err error) {
 	c := f.handler.outputCoordinator
 	c.ensureFlushChannels()
 	c.readerSeen.Store(true)
-	c.readActive.Store(true)
+	// This call means the bytes the previous one returned were delivered.
 	c.deliveryPending.Store(false)
+	if f.readBuf.Len() == 0 {
+		// Held back without taking anything, the read is not active yet:
+		// a flush with nothing queued need not wait for it.
+		f.awaitFramingSettled()
+	}
+	c.readActive.Store(true)
 	defer func() {
 		if n > 0 {
 			c.deliveryPending.Store(true)
@@ -102,6 +122,7 @@ func (f *sessionFramer) Write(p []byte) (n int, err error) {
 			f.commandFrames++
 			h.handleCommand(f.writeBuf.String())
 			f.writeBuf.Reset()
+			f.settleFramingAfterCommand()
 		default:
 			f.writeBuf.WriteByte(b)
 			if f.maxCommandFrameSize > 0 && f.writeBuf.Len() > f.maxCommandFrameSize {
@@ -218,6 +239,57 @@ func (f *sessionFramer) enableEscapedFraming(ctx context.Context) bool {
 func (f *sessionFramer) enableControlFrames() bool {
 	return f.framingState.CompareAndSwap(uint32(protocol.EscapedFraming),
 		uint32(protocol.EscapedControlFraming))
+}
+
+// settleFraming marks the session framing as final, so that Read goes on
+// encoding the frames after the capabilities frame. The command input
+// goroutine calls it as soon as no command can switch the framing any more:
+// before it handles a command that is no framing request
+// (commandDispatcher.handleCommand), when an escaped framing request leaves
+// the session without a possible control frames switch
+// (ServerHandler.handleEscapedFramingRequest), when the control frames
+// request was handled, and after the second command in any case
+// (settleFramingAfterCommand). It is idempotent.
+func (f *sessionFramer) settleFraming() {
+	f.framingSettledOnce.Do(func() { close(f.framingSettled) })
+}
+
+// settleFramingAfterCommand settles the framing after the command just
+// handled, unless that was the first one and switched the session to
+// EscapedFraming: then the second command may still be the control frames
+// request. Any other framing after the first command is final (a raw session
+// never switches later, as only the first command can make it escaped), as
+// is every framing after the second one.
+func (f *sessionFramer) settleFramingAfterCommand() {
+	if f.commandFrames >= 2 || f.framing() != protocol.EscapedFraming {
+		f.settleFraming()
+	}
+}
+
+// awaitFramingSettled blocks Read after the capabilities frame was encoded
+// until the session framing settled or the session ended, so every later
+// frame is encoded in the framing the client decodes it with. Before the
+// capabilities frame it does not wait: that frame is always raw, and
+// enableEscapedFraming waits for it. Sessions without a capabilities frame
+// (the health handler) never wait. It never waits for long: clients send
+// the framing requests together with, or right before, their first commands,
+// older clients send no requests, so their first command settles the
+// framing, and a session whose input ends is shut down.
+func (f *sessionFramer) awaitFramingSettled() {
+	if f.settledObserved {
+		return
+	}
+	select {
+	case <-f.capabilitiesFramed:
+	default:
+		return
+	}
+	select {
+	case <-f.framingSettled:
+		f.settledObserved = true
+	case <-f.handler.done.Done():
+	case <-f.handler.connCtx.Done():
+	}
 }
 
 func (f *sessionFramer) drainReadBuf(p []byte) int {

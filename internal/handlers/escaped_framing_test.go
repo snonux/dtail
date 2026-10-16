@@ -67,6 +67,9 @@ func TestSessionFramerSwitchesToEscapedFramingAfterCapabilitiesFrame(t *testing.
 	case <-time.After(5 * time.Second):
 		t.Fatal("escaped framing was not enabled after the capabilities frame")
 	}
+	// No command arrives through Write here to settle the session framing,
+	// without which Read holds back every frame after the capabilities.
+	handler.settleFraming()
 
 	handler.serverMessages <- "server 5€"
 	handler.maprMessages <- "group≔Ь¬"

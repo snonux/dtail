@@ -121,10 +121,19 @@ func (d *commandDispatcher) handleCommand(command string) {
 	if err != nil {
 		// No failed-command message here: a client of another protocol
 		// version may not know hidden messages or their framing.
+		h.settleFraming()
 		h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err)+add)
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
+	// A command that is no framing request can not switch the session
+	// framing, and none after it can (see sessionFramer.settleFraming), so
+	// the frames held back since the capabilities frame may go out before it
+	// is handled. Settling first also keeps such a command from waiting for
+	// output that Read still holds back.
+	if err != nil || !isFramingRequest(argc, args) {
+		h.settleFraming()
+	}
 	if err != nil {
 		h.sendln(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err))
 		h.reportCommandFailure(commandFailureProtocol)

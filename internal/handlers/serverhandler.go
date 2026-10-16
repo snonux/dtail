@@ -311,6 +311,10 @@ func (h *ServerHandler) handleEscapedFramingRequest(ctx context.Context) {
 		return
 	}
 	h.Logger().Debug(h.user, "Switched session to escaped framing")
+	if !h.controlFramesAdvertised {
+		// No control frames request can switch the session any more.
+		h.settleFraming()
+	}
 	maxLineLength := positiveIntOrDefault(h.serverCfg.MaxLineLength, 1024*1024)
 	if minimum, ok := escapedOutputBufferMaxBytes(maxLineLength); ok {
 		h.output.raiseBufferMaxBytes(minimum)
@@ -326,8 +330,11 @@ func (h *ServerHandler) handleEscapedFramingRequest(ctx context.Context) {
 // know it, and the session keeps its framing: the client marks control
 // frames only when the session's first frame advertised both capabilities,
 // and output of earlier commands than the escaped framing request could
-// already be framed unmarked.
+// already be framed unmarked. Either way the session framing is final
+// afterwards, so the frames Read held back since the capabilities frame go
+// out (settleFraming).
 func (h *ServerHandler) handleControlFramesRequest() {
+	defer h.settleFraming()
 	switch {
 	case !h.controlFramesAdvertised:
 		h.Logger().Debug(h.user, "Ignoring control frames request of a session not advertising it")
@@ -338,6 +345,12 @@ func (h *ServerHandler) handleControlFramesRequest() {
 	default:
 		h.Logger().Debug(h.user, "Switched session to escaped framing with control frames")
 	}
+}
+
+// isFramingRequest reports whether a decoded command is one of the framing
+// requests, the only commands that can switch the session framing.
+func isFramingRequest(argc int, args []string) bool {
+	return isEscapedFramingRequest(argc, args) || isControlFramesRequest(argc, args)
 }
 
 func isEscapedFramingRequest(argc int, args []string) bool {

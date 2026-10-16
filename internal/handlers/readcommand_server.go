@@ -329,9 +329,14 @@ func (h *ServerHandler) newReadLineWriter(ctx context.Context, generation uint64
 			generation, h.sessionState.currentGeneration, h.colorizer)
 	}
 
-	// The session framing is final here: only the session's first command
-	// can switch it (see handleEscapedFramingRequest), and that command is
-	// handled before any read command.
+	// The session framing is final for the line frames this writer
+	// encodes: only the session's first two commands can switch it
+	// (handleEscapedFramingRequest, handleControlFramesRequest), and both are
+	// handled before any read command. A read command that is itself the
+	// first or second command settles the framing before it runs (see
+	// sessionFramer.settleFraming). The second switch changes control frames
+	// only; the payload bytes of a line frame are the same under
+	// EscapedFraming and EscapedControlFraming.
 	writer := NewNetworkWriter(ctx, h.framing(), nil, h.serverMessages, h.hostname, h.plain, false,
 		generation, h.sessionState.currentGeneration, h.Logger())
 	writer.enqueueOutput = h.EnqueueOutput

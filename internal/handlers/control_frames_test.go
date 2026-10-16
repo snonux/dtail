@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -153,4 +156,134 @@ func TestServerHandlerHonoursOnlyASecondControlFramesRequest(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestServerHandlerFramesAnEarlyCloseInTheSettledFraming: a dserver shutting
+// down right after the capabilities frame queues its close handshake before
+// the client's commands arrive. Read holds that frame back until the session
+// framing settled, so it goes out in the framing the client decided on from
+// the capabilities frame: marked for a client sending both framing requests,
+// escaped for one sending only the escaped framing request, raw for one
+// sending none. Each client acknowledges it, so the session ends without
+// waiting for the acknowledgement timeout (5 s).
+func TestServerHandlerFramesAnEarlyCloseInTheSettledFraming(t *testing.T) {
+	escaped, control := protocol.EscapedFramingCommand, protocol.ControlFramesCommand
+	tests := []struct {
+		name        string
+		commands    []string
+		wantFraming protocol.Framing
+	}{
+		{name: "both framing requests", commands: []string{escaped, control},
+			wantFraming: protocol.EscapedControlFraming},
+		{name: "escaped framing request only", commands: []string{escaped, "AUTHKEY abc"},
+			wantFraming: protocol.EscapedFraming},
+		{name: "no framing request", commands: []string{"AUTHKEY abc"},
+			wantFraming: protocol.RawFraming},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
+			stream := runEarlyCloseSession(t, handler, test.commands...)
+			if handler.framing() != test.wantFraming {
+				t.Fatalf("session framing = %s, want %s", handler.framing(), test.wantFraming)
+			}
+			frames := splitMarkedFrames(stream, test.wantFraming)
+			last := frames[len(frames)-1]
+			if last.body != ".syn close connection" || last.control != test.wantFraming.MarksControl() {
+				t.Fatalf("last frame = %+v, want the close handshake marked only under %s: %q",
+					last, protocol.EscapedControlFraming, stream)
+			}
+		})
+	}
+}
+
+// runEarlyCloseSession starts reading handler's output, shuts the session
+// down once the capabilities frame went out, writes commands after the close
+// handshake was requested, and returns all bytes sent to the client once the
+// client acknowledged the close and the session ended.
+func runEarlyCloseSession(t *testing.T, handler *ServerHandler, commands ...string) []byte {
+	t.Helper()
+	output := &testOutput{}
+	var writeMu sync.Mutex
+	readerDone := startTestReader(handler, output, &writeMu)
+	output.waitForContains(t, protocol.HiddenCapabilitiesPrefix, 5*time.Second)
+
+	started := time.Now()
+	go handler.TriggerShutdown(context.Background())
+	waitForHandlerCondition(t, 5*time.Second, "close handshake not requested",
+		handler.closeSyncRequested.Load)
+	// Give a Read that did not hold the close back the time to send it.
+	time.Sleep(50 * time.Millisecond)
+	var frames strings.Builder
+	for _, command := range commands {
+		frames.WriteString(encodeTestCommand(command))
+	}
+	writeMu.Lock()
+	_, writeErr := handler.Write([]byte(frames.String()))
+	writeMu.Unlock()
+	if writeErr != nil {
+		t.Fatalf("write commands: %v", writeErr)
+	}
+	select {
+	case <-handler.Done():
+	case <-time.After(10 * time.Second):
+		t.Fatal("session did not shut down")
+	}
+	select {
+	case <-readerDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reader did not observe EOF after handler shutdown")
+	}
+	select {
+	case <-handler.ackCloseReceived:
+	default:
+		t.Fatalf("client never acknowledged the close: %q", output.String())
+	}
+	if elapsed := time.Since(started); elapsed > 4*time.Second {
+		t.Fatalf("session took %s to end, want no wait for a timeout", elapsed)
+	}
+	return []byte(output.String())
+}
+
+// TestServerHandlerDoesNotHoldFramesOfUnsettledSessionsForever: sessions
+// whose framing has not settled after the capabilities frame do not stall:
+// an older client's first command, an escaped-only client's second one and
+// the end of a session whose input ended after the escaped framing request
+// all release the held back frames.
+func TestServerHandlerDoesNotHoldFramesOfUnsettledSessionsForever(t *testing.T) {
+	path := writeControlLookalikeFile(t)
+	for name, first := range map[string][]string{
+		"older client":         nil,
+		"escaped-only client":  {protocol.EscapedFramingCommand},
+		"both framing request": {protocol.EscapedFramingCommand, protocol.ControlFramesCommand},
+	} {
+		t.Run(name, func(t *testing.T) {
+			handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
+			started := time.Now()
+			stream := runCatSessionAfter(t, handler, path, "plain=true", first...)
+			if !bytes.HasSuffix(stream, []byte(".syn close connection\xac")) {
+				t.Fatalf("session ended without the close handshake: %q", stream)
+			}
+			if elapsed := time.Since(started); elapsed > 4*time.Second {
+				t.Fatalf("session took %s, want no stall", elapsed)
+			}
+		})
+	}
+	t.Run("input ended after the escaped framing request", func(t *testing.T) {
+		handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
+		output := &testOutput{}
+		var writeMu sync.Mutex
+		readerDone := startTestReader(handler, output, &writeMu)
+		output.waitForContains(t, protocol.HiddenCapabilitiesPrefix, 5*time.Second)
+		if _, err := handler.Write([]byte(encodeTestCommand(protocol.EscapedFramingCommand))); err != nil {
+			t.Fatalf("write command: %v", err)
+		}
+		// The server shuts a session down when its input ends.
+		handler.Shutdown()
+		select {
+		case <-readerDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("held back Read did not end with the session")
+		}
+	})
 }

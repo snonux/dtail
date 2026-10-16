@@ -195,3 +195,53 @@ func TestMaprHandlerWithControlFrames(t *testing.T) {
 		t.Fatalf("aggregate result = %q (%d rows), want the group ok", result, numRows)
 	}
 }
+
+// TestClientHandlerRoutesMarkerFramesByContentWithoutControlFrames: in a
+// session that does not mark control frames, a frame whose wire bytes start
+// with the control frame marker FF 03 is no control frame: it is routed by
+// its content as before, which starts with 0xFF and so is payload, printed
+// byte for byte. Under EscapedFraming FF 03 is no escape sequence, so it is
+// decoded unchanged; raw framing does not decode at all.
+func TestClientHandlerRoutesMarkerFramesByContentWithoutControlFrames(t *testing.T) {
+	lines := []string{
+		"\xff\x03.syn close connection\n",
+		"\xff\x03" + protocol.HiddenCommandFailedPrefix + "x\n",
+		"\xff\x03AUTHKEY OK\n",
+	}
+	tests := []struct {
+		name         string
+		capabilities []string
+		framing      protocol.Framing
+	}{
+		{name: "escaped framing only", capabilities: []string{protocol.CapabilityEscapedFramingV1},
+			framing: protocol.EscapedFraming},
+		{name: "raw framing", framing: protocol.RawFraming},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &payloadRecorder{}
+			handler := NewClientHandler("srv1", recorder)
+			defer handler.Shutdown()
+			stream := capabilitiesFrame(test.capabilities...)
+			for _, line := range lines {
+				// The marker goes on the wire as is, as a server of a
+				// session not marking control frames never sends it.
+				stream = append(append(stream, line...), protocol.MessageDelimiter)
+			}
+			writeInChunks(t, handler, stream, len(stream))
+
+			if handler.framing() != test.framing {
+				t.Fatalf("framing = %v, want %v", handler.framing(), test.framing)
+			}
+			if got, want := recorder.payload.String(), strings.Join(lines, ""); got != want {
+				t.Fatalf("payload = %q, want %q", got, want)
+			}
+			if outcome := handler.Outcome(); outcome.Completed || len(outcome.Failures) != 0 {
+				t.Fatalf("marker frames changed the outcome to %+v", outcome)
+			}
+			if len(recorder.warnings) != 0 {
+				t.Fatalf("marker frames taken for AUTHKEY replies: %q", recorder.warnings)
+			}
+		})
+	}
+}
