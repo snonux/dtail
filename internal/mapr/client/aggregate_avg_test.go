@@ -64,7 +64,10 @@ func TestAggregateAvgValueCount(t *testing.T) {
 
 // TestAggregateAvgRoundTrip sends a dserver's aggregate set over the wire
 // format into the client: lines without the averaged field, or with a value
-// that is no number, must not lower the client's average.
+// that is no number, must not lower the client's average. The set is built
+// here like the dserver's serializer builds it; the real dserver path
+// (processor, parser and serializer) is covered by
+// TestAggregateAvgThroughSerializer in package aggregate.
 func TestAggregateAvgRoundTrip(t *testing.T) {
 	set := mapr.NewAggregateSet()
 	for _, lat := range []string{"10", "", "abc", "20"} {

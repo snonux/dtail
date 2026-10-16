@@ -88,7 +88,13 @@ func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 // Serialize the aggregate set so it can be sent over the wire. The value
 // count of each avg() field is sent as one more key/value pair under
 // AvgCountKey; an older client only reads the keys of its selected fields and
-// ignores it. Returns true when the serialized message was successfully sent,
+// ignores it.
+//
+// Each count directly follows its own sum, before any last()/len() string.
+// Should a message reach the client cut short (e.g. a frame split inside a
+// last() string), a count is then lost only together with its sum or right
+// after it, never because of a string written between the two, so the client
+// falls back to the message's Samples for at most that one avg() field. Returns true when the serialized message was successfully sent,
 // and false when the context was cancelled before the send completed. Callers
 // that own the source state (e.g. Aggregate) must re-merge unsent sets so
 // data is not silently lost.
@@ -109,12 +115,14 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 
 	for k, v := range s.FValues {
 		writeSerializedField(sb, k, "", strconv.FormatFloat(v, 'f', -1, 64))
+		// Only avg() sums have a count (AggregateAvg adds both); the lookup
+		// in the usually nil ValueCounts map costs no allocation.
+		if n, ok := s.ValueCounts[k]; ok {
+			writeSerializedField(sb, k, avgCountSuffix, strconv.Itoa(n))
+		}
 	}
 	for k, v := range s.SValues {
 		writeSerializedField(sb, k, "", v)
-	}
-	for k, n := range s.ValueCounts {
-		writeSerializedField(sb, k, avgCountSuffix, strconv.Itoa(n))
 	}
 
 	select {

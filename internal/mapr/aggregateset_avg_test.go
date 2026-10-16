@@ -2,6 +2,7 @@ package mapr
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -49,8 +50,10 @@ func TestAggregateAvgCountsOnlyNumericValues(t *testing.T) {
 	}
 }
 
-// aggregateAvgTestLine aggregates one line the way the dserver does: every
-// line has a status, lat only when it is not "".
+// aggregateAvgTestLine aggregates one line like the dserver's
+// serializer.aggregateLocked does: every line has a status, lat only when it
+// is not "". It is a stand-in to test AggregateSet alone; the real dserver
+// path is covered by TestAggregateAvgThroughSerializer in package aggregate.
 func aggregateAvgTestLine(set *AggregateSet, lat string) {
 	added := set.Aggregate("count(status)", Count, "ok", false) == nil
 	if lat != "" && set.Aggregate("avg(lat)", Avg, lat, false) == nil {
@@ -166,6 +169,57 @@ func TestAggregateSetSerializeValueCount(t *testing.T) {
 		}
 		if message := <-ch; strings.Contains(message, countField) != tt.want {
 			t.Errorf("%s: message %q carries %q = %v, want %v", tt.name, message, countField, !tt.want, tt.want)
+		}
+	}
+}
+
+// TestAggregateSetSerializeCountFollowsSum pins the wire order: each avg()
+// count directly follows its own sum and precedes every last()/len() string,
+// so a message cut short after such a string still carries the counts (the
+// client would otherwise fall back to Samples without any sign of it).
+func TestAggregateSetSerializeCountFollowsSum(t *testing.T) {
+	set := NewAggregateSet()
+	for _, add := range []struct {
+		storage string
+		op      AggregateOperation
+		value   string
+	}{
+		{"avg(lat)", Avg, "10"}, {"avg(lat)", Avg, "20"}, {"avg(size)", Avg, "7"},
+		{"sum(lat)", Sum, "30"}, {"last(name)", Last, "alice"}, {"len(name)", Len, "alice"},
+	} {
+		if err := set.Aggregate(add.storage, add.op, add.value, false); err != nil {
+			t.Fatalf("Aggregate(%s) error = %v", add.storage, err)
+		}
+	}
+	// Map iteration order is random, so serialize a few times.
+	for range 20 {
+		ch := make(chan string, 1)
+		if !set.Serialize(context.Background(), "host1", ch, logging.NopLogger{}) {
+			t.Fatalf("Serialize() did not send")
+		}
+		message := <-ch
+		firstString := len(message)
+		// len() also sends the length as a float under its key, so look for
+		// the string values themselves.
+		for _, storage := range []string{"last(name)", "len(name)"} {
+			index := strings.Index(message, protocol.AggregateDelimiter+storage+protocol.AggregateKVDelimiter+"alice")
+			if index < 0 {
+				t.Fatalf("message %q lacks %s", message, storage)
+			}
+			firstString = min(firstString, index)
+		}
+		for storage, want := range map[string]string{"avg(lat)": "30", "avg(size)": "7"} {
+			count := strconv.Itoa(set.ValueCounts[storage])
+			pair := protocol.AggregateDelimiter + storage + protocol.AggregateKVDelimiter + want +
+				protocol.AggregateDelimiter + AvgCountKey(storage) + protocol.AggregateKVDelimiter + count +
+				protocol.AggregateDelimiter
+			index := strings.Index(message, pair)
+			if index < 0 {
+				t.Fatalf("message %q lacks sum and count %q next to each other", message, pair)
+			}
+			if index > firstString {
+				t.Errorf("message %q: count of %s after a last()/len() string", message, storage)
+			}
 		}
 	}
 }
