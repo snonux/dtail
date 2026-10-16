@@ -350,8 +350,8 @@ func TestInteractiveHelpTextMatchesMode(t *testing.T) {
 			if !strings.Contains(help, tt.wantExample) {
 				t.Fatalf("help %q lacks example %q", help, tt.wantExample)
 			}
-			// A path with a space cannot be read (the servers split read
-			// commands on spaces), so no example may suggest one.
+			// A path with a space needs servers advertising
+			// encoded-read-path-v1, so the generic examples avoid one.
 			if strings.Contains(help, "my app") || strings.Contains(help, `\ `) {
 				t.Fatalf("help %q suggests a file path with a space", help)
 			}
@@ -657,6 +657,63 @@ func TestApplyInteractiveReloadRollsBackLateAckFailureWithRealServerConnection(t
 	}
 }
 
+// TestApplyInteractiveReloadChecksReadCapabilitiesUpFront covers a mixed
+// fleet: server srv1 reads encoded (spaced) paths, srv2 supports reloads but
+// not encoded paths. A :reload to a spaced path is rejected before any
+// SESSION UPDATE is sent, naming srv2, so srv1 neither switches nor has to be
+// rolled back (which would repeat the previous workload's output), and
+// nothing is reported to the user, so the exit status stays 0.
+func TestApplyInteractiveReloadChecksReadCapabilitiesUpFront(t *testing.T) {
+	oldArgs := config.Args{Mode: omode.TailClient, What: "/var/log/app.log"}
+	oldSpec := SessionSpec{Mode: omode.TailClient, Files: []string{"/var/log/app.log"}}
+	nextArgs := config.Args{Mode: omode.TailClient, What: "/x/my app.log"}
+	nextSpec := SessionSpec{Mode: omode.TailClient, Files: []string{"/x/my app.log"}}
+
+	handlerA := newInteractiveReloadSessionHandler(handlers.SessionAck{Action: "update", Generation: 5})
+	handlerA.capabilities[protocol.CapabilityEncodedReadPathV1] = true
+	handlerB := newInteractiveReloadSessionHandler(handlers.SessionAck{Action: "update", Generation: 5})
+	connA := newInteractiveReloadServerConnection(t, "srv1", handlerA, oldSpec)
+	connB := newInteractiveReloadServerConnection(t, "srv2", handlerB, oldSpec)
+	client := &baseClient{
+		mu:          newBaseClientMu(),
+		Args:        oldArgs,
+		sessionSpec: oldSpec,
+		connections: []connectors.Connector{connA, connB},
+	}
+
+	err := client.applyInteractiveReload(nextArgs, nextSpec)
+	if !errors.Is(err, connectors.ErrEncodedReadPathUnsupported) {
+		t.Fatalf("expected ErrEncodedReadPathUnsupported, got %v", err)
+	}
+	if !strings.HasSuffix(err.Error(), ": srv2") {
+		t.Fatalf("error %q should name srv2 only", err)
+	}
+	for _, handler := range []*interactiveReloadSessionHandler{handlerA, handlerB} {
+		if len(handler.commands) != 0 || len(handler.reported) != 0 {
+			t.Fatalf("rejected reload sent %#v and reported %#v", handler.commands, handler.reported)
+		}
+	}
+	for _, conn := range []*connectors.ServerConnection{connA, connB} {
+		if spec, generation, ok := conn.CommittedSession(); !ok || generation != 4 || !reflect.DeepEqual(spec, oldSpec) {
+			t.Fatalf("%s committed session changed: spec=%#v generation=%d ok=%v", conn.Server(), spec, generation, ok)
+		}
+	}
+	if !reflect.DeepEqual(client.Args, oldArgs) || !reflect.DeepEqual(client.sessionSpec, oldSpec) {
+		t.Fatalf("client state changed: args=%#v spec=%#v", client.Args, client.sessionSpec)
+	}
+
+	// Once srv2 can read encoded paths too, the same reload applies on both.
+	handlerB.capabilities[protocol.CapabilityEncodedReadPathV1] = true
+	if err := client.applyInteractiveReload(nextArgs, nextSpec); err != nil {
+		t.Fatalf("reload with capable servers: %v", err)
+	}
+	for _, conn := range []*connectors.ServerConnection{connA, connB} {
+		if spec, generation, ok := conn.CommittedSession(); !ok || generation != 5 || !reflect.DeepEqual(spec, nextSpec) {
+			t.Fatalf("%s not switched: spec=%#v generation=%d ok=%v", conn.Server(), spec, generation, ok)
+		}
+	}
+}
+
 func TestApplyInteractiveReloadCommitsSharedState(t *testing.T) {
 	oldSpec := SessionSpec{
 		Mode:  omode.MapClient,
@@ -829,6 +886,7 @@ type interactiveReloadConnector struct {
 
 type interactiveReloadSessionHandler struct {
 	commands            []string
+	reported            []string
 	capabilities        map[string]bool
 	sessionAcks         []handlers.SessionAck
 	waitForCapabilities bool
@@ -863,7 +921,9 @@ func (h *interactiveReloadSessionHandler) HasCapability(name string) bool {
 	return h.capabilities[name]
 }
 
-func (*interactiveReloadSessionHandler) ReportServerError(string) {}
+func (h *interactiveReloadSessionHandler) ReportServerError(message string) {
+	h.reported = append(h.reported, message)
+}
 
 func (*interactiveReloadSessionHandler) Server() string { return "mock" }
 

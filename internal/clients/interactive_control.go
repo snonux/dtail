@@ -143,20 +143,19 @@ func (c *baseClient) runInteractiveCommand(tty io.Writer, command interactiveCom
 	}
 }
 
+// applyInteractiveReload switches every connection to nextSpec. Before it
+// updates any connection it checks that all of them support query updates and
+// every capability the read targets of nextSpec need (see
+// checkReloadCapabilities), so that a reload one server cannot run is
+// rejected as a whole and leaves the workload untouched. A failure after
+// that rolls the already updated connections back to their previous spec.
 func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec SessionSpec) error {
 	prevArgs, prevSpec, connections := c.snapshotMutableState()
 	if len(connections) == 0 {
 		return errors.New("no active connections")
 	}
-
-	var unsupported []string
-	for _, conn := range connections {
-		if !conn.SupportsQueryUpdates(interactiveControlTimeout) {
-			unsupported = append(unsupported, conn.Server())
-		}
-	}
-	if len(unsupported) > 0 {
-		return fmt.Errorf("%w: %s", connectors.ErrSessionUnsupported, strings.Join(unsupported, ", "))
+	if err := checkReloadCapabilities(connections, nextSpec); err != nil {
+		return err
 	}
 
 	applied, generation, err := c.applyInteractiveReloadConnections(connections, nextSpec)
@@ -172,6 +171,44 @@ func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec Sessi
 	}
 
 	c.storeReloadState(nextArgs, nextSpec)
+	return nil
+}
+
+// checkReloadCapabilities returns an error naming the servers among
+// connections that cannot run nextSpec: those not advertising query updates,
+// or else those lacking the first missing capability that the read targets of
+// nextSpec need (journal targets, or paths containing spaces or starting with
+// base64%, see connectors.CheckSpecCapabilities). Without this up-front check
+// a server lacking such a capability would fail the reload only after others
+// already switched, and the rollback would re-run the previous workload on
+// them, which repeats its output.
+func checkReloadCapabilities(connections []connectors.Connector, nextSpec SessionSpec) error {
+	var unsupported []string
+	for _, conn := range connections {
+		if !conn.SupportsQueryUpdates(interactiveControlTimeout) {
+			unsupported = append(unsupported, conn.Server())
+		}
+	}
+	if len(unsupported) > 0 {
+		return fmt.Errorf("%w: %s", connectors.ErrSessionUnsupported, strings.Join(unsupported, ", "))
+	}
+
+	var missing error
+	for _, conn := range connections {
+		err := connectors.CheckSpecCapabilities(conn, nextSpec, interactiveControlTimeout)
+		if err == nil {
+			continue
+		}
+		if missing == nil {
+			missing = err
+		}
+		if errors.Is(err, missing) {
+			unsupported = append(unsupported, conn.Server())
+		}
+	}
+	if missing != nil {
+		return fmt.Errorf("%w: %s", missing, strings.Join(unsupported, ", "))
+	}
 	return nil
 }
 
@@ -250,8 +287,9 @@ func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
 // interactiveHelpText returns the :help line for the given arguments. The
 // example matches the flags parseInteractiveReloadArgs accepts in that mode,
 // so that e.g. dmap or dcat do not suggest a --regex they would reject. The
-// --files examples contain no spaces: the servers split each read command on
-// spaces, so a path with a space cannot be read.
+// --files examples contain no spaces, as a path with a space needs servers
+// advertising encoded-read-path-v1 (see doc/interactive-query.md for how to
+// quote one).
 func interactiveHelpText(args config.Args) string {
 	const prefix = "Commands: :reload <flags>, :show, :help, :quit. Quote values as in a shell: "
 	switch {

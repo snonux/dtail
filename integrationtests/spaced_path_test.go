@@ -103,7 +103,10 @@ func TestSpacedPathDCatDGrep(t *testing.T) {
 
 // TestSpacedPathMissingFileReadsNoOtherFile asks for a spaced path that does
 // not exist while its part before the first space does: the client must not
-// print the decoy, and fails because no file could be read.
+// print the decoy, the server must report the whole spaced path as missing
+// ("No such file(s) to read|<path>", printed by the serverless client and
+// logged by dserver, which sends the client no path), and the exit status
+// must be that of a missing path without spaces.
 func TestSpacedPathMissingFileReadsNoOtherFile(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 	cleanupTmpFiles(t)
@@ -112,14 +115,33 @@ func TestSpacedPathMissingFileReadsNoOtherFile(t *testing.T) {
 	ctx := WithTestLogger(context.Background(), testLogger)
 	fixture := newSpacedPathFixture(t)
 	missing := fixture.decoy + " missing.log"
+	missingPlain := filepath.Join(t.TempDir(), "missing.log")
+	const noFile = "No such file(s) to read|"
+	// A dserver logging at info, whose log holds the no-file reports.
+	server := startSharedReadServer(t, sharedReadModes()[0], nil)
+	modes := map[string][]string{
+		"serverless": nil,
+		"server":     {"--servers", server.address, "--trustAllHosts", "--noColor"},
+	}
 
-	for mode, serverArgs := range spacedPathModes(t) {
+	for mode, serverArgs := range modes {
 		t.Run(mode, func(t *testing.T) {
 			outFile := "spaced_path_missing.stdout.tmp"
 			cleanupFiles(t, outFile)
-			args := append(append([]string{"--plain", "--cfg", "none"}, serverArgs...), "--files", missing)
-			_, _ = runCommand(ctx, t, outFile, "../dcat", args...)
+			args := append([]string{"--plain", "--cfg", "none"}, serverArgs...)
+			wantStatus, _ := runCommand(ctx, t, outFile, "../dcat", append(args, "--files", missingPlain)...)
+			status, _ := runCommand(ctx, t, outFile, "../dcat", append(args, "--files", missing)...)
 			got := readTestFile(t, outFile)
+			if status != wantStatus {
+				t.Fatalf("dcat of the missing %q exited with %d, a missing path without spaces with %d:\n%s",
+					missing, status, wantStatus, got)
+			}
+			if serverArgs == nil && !strings.Contains(got, noFile+missing+"\n") {
+				t.Fatalf("dcat of %q did not report the whole path as missing:\n%s", missing, got)
+			}
+			if serverArgs != nil {
+				server.waitForLog(t, noFile+missing, 1)
+			}
 			if strings.Contains(got, strings.TrimSpace(spacedPathDecoy)) {
 				t.Fatalf("dcat of the missing %q read the decoy file:\n%s", missing, got)
 			}
@@ -128,6 +150,7 @@ func TestSpacedPathMissingFileReadsNoOtherFile(t *testing.T) {
 			}
 		})
 	}
+	server.requireLogCount(t, "Unable to parse command", 0)
 }
 
 // TestSpacedPathDMap runs a mapreduce query over a spaced copy of the
@@ -291,4 +314,85 @@ func TestSpacedPathScheduledJob(t *testing.T) {
 	if err := compareFilesWithContext(ctx, t, csvFile, "dserver1.csv.expected"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestSpacedPathScheduledGroup runs two scheduled jobs with the same spaced
+// Files. The scheduler groups them (option share=<group>:<members>), so
+// dserver reads the spaced path once for both through a shared one-shot read
+// (readhub), and each outfile must equal that of the job run on its own.
+func TestSpacedPathScheduledGroup(t *testing.T) {
+	skipIfNotIntegrationTest(t)
+	cleanupTmpFiles(t)
+	input := copySpacedMaprTestData(t)
+	const query = "from STATS select count($line),last($time),avg($goroutines)," +
+		"min(concurrentConnections),max(lifetimeConnections) group by $hostname"
+	jobs := map[string]struct{ where, expected string }{
+		"spaced_group_a": {"", "dserver3a.csv.expected"},
+		"spaced_group_b": {" where lifetimeConnections >= 3", "dserver3b.csv.expected"},
+	}
+	var schedule []map[string]any
+	for name, job := range jobs {
+		cleanupFiles(t, name+".csv.tmp", name+".csv.tmp.query")
+		schedule = append(schedule, map[string]any{
+			"Name": name, "Enable": true, "AllowFrom": []string{"localhost"},
+			"TimeRange": []int{0, 24}, "Files": input, "Query": query + job.where,
+			"Outfile": "./" + name + ".csv.tmp",
+		})
+	}
+
+	server := startSharedReadServer(t, sharedReadModes()[0], map[string]any{
+		"MaxConcurrentCats": 4, "MaxConnections": 12, "Schedule": schedule,
+	})
+	for name := range jobs {
+		server.waitForLog(t, fmt.Sprintf("|Job %s exited with status 0", name), 1)
+	}
+	for name, job := range jobs {
+		if err := compareFiles(t, name+".csv.tmp", job.expected); err != nil {
+			t.Error(err)
+		}
+	}
+	server.requireLogCount(t, "|Starting job group of 2 jobs reading", 1)
+	server.requireLogCount(t, sharedOneShotStartedLog, 1)
+	server.requireLogCount(t, "Unable to parse command", 0)
+}
+
+// TestSpacedPathSharedFollow follows a spaced path with two dtail clients,
+// which with sharing on share one reader of it (readhub), and with sharing
+// off read privately; both must print every matching line appended to it,
+// the same in both modes.
+func TestSpacedPathSharedFollow(t *testing.T) {
+	const regex = "foo|SYNC|MARK"
+	runSharedReadModes(t, func(t *testing.T, mode sharedReadMode) map[string]string {
+		file := newSpacedPathFixture(t).file
+		server := startSharedReadServer(t, mode, nil)
+		first := startFollowClient(t, server, "spaced_first", file, "--plain", "--grep", regex)
+		second := startFollowClient(t, server, "spaced_second", file, "--plain", "--grep", regex)
+		if mode.shared() {
+			server.waitForLog(t, sharedFollowGainedLog+"2", 1)
+		} else {
+			server.waitForReaders(t, file, 2)
+		}
+		written := syncFollowClients(t, file, first, second)
+		marked := markedLines("MARK", 100)
+		appendFileLines(t, file, marked...)
+		written = append(written, marked...)
+		waitForClients(t, marked[len(marked)-1], first, second)
+
+		want := matchingLines(t, regex, written)
+		outputs := map[string]string{}
+		for _, client := range []*followClient{first, second} {
+			outputs[client.name] = client.outputWithoutSync(t)
+			if outputs[client.name] != want {
+				t.Errorf("dtail %s output differs from the matching lines:\n%s",
+					client.name, firstDifference(outputs[client.name], want))
+			}
+		}
+		if mode.shared() {
+			server.requireLogCount(t, sharedFollowStartedLog, 1)
+		} else {
+			server.requireLogCount(t, sharedFollowAnyLog, 0)
+		}
+		server.requireLogCount(t, "Unable to parse command", 0)
+		return outputs
+	})
 }

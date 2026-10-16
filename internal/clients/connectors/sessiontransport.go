@@ -25,11 +25,16 @@ var (
 	// ErrUnexpectedSessionAck indicates that the client received a malformed or mismatched acknowledgement.
 	ErrUnexpectedSessionAck = errors.New("unexpected session acknowledgement")
 	// ErrJournalUnsupported indicates that the remote side did not advertise journal support.
-	ErrJournalUnsupported = errors.New("journal file targets unsupported by server")
+	ErrJournalUnsupported = errors.New(capabilityMessage(journalTargetsWhat, protocol.CapabilityJournalV1))
 	// ErrEncodedReadPathUnsupported indicates that the remote side did not
 	// advertise support for encoded read paths, so it cannot read a path
-	// containing a space.
-	ErrEncodedReadPathUnsupported = errors.New("file paths containing spaces unsupported by server")
+	// containing a space or starting with base64% (protocol.ReadPathNeedsEncoding).
+	ErrEncodedReadPathUnsupported = errors.New(capabilityMessage(encodedReadPathsWhat, protocol.CapabilityEncodedReadPathV1))
+)
+
+const (
+	journalTargetsWhat   = "journal file targets"
+	encodedReadPathsWhat = "file paths containing spaces or starting with " + protocol.EncodedReadPathPrefix
 )
 
 const defaultSessionAckTimeout = 2 * time.Second
@@ -89,7 +94,7 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 	logger = logging.OrNop(logger)
 
 	if !interactiveQuery || initialSpec.Mode == omode.Unknown {
-		if err := requireSpecCapabilities(server, handler, initialSpec, defaultCapabilityWait); err != nil {
+		if err := requireSpecCapabilities(server, handler, initialSpec, defaultCapabilityWait, true); err != nil {
 			return err
 		}
 		return sendLegacyCommands(handler, commands)
@@ -129,7 +134,10 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 		_, generation, _ = state.snapshot()
 	}
 
-	if err := requireSpecCapabilities(server, handler, spec, defaultCapabilityWait); err != nil {
+	// Only a failed SESSION START (generation 0) is reported to the user and
+	// sets the exit status: it fails the initial workload. A rejected UPDATE
+	// is answered on the interactive TTY and the client keeps running.
+	if err := requireSpecCapabilities(server, handler, spec, defaultCapabilityWait, generation == 0); err != nil {
 		return err
 	}
 	if !supportsQueryUpdates(handler, defaultCapabilityWait) {
@@ -179,58 +187,109 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 	return nil
 }
 
-// requireSpecCapabilities checks, before any read command of spec is sent
-// (legacy commands, SESSION START or a :reload's SESSION UPDATE), that the
-// server advertises every capability the spec's read targets need, and fails
-// the session with a clear message otherwise.
-func requireSpecCapabilities(server string, handler handlers.Handler, spec sessionspec.Spec, timeout time.Duration) error {
-	if err := requireJournalCapability(server, handler, spec, timeout); err != nil {
-		return err
-	}
-	return requireEncodedReadPathCapability(server, handler, spec, timeout)
+// specCapability is a server capability that some read targets of a session
+// spec need. what names those targets in the message "<what> require server
+// capability <capability>", which is also the text of sentinel.
+type specCapability struct {
+	capability string
+	what       string
+	sentinel   error
+	neededBy   func(sessionspec.Spec) bool
 }
 
-func requireJournalCapability(server string, handler handlers.Handler, spec sessionspec.Spec, timeout time.Duration) error {
-	if !spec.HasJournalFiles() {
-		return nil
-	}
-	return requireCapability(server, handler, protocol.CapabilityJournalV1,
-		"journal file targets", ErrJournalUnsupported, timeout)
+// specCapabilities lists every capability a read target can need, in the
+// order they are checked: journal targets (journal-v1), and paths that have
+// to be encoded, i.e. containing a space or starting with base64%
+// (encoded-read-path-v1, see sessionspec.Spec.HasEncodedFiles). An older
+// server would split an encoded-needing path at its spaces and fail with
+// "Unable to parse command", or look for a file named after the encoded
+// word; the client fails clearly instead, before sending any read command.
+// Space-free paths need no capability and keep working with every server.
+var specCapabilities = []specCapability{
+	{
+		capability: protocol.CapabilityJournalV1,
+		what:       journalTargetsWhat,
+		sentinel:   ErrJournalUnsupported,
+		neededBy:   sessionspec.Spec.HasJournalFiles,
+	},
+	{
+		capability: protocol.CapabilityEncodedReadPathV1,
+		what:       encodedReadPathsWhat,
+		sentinel:   ErrEncodedReadPathUnsupported,
+		neededBy:   sessionspec.Spec.HasEncodedFiles,
+	},
 }
 
-// requireEncodedReadPathCapability refuses a spec with a path that has to be
-// encoded (one containing a space, see sessionspec.Spec.HasEncodedFiles) for
-// a server that cannot decode it. An older server would split such a path at
-// its spaces and fail with "Unable to parse command", or look for a file
-// named after the encoded word; the client fails clearly instead, before
-// sending any read command. Space-free paths need no capability and keep
-// working with every server.
-func requireEncodedReadPathCapability(server string, handler handlers.Handler, spec sessionspec.Spec, timeout time.Duration) error {
-	if !spec.HasEncodedFiles() {
-		return nil
-	}
-	return requireCapability(server, handler, protocol.CapabilityEncodedReadPathV1,
-		"file paths containing spaces", ErrEncodedReadPathUnsupported, timeout)
+// message returns what the user is told when the server lacks c.
+func (c specCapability) message() string {
+	return capabilityMessage(c.what, c.capability)
 }
 
-// requireCapability waits up to timeout for the server's capabilities and
-// returns nil if they list capability. Otherwise it reports "<what> require
-// server capability <capability>" to the user (which also sets a non-zero
-// exit status) and returns sentinel wrapped with the server name.
-func requireCapability(server string, handler handlers.Handler, capability, what string,
-	sentinel error, timeout time.Duration) error {
-	if handler == nil {
-		return sentinel
-	}
+func capabilityMessage(what, capability string) string {
+	return what + " require server capability " + capability
+}
+
+// missingSpecCapability waits up to timeout for the capabilities of
+// handler's server and returns the first capability spec needs that the
+// server does not advertise. A nil handler advertises nothing.
+func missingSpecCapability(handler handlers.Handler, spec sessionspec.Spec,
+	timeout time.Duration) (specCapability, bool) {
 	if timeout <= 0 {
 		timeout = defaultCapabilityWait
 	}
-	if handler.WaitForCapabilities(timeout) && handler.HasCapability(capability) {
+	advertised := false
+	for _, need := range specCapabilities {
+		if !need.neededBy(spec) {
+			continue
+		}
+		if handler == nil {
+			return need, true
+		}
+		if !advertised && !handler.WaitForCapabilities(timeout) {
+			return need, true
+		}
+		advertised = true
+		if !handler.HasCapability(need.capability) {
+			return need, true
+		}
+	}
+	return specCapability{}, false
+}
+
+// requireSpecCapabilities checks, before any read command of spec is sent
+// (legacy commands, SESSION START or a :reload's SESSION UPDATE), that the
+// server advertises every capability the spec's read targets need, and
+// returns the missing capability's sentinel wrapped with the server name
+// otherwise. With report it also reports "<what> require server capability
+// <capability>" to the user, which sets a non-zero exit status: the initial
+// workload must fail the client, while a rejected :reload is answered on the
+// TTY and leaves the running workload, and the exit status, as they were.
+func requireSpecCapabilities(server string, handler handlers.Handler, spec sessionspec.Spec,
+	timeout time.Duration, report bool) error {
+	missing, ok := missingSpecCapability(handler, spec, timeout)
+	if !ok {
 		return nil
 	}
+	if report && handler != nil {
+		handler.ReportServerError(missing.message())
+	}
+	return fmt.Errorf("%w: %s", missing.sentinel, server)
+}
 
-	handler.ReportServerError(fmt.Sprintf("%s require server capability %s", what, capability))
-	return fmt.Errorf("%w: %s", sentinel, server)
+// CheckSpecCapabilities reports whether the server of conn advertises every
+// capability the read targets of spec need, waiting up to timeout for its
+// capabilities. It returns the sentinel of the first missing capability
+// (ErrJournalUnsupported or ErrEncodedReadPathUnsupported) or nil, and
+// reports nothing to the user. An interactive :reload checks every connection
+// with it before it updates any, so that a server lacking a capability
+// rejects the reload as a whole instead of after other servers already
+// switched to the new workload.
+func CheckSpecCapabilities(conn Connector, spec sessionspec.Spec, timeout time.Duration) error {
+	missing, ok := missingSpecCapability(conn.Handler(), spec, timeout)
+	if !ok {
+		return nil
+	}
+	return missing.sentinel
 }
 
 func sendLegacyCommands(handler handlers.Handler, commands []string) error {

@@ -62,8 +62,8 @@ files or globs, with blanks around each entry removed, so paths containing a
 comma cannot be read. Paths containing spaces work when quoted for the shell,
 e.g. `--files '/var/log/my app/*.log'`; this needs a dserver of the same
 version or newer (capability `encoded-read-path-v1`), and the client fails
-with `file paths containing spaces require server capability
-encoded-read-path-v1` against an older one.
+with `file paths containing spaces or starting with base64% require server
+capability encoded-read-path-v1` against an older one.
 
 ### Aggregating logs
 

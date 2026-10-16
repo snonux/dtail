@@ -264,13 +264,20 @@ the command with `read: unable to parse command` and reads nothing.
 **Compatibility:** dserver (and the serverless runtime) advertise capability
 `encoded-read-path-v1`. Clients check it before sending any read command of a
 spec with such a path (`requireSpecCapabilities` in
-`internal/clients/connectors/sessiontransport.go`, legacy commands, `SESSION
-START` and `:reload` updates) and otherwise fail with `file paths containing
-spaces require server capability encoded-read-path-v1` (exit status 1; a
-`:reload` is rejected and the workload keeps running), instead of letting an
-older dserver split the path. Space-free paths need no capability. Older
-clients still send a spaced path unencoded, which fails as before; a path an
-older client sends that starts with `base64%` is decoded by a new dserver.
+`internal/clients/connectors/sessiontransport.go`, legacy commands and
+`SESSION START`) and otherwise fail with `file paths containing spaces or
+starting with base64% require server capability encoded-read-path-v1` (exit
+status 1), instead of letting an older dserver split the path. A `:reload`
+checks every connection up front (`checkReloadCapabilities` in
+`internal/clients/interactive_control.go`, also for `journal-v1`) before it
+updates any, so with one server lacking the capability the reload is rejected
+on the TTY as a whole, no server switches, and the workload and exit status
+stay as they were. Space-free paths need no capability. Older clients send
+raw paths: in their legacy command stream a spaced path still fails as
+before, and a path starting with `base64%` is decoded by a new dserver; via
+`--interactive-query` (`SESSION START`/`UPDATE`, Files as JSON) a new dserver
+builds and encodes the commands itself, so a spaced path is read and a
+`base64%`-prefixed path is read literally.
 
 **Commas:** `--files`, positional arguments (joined with commas) and job `Files`
 are split at commas with blanks around each entry trimmed (`splitFiles` in
@@ -636,7 +643,11 @@ failure are told apart:
   shutdown); a session that ended without the server's close handshake
   (`.syn close connection`, sent only after all of the session's output),
   e.g. a remote dserver killed with SIGKILL, stopped with SIGTERM/SIGINT,
-  crashed, or a lost connection; and a failed command that is no file read
+  crashed, or a lost connection; the client refusing to send a job's read
+  commands to a server lacking a capability its `Files` need
+  (`encoded-read-path-v1` for paths containing spaces or starting with
+  `base64%`, `journal-v1` for `journal:` targets), which sets exit status 1;
+  and a failed command that is no file read
   failure (`command: unable to decode command`, `command: rejected`,
   `command: unknown command`, `map: invalid query`, `read: unable to parse
   command`, `output: too large for the session output buffer`, or a reason

@@ -104,9 +104,10 @@ splits a command line, without any variable, command or glob expansion
 * A file path containing spaces is quoted or escaped like any other value:
   `:reload --files '/var/log/my app/a.log'`. The servers must advertise the
   capability `encoded-read-path-v1` (dserver of this version or newer);
-  otherwise the reload is rejected with `file paths containing spaces
-  require server capability encoded-read-path-v1` and the current workload
-  keeps running. To read several files, list them comma-separated, e.g.
+  otherwise the reload is rejected with `file paths containing spaces or
+  starting with base64% require server capability encoded-read-path-v1:
+  <servers>` before any server switches, and the current workload keeps
+  running. To read several files, list them comma-separated, e.g.
   `:reload --files /var/log/a.log,/var/log/b.log`; a comma therefore always
   separates two files, so paths containing a comma cannot be read, and
   blanks around each path are removed.

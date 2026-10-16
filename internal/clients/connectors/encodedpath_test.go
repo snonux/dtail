@@ -52,7 +52,7 @@ func TestRequireEncodedReadPathCapability(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			handler := &mockHandler{waitForCapabilities: tc.waitForCapabilities, capabilities: tc.capabilities}
 			spec := sessionspec.Spec{Mode: omode.CatClient, Files: tc.files}
-			err := requireSpecCapabilities("srv1", handler, spec, 10*time.Millisecond)
+			err := requireSpecCapabilities("srv1", handler, spec, 10*time.Millisecond, true)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("requireSpecCapabilities() error = %v, want %v", err, tc.wantErr)
 			}
@@ -60,7 +60,8 @@ func TestRequireEncodedReadPathCapability(t *testing.T) {
 				t.Fatalf("server error %q, want reported = %v", handler.serverError, wantReport)
 			}
 			if tc.wantErr != nil && !strings.Contains(handler.serverError,
-				"file paths containing spaces require server capability "+protocol.CapabilityEncodedReadPathV1) {
+				"file paths containing spaces or starting with base64% require server capability "+
+					protocol.CapabilityEncodedReadPathV1) {
 				t.Fatalf("server error %q does not explain the missing capability", handler.serverError)
 			}
 		})
@@ -119,8 +120,9 @@ func TestDispatchInitialCommandsSendsSpacedPathWithCapability(t *testing.T) {
 
 // TestApplySessionSpecRejectsSpacedPathReloadWithoutCapability covers a
 // :reload --files with a spaced path against a server that supports reloads
-// but not encoded paths: the reload is rejected before SESSION UPDATE is sent
-// and the committed workload stays.
+// but not encoded paths: the reload is rejected before SESSION UPDATE is sent,
+// the committed workload stays, and nothing is reported to the user, so the
+// exit status stays 0 (the TTY answers the rejected reload).
 func TestApplySessionSpecRejectsSpacedPathReloadWithoutCapability(t *testing.T) {
 	mock := &mockHandler{
 		waitForCapabilities: true,
@@ -145,5 +147,42 @@ func TestApplySessionSpecRejectsSpacedPathReloadWithoutCapability(t *testing.T) 
 	if committed, generation, ok := conn.CommittedSession(); !ok || generation != 1 ||
 		committed.Files[0] != "/var/log/app.log" {
 		t.Fatalf("committed session changed: spec=%#v generation=%d ok=%v", committed, generation, ok)
+	}
+	if mock.Status() != 0 || mock.serverError != "" {
+		t.Fatalf("rejected reload reported %q and set status %d", mock.serverError, mock.Status())
+	}
+}
+
+// TestCheckSpecCapabilities checks the up-front check of a :reload: it
+// returns the sentinel of the missing capability and reports nothing.
+func TestCheckSpecCapabilities(t *testing.T) {
+	tests := []struct {
+		name         string
+		files        []string
+		capabilities map[string]bool
+		wantErr      error
+	}{
+		{name: "plain path", files: []string{"/var/log/app.log"}},
+		{name: "spaced path supported", files: []string{spacedTestPath},
+			capabilities: map[string]bool{protocol.CapabilityEncodedReadPathV1: true}},
+		{name: "spaced path unsupported", files: []string{spacedTestPath},
+			capabilities: map[string]bool{protocol.CapabilityQueryUpdateV1: true},
+			wantErr:      ErrEncodedReadPathUnsupported},
+		{name: "journal unsupported", files: []string{"journal:ssh.service", spacedTestPath},
+			capabilities: map[string]bool{protocol.CapabilityEncodedReadPathV1: true},
+			wantErr:      ErrJournalUnsupported},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &mockHandler{waitForCapabilities: true, capabilities: tc.capabilities}
+			conn := &ServerConnection{server: "srv1", handler: mock}
+			spec := sessionspec.Spec{Mode: omode.TailClient, Files: tc.files}
+			if err := CheckSpecCapabilities(conn, spec, 10*time.Millisecond); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("CheckSpecCapabilities() error = %v, want %v", err, tc.wantErr)
+			}
+			if mock.Status() != 0 || mock.serverError != "" {
+				t.Fatalf("check reported %q and set status %d", mock.serverError, mock.Status())
+			}
+		})
 	}
 }
