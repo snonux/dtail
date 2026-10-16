@@ -78,7 +78,9 @@ type ServerConfig struct {
 	// the file with a reader of its own, and the scheduler runs its jobs one
 	// at a time.
 	SharedReadsDisable bool `json:",omitempty"`
-	// The max line length until it's split up into multiple smaller lines.
+	// MaxLineLength is the longest line, in bytes without its "\n" but with
+	// the "\r" of a CRLF ending, that reads pass on whole; a longer line is
+	// cut into pieces of this length.
 	MaxLineLength int
 	// The user permissions.
 	Permissions Permissions `json:",omitempty"`

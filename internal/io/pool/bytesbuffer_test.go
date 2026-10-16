@@ -38,3 +38,48 @@ func TestRecycleBytesBufferDropsLargeBuffers(t *testing.T) {
 		})
 	}
 }
+
+// TestRecycleBytesBufferKeepsDefaultMaxLineBuffers checks buffers grown the way
+// the read paths grow them: one that held a line of the default MaxLineLength
+// (1 MiB) plus its newline, rounded up by bytes.Buffer, and one that doubled
+// from 600 KiB, are both pooled again; one that held a line of a larger
+// MaxLineLength (4 MiB plus its newline) ends above the threshold and is
+// dropped.
+func TestRecycleBytesBufferKeepsDefaultMaxLineBuffers(t *testing.T) {
+	const mib = 1024 * 1024
+	tests := []struct {
+		name    string
+		initial int
+		writes  []int
+		minCap  int
+		pooled  bool
+	}{
+		{name: "default maximum line plus newline", initial: 4096,
+			writes: []int{mib + 1}, minCap: mib + 1, pooled: true},
+		{name: "doubled from 600 KiB", initial: 600 * 1024,
+			writes: []int{600 * 1024, 1}, minCap: 2 * 600 * 1024, pooled: true},
+		{name: "4 MiB line plus newline", initial: 4096,
+			writes: []int{4*mib + 1}, minCap: 4*mib + 1, pooled: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf := bytes.NewBuffer(make([]byte, 0, tt.initial))
+			for _, n := range tt.writes {
+				buf.Write(bytes.Repeat([]byte{'x'}, n))
+			}
+			if buf.Cap() < tt.minCap {
+				t.Fatalf("buffer capacity %d, want at least %d", buf.Cap(), tt.minCap)
+			}
+			if got := buf.Cap() <= MaxRecycledBytesBufferCap; got != tt.pooled {
+				t.Fatalf("capacity %d within MaxRecycledBytesBufferCap %d = %v, want %v",
+					buf.Cap(), MaxRecycledBytesBufferCap, got, tt.pooled)
+			}
+			RecycleBytesBuffer(buf)
+			// RecycleBytesBuffer resets exactly the buffers it pools.
+			if reset := buf.Len() == 0; reset != tt.pooled {
+				t.Fatalf("buffer of capacity %d reset (pooled) = %v, want %v",
+					buf.Cap(), reset, tt.pooled)
+			}
+		})
+	}
+}
