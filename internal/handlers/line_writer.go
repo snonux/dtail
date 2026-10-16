@@ -251,9 +251,13 @@ type NetworkWriter struct {
 
 var _ LineWriter = (*NetworkWriter)(nil)
 
-// NewNetworkWriter creates a NetworkWriter that batches formatted
-// lines into a 64KB buffer before sending them to the output channel. Its
-// line frames use protocol.RawFraming; see NewFramedNetworkWriter.
+// NewNetworkWriter creates a NetworkWriter that batches formatted lines into
+// a 64KB buffer before sending them to the output channel. framing is the
+// session's negotiated framing (see protocol.Framing): every line frame the
+// writer formats is written in it. It is a required argument, so no writer
+// can silently fall back to raw framing in an escaped session. Server
+// messages go to serverMessages unframed; the session framer frames them
+// when it sends them.
 //
 // bufSize is the field the previous bare struct literal in makeWriter
 // omitted. With bufSize left at its zero value the flush condition in
@@ -267,18 +271,7 @@ var _ LineWriter = (*NetworkWriter)(nil)
 // calls processor.Flush() after every read chunk, and Flush drains the partial
 // writeBuf to the output channel promptly, so batching never holds interactive
 // output back past a read boundary.
-func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
-	serverMessages chan<- string, hostname string, plain, serverless bool,
-	generation uint64, activeGeneration func() uint64, logger logging.Logger) *NetworkWriter {
-	return NewFramedNetworkWriter(ctx, protocol.RawFraming, outputLines, serverMessages, hostname,
-		plain, serverless, generation, activeGeneration, logger)
-}
-
-// NewFramedNetworkWriter is NewNetworkWriter for a session that negotiated
-// framing: every line frame it formats is written in that framing (see
-// protocol.Framing). Server messages go to serverMessages unframed; the
-// session framer frames them when it sends them.
-func NewFramedNetworkWriter(ctx context.Context, framing protocol.Framing, outputLines chan<- []byte,
+func NewNetworkWriter(ctx context.Context, framing protocol.Framing, outputLines chan<- []byte,
 	serverMessages chan<- string, hostname string, plain, serverless bool,
 	generation uint64, activeGeneration func() uint64, logger logging.Logger) *NetworkWriter {
 	format := lineFormatProtocol

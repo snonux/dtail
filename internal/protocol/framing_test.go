@@ -2,7 +2,9 @@ package protocol
 
 import (
 	"bytes"
+	"math"
 	"testing"
+	"time"
 )
 
 // utf8WithDelimiterByte holds characters whose UTF-8 encoding contains the
@@ -248,6 +250,141 @@ func BenchmarkFramingEncodePayload(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				dst.Reset()
 				bench.framing.EncodePayload(&dst, bench.body)
+			}
+		})
+	}
+}
+
+// referenceEscape is the byte-by-byte definition of EscapedFraming bodies
+// that the optimised escaper must match.
+func referenceEscape(body []byte) []byte {
+	out := make([]byte, 0, 2*len(body))
+	for _, b := range body {
+		switch b {
+		case MessageDelimiter:
+			out = append(out, FrameEscape, escapedDelimiterCode)
+		case FrameEscape:
+			out = append(out, FrameEscape, escapedEscapeCode)
+		default:
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// denseEscapeBodies returns bodies of size bytes made only of bytes to
+// escape, all 0xFF and all 0xAC, and a pseudo-random mix of both with plain
+// bytes.
+func denseEscapeBodies(size int) map[string][]byte {
+	mixed := make([]byte, size)
+	state := uint32(1)
+	for i := range mixed {
+		state = state*1664525 + 1013904223
+		switch state >> 30 {
+		case 0:
+			mixed[i] = MessageDelimiter
+		case 1:
+			mixed[i] = FrameEscape
+		default:
+			mixed[i] = 'a'
+		}
+	}
+	return map[string][]byte{
+		"only 0xFF": bytes.Repeat([]byte{FrameEscape}, size),
+		"only 0xAC": bytes.Repeat([]byte{MessageDelimiter}, size),
+		"mixed":     mixed,
+	}
+}
+
+// TestEscapedFramingDenseBodies checks escaping and decoding of 1 MiB bodies
+// made only of bytes to escape.
+func TestEscapedFramingDenseBodies(t *testing.T) {
+	for name, body := range denseEscapeBodies(1 << 20) {
+		t.Run(name, func(t *testing.T) {
+			want := referenceEscape(body)
+			var fromBytes, fromString bytes.Buffer
+			EscapedFraming.Write(&fromBytes, body)
+			EscapedFraming.WriteString(&fromString, string(body))
+			if !bytes.Equal(fromBytes.Bytes(), want) || !bytes.Equal(fromString.Bytes(), want) {
+				t.Fatal("escaped body differs from the reference escaping")
+			}
+			var scratch []byte
+			if decoded := EscapedFraming.DecodeFrame(fromBytes.Bytes(), &scratch); !bytes.Equal(decoded, body) {
+				t.Fatal("decoded body differs from the original")
+			}
+		})
+	}
+}
+
+// TestEscapedFramingDenseBodiesAreLinear guards against quadratic escaping:
+// an escaper that searched the rest of the body for both bytes at every
+// escape took about 50 s for 1 MiB of 0xFF. A body 16 times as long must
+// take about 16 times as long to escape and decode, not 256 times; the bound
+// of 64 times leaves room for a loaded machine and the race detector, which
+// make absolute bounds unreliable.
+func TestEscapedFramingDenseBodiesAreLinear(t *testing.T) {
+	const small, large = 64 << 10, 1 << 20
+	smallBodies, largeBodies := denseEscapeBodies(small), denseEscapeBodies(large)
+	for name := range largeBodies {
+		t.Run(name, func(t *testing.T) {
+			smallTime := max(fastestEscapeAndDecode(smallBodies[name], 3), time.Millisecond)
+			largeTime := fastestEscapeAndDecode(largeBodies[name], 3)
+			if largeTime > 64*smallTime {
+				t.Fatalf("1 MiB took %v, 64 KiB %v: escaping grows faster than linearly",
+					largeTime, smallTime)
+			}
+		})
+	}
+}
+
+// fastestEscapeAndDecode returns the fastest of runs escapes and decodes of
+// body.
+func fastestEscapeAndDecode(body []byte, runs int) time.Duration {
+	fastest := time.Duration(math.MaxInt64)
+	var dst bytes.Buffer
+	var scratch []byte
+	for range runs {
+		dst.Reset()
+		start := time.Now()
+		EscapedFraming.Write(&dst, body)
+		EscapedFraming.DecodeFrame(dst.Bytes(), &scratch)
+		fastest = min(fastest, time.Since(start))
+	}
+	return fastest
+}
+
+// TestEscapedFramingMatchesReference compares the escaper with the reference
+// on pseudo-random bodies of many lengths around shortBodyLen, written into
+// buffers with and without spare capacity and after existing content.
+func TestEscapedFramingMatchesReference(t *testing.T) {
+	alphabet := []byte{MessageDelimiter, FrameEscape, 'a', 0xE2, 0x82, escapedDelimiterCode}
+	state := uint32(7)
+	for length := 0; length <= 4*shortBodyLen; length++ {
+		body := make([]byte, length)
+		for i := range body {
+			state = state*1664525 + 1013904223
+			body[i] = alphabet[int(state>>16)%len(alphabet)]
+		}
+		want := append([]byte("prefix"), referenceEscape(body)...)
+		for _, spare := range []int{0, length / 2, 2 * length} {
+			dst := bytes.NewBuffer(make([]byte, 0, len("prefix")+spare))
+			dst.WriteString("prefix")
+			EscapedFraming.Write(dst, body)
+			if !bytes.Equal(dst.Bytes(), want) {
+				t.Fatalf("length %d spare %d: escaped %q, want %q", length, spare, dst.Bytes(), want)
+			}
+		}
+	}
+}
+
+func BenchmarkFramingEncodeDensePayload(b *testing.B) {
+	for name, body := range denseEscapeBodies(1 << 20) {
+		b.Run(name, func(b *testing.B) {
+			var dst bytes.Buffer
+			b.SetBytes(int64(len(body)))
+			for i := 0; i < b.N; i++ {
+				dst.Reset()
+				EscapedFraming.EncodePayload(&dst, body)
 			}
 		})
 	}

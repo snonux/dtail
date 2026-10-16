@@ -329,9 +329,10 @@ func (h *ServerHandler) newReadLineWriter(ctx context.Context, generation uint64
 			generation, h.sessionState.currentGeneration, h.colorizer)
 	}
 
-	// The session framing is final here: a client asks for escaped framing
-	// with its first command, which is handled before any read command.
-	writer := NewFramedNetworkWriter(ctx, h.framing(), nil, h.serverMessages, h.hostname, h.plain, false,
+	// The session framing is final here: only the session's first command
+	// can switch it (see handleEscapedFramingRequest), and that command is
+	// handled before any read command.
+	writer := NewNetworkWriter(ctx, h.framing(), nil, h.serverMessages, h.hostname, h.plain, false,
 		generation, h.sessionState.currentGeneration, h.Logger())
 	writer.enqueueOutput = h.EnqueueOutput
 	return writer

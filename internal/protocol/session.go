@@ -30,6 +30,11 @@ const (
 	CommandFailureMapQuery = "map: invalid query"
 	// CommandFailureReadCommand: a read command could not be parsed.
 	CommandFailureReadCommand = "read: unable to parse command"
+	// CommandFailureOutputTooLarge: a read produced output (a batch of line
+	// frames) larger than the session's output buffer cap, so that output
+	// was dropped. It is no file read failure: the file was read, but the
+	// command could not deliver what it read.
+	CommandFailureOutputTooLarge = "output: too large for the session output buffer"
 
 	// The file read failures (see IsFileReadFailure).
 

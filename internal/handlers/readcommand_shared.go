@@ -77,7 +77,7 @@ func (r *readCommand) readShared(ctx context.Context, ltx lcontext.LContext, re 
 		// The private read loop reports a failed read iteration to the client
 		// before it reads the file again (see executeReadLoop); only a
 		// max-count stop ends an iteration there without a failure.
-		r.reportFailure(ctx, readFailureReadingFile)
+		r.reportReadError(ctx, err)
 	}
 	r.restartPrivately(ctx, ltx, re, options, writer)
 }

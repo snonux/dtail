@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -146,6 +147,24 @@ func minimumOutputBufferMaxBytes(maxLineLength int) int {
 	return maxLineLength + 2*networkWriterBufferSize
 }
 
+// escapedOutputBufferMaxBytes is the output buffer cap of a session that
+// uses escaped framing: minimumOutputBufferMaxBytes plus another
+// maxLineLength. Escaping replaces each 0xAC and 0xFF byte by two bytes, so
+// the frame of a maximum-length line can grow to almost twice its raw size,
+// and the batch holding it with it; this cap admits that batch just as the
+// minimum admits the raw one. A session switching to escaped framing raises
+// its cap to this value when OutputBufferMaxBytes is smaller, so every
+// configuration valid for raw framing keeps working, at a higher memory
+// bound of about one more maximum-length line per session. It reports false
+// when the sum does not fit an int; the session then keeps the configured
+// cap (which is then at least about half of math.MaxInt anyway).
+func escapedOutputBufferMaxBytes(maxLineLength int) (int, bool) {
+	if maxLineLength > (math.MaxInt-2*networkWriterBufferSize)/2 {
+		return 0, false
+	}
+	return 2*maxLineLength + 2*networkWriterBufferSize, true
+}
+
 func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LContext,
 	argc int, args []string, commandName string) {
 
@@ -226,15 +245,30 @@ func (h *ServerHandler) handleAckControl(ctx context.Context, argc int, args []s
 }
 
 // handleEscapedFramingRequest switches the session to escaped framing when
-// its capabilities frame advertised it; otherwise the request is ignored, as
-// by a server that does not know it, and the session stays on raw framing.
+// its capabilities frame advertised it and the request is the session's
+// first command, as clients send it. Otherwise the request is ignored, as by
+// a server that does not know it, and the session keeps its framing: a
+// switch after other commands could change the framing of output those
+// commands already produce, under a client that decided its framing from
+// the session's first frame. A switch also raises the session's output
+// buffer cap to escapedOutputBufferMaxBytes, so that escaping can never make
+// a batch with a maximum-length line too large to queue.
 func (h *ServerHandler) handleEscapedFramingRequest(ctx context.Context) {
-	if !h.escapedFramingAdvertised {
+	switch {
+	case !h.escapedFramingAdvertised:
 		h.Logger().Debug(h.user, "Ignoring escaped framing request of a session not advertising it")
 		return
+	case !h.handlingFirstCommand():
+		h.Logger().Warn(h.user, "Ignoring escaped framing request that is not the session's first command")
+		return
 	}
-	if h.enableEscapedFraming(ctx) {
-		h.Logger().Debug(h.user, "Switched session to escaped framing")
+	if !h.enableEscapedFraming(ctx) {
+		return
+	}
+	h.Logger().Debug(h.user, "Switched session to escaped framing")
+	maxLineLength := positiveIntOrDefault(h.serverCfg.MaxLineLength, 1024*1024)
+	if minimum, ok := escapedOutputBufferMaxBytes(maxLineLength); ok {
+		h.output.raiseBufferMaxBytes(minimum)
 	}
 }
 

@@ -123,7 +123,7 @@ func (s *sharedReadTestServer) readCommandDependencies() readCommandDependencies
 			maxGlobTargets:            1000,
 		},
 		newLineWriter: func(ctx context.Context, generation uint64) LineWriter {
-			return NewNetworkWriter(ctx, s.outputLines, s.serverMessage, "testhost", true, false,
+			return NewNetworkWriter(ctx, protocol.RawFraming, s.outputLines, s.serverMessage, "testhost", true, false,
 				generation, func() uint64 { return 0 }, logging.NopLogger{})
 		},
 		readHub: s.readHub,

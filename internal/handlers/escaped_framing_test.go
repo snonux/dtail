@@ -3,8 +3,11 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/mimecast/dtail/internal/authkey"
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/session"
@@ -96,13 +100,26 @@ func TestSessionFramerEnableEscapedFramingGivesUpWithContext(t *testing.T) {
 
 func newFramingTestServerHandler(t *testing.T, capabilities []string) *ServerHandler {
 	t.Helper()
+	return newFramingTestServerHandlerWithConfig(t, capabilities,
+		&config.ServerConfig{MapreduceLogFormat: "default", AuthKeyEnabled: true})
+}
+
+func newFramingTestServerHandlerWithConfig(t *testing.T, capabilities []string,
+	serverCfg *config.ServerConfig) *ServerHandler {
+	t.Helper()
+	return newFramingTestServerHandlerWithLogger(t, capabilities, serverCfg, handlerTestLogger)
+}
+
+func newFramingTestServerHandlerWithLogger(t *testing.T, capabilities []string,
+	serverCfg *config.ServerConfig, logger logging.Logger) *ServerHandler {
+	t.Helper()
 	handler, err := NewServerHandler(context.Background(), &userserver.User{Name: config.ContinuousUser},
 		Dependencies{
 			CatLimiter:   make(chan struct{}, 4),
 			TailLimiter:  make(chan struct{}, 4),
-			ServerConfig: &config.ServerConfig{MapreduceLogFormat: "default", AuthKeyEnabled: true},
+			ServerConfig: serverCfg,
 			AuthKeyStore: authkey.New(time.Hour, 5),
-			Loggers:      HandlerLoggers{Diagnostics: handlerTestLogger, Reader: handlerTestLogger},
+			Loggers:      HandlerLoggers{Diagnostics: logger, Reader: logger},
 			Capabilities: capabilities,
 			Hostname:     "testhost",
 		})
@@ -117,14 +134,24 @@ func newFramingTestServerHandler(t *testing.T, capabilities []string) *ServerHan
 func runFramingCatSession(t *testing.T, handler *ServerHandler, path, options string,
 	request bool) []byte {
 	t.Helper()
+	var first []string
+	if request {
+		first = []string{protocol.EscapedFramingCommand}
+	}
+	return runCatSessionAfter(t, handler, path, options, first...)
+}
+
+// runCatSessionAfter runs one cat session whose command frames follow the
+// first ones, and returns all bytes sent to the client.
+func runCatSessionAfter(t *testing.T, handler *ServerHandler, path, options string,
+	first ...string) []byte {
+	t.Helper()
 	spec := session.Spec{Mode: omode.CatClient, Files: []string{path}, Options: options, Regex: "."}
 	commands, err := spec.Commands()
 	if err != nil {
 		t.Fatalf("build commands: %v", err)
 	}
-	if request {
-		commands = append([]string{protocol.EscapedFramingCommand}, commands...)
-	}
+	commands = append(slices.Clone(first), commands...)
 
 	commandWg := wrapHandlerCommandsForJoin(handler)
 	output := &testOutput{}
@@ -214,4 +241,175 @@ func TestServerHandlerEscapesFramesOnlyWhenNegotiated(t *testing.T) {
 			})
 		}
 	}
+}
+
+// TestServerHandlerHonoursOnlyAFirstEscapedFramingRequest: a framing request
+// switches the session only as its first command; a later one is ignored, so
+// the session stays raw, and a repeated one changes nothing.
+func TestServerHandlerHonoursOnlyAFirstEscapedFramingRequest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "utf8.log")
+	if err := os.WriteFile(path, []byte(framingTestContent), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	tests := []struct {
+		name        string
+		first       []string
+		wantFraming protocol.Framing
+	}{
+		{name: "late request", first: []string{".ack late first", protocol.EscapedFramingCommand},
+			wantFraming: protocol.RawFraming},
+		{name: "repeated request",
+			first:       []string{protocol.EscapedFramingCommand, protocol.EscapedFramingCommand},
+			wantFraming: protocol.EscapedFraming},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
+			stream := runCatSessionAfter(t, handler, path, "plain=true", test.first...)
+			if handler.framing() != test.wantFraming {
+				t.Fatalf("session framing = %s, want %s", handler.framing(), test.wantFraming)
+			}
+			escaped := bytes.Contains(stream, []byte{protocol.FrameEscape, 0x01})
+			if escaped != (test.wantFraming == protocol.EscapedFraming) {
+				t.Fatalf("stream has escape sequences = %v, want framing %s: %q",
+					escaped, test.wantFraming, stream)
+			}
+			if test.wantFraming == protocol.EscapedFraming {
+				if got := payloadOf(t, splitFrames(stream, test.wantFraming)); got != framingTestContent {
+					t.Fatalf("payload = %q, want %q", got, framingTestContent)
+				}
+			}
+		})
+	}
+}
+
+// escapedMaxLineLength is the MaxLineLength of the escaped output buffer
+// tests: far above a 64 KiB writer batch, so that an escaped maximum-length
+// line no longer fits the minimum raw buffer cap, yet quick to read.
+const escapedMaxLineLength = 256 * 1024
+
+// writeMaxLengthLineFile writes a file holding a short line, one line of
+// exactly escapedMaxLineLength bytes (with its newline) built from unit, and
+// another short line, and returns its path and content.
+func writeMaxLengthLineFile(t *testing.T, unit string) (string, string) {
+	t.Helper()
+	long := strings.Repeat(unit, (escapedMaxLineLength-1)/len(unit))
+	content := "first line\n" + long + "\n" + "tail line\n"
+	path := filepath.Join(t.TempDir(), "long.log")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	return path, content
+}
+
+// TestServerHandlerDeliversEscapedMaxLengthLinesAtMinimumBuffer: at the
+// smallest OutputBufferMaxBytes the handler accepts, a maximum-length line of
+// 0xAC bytes (twice as long once escaped) or of '€' still reaches the client
+// whole, together with the lines batched before and after it, in both line
+// formats.
+func TestServerHandlerDeliversEscapedMaxLengthLinesAtMinimumBuffer(t *testing.T) {
+	for _, unit := range []string{"\xac", "€", "\xff"} {
+		path, content := writeMaxLengthLineFile(t, unit)
+		for _, options := range []string{"plain=true", ""} {
+			t.Run(fmt.Sprintf("%q/%s", unit, options), func(t *testing.T) {
+				handler := newFramingTestServerHandlerWithConfig(t, ServerCapabilities("linux", false),
+					&config.ServerConfig{MapreduceLogFormat: "default", AuthKeyEnabled: true,
+						MaxLineLength:        escapedMaxLineLength,
+						OutputBufferMaxBytes: minimumOutputBufferMaxBytes(escapedMaxLineLength)})
+				stream := runFramingCatSession(t, handler, path, options, true)
+				frames := splitFrames(stream, protocol.EscapedFraming)
+				for _, frame := range frames {
+					if strings.Contains(frame, protocol.HiddenCommandFailedPrefix) {
+						t.Fatalf("session reported a failed command: %q", frame)
+					}
+				}
+				if got := payloadOf(t, frames); got != content {
+					t.Fatalf("payload of %d bytes, want the %d bytes of the file", len(got), len(content))
+				}
+			})
+		}
+	}
+}
+
+func TestEscapedFramingRaisesOnlyAnEscapedSessionsBufferCap(t *testing.T) {
+	minimum := minimumOutputBufferMaxBytes(escapedMaxLineLength)
+	escaped, ok := escapedOutputBufferMaxBytes(escapedMaxLineLength)
+	if !ok || escaped != 2*escapedMaxLineLength+2*networkWriterBufferSize {
+		t.Fatalf("escapedOutputBufferMaxBytes = %d, %v", escaped, ok)
+	}
+	for _, test := range []struct {
+		name       string
+		request    bool
+		configured int
+		want       int
+	}{
+		{name: "raw session keeps the configured cap", configured: minimum, want: minimum},
+		{name: "escaped session raises a smaller cap", request: true, configured: minimum, want: escaped},
+		{name: "escaped session keeps a larger cap", request: true, configured: 4 * escaped,
+			want: 4 * escaped},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler := newFramingTestServerHandlerWithConfig(t, ServerCapabilities("linux", false),
+				&config.ServerConfig{MapreduceLogFormat: "default", AuthKeyEnabled: true,
+					MaxLineLength: escapedMaxLineLength, OutputBufferMaxBytes: test.configured})
+			path := filepath.Join(t.TempDir(), "short.log")
+			if err := os.WriteFile(path, []byte("short\n"), 0o644); err != nil {
+				t.Fatalf("write file: %v", err)
+			}
+			runFramingCatSession(t, handler, path, "plain=true", test.request)
+			handler.output.mu.Lock()
+			got := handler.output.resolvedBufferMaxBytes()
+			handler.output.mu.Unlock()
+			if got != test.want {
+				t.Fatalf("session buffer cap = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestEscapedOutputBufferMaxBytesRejectsOverflow(t *testing.T) {
+	if _, ok := escapedOutputBufferMaxBytes(math.MaxInt / 2); ok {
+		t.Fatal("escapedOutputBufferMaxBytes accepted a sum that does not fit an int")
+	}
+	largest := (math.MaxInt - 2*networkWriterBufferSize) / 2
+	if got, ok := escapedOutputBufferMaxBytes(largest); !ok || got < largest {
+		t.Fatalf("escapedOutputBufferMaxBytes(%d) = %d, %v", largest, got, ok)
+	}
+}
+
+// TestServerHandlerReportsOutputTooLargeForTheBuffer: output that does not
+// fit the session's output buffer is reported to the client with a visible
+// warning and a failed-command reason, never dropped silently.
+func TestServerHandlerReportsOutputTooLargeForTheBuffer(t *testing.T) {
+	path, _ := writeMaxLengthLineFile(t, "a")
+	handler := newFramingTestServerHandlerWithLogger(t, ServerCapabilities("linux", false),
+		&config.ServerConfig{MapreduceLogFormat: "default", AuthKeyEnabled: true,
+			MaxLineLength: escapedMaxLineLength}, &framingWarnLogger{})
+	// No valid configuration gets here; shrink the cap below one line batch
+	// the way an oversized frame would exceed it.
+	handler.output.mu.Lock()
+	handler.output.bufferMaxBytes = escapedMaxLineLength / 2
+	handler.output.mu.Unlock()
+
+	frames := splitFrames(runFramingCatSession(t, handler, path, "", false), protocol.RawFraming)
+	var warned, reported bool
+	for _, frame := range frames {
+		warned = warned || strings.HasPrefix(frame, "SERVER|testhost|") &&
+			strings.Contains(frame, "Dropped output too large for the session output buffer")
+		reported = reported ||
+			strings.TrimSuffix(frame, "\n") == protocol.HiddenCommandFailedPrefix+protocol.CommandFailureOutputTooLarge
+	}
+	if !warned || !reported {
+		t.Fatalf("warning sent = %v, failure reported = %v, want both: %q", warned, reported, frames)
+	}
+}
+
+// framingWarnLogger returns the text of its warnings, as the real logger
+// returns the formatted line, so that warnings sent to the client show.
+type framingWarnLogger struct {
+	logging.NopLogger
+}
+
+func (*framingWarnLogger) Warn(args ...any) string {
+	return fmt.Sprint(args...)
 }

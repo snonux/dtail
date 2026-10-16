@@ -59,6 +59,7 @@ const (
 	readFailurePermission  = protocol.CommandFailurePermission
 	readFailureReader      = protocol.CommandFailureReader
 	readFailureReadingFile = protocol.CommandFailureReadingFile
+	readFailureOutput      = protocol.CommandFailureOutputTooLarge
 )
 
 type pendingInputReservationKeyType struct{}
@@ -563,7 +564,7 @@ func (r *readCommand) executeReadLoop(ctx context.Context, ltx lcontext.LContext
 			if errors.Is(err, fs.ErrReaderWorkerPanic) {
 				panic(err)
 			}
-			r.reportFailure(ctx, readFailureReadingFile)
+			r.reportReadError(ctx, err)
 		}
 
 		select {
@@ -587,33 +588,45 @@ func (r *readCommand) readViaProcessor(path, globID string, writer LineWriter) r
 		r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> starting read loop iteration")
 
 		processor := r.makeProcessor(path, globID, writer)
+		startErr, flushErr := r.runProcessor(ctx, ltx, reader, re, processor, path, globID)
 
-		startErr := func() error {
-			// Register cleanup before entering reader code. A panic in either the
-			// reader or Flush must still close an Processor and release
-			// its processorsWg reservation. LIFO order preserves Flush-before-Close.
-			defer func() {
-				closeErr := processor.Close()
-				if closeErr != nil {
-					r.logger.Error(r.logContext, path, globID, "close error", closeErr)
-				}
-				r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> processor closed")
-			}()
-			defer func() {
-				r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> flushing processor")
-				if flushErr := processor.Flush(); flushErr != nil {
-					r.logger.Error(r.logContext, path, globID, "flush error", flushErr)
-				}
-			}()
-
-			r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> reader.Start -> about to start")
-			err := reader.Start(ctx, ltx, processor, re)
-			r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> reader.Start -> completed")
-			return err
-		}()
-
+		// A final flush that dropped the lines still batched in the writer
+		// because they did not fit the session's output buffer fails the
+		// iteration like a failed read does. Other flush errors (e.g. the
+		// session ending) stay logged only, as before.
+		if errors.Is(flushErr, errOutputPayloadTooLarge) {
+			return errors.Join(startErr, flushErr)
+		}
 		return startErr
 	}
+}
+
+// runProcessor runs reader with processor and flushes and closes processor
+// afterwards. It returns the reader's error and the flush error.
+func (r *readCommand) runProcessor(ctx context.Context, ltx lcontext.LContext, reader fs.FileReader,
+	re regex.Regex, processor line.Processor, path, globID string) (startErr, flushErr error) {
+
+	// Register cleanup before entering reader code. A panic in either the
+	// reader or Flush must still close an Processor and release
+	// its processorsWg reservation. LIFO order preserves Flush-before-Close.
+	defer func() {
+		closeErr := processor.Close()
+		if closeErr != nil {
+			r.logger.Error(r.logContext, path, globID, "close error", closeErr)
+		}
+		r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> processor closed")
+	}()
+	defer func() {
+		r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> flushing processor")
+		if flushErr = processor.Flush(); flushErr != nil {
+			r.logger.Error(r.logContext, path, globID, "flush error", flushErr)
+		}
+	}()
+
+	r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> reader.Start -> about to start")
+	startErr = reader.Start(ctx, ltx, processor, re)
+	r.logger.Trace(r.logContext, path, globID, "readWithProcessor -> reader.Start -> completed")
+	return startErr, nil
 }
 
 func (r *readCommand) makeProcessor(path, globID string, writer LineWriter) line.Processor {
@@ -669,6 +682,21 @@ func (r *readCommand) reportFailure(ctx context.Context, reason string) {
 		return
 	}
 	r.server.SendReadMessage(ctx, r.generation, protocol.HiddenCommandFailedPrefix+reason)
+}
+
+// reportReadError reports a failed read iteration, err being what the reader
+// or its processor returned. Output too large for the session's output
+// buffer (errOutputPayloadTooLarge, the line writer's batch was dropped) is
+// also reported to the user with a visible warning, as those lines are lost
+// although the file was read; any other error is a failure to read the file.
+func (r *readCommand) reportReadError(ctx context.Context, err error) {
+	if !errors.Is(err, errOutputPayloadTooLarge) {
+		r.reportFailure(ctx, readFailureReadingFile)
+		return
+	}
+	r.sendServerMessage(ctx, r.logger.Warn(r.logContext,
+		"Dropped output too large for the session output buffer, check server logs", err))
+	r.reportFailure(ctx, readFailureOutput)
 }
 
 // sendServerMessage forwards a user-visible message to the session's shared

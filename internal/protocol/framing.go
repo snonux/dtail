@@ -2,7 +2,7 @@ package protocol
 
 import (
 	"bytes"
-	"strings"
+	"unsafe"
 )
 
 // Framing selects how the body of a frame is written between two
@@ -46,27 +46,19 @@ const (
 	// FrameEscape.
 	escapedEscapeCode byte = 0x02
 	// shortBodyLen is the length up to which a body is scanned for bytes to
-	// escape in one plain loop instead of two vectorised IndexByte calls.
+	// escape in one plain loop instead of with escapeScanner.
 	shortBodyLen = 32
 )
 
 // Write appends body bytes of a frame to dst in framing f. It does not
-// terminate the frame.
+// terminate the frame. Under EscapedFraming it takes time linear in
+// len(body), whatever the share of bytes to escape (see writeEscaped).
 func (f Framing) Write(dst *bytes.Buffer, body []byte) {
 	if f != EscapedFraming {
 		dst.Write(body)
 		return
 	}
-	for len(body) > 0 {
-		i := indexEscapable(body)
-		if i < 0 {
-			dst.Write(body)
-			return
-		}
-		dst.Write(body[:i])
-		writeEscapeSequence(dst, body[i])
-		body = body[i+1:]
-	}
+	writeEscaped(dst, body)
 }
 
 // WriteString appends body bytes of a frame to dst in framing f. It does
@@ -76,16 +68,10 @@ func (f Framing) WriteString(dst *bytes.Buffer, body string) {
 		dst.WriteString(body)
 		return
 	}
-	for len(body) > 0 {
-		i := indexEscapableString(body)
-		if i < 0 {
-			dst.WriteString(body)
-			return
-		}
-		dst.WriteString(body[:i])
-		writeEscapeSequence(dst, body[i])
-		body = body[i+1:]
-	}
+	// writeEscaped only reads body and dst.Write copies what it is given, so
+	// viewing the string's bytes without copying them is safe; it keeps a
+	// single escaper for both body types.
+	writeEscaped(dst, unsafe.Slice(unsafe.StringData(body), len(body)))
 }
 
 // EncodePayload appends an untagged frame whose body is payload, e.g. a
@@ -103,12 +89,17 @@ func (f Framing) EncodePayload(dst *bytes.Buffer, payload []byte) {
 // valid until scratch is used again. Malformed sequences (an unknown code or
 // a FrameEscape at the end) are kept verbatim; no encoder produces them.
 func (f Framing) DecodeFrame(frame []byte, scratch *[]byte) []byte {
-	if f != EscapedFraming || bytes.IndexByte(frame, FrameEscape) < 0 {
+	if f != EscapedFraming {
 		return frame
 	}
+	i := bytes.IndexByte(frame, FrameEscape)
+	if i < 0 {
+		return frame
+	}
+	// Every iteration consumes the frame up to and including the escape
+	// sequence it found, so decoding is linear in the frame length.
 	decoded := (*scratch)[:0]
-	for {
-		i := bytes.IndexByte(frame, FrameEscape)
+	for ; ; i = bytes.IndexByte(frame, FrameEscape) {
 		if i < 0 || i+1 == len(frame) {
 			decoded = append(decoded, frame...)
 			break
@@ -136,70 +127,105 @@ func (f Framing) String() string {
 	return "raw"
 }
 
-// writeEscapeSequence appends the escape sequence of a body byte that is
-// MessageDelimiter or FrameEscape.
-func writeEscapeSequence(dst *bytes.Buffer, b byte) {
-	dst.WriteByte(FrameEscape)
-	if b == MessageDelimiter {
-		dst.WriteByte(escapedDelimiterCode)
+// writeEscaped appends body to dst in EscapedFraming. The escaped body is
+// appended to the spare capacity of dst and committed with one Write, which
+// is cheaper than a Write per run and escape sequence. dst grows by
+// len(body) first, as a plain Write of body would, so a body without bytes
+// to escape never makes dst allocate more than a raw frame would; only the
+// escape sequences may need more. Short bodies such as header fields are
+// scanned in one plain loop, which is cheaper there than the vectorised
+// IndexByte calls of escapeScanner; a longer body without bytes to escape
+// costs two IndexByte passes and one copy.
+func writeEscaped(dst *bytes.Buffer, body []byte) {
+	if len(body) <= shortBodyLen {
+		dst.Grow(len(body))
+		dst.Write(appendEscapedShort(dst.AvailableBuffer(), body))
 		return
 	}
-	dst.WriteByte(escapedEscapeCode)
+	scanner := newEscapeScanner(body)
+	i := scanner.next()
+	if i < 0 {
+		dst.Write(body)
+		return
+	}
+	dst.Grow(len(body))
+	out := dst.AvailableBuffer()
+	start := 0
+	for ; i >= 0; i = scanner.next() {
+		out = append(out, body[start:i]...)
+		out = append(out, FrameEscape, escapeCode(body[i]))
+		start = i + 1
+	}
+	dst.Write(append(out, body[start:]...))
 }
 
-// indexEscapable returns the index of the first byte of body that must be
-// escaped, or -1. Each byte is scanned at most twice with the vectorised
-// IndexByte, so text without such bytes stays at memchr speed; short bodies
-// such as header fields are scanned in one plain loop, which is cheaper than
-// two IndexByte calls there.
-func indexEscapable(body []byte) int {
-	if len(body) <= shortBodyLen {
-		return indexEscapableShort(body)
-	}
-	delimiter := bytes.IndexByte(body, MessageDelimiter)
-	head := body
-	if delimiter >= 0 {
-		head = body[:delimiter]
-	}
-	if escape := bytes.IndexByte(head, FrameEscape); escape >= 0 {
-		return escape
-	}
-	return delimiter
-}
-
-// indexEscapableString is indexEscapable for string bodies.
-func indexEscapableString(body string) int {
-	if len(body) <= shortBodyLen {
-		return indexEscapableShortString(body)
-	}
-	delimiter := strings.IndexByte(body, MessageDelimiter)
-	head := body
-	if delimiter >= 0 {
-		head = body[:delimiter]
-	}
-	if escape := strings.IndexByte(head, FrameEscape); escape >= 0 {
-		return escape
-	}
-	return delimiter
-}
-
-// indexEscapableShort is the single-loop scan of indexEscapable for bodies of
-// at most shortBodyLen bytes.
-func indexEscapableShort(body []byte) int {
+// appendEscapedShort appends body in EscapedFraming to out; it is the plain
+// loop writeEscaped uses for bodies of at most shortBodyLen bytes.
+func appendEscapedShort(out, body []byte) []byte {
+	start := 0
 	for i, b := range body {
 		if b == MessageDelimiter || b == FrameEscape {
-			return i
+			out = append(out, body[start:i]...)
+			out = append(out, FrameEscape, escapeCode(b))
+			start = i + 1
 		}
 	}
-	return -1
+	return append(out, body[start:]...)
 }
 
-// indexEscapableShortString is indexEscapableShort for string bodies.
-func indexEscapableShortString(body string) int {
-	for i := 0; i < len(body); i++ {
-		if b := body[i]; b == MessageDelimiter || b == FrameEscape {
-			return i
-		}
+// escapeScanner returns the indexes of the bytes of a body that must be
+// escaped, in order, in time linear in the body length. It keeps the next
+// MessageDelimiter and the next FrameEscape position apart and only searches
+// again for the kind it just returned, from the byte after it, so every body
+// byte is scanned at most once per kind. (Searching for the first byte of
+// either kind afresh at every escape rescans the rest of the body for the
+// other kind each time, which is quadratic on a body full of one kind: about
+// 50 s for 1 MiB of 0xFF.)
+type escapeScanner struct {
+	body []byte
+	// delimiter and escape are the indexes of the next MessageDelimiter and
+	// the next FrameEscape not returned yet, or len(body) when none is left.
+	delimiter int
+	escape    int
+}
+
+func newEscapeScanner(body []byte) escapeScanner {
+	return escapeScanner{
+		body:      body,
+		delimiter: indexByteFrom(body, 0, MessageDelimiter),
+		escape:    indexByteFrom(body, 0, FrameEscape),
 	}
-	return -1
+}
+
+// next returns the index of the next byte to escape, or -1 when none is
+// left.
+func (s *escapeScanner) next() int {
+	i := min(s.delimiter, s.escape)
+	switch {
+	case i == len(s.body):
+		return -1
+	case i == s.delimiter:
+		s.delimiter = indexByteFrom(s.body, i+1, MessageDelimiter)
+	default:
+		s.escape = indexByteFrom(s.body, i+1, FrameEscape)
+	}
+	return i
+}
+
+// indexByteFrom returns the index of the first c in body at or after from,
+// or len(body) when there is none.
+func indexByteFrom(body []byte, from int, c byte) int {
+	if i := bytes.IndexByte(body[from:], c); i >= 0 {
+		return from + i
+	}
+	return len(body)
+}
+
+// escapeCode returns the code that follows FrameEscape in place of a body
+// byte that is MessageDelimiter or FrameEscape.
+func escapeCode(b byte) byte {
+	if b == MessageDelimiter {
+		return escapedDelimiterCode
+	}
+	return escapedEscapeCode
 }

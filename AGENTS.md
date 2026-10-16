@@ -270,11 +270,20 @@ negotiate escaped framing (`internal/protocol/framing.go`; design in
   waiting for the capabilities. The health handler does not (the server's health
   handler ends the session after the first command).
 - The server switches the session to escaped framing on that request (only if it
-  advertised it, and only after its capabilities frame was encoded); every later
-  frame body has 0xAC replaced by `FF 01` and 0xFF by `FF 02`. The client
-  decodes every frame after a capabilities frame listing the capability as
-  escaped. Valid UTF-8 never contains 0xFF, so frames without 0xAC are
+  advertised it, only when the request is the session's first command frame, a
+  later or repeated one is ignored and logged, and only after its capabilities
+  frame was encoded); every later frame body has 0xAC replaced by `FF 01` and
+  0xFF by `FF 02`, in time linear in the body however many bytes are escaped.
+  The client decides from the session's first frame only: if it is the
+  capabilities frame listing the capability, every later frame is decoded as
+  escaped; a later frame that reads like a capabilities frame never switches
+  it. Valid UTF-8 never contains 0xFF, so frames without 0xAC are
   byte-identical in both framings.
+- Escaping can grow a frame to almost twice its raw size, so a session that
+  switches to escaped framing raises its output buffer cap to at least
+  `2*MaxLineLength + 128 KiB` (see the output limits below). Output that still
+  does not fit is reported, never dropped silently: a visible warning plus the
+  failed-command reason `output: too large for the session output buffer`.
 - Mixed versions keep the legacy raw framing (and its corruption of such lines):
   older dservers ignore the unknown `.ack` like any other, and older clients
   never ask. `ProtocolCompat` stays `4.1`.
@@ -392,7 +401,16 @@ this). The interval never drops below one second, so a timeout below four second
 closes two to three seconds past it instead of proportionally.
 Per-session payload backing memory waiting on a slow client is capped by
 `OutputBufferMaxBytes` (default 2 MiB); producers apply backpressure when the cap is reached. The
-configured cap must leave room for one maximum-length formatted line.
+configured cap must leave room for one maximum-length formatted line: it must be
+at least `MaxLineLength + 128 KiB`. A session that negotiated escaped framing
+(see Wire Framing) raises its own cap to at least `2*MaxLineLength + 128 KiB`
+(`escapedOutputBufferMaxBytes` in `internal/handlers/serverhandler.go`), since
+escaping 0xAC/0xFF bytes can almost double a line frame; validation is
+unchanged, so every configuration valid before keeps working, and memory stays
+bounded at about one more maximum-length line per session. A batch of line
+frames that still exceeds the cap is reported, not dropped silently: the client
+gets a visible `Dropped output too large for the session output buffer` warning
+and the failed-command reason `output: too large for the session output buffer`.
 
 **Shared follow reads (dserver):**
 Sessions that tail the same uncompressed file share one reader of it in
@@ -547,7 +565,11 @@ failure are told apart:
   crashed, or a lost connection; and a failed command that is no file read
   failure (`command: unable to decode command`, `command: rejected`,
   `command: unknown command`, `map: invalid query`, `read: unable to parse
-  command`, or a reason the client does not know).
+  command`, `output: too large for the session output buffer`, or a reason
+  the client does not know). The output reason means a read dropped line
+  frames that did not fit the session's output buffer (see the output limits
+  above); it is no file read failure, as the file was read. A scheduled job's
+  server-side MapReduce sends aggregates, not line frames, so it cannot get it.
 - **File read failures**, reported by dservers advertising capability
   `command-failure-v1` with the hidden message `.syn command failed <reason>`
   (fixed reasons from `internal/protocol/session.go`, no paths or error

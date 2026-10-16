@@ -589,7 +589,7 @@
         },
         "OutputBufferMaxBytes": {
           "type": "integer",
-          "description": "Maximum payload backing memory retained by the output buffer per SSH session; producers apply backpressure at the cap. Must be at least MaxLineLength + 131072 (two 64 KiB writer batches), otherwise dserver refuses the session. 0 or less uses the 2 MiB default.",
+          "description": "Maximum payload backing memory retained by the output buffer per SSH session; producers apply backpressure at the cap. Must be at least MaxLineLength + 131072 (two 64 KiB writer batches), otherwise dserver refuses the session. A session using escaped wire framing raises its own cap to at least 2 * MaxLineLength + 131072. 0 or less uses the 2 MiB default.",
           "default": 2097152
         },
         "OutputFlushTimeoutMs": {

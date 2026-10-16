@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -129,6 +128,7 @@ func TestClientHandlerDecodesFramesPerNegotiatedFraming(t *testing.T) {
 			for _, size := range []int{1, 3, len(stream)} {
 				recorder.payload.Reset()
 				handler.escapedFraming.Store(false)
+				handler.framingDecided = false
 				writeInChunks(t, handler, stream, size)
 				if got := recorder.payload.String(); got != test.want {
 					t.Fatalf("chunk size %d: payload = %q, want %q", size, got, test.want)
@@ -138,24 +138,38 @@ func TestClientHandlerDecodesFramesPerNegotiatedFraming(t *testing.T) {
 	}
 }
 
-// TestClientHandlerDecodesFramesAfterCapabilitiesOnly: the capabilities frame
-// itself is raw; frames before it (none in practice) are never unescaped.
-func TestClientHandlerDecodesFramesAfterCapabilitiesOnly(t *testing.T) {
-	recorder := &payloadRecorder{}
-	handler := NewClientHandler("srv1", recorder)
-	var stream []byte
-	stream = append(stream, payloadFrames(protocol.RawFraming, "early \xff\x01\n")...)
-	stream = append(stream, capabilitiesFrame(protocol.CapabilityEscapedFramingV1)...)
-	stream = append(stream, payloadFrames(protocol.EscapedFraming, "late 5€\n")...)
-	if _, err := handler.Write(stream); err != nil {
-		t.Fatalf("Write() error = %v", err)
+// TestClientHandlerDecidesFramingFromFirstFrameOnly: only the session's first
+// frame decides the framing. A capabilities frame listing escaped framing
+// that arrives later, e.g. a log line of a raw --plain session from an older
+// server that reads like one, leaves the session raw.
+func TestClientHandlerDecidesFramingFromFirstFrameOnly(t *testing.T) {
+	lateCapabilities := capabilitiesFrame(protocol.CapabilityEscapedFramingV1)
+	tests := []struct {
+		name  string
+		first []byte
+	}{
+		{name: "payload first", first: payloadFrames(protocol.RawFraming, "early \xff\x01\n")},
+		{name: "capabilities without escaped framing first",
+			first: capabilitiesFrame(protocol.CapabilityQueryUpdateV1)},
 	}
-	if got, want := recorder.payload.String(), "early \xff\x01\nlate 5€\n"; got != want {
-		t.Fatalf("payload = %q, want %q", got, want)
-	}
-	if !handler.WaitForCapabilities(time.Millisecond) ||
-		!handler.HasCapability(protocol.CapabilityEscapedFramingV1) {
-		t.Fatal("capabilities frame was not handled")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &payloadRecorder{}
+			handler := NewClientHandler("srv1", recorder)
+			var stream []byte
+			stream = append(stream, test.first...)
+			stream = append(stream, lateCapabilities...)
+			stream = append(stream, payloadFrames(protocol.RawFraming, "late \xff\x01 raw\n")...)
+			if _, err := handler.Write(stream); err != nil {
+				t.Fatalf("Write() error = %v", err)
+			}
+			if handler.framing() != protocol.RawFraming {
+				t.Fatal("a capabilities frame after the first frame switched the framing")
+			}
+			if got := recorder.payload.String(); !strings.HasSuffix(got, "late \xff\x01 raw\n") {
+				t.Fatalf("payload = %q, want the late frame kept raw", got)
+			}
+		})
 	}
 }
 

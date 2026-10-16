@@ -53,10 +53,16 @@ type baseHandler struct {
 
 	// escapedFramingRequested is set when the handler sends
 	// protocol.EscapedFramingCommand as its first frame. escapedFraming is
-	// set once the server's capabilities frame confirmed it: every frame
-	// after that one is decoded as protocol.EscapedFraming.
+	// set when the session's first frame is the server's capabilities frame
+	// and lists protocol.CapabilityEscapedFramingV1: every frame after that
+	// one is decoded as protocol.EscapedFraming. framingDecided is set once
+	// the first frame was seen, so no later frame changes the framing (a
+	// later frame may well be a log line of a raw session that happens to
+	// read like a capabilities frame). framingDecided is only touched by
+	// Write.
 	escapedFramingRequested bool
 	escapedFraming          atomic.Bool
+	framingDecided          bool
 
 	capabilitiesMu sync.RWMutex
 	capabilities   map[string]struct{}
@@ -215,7 +221,9 @@ func (h *baseHandler) framing() protocol.Framing {
 
 // decodeFrame returns the body of a received frame (without its delimiter)
 // in the session framing. The result aliases frame or frameBuf and is only
-// valid until the next decodeFrame call; frame itself is never modified.
+// valid until the next decodeFrame call; frame itself is never modified. The
+// session's first frame decides the framing of all later ones (see
+// decideFraming).
 func (h *baseHandler) decodeFrame(frame []byte) []byte {
 	decoded := h.framing().DecodeFrame(frame, &h.frameBuf)
 	if cap(h.frameBuf) > maxRetainedLineBufBytes {
@@ -223,7 +231,34 @@ func (h *baseHandler) decodeFrame(frame []byte) []byte {
 		// an oversized frame does not pin its buffer (same policy as lineBuf).
 		h.frameBuf = nil
 	}
+	if !h.framingDecided {
+		h.framingDecided = true
+		h.decideFraming(decoded)
+	}
 	return decoded
+}
+
+// decideFraming switches the session to escaped framing when the session
+// asked for it and its first frame, which is always raw, is the server's
+// capabilities frame listing protocol.CapabilityEscapedFramingV1. Such a
+// server sends that frame first and escapes every frame after it; this runs
+// on the Write goroutine before the next frame is decoded. Any other first
+// frame keeps raw framing for good: a server without the capability, or one
+// that sends something else first, never escapes.
+func (h *baseHandler) decideFraming(first []byte) {
+	if !h.escapedFramingRequested {
+		return
+	}
+	capabilities, ok := bytes.CutPrefix(first, []byte(protocol.HiddenCapabilitiesPrefix))
+	if !ok {
+		return
+	}
+	for _, capability := range strings.Fields(string(capabilities)) {
+		if capability == protocol.CapabilityEscapedFramingV1 {
+			h.escapedFraming.Store(true)
+			return
+		}
+	}
 }
 
 // Write receives data from the dtail server via the io.Writer interface.
@@ -457,13 +492,8 @@ func (h *baseHandler) handleCapabilitiesMessage(message string) {
 		}
 		h.capabilities[capability] = struct{}{}
 	}
-	// The server switches to escaped framing right after this frame when it
-	// advertises the capability and got our request (see
-	// protocol.CapabilityEscapedFramingV1); this runs on the Write goroutine,
-	// so the next frame is already decoded accordingly.
-	if _, ok := h.capabilities[protocol.CapabilityEscapedFramingV1]; ok && h.escapedFramingRequested {
-		h.escapedFraming.Store(true)
-	}
+	// The session framing is not decided here but from the session's first
+	// frame only (see decideFraming).
 
 	h.capabilitiesOk.Do(func() {
 		if h.capabilitiesCh != nil {

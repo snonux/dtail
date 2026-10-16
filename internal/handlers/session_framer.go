@@ -17,7 +17,8 @@ import (
 //
 // It also owns the session's output framing (see protocol.Framing). A session
 // starts in RawFraming and switches to EscapedFraming at most once, when the
-// client asks for it (enableEscapedFraming). The switch waits until the
+// client asks for it with the session's first command (enableEscapedFraming,
+// handlingFirstCommand). The switch waits until the
 // capabilities frame, the first frame of the session, has been encoded, so
 // that frame is always raw and the client, which decodes every frame after
 // it as escaped, agrees with the server on every frame.
@@ -27,6 +28,9 @@ type sessionFramer struct {
 	writeBuf bytes.Buffer
 
 	maxCommandFrameSize int
+	// commandFrames counts the command frames Write passed on so far. It is
+	// only touched by Write, i.e. by the command input goroutine.
+	commandFrames int
 
 	// escaped is set once the session switched to EscapedFraming. It is
 	// written by the command input goroutine and read by the output
@@ -90,6 +94,7 @@ func (f *sessionFramer) Write(p []byte) (n int, err error) {
 	for _, b := range p {
 		switch b {
 		case ';':
+			f.commandFrames++
 			h.handleCommand(f.writeBuf.String())
 			f.writeBuf.Reset()
 		default:
@@ -162,6 +167,13 @@ func (f *sessionFramer) framing() protocol.Framing {
 		return protocol.EscapedFraming
 	}
 	return protocol.RawFraming
+}
+
+// handlingFirstCommand reports whether the command being handled is the
+// session's first command frame. It is only meaningful while a command is
+// handled on the command input goroutine (Write).
+func (f *sessionFramer) handlingFirstCommand() bool {
+	return f.commandFrames == 1
 }
 
 // enableEscapedFraming switches the session to EscapedFraming once the
