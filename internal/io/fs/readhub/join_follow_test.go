@@ -278,7 +278,7 @@ func TestJoinWhileTheLastSessionIsEvicted(t *testing.T) {
 	file.appendRaw(strings.Join(burst("only"), "\n") + "\n")
 	select {
 	case <-joined:
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("the only session was not evicted")
 	}
 	waitFor(t, "the joiner's shared read", func() bool { return subscriberCount(hub, file.path) == 1 })
@@ -368,7 +368,7 @@ func TestEvictedSessionGetsTheReaderPanicThatDidNotFit(t *testing.T) {
 		if !errors.Is(err, ErrReaderFailed) || !errors.Is(err, fs.ErrReaderWorkerPanic) {
 			t.Errorf("Follow() = %v, want an error wrapping ErrReaderFailed and fs.ErrReaderWorkerPanic", err)
 		}
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("Follow did not return after the shared reader panicked")
 	}
 	if got, want := slow.recorder.lines(), []string{"a", "b"}; !reflect.DeepEqual(got, want) {

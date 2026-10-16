@@ -262,7 +262,7 @@ func TestEvictingTheLastSessionStopsTheSharedRead(t *testing.T) {
 	file.appendLines(lines...)
 	select {
 	case <-shared.done:
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("the shared read did not stop after its last session was evicted")
 	}
 	if hub.entryFor(file.path) != nil {

@@ -616,18 +616,24 @@ func (h *baseHandler) WaitForCapabilities(timeout time.Duration) bool {
 	}
 }
 
+// WaitForSessionAck returns the next session acknowledgement, waiting up to
+// timeout for one. Like WaitForCapabilities, an acknowledgement that is
+// already queued wins without any wait: the non-blocking receive comes first
+// because a select with several ready cases picks one at random, so a queued
+// acknowledgement could otherwise lose against an expired timer or an already
+// finished session.
 func (h *baseHandler) WaitForSessionAck(timeout time.Duration) (SessionAck, bool) {
 	if h.sessionAcks == nil {
 		return SessionAck{}, false
 	}
 
+	select {
+	case ack := <-h.sessionAcks:
+		return ack, true
+	default:
+	}
 	if timeout <= 0 {
-		select {
-		case ack := <-h.sessionAcks:
-			return ack, true
-		default:
-			return SessionAck{}, false
-		}
+		return SessionAck{}, false
 	}
 
 	timer := time.NewTimer(timeout)

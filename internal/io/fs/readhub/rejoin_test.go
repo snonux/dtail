@@ -368,7 +368,7 @@ func (g *readStartGate) awaitHeld(t *testing.T, what string) {
 	t.Helper()
 	select {
 	case <-g.reached:
-	case <-time.After(3 * waitTimeout):
+	case <-time.After(waitBound(t, 3*waitTimeout)):
 		t.Fatalf("timed out waiting for %s to start a read", what)
 	}
 }
@@ -571,7 +571,7 @@ func TestNoRejoinBehindWhatTheReaderReadBeforeATruncation(t *testing.T) {
 	pauser.resume()
 	select {
 	case <-held:
-	case <-time.After(3 * waitTimeout):
+	case <-time.After(waitBound(t, 3*waitTimeout)):
 		t.Fatal("timed out waiting for the private reader to near the end of the file")
 	}
 	const unfinished = 100000
@@ -674,7 +674,7 @@ func TestNoRejoinWhileTheReaderIsInARead(t *testing.T) {
 	pauser.resume()
 	select {
 	case <-held:
-	case <-time.After(3 * waitTimeout):
+	case <-time.After(waitBound(t, 3*waitTimeout)):
 		t.Fatal("timed out waiting for the private reader to near the end of the file")
 	}
 	const unfinished = 100000
@@ -682,7 +682,7 @@ func TestNoRejoinWhileTheReaderIsInARead(t *testing.T) {
 	file.appendRaw(strings.Repeat("p", unfinished))
 	select {
 	case <-reached:
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("timed out waiting for the shared reader to read the unfinished line")
 	}
 	// Rewritten to a size between the end of the complete lines and the end

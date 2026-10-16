@@ -788,6 +788,11 @@ type reloadTest struct {
 	manager *outputManager
 	stop    chan struct{}
 	writers sync.WaitGroup
+	// staleAtReload is how many bytes of generation 1 the manager held when
+	// the reader reloaded. They leave the manager only through tryRead after
+	// the reload, so whatever of them is not in the output after the reload
+	// was dropped by the reader-side generation check.
+	staleAtReload int
 }
 
 // write runs a writer of generation that writes lines records tagged tag,
@@ -823,8 +828,10 @@ func (r *reloadTest) shouldDrop(generation uint64) bool {
 // read reads like the session output goroutine does (outputCoordinator.next):
 // it waits for a state change whenever the manager has nothing to deliver,
 // instead of spinning on tryRead. When 512 KiB of generation 1 output were
-// read, it reloads to generation 2 and starts its writer; it returns what it
-// read before and after the reload once every generation 2 record arrived.
+// read, it stops reading until the manager holds a backlog of generation 1
+// (see reloadWithBacklog), reloads to generation 2 and starts its writer; it
+// returns what it read before and after the reload once every generation 2
+// record arrived.
 func (r *reloadTest) read(deadline <-chan time.Time) (before, after []byte) {
 	buf := make([]byte, 5003)
 	g2Records, counted := 0, 0
@@ -843,19 +850,52 @@ func (r *reloadTest) read(deadline <-chan time.Time) (before, after []byte) {
 			before = append(before, buf[:n]...)
 		}
 		if !reloaded && len(before) > 512*1024 {
-			r.reload()
+			r.reloadWithBacklog(deadline)
+			continue
 		}
 		if !handled {
-			select {
-			case <-changed:
-			case <-deadline:
-				close(r.stop)
-				r.t.Fatalf("timed out; %d bytes and %d of %d generation 2 records read after the reload",
+			r.waitForChange(changed, deadline, func() string {
+				return fmt.Sprintf("%d bytes and %d of %d generation 2 records read after the reload",
 					len(after), g2Records, reloadTestLines)
-			}
+			})
 		}
 	}
 	return before, after
+}
+
+// waitForChange waits for a manager state change, or fails the test with the
+// progress describe returns once deadline passed.
+func (r *reloadTest) waitForChange(changed <-chan struct{}, deadline <-chan time.Time, describe func() string) {
+	select {
+	case <-changed:
+	case <-deadline:
+		close(r.stop)
+		r.t.Fatalf("timed out; %s", describe())
+	}
+}
+
+// reloadWithBacklog waits, without reading, until the manager holds at least
+// one full writer batch of generation 1 (the generation 1 writer then blocks
+// on the cap with its next batch), and only then reloads. Without the backlog
+// the reader usually drained the queue before the reload, the writer-side
+// check dropped the stale batch at enqueue, and the reader-side drop this test
+// is about never ran.
+func (r *reloadTest) reloadWithBacklog(deadline <-chan time.Time) {
+	for {
+		changed, _ := r.manager.readWait()
+		if r.manager.bufferedLen() >= networkWriterBufferSize {
+			break
+		}
+		r.waitForChange(changed, deadline, func() string {
+			return fmt.Sprintf("%d of %d generation 1 bytes buffered before the reload",
+				r.manager.bufferedLen(), networkWriterBufferSize)
+		})
+	}
+	// Nothing reads between this snapshot and the reload, and the generation
+	// 1 writer cannot add to the full queue, so the snapshot is exact or (when
+	// a racing enqueue slips in after the reader frees space) a lower bound.
+	r.staleAtReload = r.manager.bufferedLen()
+	r.reload()
 }
 
 func (r *reloadTest) reloaded() bool { return r.state.currentGeneration() == 2 }
@@ -872,7 +912,10 @@ func (r *reloadTest) reload() {
 // After a reload, a reader that has observed the new generation must not
 // deliver records of the old one (except the rest of a record whose prefix was
 // already sent), while writers of both generations run concurrently. Every
-// record of the new generation arrives exactly once.
+// record of the new generation arrives exactly once. The reload happens while
+// the manager holds a backlog of the old generation, so the reader-side drop
+// (tryRead's shouldDropGeneration) is what removes it: the test fails when that
+// check is disabled.
 func TestStaleGenerationDroppedUnderConcurrentReload(t *testing.T) {
 	var state sessionCommandState
 	state.mu.Lock()
@@ -897,9 +940,25 @@ func TestStaleGenerationDroppedUnderConcurrentReload(t *testing.T) {
 		t.Fatal("no generation 1 output before the reload")
 	}
 	assertOnlyGeneration2AfterReload(t, after)
+	if dropped := r.staleAtReload - staleBytesAfterReload(after); dropped <= 0 {
+		t.Fatalf("dropped %d of the %d generation 1 bytes buffered at the reload, want more than 0",
+			dropped, r.staleAtReload)
+	}
 	if retained, buffered, entries := managerAccounting(r.manager); buffered != 0 || entries != 0 || retained != 0 {
 		t.Fatalf("after drain retained/buffered/entries = %d/%d/%d, want 0/0/0", retained, buffered, entries)
 	}
+}
+
+// staleBytesAfterReload is how many bytes (delimiters included) of after
+// belong to records that are not of generation 2.
+func staleBytesAfterReload(after []byte) int {
+	stale := 0
+	for _, record := range bytes.SplitAfter(after, []byte{protocol.MessageDelimiter}) {
+		if !bytes.HasPrefix(record, []byte("g2-")) {
+			stale += len(record)
+		}
+	}
+	return stale
 }
 
 // assertOnlyGeneration2AfterReload fails unless after holds every generation

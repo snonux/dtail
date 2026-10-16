@@ -218,7 +218,7 @@ func evictAtACut(t *testing.T, hub *Hub, file *testFile, fast *lastLineProcessor
 	waitFor(t, "fast session to get the pause line", func() bool { return fast.saw("pause") })
 	select {
 	case <-held:
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("timed out waiting for the slow session to be held up")
 	}
 	long := strings.Repeat("A", cutLineLength) + strings.Repeat("B", cutLineLength) +
@@ -335,7 +335,7 @@ func evictBeforeACutLine(t *testing.T, hub *Hub, file *testFile, fast *lastLineP
 	waitFor(t, "fast session to get the pause line", func() bool { return fast.saw("pause") })
 	select {
 	case <-held:
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("timed out waiting for the slow session to be held up")
 	}
 	file.appendRaw("short\n")

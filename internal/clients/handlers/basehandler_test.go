@@ -205,6 +205,32 @@ func TestHandleSessionAckMessage(t *testing.T) {
 	}
 }
 
+// TestWaitForSessionAckPrefersQueuedAck checks that queued session
+// acknowledgements are returned even when the session is done and the timer
+// would expire at once: a plain select would pick among those ready cases at
+// random.
+func TestWaitForSessionAckPrefersQueuedAck(t *testing.T) {
+	const attempts = 100
+	handler := baseHandler{
+		done:        internal.NewDone(),
+		sessionAcks: make(chan SessionAck, attempts),
+	}
+	for i := 0; i < attempts; i++ {
+		handler.handleHiddenMessage(fmt.Sprintf(".syn session update ok %d", i+1))
+	}
+	handler.done.Shutdown()
+
+	for i := 0; i < attempts; i++ {
+		ack, ok := handler.WaitForSessionAck(time.Nanosecond)
+		if !ok {
+			t.Fatalf("attempt %d: expected the queued session ack to win", i)
+		}
+		if ack.Generation != uint64(i+1) {
+			t.Fatalf("attempt %d: ack generation = %d, want %d", i, ack.Generation, i+1)
+		}
+	}
+}
+
 func TestHandleCloseConnectionAcknowledgesBeforeShutdown(t *testing.T) {
 	handler := baseHandler{
 		done:     internal.NewDone(),

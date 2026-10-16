@@ -100,7 +100,7 @@ func (m *testMember) wait(t *testing.T) error {
 	case err := <-m.done:
 		m.done <- err // for the cleanup
 		return err
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("ReadOnce did not return")
 		return nil
 	}
@@ -385,7 +385,7 @@ func TestReadOnceCancelledMemberReleasesTheGroup(t *testing.T) {
 		if err != nil {
 			t.Errorf("cancelled ReadOnce() = %v, want nil", err)
 		}
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("the cancelled member did not return")
 	}
 	if err := healthy.wait(t); err != nil {
@@ -439,7 +439,7 @@ func TestReadOnceGroupLeftBeforeTheStartNeverReads(t *testing.T) {
 	}
 	select {
 	case <-e.done:
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("the abandoned group read did not stop")
 	}
 	if starts := seams.starts(); starts != 0 {

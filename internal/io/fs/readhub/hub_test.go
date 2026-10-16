@@ -26,12 +26,34 @@ import (
 // waitTimeout is the one bound of the package's tests for anything they wait
 // for; waits that include several whole burst reads use a multiple of it.
 // Every use is an upper bound on an expected event, so a passing test never
-// waits for it. It is generous because the reads behind these waits are CPU
+// waits for it, and goes through waitBound, which shortens it to fit into
+// what is left of the go test -timeout. It is generous because the reads behind these waits are CPU
 // bound: under the race detector, filtering a 20,000 line burst (see burst)
 // with a regex takes a session about a second on an idle machine and several
 // times that when several -race suites share the CPUs, which used to exceed a
 // 10 s bound ("timed out waiting for slow session to read the new file").
 const waitTimeout = 60 * time.Second
+
+// deadlineMargin is how long before the go test -timeout (t.Deadline) every
+// wait gives up, so a wait that fails reports its own message instead of the
+// test binary panicking with a dump of every goroutine.
+const deadlineMargin = 10 * time.Second
+
+// waitBound returns limit, shortened to end deadlineMargin before the test
+// binary's deadline. With less than twice the margin left it returns half of
+// what is left, so waits started late still end before the deadline. The
+// whole package (about 170 s under the race detector) runs within the default
+// 10 minute timeout, so the bound only shortens waits of a run that is
+// already far behind.
+func waitBound(t interface{ Deadline() (time.Time, bool) }, limit time.Duration) time.Duration {
+	deadline, ok := t.Deadline()
+	if !ok {
+		return limit
+	}
+	remaining := time.Until(deadline)
+	bound := max(remaining-deadlineMargin, remaining/2)
+	return min(bound, limit)
+}
 
 // event is one call a recordingProcessor saw.
 type event struct {
@@ -47,6 +69,9 @@ type recorder struct {
 	mu     sync.Mutex
 	events []event
 	made   int
+	// scanned is, per text hasLine waits for, how many events hasLine
+	// already examined without finding it.
+	scanned map[string]int
 	// failAt makes ProcessLine fail on the line with this text.
 	failAt string
 }
@@ -94,18 +119,25 @@ func (r *recorder) lineNums() []uint64 {
 }
 
 // hasLine reports whether a line with text was recorded. Tests poll it while
-// sessions read whole bursts, so it scans in place, from the newest event,
-// where the line waited for usually is, instead of copying every event and
-// line text on each poll: under the race detector on a loaded machine those
-// copies took CPU time from the reads the test waits for.
+// sessions read whole bursts, so each poll examines, in place, only the
+// events recorded since the previous poll for the same text: rescanning (or
+// copying) every event on each poll took CPU time from the reads the test
+// waits for, under the race detector on a loaded machine. Events are only
+// appended, so an examined event never has to be looked at again.
 func (r *recorder) hasLine(text string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for i := len(r.events) - 1; i >= 0; i-- {
+	if r.scanned == nil {
+		r.scanned = make(map[string]int)
+	}
+	for i := r.scanned[text]; i < len(r.events); i++ {
 		if e := r.events[i]; e.kind == "line" && e.text == text {
+			// Keep the position, so later polls for this text return at once.
+			r.scanned[text] = i
 			return true
 		}
 	}
+	r.scanned[text] = len(r.events)
 	return false
 }
 
@@ -239,7 +271,7 @@ func (f *follower) stop(t *testing.T) error {
 	case err := <-f.done:
 		f.done <- err // for the cleanup
 		return err
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("Follow did not return after its context ended")
 		return nil
 	}
@@ -251,13 +283,15 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 }
 
 // waitWithin is waitFor with a timeout of its own, for waits that include a
-// whole burst read under the race detector on a loaded machine.
+// whole burst read under the race detector on a loaded machine. The timeout
+// goes through waitBound, like every wait of the package's tests.
 func waitWithin(t *testing.T, timeout time.Duration, what string, condition func() bool) {
 	t.Helper()
+	timeout = waitBound(t, timeout)
 	deadline := time.Now().Add(timeout)
 	for !condition() {
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
+			t.Fatalf("timed out after %v waiting for %s", timeout, what)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -475,7 +509,7 @@ func TestFollowLastSessionLeavingStopsTheReader(t *testing.T) {
 	}
 	select {
 	case <-e.done:
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("the reader did not stop after the last session left")
 	}
 	if hub.entryFor(file.path) != nil {
@@ -571,7 +605,7 @@ func TestFollowReturnsWhenTheSessionReadEnds(t *testing.T) {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("Follow() = %v, want %v", err, tt.wantErr)
 				}
-			case <-time.After(waitTimeout):
+			case <-time.After(waitBound(t, waitTimeout)):
 				t.Fatal("Follow did not return")
 			}
 			events := rec.snapshot()
@@ -617,7 +651,7 @@ func TestFollowWarnsEverySessionAboutLongLinesWithItsOwnPath(t *testing.T) {
 			if !strings.Contains(message, "Long log line") || !strings.Contains(message, tt.path) {
 				t.Errorf("message = %q, want the long line warning for %s", message, tt.path)
 			}
-		case <-time.After(waitTimeout):
+		case <-time.After(waitBound(t, waitTimeout)):
 			t.Fatal("a session did not get the long line warning")
 		}
 	}
@@ -699,13 +733,13 @@ func TestFollowSurvivesAReaderPanic(t *testing.T) {
 					if !errors.Is(err, ErrReaderFailed) || !errors.Is(err, fs.ErrReaderWorkerPanic) {
 						t.Errorf("Follow() = %v, want an error wrapping ErrReaderFailed and fs.ErrReaderWorkerPanic", err)
 					}
-				case <-time.After(waitTimeout):
+				case <-time.After(waitBound(t, waitTimeout)):
 					t.Fatal("Follow did not return after the reader failed")
 				}
 			}
 			select {
 			case <-failed.done:
-			case <-time.After(waitTimeout):
+			case <-time.After(waitBound(t, waitTimeout)):
 				t.Fatal("the failed reader did not stop")
 			}
 
@@ -911,7 +945,7 @@ func TestFailedHandOverMovesTheRemainingSessionToAPrivateRead(t *testing.T) {
 	}
 	select {
 	case <-failed.done:
-	case <-time.After(waitTimeout):
+	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("the reader did not stop after the hand-over failed")
 	}
 	// The failure is not the session's: it goes on privately, from where the

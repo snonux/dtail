@@ -200,7 +200,7 @@ func TestEvictionAfterARotationWhileTheReaderLagsLosesNoLine(t *testing.T) {
 			close(release)
 			select {
 			case <-slowSub.evicted:
-			case <-time.After(waitTimeout):
+			case <-time.After(waitBound(t, waitTimeout)):
 				t.Fatal("the slow session was not evicted")
 			}
 			waitFor(t, "fast session to read the new file", func() bool { return fast.saw("new 3") })
