@@ -106,7 +106,9 @@ func TestSpacedPathDCatDGrep(t *testing.T) {
 // print the decoy, the server must report the whole spaced path as missing
 // ("No such file(s) to read|<path>", printed by the serverless client and
 // logged by dserver, which sends the client no path), and the exit status
-// must be that of a missing path without spaces.
+// must be that of a missing path without spaces: 2, as the server reports
+// the missing file with ".syn command failed read: no file to read" (task
+// fe3), which serverless mode's in-process server does the same way.
 func TestSpacedPathMissingFileReadsNoOtherFile(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 	cleanupTmpFiles(t)
@@ -130,6 +132,11 @@ func TestSpacedPathMissingFileReadsNoOtherFile(t *testing.T) {
 			cleanupFiles(t, outFile)
 			args := append([]string{"--plain", "--cfg", "none"}, serverArgs...)
 			wantStatus, _ := runCommand(ctx, t, outFile, "../dcat", append(args, "--files", missingPlain)...)
+			// Pin the reference status too, so the comparison below cannot
+			// pass with both runs exiting 0 if the failure report regressed.
+			if wantStatus != 2 {
+				t.Fatalf("dcat of the missing %q exited with %d, want 2", missingPlain, wantStatus)
+			}
 			status, _ := runCommand(ctx, t, outFile, "../dcat", append(args, "--files", missing)...)
 			got := readTestFile(t, outFile)
 			if status != wantStatus {

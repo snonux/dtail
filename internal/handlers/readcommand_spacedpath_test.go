@@ -76,7 +76,7 @@ func readSpecOutput(t *testing.T, handler *ServerHandler, serverless *testOutput
 	if err != nil {
 		t.Fatalf("build commands: %v", err)
 	}
-	transport := runLegacyCommands(t, handler, commands)
+	transport := runLegacyCommandsOn(t, handler, commands)
 	if serverless == nil {
 		return transport, ""
 	}
@@ -157,7 +157,7 @@ func TestReadCommandRejectsInvalidEncodedPath(t *testing.T) {
 			handler := newSpacedPathTestHandler(t, []string{"readfiles:.*"}, nil)
 			// The test logger formats no message text, so only the hidden
 			// failed-command reason identifies the parse failure.
-			output := runLegacyCommands(t, handler, []string{"cat: " + word + " regex:noop "})
+			output := runLegacyCommandsOn(t, handler, []string{"cat: " + word + " regex:noop "})
 			if want := protocol.HiddenCommandFailedPrefix + protocol.CommandFailureReadCommand; !strings.Contains(output, want) {
 				t.Fatalf("invalid encoded path %q did not report %q: %q", word, want, output)
 			}
