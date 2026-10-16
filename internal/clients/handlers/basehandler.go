@@ -26,6 +26,22 @@ import (
 // its backing array for the lifetime of every server connection.
 const maxRetainedLineBufBytes = 64 * 1024
 
+// frameKind tells how the client handles a received frame (see
+// handleMessage).
+type frameKind uint8
+
+const (
+	// frameUnmarked is a frame of a session that does not mark control
+	// frames (protocol.Framing.MarksControl): its content tells whether it
+	// is a control message.
+	frameUnmarked frameKind = iota
+	// framePayload is an unmarked frame of a session that marks control
+	// frames: it is never a control message, whatever its content.
+	framePayload
+	// frameControl is a marked control frame of such a session.
+	frameControl
+)
+
 type baseHandler struct {
 	done         *internal.Done
 	server       string
@@ -38,7 +54,7 @@ type baseHandler struct {
 	// the buffer io.Copy hands to Read (32KB), so the remainder is kept here
 	// and drained by subsequent Read calls instead of being dropped, which
 	// would corrupt the server-side command stream. Only touched by Read
-	// (single output-copy goroutine), and by requestEscapedFraming before the
+	// (single output-copy goroutine), and by requestFraming before the
 	// handler is used.
 	pendingCommand []byte
 	// lineBuf is scratch space for appending the newline to a payload message
@@ -51,18 +67,20 @@ type baseHandler struct {
 	frameBuf []byte
 	status   int
 
-	// escapedFramingRequested is set when the handler sends
-	// protocol.EscapedFramingCommand as its first frame. escapedFraming is
-	// set when the session's first frame is the server's capabilities frame
-	// and lists protocol.CapabilityEscapedFramingV1: every frame after that
-	// one is decoded as protocol.EscapedFraming. framingDecided is set once
-	// the first frame was seen, so no later frame changes the framing (a
-	// later frame may well be a log line of a raw session that happens to
-	// read like a capabilities frame). framingDecided is only touched by
-	// Write.
-	escapedFramingRequested bool
-	escapedFraming          atomic.Bool
-	framingDecided          bool
+	// framingRequested is set when the handler sends
+	// protocol.EscapedFramingCommand and protocol.ControlFramesCommand as
+	// its first two frames. framingState holds the protocol.Framing of every
+	// frame after the session's first one, decided from that first frame
+	// (see decideFraming): RawFraming, EscapedFraming when it is the server's
+	// capabilities frame listing protocol.CapabilityEscapedFramingV1, or
+	// EscapedControlFraming when it also lists
+	// protocol.CapabilityControlFramesV1. framingDecided is set once the
+	// first frame was seen, so no later frame changes the framing (a later
+	// frame may well be a log line of a raw session that happens to read like
+	// a capabilities frame). framingDecided is only touched by Write.
+	framingRequested bool
+	framingState     atomic.Uint32
+	framingDecided   bool
 
 	capabilitiesMu sync.RWMutex
 	capabilities   map[string]struct{}
@@ -198,15 +216,20 @@ func (h *baseHandler) SendMessage(command string) error {
 	return nil
 }
 
-// requestEscapedFraming makes protocol.EscapedFramingCommand the first frame
-// Read sends, ahead of every command passed to SendMessage (e.g. AUTHKEY and
-// the read commands), whichever connector drives the handler. Servers that do
-// not advertise protocol.CapabilityEscapedFramingV1 ignore it, so the session
-// then keeps raw framing. It must be called before the handler is used.
-func (h *baseHandler) requestEscapedFraming() {
-	h.escapedFramingRequested = true
-	h.pendingCommand = []byte(commandFrame(
-		base64.StdEncoding.EncodeToString([]byte(protocol.EscapedFramingCommand))))
+// requestFraming makes protocol.EscapedFramingCommand and
+// protocol.ControlFramesCommand the first two frames Read sends, in one
+// piece, ahead of every command passed to SendMessage (e.g. AUTHKEY and the
+// read commands), whichever connector drives the handler. Servers that do not
+// advertise protocol.CapabilityEscapedFramingV1 ignore both, so the session
+// then keeps raw framing; servers that advertise escaped framing but not
+// protocol.CapabilityControlFramesV1 ignore the second one, so the session is
+// escaped without marked control frames. It must be called before the
+// handler is used.
+func (h *baseHandler) requestFraming() {
+	h.framingRequested = true
+	h.pendingCommand = []byte(
+		commandFrame(base64.StdEncoding.EncodeToString([]byte(protocol.EscapedFramingCommand))) +
+			commandFrame(base64.StdEncoding.EncodeToString([]byte(protocol.ControlFramesCommand))))
 }
 
 // commandFrame frames a base64-encoded command for the server.
@@ -216,19 +239,28 @@ func commandFrame(encodedCommand string) string {
 
 // framing returns the framing of the frames received from now on.
 func (h *baseHandler) framing() protocol.Framing {
-	if h.escapedFraming.Load() {
-		return protocol.EscapedFraming
-	}
-	return protocol.RawFraming
+	return protocol.Framing(h.framingState.Load())
 }
 
 // decodeFrame returns the body of a received frame (without its delimiter)
-// in the session framing. The result aliases frame or frameBuf and is only
-// valid until the next decodeFrame call; frame itself is never modified. The
-// session's first frame decides the framing of all later ones (see
-// decideFraming).
-func (h *baseHandler) decodeFrame(frame []byte) []byte {
-	decoded := h.framing().DecodeFrame(frame, &h.frameBuf)
+// in the session framing, and how to handle it (see frameKind). The result
+// aliases frame or frameBuf and is only valid until the next decodeFrame
+// call; frame itself is never modified. The session's first frame decides
+// the framing of all later ones (see decideFraming). The control frame
+// marker is cut off before the frame is decoded, as a decoded body may start
+// with the same bytes.
+func (h *baseHandler) decodeFrame(frame []byte) ([]byte, frameKind) {
+	framing := h.framing()
+	kind := frameUnmarked
+	if framing.MarksControl() {
+		var control bool
+		frame, control = framing.CutControl(frame)
+		kind = framePayload
+		if control {
+			kind = frameControl
+		}
+	}
+	decoded := framing.DecodeFrame(frame, &h.frameBuf)
 	if cap(h.frameBuf) > maxRetainedLineBufBytes {
 		// decoded stays valid: only the handler's reference is dropped, so
 		// an oversized frame does not pin its buffer (same policy as lineBuf).
@@ -238,29 +270,33 @@ func (h *baseHandler) decodeFrame(frame []byte) []byte {
 		h.framingDecided = true
 		h.decideFraming(decoded)
 	}
-	return decoded
+	return decoded, kind
 }
 
 // decideFraming switches the session to escaped framing when the session
 // asked for it and its first frame, which is always raw, is the server's
-// capabilities frame listing protocol.CapabilityEscapedFramingV1. Such a
-// server sends that frame first and escapes every frame after it; this runs
-// on the Write goroutine before the next frame is decoded. Any other first
-// frame keeps raw framing for good: a server without the capability, or one
-// that sends something else first, never escapes.
+// capabilities frame listing protocol.CapabilityEscapedFramingV1, and on to
+// marked control frames (protocol.EscapedControlFraming) when that frame
+// also lists protocol.CapabilityControlFramesV1. Such a server sends that
+// frame first and frames every later frame so; this runs on the Write
+// goroutine before the next frame is decoded. Any other first frame keeps
+// raw framing for good: a server without the capability, or one that sends
+// something else first, never escapes.
 func (h *baseHandler) decideFraming(first []byte) {
-	if !h.escapedFramingRequested {
+	if !h.framingRequested {
 		return
 	}
 	capabilities, ok := bytes.CutPrefix(first, []byte(protocol.HiddenCapabilitiesPrefix))
 	if !ok {
 		return
 	}
-	for _, capability := range strings.Fields(string(capabilities)) {
-		if capability == protocol.CapabilityEscapedFramingV1 {
-			h.escapedFraming.Store(true)
-			return
-		}
+	fields := strings.Fields(string(capabilities))
+	switch {
+	case !slices.Contains(fields, protocol.CapabilityEscapedFramingV1):
+	case slices.Contains(fields, protocol.CapabilityControlFramesV1):
+		h.framingState.Store(uint32(protocol.EscapedControlFraming))
+	default:
+		h.framingState.Store(uint32(protocol.EscapedFraming))
 	}
 }
 
@@ -352,19 +388,57 @@ func (h *baseHandler) consumeCommand(p []byte, command string) int {
 	return n
 }
 
-// handleMessage routes one message whose stream delimiter has been removed.
-// Hidden control messages and AUTHKEY acknowledgements are consumed here; all
-// other messages are user payload and are written with exactly one trailing
-// newline. message is only valid for the duration of the call.
-func (h *baseHandler) handleMessage(message []byte) {
+// handleMessage routes one decoded message of the given kind. Control
+// messages (hidden messages and AUTHKEY acknowledgements) are consumed here;
+// all other messages are user payload and are written with exactly one
+// trailing newline (writePayload). Which messages are control messages
+// depends on the session framing: a marked control frame always is one, an
+// unmarked frame of a session that marks control frames never is (so a
+// --plain log line such as ".syn close connection" is printed, not acted
+// upon), and in any other session the content tells (handleUnmarkedControl).
+// message is only valid for the duration of the call.
+func (h *baseHandler) handleMessage(message []byte, kind frameKind) {
+	switch kind {
+	case frameControl:
+		h.handleControlMessage(message)
+		return
+	case frameUnmarked:
+		if h.handleUnmarkedControl(message) {
+			return
+		}
+	}
+	h.writePayload(message)
+}
+
+// handleControlMessage handles the body of a marked control frame. A body
+// that is neither a hidden message nor an AUTHKEY reply comes from a newer
+// server and is ignored, like an unknown hidden message.
+func (h *baseHandler) handleControlMessage(message []byte) {
 	if len(message) > 0 && message[0] == '.' {
 		h.handleHiddenMessage(string(message))
 		return
 	}
-	if mayBeAuthKeyMessage(message) && h.handleAuthKeyMessage(string(message)) {
-		return
+	if !h.handleAuthKeyMessage(string(message)) {
+		h.log().Debug(h.server, "Ignoring unknown control frame", string(message))
 	}
+}
 
+// handleUnmarkedControl handles message as a control message, and reports
+// true, when its content reads like one: it starts with '.' (a hidden
+// message) or is an AUTHKEY acknowledgement, bare or in a SERVER or
+// AGGREGATE frame. This is the routing of sessions that do not mark control
+// frames (with older servers, or of older clients), in which a --plain log
+// line reading like that is taken for a control message as well.
+func (h *baseHandler) handleUnmarkedControl(message []byte) bool {
+	if len(message) > 0 && message[0] == '.' {
+		h.handleHiddenMessage(string(message))
+		return true
+	}
+	return mayBeAuthKeyMessage(message) && h.handleAuthKeyMessage(string(message))
+}
+
+// writePayload writes one payload message with exactly one trailing newline.
+func (h *baseHandler) writePayload(message []byte) {
 	if len(message) > 0 && message[len(message)-1] == '\n' {
 		clientlog.RawBytes(h.log(), message)
 		return

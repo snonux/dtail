@@ -50,6 +50,11 @@ type ServerHandler struct {
 	// means logformat.NewParserWithHostname. Tests replace it to make
 	// building a map command fail after its query parsed.
 	mapParserFactory mapParserFactory
+	// controlFramesAdvertised is set when the capabilities frame lists
+	// protocol.CapabilityControlFramesV1, the only case in which the
+	// client's protocol.ControlFramesCommand marks the session's control
+	// frames.
+	controlFramesAdvertised bool
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
 }
@@ -119,6 +124,8 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 		regex:        ".",
 		escapedFramingAdvertised: slices.Contains(dependencies.Capabilities,
 			protocol.CapabilityEscapedFramingV1),
+		controlFramesAdvertised: slices.Contains(dependencies.Capabilities,
+			protocol.CapabilityControlFramesV1),
 	}
 	h.handleCommandCb = h.handleUserCommand
 	h.prepareCommandContextCb = h.prepareCommandContext
@@ -264,7 +271,8 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 // after graceful shutdown has sealed command admission, and kept out of
 // commandWg so shutdown never waits on its own acknowledgement. Unknown ones
 // are ignored (handleAckCommand), which is what lets a client send
-// protocol.EscapedFramingCommand to servers that do not know it.
+// protocol.EscapedFramingCommand and protocol.ControlFramesCommand to
+// servers that do not know them.
 func (h *ServerHandler) handleAckControl(ctx context.Context, argc int, args []string) {
 	defer cancelCommandContext(ctx)
 	switch {
@@ -274,6 +282,8 @@ func (h *ServerHandler) handleAckControl(ctx context.Context, argc int, args []s
 		h.completeCommandBatch(h.connCtx)
 	case isEscapedFramingRequest(argc, args):
 		h.handleEscapedFramingRequest(ctx)
+	case isControlFramesRequest(argc, args):
+		h.handleControlFramesRequest()
 	default:
 		h.handleAckCommand(argc, args)
 	}
@@ -293,7 +303,7 @@ func (h *ServerHandler) handleEscapedFramingRequest(ctx context.Context) {
 	case !h.escapedFramingAdvertised:
 		h.Logger().Debug(h.user, "Ignoring escaped framing request of a session not advertising it")
 		return
-	case !h.handlingFirstCommand():
+	case !h.handlingCommandFrame(1):
 		h.Logger().Warn(h.user, "Ignoring escaped framing request that is not the session's first command")
 		return
 	}
@@ -307,8 +317,35 @@ func (h *ServerHandler) handleEscapedFramingRequest(ctx context.Context) {
 	}
 }
 
+// handleControlFramesRequest switches the session to
+// protocol.EscapedControlFraming when its capabilities frame advertised it,
+// the session is escaped and the request is its second command, as clients
+// send it right after the escaped framing request. The session then marks
+// every control frame it sends, so the client never takes a --plain log line
+// for one. Otherwise the request is ignored, as by a server that does not
+// know it, and the session keeps its framing: the client marks control
+// frames only when the session's first frame advertised both capabilities,
+// and output of earlier commands than the escaped framing request could
+// already be framed unmarked.
+func (h *ServerHandler) handleControlFramesRequest() {
+	switch {
+	case !h.controlFramesAdvertised:
+		h.Logger().Debug(h.user, "Ignoring control frames request of a session not advertising it")
+	case !h.handlingCommandFrame(2):
+		h.Logger().Warn(h.user, "Ignoring control frames request that is not the session's second command")
+	case !h.enableControlFrames():
+		h.Logger().Warn(h.user, "Ignoring control frames request of a session without escaped framing")
+	default:
+		h.Logger().Debug(h.user, "Switched session to escaped framing with control frames")
+	}
+}
+
 func isEscapedFramingRequest(argc int, args []string) bool {
 	return argc == 3 && strings.Join(args, " ") == protocol.EscapedFramingCommand
+}
+
+func isControlFramesRequest(argc int, args []string) bool {
+	return argc == 3 && strings.Join(args, " ") == protocol.ControlFramesCommand
 }
 
 func isInputBatchBegin(argc int, args []string) bool {

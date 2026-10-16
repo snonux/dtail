@@ -19,6 +19,9 @@ import (
 // servers of different versions keep working together (see
 // CapabilityEscapedFramingV1 and EscapedFramingCommand): only when the server
 // advertises the capability and the client asks for it are frames escaped.
+// EscapedControlFraming additionally marks control frames, so that no
+// payload frame can be taken for one (see CapabilityControlFramesV1 and
+// control_frames.go).
 type Framing uint8
 
 const (
@@ -31,6 +34,13 @@ const (
 	// with FrameEscape followed by escapedEscapeCode. All other bytes, and so
 	// all UTF-8 text without 0xAC, stay unchanged.
 	EscapedFraming
+	// EscapedControlFraming escapes every frame body like EscapedFraming and
+	// starts the body of every control frame (hidden ".syn ..." messages and
+	// AUTHKEY replies, see EncodeControl) with FrameEscape followed by
+	// controlFrameCode. A body escaped this way never starts with that
+	// sequence, so a frame without it is never a control frame, whatever its
+	// content (e.g. a --plain log line ".syn close connection").
+	EscapedControlFraming
 )
 
 const (
@@ -45,6 +55,9 @@ const (
 	// escapedEscapeCode follows FrameEscape in place of a body byte equal to
 	// FrameEscape.
 	escapedEscapeCode byte = 0x02
+	// controlFrameCode follows FrameEscape at the very start of a control
+	// frame body under EscapedControlFraming. It stands for no body byte.
+	controlFrameCode byte = 0x03
 	// shortBodyLen is the length up to which a body is scanned for bytes to
 	// escape in one plain loop instead of with escapeScanner.
 	shortBodyLen = 32
@@ -54,7 +67,7 @@ const (
 // terminate the frame. Under EscapedFraming it takes time linear in
 // len(body), whatever the share of bytes to escape (see writeEscaped).
 func (f Framing) Write(dst *bytes.Buffer, body []byte) {
-	if f != EscapedFraming {
+	if !f.escapes() {
 		dst.Write(body)
 		return
 	}
@@ -64,7 +77,7 @@ func (f Framing) Write(dst *bytes.Buffer, body []byte) {
 // WriteString appends body bytes of a frame to dst in framing f. It does
 // not terminate the frame.
 func (f Framing) WriteString(dst *bytes.Buffer, body string) {
-	if f != EscapedFraming {
+	if !f.escapes() {
 		dst.WriteString(body)
 		return
 	}
@@ -88,8 +101,10 @@ func (f Framing) EncodePayload(dst *bytes.Buffer, payload []byte) {
 // which keeps the grown buffer for the next frame, and the result is only
 // valid until scratch is used again. Malformed sequences (an unknown code or
 // a FrameEscape at the end) are kept verbatim; no encoder produces them.
+// Under EscapedControlFraming the control frame marker must be cut off first
+// (CutControl): a decoded body may start with the same two bytes.
 func (f Framing) DecodeFrame(frame []byte, scratch *[]byte) []byte {
-	if f != EscapedFraming {
+	if !f.escapes() {
 		return frame
 	}
 	i := bytes.IndexByte(frame, FrameEscape)
@@ -121,10 +136,19 @@ func (f Framing) DecodeFrame(frame []byte, scratch *[]byte) []byte {
 
 // String returns the name of the framing for diagnostics.
 func (f Framing) String() string {
-	if f == EscapedFraming {
+	switch f {
+	case EscapedFraming:
 		return "escaped"
+	case EscapedControlFraming:
+		return "escaped-control"
+	default:
+		return "raw"
 	}
-	return "raw"
+}
+
+// escapes reports whether f escapes frame bodies.
+func (f Framing) escapes() bool {
+	return f == EscapedFraming || f == EscapedControlFraming
 }
 
 // writeEscaped appends body to dst in EscapedFraming. The escaped body is

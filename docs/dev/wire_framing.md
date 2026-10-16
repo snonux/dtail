@@ -9,7 +9,9 @@ in serverless mode) is a sequence of frames. Each frame ends with
 * `SERVER|host|message` and `AGGREGATE|host|data` — server messages and
   MapReduce aggregates (`protocol.Framing.EncodeMessage`),
 * an untagged payload: a plain-mode log line, a hidden control message
-  starting with `.` (e.g. `.syn capabilities ...`, `.syn close connection`).
+  starting with `.` (e.g. `.syn capabilities ...`, `.syn close connection`),
+  or, in plain mode, an `AUTHKEY OK` / `AUTHKEY ERR ...` reply. Sessions that
+  negotiated control frames mark the control messages (see Control frames).
 
 The client-to-server direction is unchanged: `protocol 4.1 base64 <command>;`.
 
@@ -61,6 +63,42 @@ one 1 MiB line of `0xFF` and stalled the session; the next one grew the buffer
 by the raw length only and reallocated while appending, 5 to 7 allocations of
 6 to 11 MB in all for a dense 1 MiB body.)
 
+## Control frames
+
+Hidden messages and `AUTHKEY` replies are control messages: the client
+consumes them instead of printing them. With `--plain` they used to be
+untagged frames just like the log lines, so the client could only tell them by
+their content: every log line starting with `.` vanished from `--plain`
+server-mode output, so did lines like `AUTHKEY OK` (also with surrounding
+blanks or as `SERVER|x|AUTHKEY OK`), and a log line could forge a control
+message: `.syn close connection` made the client acknowledge the close and
+count the session as complete, `.syn command failed x` added a failed command
+(and so, with the dcat/dgrep exit statuses, exit status 2), `.syn
+capabilities ...` added capabilities. Serverless mode printed all of them.
+
+`protocol.EscapedControlFraming` removes the ambiguity. It escapes every frame
+body exactly like `EscapedFraming` and additionally starts the body of every
+control frame with the marker `FF 03` (`Framing.EncodeControl`):
+
+| frame           | body on the wire                      |
+|-----------------|---------------------------------------|
+| control frame   | `FF 03` + escaped message             |
+| any other frame | escaped body, as under EscapedFraming |
+
+Escaping turns every `0xFF` of a body into `FF 02`, so no escaped body starts
+with `FF 03`: payload cannot forge the marker, and a frame without it is
+payload whatever it contains. The client cuts the marker off before decoding
+(`Framing.CutControl`; a decoded body may well start with the bytes
+`FF 03`). In such a session the client handles marked frames as hidden
+messages or `AUTHKEY` replies (and ignores other marked frames of newer
+servers) and prints every unmarked frame (`frameKind` in
+`internal/clients/handlers/basehandler.go`); MapReduce sessions never take a
+marked frame for aggregate data. The server marks every hidden message and
+every `AUTHKEY` reply, in plain and REMOTE line format alike (the latter
+replaces the `SERVER|host|AUTHKEY ...` frame of other sessions). Line frames,
+server messages and aggregates are byte-identical to `EscapedFraming`, so the
+per-line hot path does not change.
+
 ## Escaped frames and the output buffer cap
 
 Escaping turns each `0xAC` and `0xFF` of a body into two bytes, so the frame of
@@ -92,12 +130,15 @@ working with every other one:
 1. The server queues its capabilities frame (`.syn capabilities ...`) when the
    session handler is built. It is the first frame of the session and always
    raw. dserver and the in-process serverless server list
-   `escaped-framing-v1` (`protocol.CapabilityEscapedFramingV1`).
+   `escaped-framing-v1` (`protocol.CapabilityEscapedFramingV1`) and
+   `control-frames-v1` (`protocol.CapabilityControlFramesV1`).
 2. The client handlers for dcat, dgrep, dtail and dmap (`NewClientHandler`,
    `NewMaprHandler`) send `.ack framing escaped-v1`
-   (`protocol.EscapedFramingCommand`) as their very first command frame,
-   before `AUTHKEY` and `.ack input begin`, whichever connector drives them.
-   They do not wait for the capabilities, so the request costs no round trip.
+   (`protocol.EscapedFramingCommand`) as their very first command frame and
+   `.ack framing control-v1` (`protocol.ControlFramesCommand`) as the second,
+   both in one write, before `AUTHKEY` and `.ack input begin`, whichever
+   connector drives them. They do not wait for the capabilities, so the
+   requests cost no round trip.
 3. A server that advertised the capability switches the session to escaped
    framing when it handles the request (`ServerHandler.handleAckControl`), but
    only when the request is the session's first command frame; a later or
@@ -109,22 +150,45 @@ working with every other one:
    every frame of a later command is escaped, including line frames that a
    read command pre-encodes (`NewNetworkWriter`, whose framing argument is
    required).
-4. The client decides the framing from the session's first frame only: if
+4. A server that advertised `control-frames-v1` switches an escaped session
+   on to `EscapedControlFraming` when it handles the control frames request
+   as the session's second command
+   (`ServerHandler.handleControlFramesRequest`,
+   `sessionFramer.enableControlFrames`); a request that is not the second
+   command, or reaches a session that is not escaped, is ignored and logged.
+   The first command, the escaped framing request, produces no frame, and the
+   client sends both requests in one write, so in practice the server
+   switches before it encodes any frame after the capabilities. (A control
+   message the server sends on its own within that window, such as the close
+   handshake of a dserver shutting down in the session's first moment, would
+   reach the client unmarked and be printed instead of acted upon.)
+5. The client decides the framing from the session's first frame only: if
    that frame is the capabilities frame and lists `escaped-framing-v1` (and
-   the client sent the request), it decodes every later frame as escaped;
-   otherwise the session stays raw for good. A later frame that reads like a
-   capabilities frame, e.g. a log line of a raw `--plain` session from an
-   older server, does not switch it.
+   the client sent the requests), it decodes every later frame as escaped,
+   and as `EscapedControlFraming` if the frame also lists
+   `control-frames-v1`; otherwise the session stays raw for good. A later
+   frame that reads like a capabilities frame, e.g. a log line of a raw
+   `--plain` session from an older server, does not switch it.
 
-| client \ server              | older dserver           | current dserver |
-|------------------------------|-------------------------|-----------------|
-| older client (no request)    | raw                     | raw             |
-| current client (request)     | raw (`.ack` ignored)    | escaped         |
+| client \ server                  | older dserver          | dserver with escaped framing only | current dserver |
+|----------------------------------|------------------------|-----------------------------------|-----------------|
+| older client (no request)        | raw                    | raw                               | raw             |
+| client with escaped framing only | raw (`.ack` ignored)   | escaped                           | escaped         |
+| current client (both requests)   | raw (`.ack`s ignored)  | escaped (2nd `.ack` ignored)      | escaped-control |
 
-Older dservers of this fork ignore the unknown `.ack framing escaped-v1` like
-every `.ack` they do not know (the same property `.ack input begin` relies
-on), and do not advertise the capability, so the client stays on raw framing.
-Older clients never send the request. Both raw combinations keep the legacy
+Only the escaped-control combination prints `--plain` log lines that read like
+control messages and never acts upon them; every other combination keeps the
+content-based routing described under Control frames, with its loss of such
+lines, as before (checked with dcat of this version against a dserver with
+escaped framing only, and the other way round). Output without `--plain` is
+unambiguous in every combination, since log lines are `REMOTE|...` frames
+there.
+
+Older dservers of this fork ignore the unknown `.ack framing escaped-v1` and
+`.ack framing control-v1` like every `.ack` they do not know (the same
+property `.ack input begin` relies on), and do not advertise the
+capabilities, so the client stays on raw (or plain escaped) framing.
+Older clients never send the requests. Both raw combinations keep the legacy
 behaviour, including the corruption of lines containing `0xAC`;
 `ProtocolCompat` stays `4.1`, so no combination is rejected.
 
@@ -132,12 +196,12 @@ Released v4.3.x dservers, which predate this fork's command batches, end a
 session as soon as a command completes while no other one runs, so they
 already ended the session on a fork client's first `AUTHKEY` or
 `.ack input begin` before escaped framing existed (checked against v4.3.4
-with and without `--no-auth-key`). The framing request adds no new
+with and without `--no-auth-key`). The framing requests add no new
 incompatibility with them.
 
-The health check (`dtailhealth`) never requests escaped framing: the server's
-health handler ends the session after its first command and advertises no
-capabilities.
+The health check (`dtailhealth`) never requests escaped framing or control
+frames: the server's health handler ends the session after its first command
+and advertises no capabilities.
 
 ## Where the code lives
 
@@ -147,9 +211,12 @@ capabilities.
   constant header fields once per line writer (with escaped framing a typical
   line frame costs fewer instructions than the raw `EncodeLine` did before,
   which also allocated its line number string)
+* `internal/protocol/control_frames.go` — control frames (`EncodeControl`,
+  `CutControl`, `IsControlMessage`)
 * `internal/protocol/capabilities.go` — capability and request constants
 * `internal/handlers/session_framer.go` — the server session's framing state
-* `internal/handlers/serverhandler.go` — handling of the request
+  and the framing of control messages (`readServerMessage`)
+* `internal/handlers/serverhandler.go` — handling of the requests
 * `internal/handlers/line_writer.go`, `protocol_formatter.go` — line frames
 * `internal/clients/handlers/basehandler.go`, `maprhandler.go` — request and
   decoding on the client
@@ -159,3 +226,7 @@ capabilities.
   dcat (plain and REMOTE frames), dgrep (REMOTE frames) and dmap on `€`, `Ь`,
   `¬` and `丬`, a dtail follow of such lines, and 1 MiB lines of only `0xAC`,
   only `0xFF` and only `€` at the default `OutputBufferMaxBytes`
+* `integrationtests/plain_control_frames_test.go` — `--plain` dcat and dgrep
+  in server mode versus serverless on lines such as `.hidden`, `.syn close
+  connection`, `.syn command failed x` and `AUTHKEY OK` (with exit status 0),
+  and a `dtail --plain` follow that goes on after them

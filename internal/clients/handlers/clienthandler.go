@@ -30,6 +30,6 @@ func NewClientHandler(server string, logger clientlog.Logger) *ClientHandler {
 			logger:         logger,
 		},
 	}
-	h.requestEscapedFraming()
+	h.requestFraming()
 	return h
 }

@@ -29,6 +29,15 @@ const (
 	// a server that does not advertise it: an older server would split the
 	// path at its spaces, or look for a file named after the encoded word.
 	CapabilityEncodedReadPathV1 = "encoded-read-path-v1"
+
+	// CapabilityControlFramesV1 marks that the server switches an escaped
+	// session to EscapedControlFraming when the client sends
+	// ControlFramesCommand as the session's second command, right after an
+	// EscapedFramingCommand that switched it to EscapedFraming. A client
+	// that sent both requests decodes every frame after the capabilities
+	// frame as EscapedControlFraming when the session's first frame lists
+	// both capabilities.
+	CapabilityControlFramesV1 = "control-frames-v1"
 )
 
 // EscapedFramingCommand asks the server to escape every frame it sends after
@@ -39,3 +48,15 @@ const (
 // other ".ack" they do not know and keep RawFraming, and older clients never
 // send it, so their sessions stay on RawFraming too.
 const EscapedFramingCommand = ".ack framing escaped-v1"
+
+// ControlFramesCommand asks the server to mark its control frames (see
+// EscapedControlFraming), so that no --plain log line can be taken for one.
+// Clients send it as the session's second command, right after
+// EscapedFramingCommand and in the same write, without waiting for the
+// capabilities. Servers ignore it unless they advertise
+// CapabilityControlFramesV1, the session switched to EscapedFraming with its
+// first command and this is its second command; servers that do not know it
+// ignore it like any other ".ack" they do not know. Either way the session
+// then keeps the framing it has, and so does a client that does not find
+// CapabilityControlFramesV1 in the session's first frame.
+const ControlFramesCommand = ".ack framing control-v1"

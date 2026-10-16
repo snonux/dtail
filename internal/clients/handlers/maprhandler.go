@@ -31,7 +31,7 @@ func NewMaprHandler(server string, session *client.SessionState, logger clientlo
 		},
 		aggregate: client.NewAggregate(server, session, logger),
 	}
-	h.requestEscapedFraming()
+	h.requestFraming()
 	return h
 }
 
@@ -56,19 +56,22 @@ func (h *MaprHandler) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// handleFrame handles the message accumulated in receiveBuf.
+// handleFrame handles the message accumulated in receiveBuf. A marked
+// control frame is never aggregate data.
 func (h *MaprHandler) handleFrame() {
 	if h.receiveBuf.Len() == 0 {
 		return
 	}
-	frame := h.decodeFrame(h.receiveBuf.Bytes())
+	frame, kind := h.decodeFrame(h.receiveBuf.Bytes())
 	message := string(frame)
 	h.log().Debug(message)
-	if aggregateMessage, decodeErr, ok := decodeAggregateMessage(message); ok {
-		h.handleAggregateMessage(message, aggregateMessage, decodeErr)
-		return
+	if kind != frameControl {
+		if aggregateMessage, decodeErr, ok := decodeAggregateMessage(message); ok {
+			h.handleAggregateMessage(message, aggregateMessage, decodeErr)
+			return
+		}
 	}
-	h.handleMessage(frame)
+	h.handleMessage(frame, kind)
 }
 
 // isAggregateMessage reports whether a wire message starts with a mapreduce

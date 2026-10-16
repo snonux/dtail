@@ -19,7 +19,7 @@ Layout:
     channel-less read/output path — now the single, default path)
   * [Integration tests refactoring guide](dev/refactoring_guide.md)
   * [Wire framing](dev/wire_framing.md) (server-to-client frames, the 0xAC
-    delimiter and the negotiated escaped framing)
+    delimiter, the negotiated escaped framing and marked control frames)
 * `benchmarks/` — raw evidence bundles (scripts, CSV results, logs) backing
   the dated benchmark reports
 * `archive/` — outdated documents kept for historical reference only

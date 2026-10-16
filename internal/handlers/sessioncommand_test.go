@@ -164,6 +164,7 @@ func TestServerCapabilitiesAdvertisesJournalOnlyOnLinuxWithJournalctl(t *testing
 				protocol.CapabilityCommandFailureV1,
 				protocol.CapabilityEscapedFramingV1,
 				protocol.CapabilityEncodedReadPathV1,
+				protocol.CapabilityControlFramesV1,
 				protocol.CapabilityJournalV1,
 			},
 		},
@@ -172,21 +173,24 @@ func TestServerCapabilitiesAdvertisesJournalOnlyOnLinuxWithJournalctl(t *testing
 			goos:                "linux",
 			journalctlAvailable: false,
 			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
-				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1},
+				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1,
+				protocol.CapabilityControlFramesV1},
 		},
 		{
 			name:                "non linux with journalctl",
 			goos:                "freebsd",
 			journalctlAvailable: true,
 			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
-				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1},
+				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1,
+				protocol.CapabilityControlFramesV1},
 		},
 		{
 			name:                "non linux without journalctl",
 			goos:                "darwin",
 			journalctlAvailable: false,
 			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
-				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1},
+				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1,
+				protocol.CapabilityControlFramesV1},
 		},
 	}
 
@@ -655,7 +659,8 @@ func waitForContextDone(ctx context.Context, t *testing.T) {
 // message, such as a query error in a session error acknowledgement, can not
 // split or end the message of a raw-framing (e.g. older) client: the
 // delimiter byte appears in '¬' and as the last byte of '€'. Under escaped
-// framing the text is transported unchanged.
+// framing, with or without control frames, the text is transported
+// unchanged.
 func TestMessageTextKeepsTheRawFraming(t *testing.T) {
 	text := "invalid query: 'a¬b€c\nd'"
 	handler := newSessionTestHandler("message-text-user")
@@ -667,8 +672,10 @@ func TestMessageTextKeepsTheRawFraming(t *testing.T) {
 		t.Fatalf("raw framing messageText = %q contains the message delimiter", got)
 	}
 
-	handler.escaped.Store(true)
-	if got := handler.messageText(text); got != text {
-		t.Fatalf("escaped framing messageText = %q, want %q", got, text)
+	for _, framing := range []protocol.Framing{protocol.EscapedFraming, protocol.EscapedControlFraming} {
+		handler.framingState.Store(uint32(framing))
+		if got := handler.messageText(text); got != text {
+			t.Fatalf("%v framing messageText = %q, want %q", framing, got, text)
+		}
 	}
 }

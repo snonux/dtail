@@ -202,13 +202,14 @@ func (h *baseHandler) reportCommandFailure(reason string) {
 // messageText returns text, which may contain text the client sent such as
 // its query, for a server message whose content is not fixed, e.g. a session
 // error acknowledgement or a map command's diagnostic. Under EscapedFraming
-// every byte of a frame body is transported as it is, so text is returned
-// unchanged. Raw framing (clients that did not negotiate escaped framing,
-// such as older ones) has no escaping: a character whose UTF-8 encoding
-// contains the message delimiter byte would split the message, so such
-// characters, and control characters, are replaced with blanks.
+// and EscapedControlFraming every byte of a frame body is transported as it
+// is (control frames are escaped too, and their marker is unforgeable), so
+// text is returned unchanged. Raw framing (clients that did not negotiate
+// escaped framing, such as older ones) has no escaping: a character whose
+// UTF-8 encoding contains the message delimiter byte would split the message,
+// so such characters, and control characters, are replaced with blanks.
 func (h *baseHandler) messageText(text string) string {
-	if h.framing() == protocol.EscapedFraming {
+	if h.framing() != protocol.RawFraming {
 		return text
 	}
 	return rawFramingText(text)

@@ -405,19 +405,23 @@ func TestSessionClearsAStaleMapQueryFailure(t *testing.T) {
 }
 
 // TestMapCommandDiagnosticKeepsTheFraming checks that the error a failed map
-// command sends, which quotes the query, is sanitized for raw framing only.
+// command sends, which quotes the query, is sanitized for raw framing only:
+// EscapedFraming and EscapedControlFraming both escape every frame body.
 func TestMapCommandDiagnosticKeepsTheFraming(t *testing.T) {
 	args := strings.Split("map: from STATS select count(a€),count(a€) group by $time", " ")
-	for _, escaped := range []bool{false, true} {
+	framings := []protocol.Framing{protocol.RawFraming, protocol.EscapedFraming,
+		protocol.EscapedControlFraming}
+	for _, framing := range framings {
+		escaped := framing != protocol.RawFraming
 		handler := newSessionTestHandler("map-diagnostic-user")
 		readServerMessage(t, handler.serverMessages)
-		handler.escaped.Store(escaped)
+		handler.framingState.Store(uint32(framing))
 		handler.handleMapCommand(context.Background(), lcontext.LContext{}, len(args), args, func() {})
 
 		message := readServerMessage(t, handler.serverMessages)
 		hasDelimiter := strings.IndexByte(message, protocol.MessageDelimiter) >= 0
 		if !strings.Contains(message, "more than once") || hasDelimiter == !escaped {
-			t.Fatalf("escaped=%v: unexpected map command diagnostic %q", escaped, message)
+			t.Fatalf("framing %v: unexpected map command diagnostic %q", framing, message)
 		}
 	}
 }

@@ -18,10 +18,13 @@ import (
 // It also owns the session's output framing (see protocol.Framing). A session
 // starts in RawFraming and switches to EscapedFraming at most once, when the
 // client asks for it with the session's first command (enableEscapedFraming,
-// handlingFirstCommand). The switch waits until the
+// handlingCommandFrame). The switch waits until the
 // capabilities frame, the first frame of the session, has been encoded, so
 // that frame is always raw and the client, which decodes every frame after
-// it as escaped, agrees with the server on every frame.
+// it as escaped, agrees with the server on every frame. An escaped session
+// switches on to EscapedControlFraming at most once, when the client asks
+// for it with the session's second command (enableControlFrames); the first
+// command, the escaped framing request, produced no frame in between.
 type sessionFramer struct {
 	handler  *baseHandler
 	readBuf  bytes.Buffer
@@ -32,10 +35,12 @@ type sessionFramer struct {
 	// only touched by Write, i.e. by the command input goroutine.
 	commandFrames int
 
-	// escaped is set once the session switched to EscapedFraming. It is
-	// written by the command input goroutine and read by the output
-	// goroutine (Read) and by the command goroutines creating line writers.
-	escaped atomic.Bool
+	// framingState holds the session's protocol.Framing: RawFraming until
+	// the session switched to EscapedFraming, and EscapedControlFraming once
+	// it switched on to that. It is written by the command input goroutine
+	// and read by the output goroutine (Read) and by the command goroutines
+	// creating line writers.
+	framingState atomic.Uint32
 	// capabilitiesFramed is closed once Read encoded the capabilities frame.
 	capabilitiesFramed     chan struct{}
 	capabilitiesFramedOnce sync.Once
@@ -115,6 +120,12 @@ func (f *sessionFramer) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+// readServerMessage frames one message of the server itself. Control
+// messages (hidden ones and AUTHKEY replies) become control frames
+// (encodeControl); the AUTHKEY replies only in sessions that mark control
+// frames, as older clients expect them as server messages (or untagged in
+// plain mode). Server messages are dropped in serverless mode, and empty
+// ones in every mode (isEmptyServerMessage).
 func (f *sessionFramer) readServerMessage(p []byte, message string) int {
 	h := f.handler
 	generation, decodedMessage := decodeGeneratedMessage(message)
@@ -122,29 +133,36 @@ func (f *sessionFramer) readServerMessage(p []byte, message string) int {
 		return 0
 	}
 	message = decodedMessage
-	if len(message) > 0 && message[0] == '.' {
-		f.framing().EncodeMessage(&f.readBuf, protocol.Message{
-			Kind:    protocol.MessagePlain,
-			Content: message,
-		})
-		if strings.HasPrefix(message, protocol.HiddenCapabilitiesPrefix) {
-			f.capabilitiesFramedOnce.Do(func() { close(f.capabilitiesFramed) })
-		}
+	framing := f.framing()
+	switch {
+	case protocol.IsHiddenMessage(message):
+		f.encodeControl(framing, message)
 		return f.drainReadBuf(p)
-	}
-	if h.serverless || isEmptyServerMessage(message) {
+	case h.serverless || isEmptyServerMessage(message):
 		return 0
+	case framing.MarksControl() && protocol.IsControlMessage(message):
+		f.encodeControl(framing, message)
+		return f.drainReadBuf(p)
 	}
 	kind := protocol.MessageServer
 	if h.plain {
 		kind = protocol.MessagePlain
 	}
-	f.framing().EncodeMessage(&f.readBuf, protocol.Message{
+	framing.EncodeMessage(&f.readBuf, protocol.Message{
 		Kind:     kind,
 		Hostname: h.hostname,
 		Content:  message,
 	})
 	return f.drainReadBuf(p)
+}
+
+// encodeControl appends the control frame of message to readBuf and, for
+// the capabilities frame, lets enableEscapedFraming go on.
+func (f *sessionFramer) encodeControl(framing protocol.Framing, message string) {
+	framing.EncodeControl(&f.readBuf, message)
+	if strings.HasPrefix(message, protocol.HiddenCapabilitiesPrefix) {
+		f.capabilitiesFramedOnce.Do(func() { close(f.capabilitiesFramed) })
+	}
 }
 
 func (f *sessionFramer) readMaprMessage(p []byte, message string) int {
@@ -163,17 +181,14 @@ func (f *sessionFramer) readMaprMessage(p []byte, message string) int {
 
 // framing returns the framing of the frames the session encodes from now on.
 func (f *sessionFramer) framing() protocol.Framing {
-	if f.escaped.Load() {
-		return protocol.EscapedFraming
-	}
-	return protocol.RawFraming
+	return protocol.Framing(f.framingState.Load())
 }
 
-// handlingFirstCommand reports whether the command being handled is the
-// session's first command frame. It is only meaningful while a command is
-// handled on the command input goroutine (Write).
-func (f *sessionFramer) handlingFirstCommand() bool {
-	return f.commandFrames == 1
+// handlingCommandFrame reports whether the command being handled is the
+// session's n-th command frame (counting from 1). It is only meaningful
+// while a command is handled on the command input goroutine (Write).
+func (f *sessionFramer) handlingCommandFrame(n int) bool {
+	return f.commandFrames == n
 }
 
 // enableEscapedFraming switches the session to EscapedFraming once the
@@ -191,8 +206,18 @@ func (f *sessionFramer) enableEscapedFraming(ctx context.Context) bool {
 	case <-f.handler.done.Done():
 		return false
 	}
-	f.escaped.Store(true)
+	f.framingState.Store(uint32(protocol.EscapedFraming))
 	return true
+}
+
+// enableControlFrames switches an escaped session to EscapedControlFraming
+// and reports whether it did; a session in any other framing keeps it. It
+// runs on the command input goroutine like enableEscapedFraming, and needs
+// not wait: the capabilities frame was encoded before the session became
+// escaped.
+func (f *sessionFramer) enableControlFrames() bool {
+	return f.framingState.CompareAndSwap(uint32(protocol.EscapedFraming),
+		uint32(protocol.EscapedControlFraming))
 }
 
 func (f *sessionFramer) drainReadBuf(p []byte) int {

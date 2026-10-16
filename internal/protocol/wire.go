@@ -57,8 +57,9 @@ type Message struct {
 // EncodeLine appends a complete remote log-line frame in framing f to dst.
 // Header fields must not contain the field separator; the wire format has no
 // escape sequence for field separators in those fields. Under EscapedFraming
-// the whole frame body, header fields and content alike, is escaped, so a
-// MessageDelimiter byte in any of them no longer ends the frame early.
+// (and EscapedControlFraming) the whole frame body, header fields and
+// content alike, is escaped, so a MessageDelimiter byte in any of them no
+// longer ends the frame early.
 func (f Framing) EncodeLine(dst *bytes.Buffer, line Line) {
 	f.writeLineHeader(dst, line.Hostname, line.TransmittedPercent)
 	writeLineNumber(dst, line.Number)

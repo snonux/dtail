@@ -48,14 +48,19 @@ func readFirstFrame(t *testing.T, handler *baseHandler) string {
 	return string(p[:n])
 }
 
+// TestClientHandlersRequestEscapedFramingFirst: the escaped framing request
+// is the first command frame and the control frames request the second, both
+// in the same Read, ahead of every other command.
 func TestClientHandlersRequestEscapedFramingFirst(t *testing.T) {
 	want := "protocol " + protocol.ProtocolCompat + " base64 " +
-		base64.StdEncoding.EncodeToString([]byte(protocol.EscapedFramingCommand)) + ";"
+		base64.StdEncoding.EncodeToString([]byte(protocol.EscapedFramingCommand)) + ";" +
+		"protocol " + protocol.ProtocolCompat + " base64 " +
+		base64.StdEncoding.EncodeToString([]byte(protocol.ControlFramesCommand)) + ";"
 
 	client := NewClientHandler("srv1", nil)
 	go func() { _ = client.SendMessage("AUTHKEY abc") }()
 	if got := readFirstFrame(t, &client.baseHandler); got != want {
-		t.Fatalf("first client frame = %q, want the escaped framing request %q", got, want)
+		t.Fatalf("first client frames = %q, want the framing requests %q", got, want)
 	}
 	if got := readFirstFrame(t, &client.baseHandler); !strings.Contains(got, "base64") {
 		t.Fatalf("second client frame = %q, want the AUTHKEY command", got)
@@ -67,7 +72,7 @@ func TestClientHandlersRequestEscapedFramingFirst(t *testing.T) {
 	}
 	mapClient := NewMaprHandler("srv1", maprclient.NewSessionState(query, logging.NopLogger{}), nil)
 	if got := readFirstFrame(t, &mapClient.baseHandler); got != want {
-		t.Fatalf("first mapr frame = %q, want the escaped framing request %q", got, want)
+		t.Fatalf("first mapr frames = %q, want the framing requests %q", got, want)
 	}
 }
 
@@ -76,7 +81,7 @@ func TestClientHandlersRequestEscapedFramingFirst(t *testing.T) {
 // precede the health command.
 func TestHealthHandlerDoesNotRequestEscapedFraming(t *testing.T) {
 	health := NewHealthHandler("srv1", nil)
-	if health.escapedFramingRequested || len(health.pendingCommand) != 0 {
+	if health.framingRequested || len(health.pendingCommand) != 0 {
 		t.Fatalf("health handler requested escaped framing: pending %q", health.pendingCommand)
 	}
 	if _, err := health.Write(capabilitiesFrame(protocol.CapabilityEscapedFramingV1)); err != nil {
@@ -123,11 +128,11 @@ func TestClientHandlerDecodesFramesPerNegotiatedFraming(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			recorder := &payloadRecorder{}
 			handler := NewClientHandler("srv1", recorder)
-			handler.escapedFramingRequested = test.request
+			handler.framingRequested = test.request
 			stream := append(capabilitiesFrame(test.capabilities...), test.payload...)
 			for _, size := range []int{1, 3, len(stream)} {
 				recorder.payload.Reset()
-				handler.escapedFraming.Store(false)
+				handler.framingState.Store(uint32(protocol.RawFraming))
 				handler.framingDecided = false
 				writeInChunks(t, handler, stream, size)
 				if got := recorder.payload.String(); got != test.want {

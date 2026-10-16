@@ -329,6 +329,21 @@ negotiate escaped framing (`internal/protocol/framing.go`; design in
 - Mixed versions keep the legacy raw framing (and its corruption of such lines):
   older dservers ignore the unknown `.ack` like any other, and older clients
   never ask. `ProtocolCompat` stays `4.1`.
+- Control frames (`internal/protocol/control_frames.go`): with `--plain`, log
+  lines and control messages (hidden `.syn ...` messages, `AUTHKEY` replies)
+  are both untagged frames, so a client told them apart by content only and
+  dropped log lines starting with `.` or reading `AUTHKEY OK`, and acted upon
+  `.syn close connection` / `.syn command failed x` lines. dserver therefore
+  also advertises `control-frames-v1`; clients send `.ack framing control-v1`
+  as the second command frame, in the same write as the escaped framing
+  request. The server honours it only if advertised, the session is escaped
+  and it is the second command, and then switches to
+  `protocol.EscapedControlFraming`: every control frame body starts with
+  `FF 03`, which escaping makes unforgeable, and every other frame is
+  byte-identical to escaped framing. The client uses it when the first frame
+  lists both capabilities; then every unmarked frame is payload. Any other
+  client/server combination (older ones, or with escaped framing only) keeps
+  the content-based routing and its loss of such `--plain` lines.
 
 ### Client Log Contents: Diagnostics vs Payload
 The default client logger is `fout` (stdout + a daily file at
@@ -429,11 +444,13 @@ reported failed command (`2`) outweighs it. Servers of every protocol version
 (since v1.0.0, also the in-process server of serverless mode) send the close
 handshake after a completed session's output, so no capability gates this;
 `--max` stops on the server, which then closes normally.
-Known gap: in `--plain` server mode a payload line starting with `.syn command
-failed` is taken as a failure report (exit `2`), and a payload line `.syn close
-connection` as the close handshake, so the client stops reading that server and
-exits `0` with truncated output, until the `--plain` framing fix (task 1e3)
-lands. With
+Known gap: in `--plain` server mode a payload line starting with `.syn
+command failed` or a payload line `.syn close connection` is payload (printed,
+exit unchanged) when client and server negotiated control frames
+(`control-frames-v1`, see "Wire Framing" above); only with an older client or
+dserver is the first still taken as a failure report (exit `2`) and the second
+as the close handshake (the client stops reading that server and exits `0`
+with truncated output). With
 `--interactive-query` the client keeps the failures of every workload of the
 session that reached it, also of workloads a `:reload` replaced; dserver drops
 queued messages of a stale generation (`outputCoordinator.shouldDropGeneration`),
