@@ -38,7 +38,14 @@ Mode-specific flags:
   the shared flags
 * `dcat`: the shared flags only
 
-`--grep` is an alias of `--regex`; when both are given, the last one wins.
+`--grep` is an alias of `--regex` and behaves as on the `dgrep` and `dtail`
+command lines: a non-empty `--grep` wins over `--regex` whatever their order,
+and `--grep ''` is ignored. Use `--regex ''` to clear the regex.
+
+A reload must leave the session something to do: `--files` needs at least
+one non-blank file (`--files ''`, `--files ' '` and `--files ,` are rejected),
+and in `dmap` and query-driven `dtail` a blank `--query` is rejected. A
+rejected reload keeps the current workload running unchanged.
 
 ## Quoting
 
@@ -50,8 +57,11 @@ splits a command line, without any variable, command or glob expansion
 * Single quotes keep everything up to the closing quote literally,
   backslashes included. Use them for regular expressions:
   `:reload --regex '\d+ ms'` matches the regex `\d+ ms`.
-* Double quotes also keep backslashes, except that `\\` and `\"` stand for a
-  backslash and a double quote: `:reload --regex "a\.b"` is the regex `a\.b`.
+* Double quotes also keep backslashes, except that `\\`, `\"`, `\$` and
+  ``\` `` stand for a backslash, a double quote, a dollar sign and a backtick,
+  as in a POSIX shell: `:reload --regex "a\.b"` is the regex `a\.b`, and
+  `"\$"` is `$`. (A shell's backslash-newline continuation does not apply,
+  as each control line is read on its own.)
 * Outside quotes, a backslash makes the next character literal, so `\d`
   becomes `d` there; `/var/log/my\ app.log` is one argument.
 * An empty quoted string is an empty value: `:reload --regex ''` clears the
@@ -59,6 +69,7 @@ splits a command line, without any variable, command or glob expansion
 * Quoted and unquoted parts next to each other form one argument, and an
   unterminated quote or a trailing backslash rejects the whole line with an
   error, leaving the current workload unchanged.
+* Non-ASCII text, even invalid UTF-8, is passed through byte for byte.
 
 ## Examples
 

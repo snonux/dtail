@@ -207,8 +207,11 @@ Interactive query control is opt-in on the client with `--interactive-query`.
 The controlling TTY accepts `:reload <flags>`, `:show`, `:help`, and `:quit`.
 `:reload` flags are tokenized POSIX-shell-like without expansion
 (`internal/clients/interactive_args.go`): single quotes are literal, double
-quotes keep backslashes except `\\` and `\"`, and `''`/`""` is an empty value
-(`--regex ''` clears the regex). Full rules: `doc/interactive-query.md`.
+quotes keep backslashes except `\\`, `\"`, `\$` and ``\` ``, and `''`/`""` is
+an empty value (`--regex ''` clears the regex). `--grep` follows the CLI: a
+non-empty `--grep` wins over `--regex`, `--grep ''` is ignored. Blank
+`--files` and blank `--query` values are rejected. Full rules:
+`doc/interactive-query.md`.
 
 **Compatibility and session semantics:**
 - Initial interactive bootstrap prefers `SESSION START` when the server

@@ -234,12 +234,28 @@ func (*baseClient) rollbackInteractiveReloadConnections(applied []interactiveRel
 }
 
 // writeInteractiveHelp prints the control commands and a summary of the
-// :reload quoting rules implemented by splitInteractiveArgs.
+// :reload quoting rules implemented by splitInteractiveArgs, with an example
+// for the flags of the current mode (see interactiveHelpText).
 func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
-	return writeControlLine(writer,
-		"Commands: :reload <flags>, :show, :help, :quit. Quote values as in a shell: "+
-			"--query \"select count(status) from stats\", --regex '\\d+' (single quotes keep backslashes), "+
-			"--regex '' (empty value).")
+	args, _ := c.snapshotConnectionState()
+	return writeControlLine(writer, interactiveHelpText(args))
+}
+
+// interactiveHelpText returns the :help line for the given arguments. The
+// example matches the flags parseInteractiveReloadArgs accepts in that mode,
+// so that e.g. dmap or dcat do not suggest a --regex they would reject.
+func interactiveHelpText(args config.Args) string {
+	const prefix = "Commands: :reload <flags>, :show, :help, :quit. Quote values as in a shell: "
+	switch {
+	case isInteractiveQueryMode(args):
+		return prefix + "--query \"select count(status) from stats\" (double quotes keep spaces), " +
+			"--files '/var/log/my app.log'."
+	case args.Mode == omode.GrepClient || args.Mode == omode.TailClient:
+		return prefix + "--regex '\\d+' (single quotes keep backslashes), " +
+			"--regex '' (empty value, matches every line)."
+	default:
+		return prefix + "--files '/var/log/my app.log' (quotes keep spaces)."
+	}
 }
 
 func (c *baseClient) writeInteractiveState(writer io.Writer) error {
@@ -302,36 +318,22 @@ func parseInteractiveCommand(current config.Args, line string, logger logging.Lo
 	}
 }
 
+// parseInteractiveReloadArgs applies the flags of a `:reload` line to a copy
+// of the current arguments. Which flags exist depends on the mode (see
+// doc/interactive-query.md); on any error the current arguments are returned
+// unchanged together with the error.
 func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Args, error) {
 	next := current
 	fs := flag.NewFlagSet("reload", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	bindInteractiveSharedFlags(fs, &next, current)
 
-	fs.StringVar(&next.What, "files", current.What, "File(s) to read")
-	fs.BoolVar(&next.Plain, "plain", current.Plain, "Plain output mode")
-	fs.BoolVar(&next.Quiet, "quiet", current.Quiet, "Quiet output mode")
-	fs.IntVar(&next.Timeout, "timeout", current.Timeout, "Max time dtail server will collect data until disconnection")
-
+	var grep *string
 	switch {
 	case isInteractiveQueryMode(current):
 		fs.StringVar(&next.QueryStr, "query", current.QueryStr, "Map reduce query")
 	case current.Mode == omode.GrepClient || current.Mode == omode.TailClient:
-		// --grep is an alias of --regex: both write the same field, so the
-		// last one given wins and an empty value (`--grep ''`) clears the
-		// regex like `--regex ''` does.
-		fs.StringVar(&next.RegexStr, "regex", current.RegexStr, "Regular expression")
-		fs.StringVar(&next.RegexStr, "grep", current.RegexStr, "Alias for -regex")
-		fs.BoolVar(&next.RegexInvert, "invert", current.RegexInvert, "Invert regex")
-		fs.IntVar(&next.BeforeContext, "before", current.BeforeContext, "Leading context lines")
-		fs.IntVar(&next.AfterContext, "after", current.AfterContext, "Trailing context lines")
-		fs.IntVar(&next.MaxCount, "max", current.MaxCount, "Maximum number of matches")
-		if err := fs.Parse(tokens); err != nil {
-			return current, err
-		}
-		if len(fs.Args()) > 0 {
-			return current, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
-		}
-		return next, nil
+		grep = bindInteractiveGrepFlags(fs, &next, current)
 	case current.Mode == omode.CatClient:
 	default:
 		return current, fmt.Errorf("interactive reload is unsupported for mode %s", current.Mode)
@@ -341,9 +343,83 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 		return current, err
 	}
 	if len(fs.Args()) > 0 {
-		return current, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+		return current, fmt.Errorf("unexpected arguments: %s", quoteInteractiveArgs(fs.Args()))
+	}
+	// --grep is an alias of --regex with the semantics of the dgrep and dtail
+	// command lines (cmd/dgrep, cmd/dtail): a non-empty --grep wins over
+	// --regex whatever their order, and an empty --grep is ignored, so
+	// `--regex ''` is the way to clear the regex.
+	if grep != nil && *grep != "" {
+		next.RegexStr = *grep
+	}
+	if err := validateInteractiveReloadArgs(fs, next); err != nil {
+		return current, err
 	}
 	return next, nil
+}
+
+// bindInteractiveSharedFlags binds the :reload flags every mode accepts.
+func bindInteractiveSharedFlags(fs *flag.FlagSet, next *config.Args, current config.Args) {
+	fs.StringVar(&next.What, "files", current.What, "File(s) to read")
+	fs.BoolVar(&next.Plain, "plain", current.Plain, "Plain output mode")
+	fs.BoolVar(&next.Quiet, "quiet", current.Quiet, "Quiet output mode")
+	fs.IntVar(&next.Timeout, "timeout", current.Timeout, "Max time dtail server will collect data until disconnection")
+}
+
+// bindInteractiveGrepFlags binds the :reload flags of the grep-driven modes
+// (dgrep and dtail without --query). It returns the --grep alias value, which
+// the caller applies after parsing, see parseInteractiveReloadArgs.
+func bindInteractiveGrepFlags(fs *flag.FlagSet, next *config.Args, current config.Args) *string {
+	fs.StringVar(&next.RegexStr, "regex", current.RegexStr, "Regular expression")
+	grep := fs.String("grep", "", "Alias for -regex")
+	fs.BoolVar(&next.RegexInvert, "invert", current.RegexInvert, "Invert regex")
+	fs.IntVar(&next.BeforeContext, "before", current.BeforeContext, "Leading context lines")
+	fs.IntVar(&next.AfterContext, "after", current.AfterContext, "Trailing context lines")
+	fs.IntVar(&next.MaxCount, "max", current.MaxCount, "Maximum number of matches")
+	return grep
+}
+
+// validateInteractiveReloadArgs rejects explicitly given values that would
+// leave the session without a workload: a --files value without any
+// non-blank file (an empty or blank value, or only commas) would cancel the
+// running work and read nothing, and a blank --query would silently turn a
+// query session into a plain one (dtail) or an unsupported one (dmap), after
+// which --query could not even be reloaded anymore. Values not given on the
+// line keep the current ones and are not checked, so e.g. a serverless stdin
+// session with no files can still reload other flags.
+func validateInteractiveReloadArgs(fs *flag.FlagSet, next config.Args) error {
+	var err error
+	fs.Visit(func(f *flag.Flag) {
+		switch {
+		case err != nil:
+		case f.Name == "files" && !hasNonBlankFile(next.What):
+			err = fmt.Errorf("--files needs at least one non-blank file, got %q", next.What)
+		case f.Name == "query" && strings.TrimSpace(next.QueryStr) == "":
+			err = fmt.Errorf("--query must not be blank, got %q", next.QueryStr)
+		}
+	})
+	return err
+}
+
+// hasNonBlankFile reports whether a comma-separated --files value names at
+// least one file, splitting it like the session spec does.
+func hasNonBlankFile(what string) bool {
+	for _, file := range strings.Split(what, ",") {
+		if strings.TrimSpace(file) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// quoteInteractiveArgs formats leftover arguments with %q each, so that empty
+// or blank arguments stay visible in the error message.
+func quoteInteractiveArgs(args []string) string {
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = fmt.Sprintf("%q", arg)
+	}
+	return strings.Join(quoted, " ")
 }
 
 func buildInteractiveSessionSpec(args config.Args, logger logging.Logger) (SessionSpec, error) {

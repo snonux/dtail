@@ -1,6 +1,7 @@
 package integrationtests
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,9 +25,14 @@ type interactiveStep struct {
 	Input   string
 }
 
+// processOutputCollector collects the output lines of a process, see
+// startInteractiveTestServer.
 type processOutputCollector struct {
 	mu    sync.Mutex
 	lines []string
+	// partial holds the bytes of an output line whose newline did not
+	// arrive yet.
+	partial []byte
 }
 
 func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T) {
@@ -46,22 +52,7 @@ func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T)
 	}
 	cleanupFiles(t, followFile, "interactive_dtail_reload.stdout.tmp")
 
-	port := getUniquePortNumber()
-	serverStdout, serverStderr, _, err := startCommand(ctx, t, "", "../dserver",
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "debug",
-		"--bindAddress", "localhost",
-		"--port", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
-		t.Fatalf("start dserver: %v", err)
-	}
-	serverLogs := startProcessOutputCollector(ctx, serverStdout, serverStderr)
-	if err := waitForServerReady(ctx, "localhost", port); err != nil {
-		t.Fatalf("wait for dserver: %v", err)
-	}
-	serverLogs.reset()
+	port, serverLogs := startInteractiveTestServer(ctx, t)
 
 	writerDone := make(chan error, 1)
 	go func() {
@@ -135,22 +126,7 @@ func TestDTailInteractiveReloadReusesSessionOnImmediateBoundaryAndDropsLateOldMa
 	}
 	cleanupFiles(t, followFile, "interactive_dtail_reload_immediate.stdout.tmp")
 
-	port := getUniquePortNumber()
-	serverStdout, serverStderr, _, err := startCommand(ctx, t, "", "../dserver",
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "debug",
-		"--bindAddress", "localhost",
-		"--port", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
-		t.Fatalf("start dserver: %v", err)
-	}
-	serverLogs := startProcessOutputCollector(ctx, serverStdout, serverStderr)
-	if err := waitForServerReady(ctx, "localhost", port); err != nil {
-		t.Fatalf("wait for dserver: %v", err)
-	}
-	serverLogs.reset()
+	port, serverLogs := startInteractiveTestServer(ctx, t)
 
 	// Feed follow-file content at deterministic points instead of on fixed
 	// offsets from an independent clock (the previous racy design, which under
@@ -250,22 +226,7 @@ func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 	}
 	cleanupFiles(t, inputFile, "interactive_dgrep_reload.stdout.tmp")
 
-	port := getUniquePortNumber()
-	serverStdout, serverStderr, _, err := startCommand(ctx, t, "", "../dserver",
-		"--cfg", "none",
-		"--logger", "stdout",
-		"--logLevel", "debug",
-		"--bindAddress", "localhost",
-		"--port", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
-		t.Fatalf("start dserver: %v", err)
-	}
-	serverLogs := startProcessOutputCollector(ctx, serverStdout, serverStderr)
-	if err := waitForServerReady(ctx, "localhost", port); err != nil {
-		t.Fatalf("wait for dserver: %v", err)
-	}
-	serverLogs.reset()
+	port, serverLogs := startInteractiveTestServer(ctx, t)
 
 	clientOutput, err := runInteractivePTYCommand(ctx, []string{
 		"../dgrep",
@@ -303,7 +264,8 @@ func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 // TestDGrepInteractiveReloadQuoting checks the shell-like quoting of :reload
 // end to end: a single-quoted regex keeps its backslash (`'\d+ ms'` must not
 // become `d+ ms`, which would match "odd ms" instead of "latency 12 ms"), and
-// an empty quoted value clears the regex so every line matches again.
+// an empty quoted value clears the regex so every line matches again. An
+// empty --files value is rejected instead of cancelling the read for nothing.
 func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 
@@ -321,7 +283,7 @@ func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 	}
 	cleanupFiles(t, inputFile, "interactive_dgrep_quoting.stdout.tmp")
 
-	port := startInteractiveTestServer(ctx, t)
+	port, _ := startInteractiveTestServer(ctx, t)
 	clientOutput, err := runInteractivePTYCommand(ctx, []string{
 		"../dgrep", "--cfg", "none", "--logger", "stdout", "--logLevel", "info",
 		"--servers", fmt.Sprintf("localhost:%d", port), "--files", inputFile,
@@ -329,7 +291,8 @@ func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 	}, []interactiveStep{
 		{WaitFor: "ERROR first", Input: `:reload --regex '\d+ ms'`},
 		{WaitFor: "latency 12 ms", Input: `:reload --regex ''`},
-		{WaitFor: "odd ms", Input: ":quit"},
+		{WaitFor: "odd ms", Input: `:reload --files ''`},
+		{WaitFor: "interactive query error: --files needs at least one non-blank file", Input: ":quit"},
 	})
 	if err != nil {
 		t.Fatalf("run interactive dgrep: %v\noutput:\n%s", err, clientOutput)
@@ -341,6 +304,8 @@ func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 		"latency 12 ms":               2,
 		"odd ms":                      1,
 		"reload applied successfully": 2,
+		// The rejected empty --files reload neither applies nor reads again.
+		"interactive query error: --files needs at least one non-blank file": 1,
 	} {
 		if got := strings.Count(clientOutput, needle); got != want {
 			t.Fatalf("expected %d x %q in output, got %d:\n%s", want, needle, got, clientOutput)
@@ -348,29 +313,57 @@ func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 	}
 }
 
-// startInteractiveTestServer starts a dserver on a unique port for an
-// interactive test and returns the port once the server accepts connections.
-func startInteractiveTestServer(ctx context.Context, t *testing.T) int {
+// startInteractiveTestServer starts a dserver (debug logging) on a unique
+// port for an interactive test and returns the port once the server accepts
+// connections, together with a collector of its output lines, reset at that
+// point so it holds only what the test caused.
+//
+// The server's stdout and stderr are written straight into the collector by
+// os/exec instead of going through startCommand's line channels: nothing can
+// block on an unread channel, and t.Cleanup stops the server and waits for
+// it, which also waits for the output copying, so the test leaks neither the
+// process nor a goroutine.
+func startInteractiveTestServer(ctx context.Context, t *testing.T) (int, *processOutputCollector) {
 	t.Helper()
 	port := getUniquePortNumber()
-	serverStdout, serverStderr, _, err := startCommand(ctx, t, "", "../dserver",
+	args := []string{
 		"--cfg", "none",
 		"--logger", "stdout",
-		"--logLevel", "info",
+		"--logLevel", "debug",
 		"--bindAddress", "localhost",
 		"--port", fmt.Sprintf("%d", port),
-	)
-	if err != nil {
+	}
+	if logger := GetTestLogger(ctx); logger != nil {
+		logger.LogCommand("../dserver", args)
+	}
+
+	serverCtx, stopServer := context.WithCancel(ctx)
+	collector := &processOutputCollector{}
+	cmd := exec.CommandContext(serverCtx, "../dserver", args...)
+	// The same comparable writer for both streams makes os/exec serialize
+	// the writes, so Write needs no extra care for concurrent callers.
+	cmd.Stdout, cmd.Stderr = collector, collector
+	if err := cmd.Start(); err != nil {
+		stopServer()
 		t.Fatalf("start dserver: %v", err)
 	}
-	// Drain the server output so the server never blocks on a full pipe.
-	_ = startProcessOutputCollector(ctx, serverStdout, serverStderr)
+	t.Cleanup(func() {
+		stopServer()
+		// The exit status is that of a killed process; only the wait matters.
+		_ = cmd.Wait()
+		if t.Failed() {
+			t.Logf("dserver output:\n%s", strings.Join(collector.snapshot(), "\n"))
+		}
+	})
 	if err := waitForServerReady(ctx, "localhost", port); err != nil {
 		t.Fatalf("wait for dserver: %v", err)
 	}
-	return port
+	collector.reset()
+	return port, collector
 }
 
+// startProcessOutputCollector collects the lines of startCommand's output
+// channels until they close or ctx is done.
 func startProcessOutputCollector(ctx context.Context, stdoutCh, stderrCh <-chan string) *processOutputCollector {
 	collector := &processOutputCollector{}
 	collect := func(ch <-chan string) {
@@ -395,6 +388,27 @@ func (c *processOutputCollector) append(line string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lines = append(c.lines, line)
+}
+
+// Write implements io.Writer for os/exec: it splits the process output into
+// lines like bufio.ScanLines (a trailing \r is dropped) and keeps an
+// unfinished last line until its newline arrives.
+func (c *processOutputCollector) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.partial = append(c.partial, p...)
+	rest := c.partial
+	for {
+		idx := bytes.IndexByte(rest, '\n')
+		if idx < 0 {
+			break
+		}
+		c.lines = append(c.lines, string(bytes.TrimSuffix(rest[:idx], []byte("\r"))))
+		rest = rest[idx+1:]
+	}
+	c.partial = append(c.partial[:0], rest...)
+	return len(p), nil
 }
 
 func (c *processOutputCollector) snapshot() []string {

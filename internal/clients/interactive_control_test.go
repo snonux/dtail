@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +107,13 @@ func TestSplitInteractiveArgs(t *testing.T) {
 		{name: "double quotes escape double quote", raw: `--regex "say \"hi\""`, want: []string{"--regex", `say "hi"`}},
 		{name: "double quotes keep single quote", raw: `--regex "it's"`, want: []string{"--regex", "it's"}},
 		{name: "double quotes keep dollar", raw: `--query "select count($line)"`, want: []string{"--query", "select count($line)"}},
+		{name: "double quotes escape dollar", raw: `--regex "\$x\$"`, want: []string{"--regex", "$x$"}},
+		{name: "double quotes escape backtick", raw: "--regex \"a\\`b\"", want: []string{"--regex", "a`b"}},
+		{name: "single quotes keep escaped dollar", raw: `--regex '\$x'`, want: []string{"--regex", `\$x`}},
+		{name: "invalid utf-8 is kept", raw: "--regex \xff'\xfe' \"\xfd\"", want: []string{"--regex", "\xff\xfe", "\xfd"}},
+		{name: "unquoted backslash before multibyte", raw: `--files /tmp/\é.log`, want: []string{"--files", "/tmp/é.log"}},
+		{name: "double-quoted backslash before multibyte", raw: `--regex "\é"`, want: []string{"--regex", `\é`}},
+		{name: "unquoted backslash before invalid byte", raw: "--regex \\\xff", want: []string{"--regex", "\xff"}},
 		{name: "unquoted backslash escapes space", raw: `--files /a\ b`, want: []string{"--files", "/a b"}},
 		{name: "unquoted backslash escapes quote", raw: `--regex it\'s`, want: []string{"--regex", "it's"}},
 		{name: "unquoted backslash escapes backslash", raw: `--regex a\\d`, want: []string{"--regex", `a\d`}},
@@ -175,9 +183,14 @@ func TestParseInteractiveCommandReloadRegexQuoting(t *testing.T) {
 		{name: "single-quoted backslash regex", line: `:reload --regex '\d+'`, wantRegex: `\d+`, wantMax: 7},
 		{name: "double-quoted backslash regex", line: `:reload --regex "a\.b"`, wantRegex: `a\.b`, wantMax: 7},
 		{name: "empty regex clears it", line: `:reload --regex ''`, wantRegex: "", wantMax: 7},
-		{name: "empty grep alias clears it", line: `:reload --grep ""`, wantRegex: "", wantMax: 7},
 		{name: "empty regex keeps following flag", line: `:reload --regex '' --max 1`, wantRegex: "", wantMax: 1},
-		{name: "last of regex and grep wins", line: `:reload --grep WARN --regex INFO`, wantRegex: "INFO", wantMax: 7},
+		// --grep follows the dgrep/dtail command lines: a non-empty --grep
+		// wins whatever the order, and an empty --grep is ignored.
+		{name: "empty grep alias is ignored", line: `:reload --grep ""`, wantRegex: "ERROR", wantMax: 7},
+		{name: "grep wins when given first", line: `:reload --grep WARN --regex INFO`, wantRegex: "WARN", wantMax: 7},
+		{name: "grep wins when given last", line: `:reload --regex INFO --grep WARN`, wantRegex: "WARN", wantMax: 7},
+		{name: "empty grep keeps regex", line: `:reload --regex INFO --grep ''`, wantRegex: "INFO", wantMax: 7},
+		{name: "empty grep keeps cleared regex", line: `:reload --grep '' --regex ''`, wantRegex: "", wantMax: 7},
 	}
 
 	for _, tt := range tests {
@@ -192,6 +205,100 @@ func TestParseInteractiveCommandReloadRegexQuoting(t *testing.T) {
 			}
 			if command.next.MaxCount != tt.wantMax {
 				t.Fatalf("max = %d, want %d", command.next.MaxCount, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestParseInteractiveCommandRejectsBlankValues(t *testing.T) {
+	grep := config.Args{Mode: omode.GrepClient, What: "/var/log/app.log", RegexStr: "ERROR"}
+	cat := config.Args{Mode: omode.CatClient, What: "/var/log/app.log"}
+	mapr := config.Args{
+		Mode:     omode.MapClient,
+		What:     "/var/log/app.log",
+		QueryStr: "select count(status) from stats group by status",
+	}
+	tailQuery := mapr
+	tailQuery.Mode = omode.TailClient
+
+	tests := []struct {
+		name    string
+		current config.Args
+		line    string
+		wantErr string
+	}{
+		{name: "empty files", current: grep, line: `:reload --files ''`, wantErr: "--files needs at least one non-blank file"},
+		{name: "blank files", current: cat, line: `:reload --files ' '`, wantErr: "--files needs at least one non-blank file"},
+		{name: "comma files", current: cat, line: `:reload --files ,`, wantErr: "--files needs at least one non-blank file"},
+		{name: "blank comma files", current: mapr, line: `:reload --files ' , '`, wantErr: "--files needs at least one non-blank file"},
+		{name: "empty files after equals", current: grep, line: `:reload --files=`, wantErr: "--files needs at least one non-blank file"},
+		{name: "empty dmap query", current: mapr, line: `:reload --query ''`, wantErr: "--query must not be blank"},
+		{name: "blank dmap query", current: mapr, line: `:reload --query '  '`, wantErr: "--query must not be blank"},
+		{name: "empty dtail query", current: tailQuery, line: `:reload --query ""`, wantErr: "--query must not be blank"},
+		{name: "empty extra argument", current: grep, line: `:reload --plain ''`, wantErr: `unexpected arguments: ""`},
+		{name: "extra arguments quoted", current: cat, line: `:reload --plain foo ' '`, wantErr: `unexpected arguments: "foo" " "`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			command, err := parseInteractiveCommand(tt.current, tt.line, logging.NopLogger{})
+			if err == nil {
+				t.Fatalf("parseInteractiveCommand(%q) = %#v, want error %q", tt.line, command.next, tt.wantErr)
+			}
+			if !strings.HasPrefix(err.Error(), tt.wantErr) {
+				t.Fatalf("parseInteractiveCommand(%q) error = %q, want prefix %q", tt.line, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseInteractiveCommandKeepsUnsetBlankFiles(t *testing.T) {
+	// A session without files (e.g. serverless stdin) can still reload other
+	// flags: only an explicitly given --files value is validated.
+	current := config.Args{Mode: omode.GrepClient, RegexStr: "ERROR"}
+	command, err := parseInteractiveCommand(current, `:reload --regex WARN`, logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("parseInteractiveCommand() error = %v", err)
+	}
+	if command.next.RegexStr != "WARN" || command.next.What != "" {
+		t.Fatalf("regex = %q, files = %q, want WARN and no files", command.next.RegexStr, command.next.What)
+	}
+	command, err = parseInteractiveCommand(current, `:reload --files 'a.log, ,b.log'`, logging.NopLogger{})
+	if err != nil {
+		t.Fatalf("parseInteractiveCommand() error = %v", err)
+	}
+	if !reflect.DeepEqual(command.spec.Files, []string{"a.log", "b.log"}) {
+		t.Fatalf("spec files = %q, want [a.log b.log]", command.spec.Files)
+	}
+}
+
+func TestInteractiveHelpTextMatchesMode(t *testing.T) {
+	query := "select count(status) from stats group by status"
+	tests := []struct {
+		name        string
+		args        config.Args
+		wantExample string
+	}{
+		{name: "dgrep", args: config.Args{Mode: omode.GrepClient}, wantExample: `--regex '\d+'`},
+		{name: "dtail", args: config.Args{Mode: omode.TailClient}, wantExample: `--regex '\d+'`},
+		{name: "dtail query", args: config.Args{Mode: omode.TailClient, QueryStr: query}, wantExample: "--query"},
+		{name: "dmap", args: config.Args{Mode: omode.MapClient, QueryStr: query}, wantExample: "--query"},
+		{name: "dcat", args: config.Args{Mode: omode.CatClient}, wantExample: "--files '/var/log/my app.log'"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			help := interactiveHelpText(tt.args)
+			if !strings.Contains(help, ":reload <flags>, :show, :help, :quit") {
+				t.Fatalf("help %q lacks the command list", help)
+			}
+			if !strings.Contains(help, tt.wantExample) {
+				t.Fatalf("help %q lacks example %q", help, tt.wantExample)
+			}
+			// Only the grep-driven modes accept --regex.
+			grepMode := tt.wantExample == `--regex '\d+'`
+			if strings.Contains(help, "--regex") != grepMode {
+				t.Fatalf("help %q: mentions --regex = %v, want %v", help, !grepMode, grepMode)
 			}
 		})
 	}
