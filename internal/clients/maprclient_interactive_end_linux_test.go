@@ -4,6 +4,7 @@ package clients
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -34,7 +35,7 @@ func TestMaprClientInteractiveEndIsNoCutShort(t *testing.T) {
 
 			done := make(chan int, 1)
 			go func() { done <- c.Start(context.Background(), nil) }()
-			waitForPTYOutput(t, master, "Interactive query control enabled")
+			waitForPTYOutput(t, master, "Interactive query control enabled", done)
 			if end == "quit" {
 				if _, err := master.WriteString(":quit\n"); err != nil {
 					t.Fatalf("write :quit: %v", err)
@@ -61,7 +62,9 @@ func TestMaprClientInteractiveEndIsNoCutShort(t *testing.T) {
 // openTestPTY opens a new pseudo terminal and returns its master side
 // (closed when the test ends) and the path of its slave side, which the
 // client opens as its control TTY. It skips the test where no pseudo
-// terminal can be opened.
+// terminal can be opened, including when the slave path cannot be opened
+// (e.g. a container whose /dev/pts is not the devpts instance /dev/ptmx
+// belongs to), so such an environment never fails in the client instead.
 func openTestPTY(t *testing.T) (*os.File, string) {
 	t.Helper()
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
@@ -84,24 +87,45 @@ func openTestPTY(t *testing.T) (*os.File, string) {
 	if ctlErr != nil || err != nil {
 		t.Skipf("pseudo terminal setup: %v %v", ctlErr, err)
 	}
-	return master, fmt.Sprintf("/dev/pts/%d", number)
+	path := fmt.Sprintf("/dev/pts/%d", number)
+	slave, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Skipf("pseudo terminal slave %s: %v", path, err)
+	}
+	// Keep this probe open until the test ends: closing the last open slave
+	// makes reads of the master fail with EIO until the client opens the
+	// slave, which would race with waitForPTYOutput.
+	t.Cleanup(func() { _ = slave.Close() })
+	return master, path
 }
 
 // waitForPTYOutput reads the master side of a pseudo terminal until the
 // output contains want, so that the client opened its control TTY and runs
-// its control loop.
-func waitForPTYOutput(t *testing.T, master *os.File, want string) {
+// its control loop. It fails at once should the client's Start return
+// (reported on done) before that, instead of waiting for the deadline.
+func waitForPTYOutput(t *testing.T, master *os.File, want string, done <-chan int) {
 	t.Helper()
-	if err := master.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatalf("set read deadline: %v", err)
-	}
 	defer func() { _ = master.SetReadDeadline(time.Time{}) }()
+	deadline := time.Now().Add(10 * time.Second)
 	var output strings.Builder
 	buf := make([]byte, 1024)
 	for !strings.Contains(output.String(), want) {
+		select {
+		case status := <-done:
+			t.Fatalf("Start returned %d before the control TTY output %q (got %q)",
+				status, want, output.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no control TTY output %q within 10s (got %q)", want, output.String())
+		}
+		// Read in short slices so that an early return of Start is noticed.
+		if err := master.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline: %v", err)
+		}
 		n, err := master.Read(buf)
 		output.Write(buf[:n])
-		if err != nil {
+		if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
 			t.Fatalf("read control TTY output %q: %v", output.String(), err)
 		}
 	}

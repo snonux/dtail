@@ -41,10 +41,11 @@ type baseClient struct {
 	// We have one connection per remote server.
 	connections []connectors.Connector
 	// endedByClient[i] reports whether the client itself ended the last
-	// session of connections[i] (see runSession and sessionEndedByClient);
-	// replaceConnection resets it for the new connection. It may be shorter
-	// than connections (tests set connections directly): a missing entry is
-	// false, a session the client did not end, or one not ended yet.
+	// session of connections[i] (see runSession, recordSessionEnd and
+	// snapshotSessions); replaceConnection resets it for the new connection.
+	// recordSessionEnd grows it on demand, so it may be shorter than
+	// connections: a missing entry reads as false, a session the client did
+	// not end, or one not ended yet.
 	endedByClient []bool
 	// SSH auth methods to use to connect to the remote servers.
 	sshAuthMethods []gossh.AuthMethod
@@ -335,8 +336,9 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 // the connector cancels that itself when the session ends. The decision is
 // made at the moment this session ended, so a session cut short (e.g. a
 // server that went away) before a later cancel still counts as cut short.
-// It is recorded for connection i (see sessionEndedByClient), where
-// MaprClient.incompleteResultReasons reads it after all connections ended.
+// It is recorded for connection i by recordSessionEnd, and
+// MaprClient.incompleteResultReasons reads it through snapshotSessions
+// after all connections ended.
 func (c *baseClient) runSession(ctx context.Context, i int, conn connectors.Connector) int {
 	connCtx, cancel := context.WithCancel(ctx)
 	conn.Start(connCtx, cancel, c.throttleCh, c.stats.connectionsEstCh)
