@@ -436,7 +436,9 @@ client (`clientProfile.failedCommandStatus`, set by `readClientProfile`):
 scheduled jobs" below) and `dtailhealth` keep their statuses; interactive
 `dmap` thus exits `0` and writes its outfile also after a reported `map:
 incomplete result`, which dserver only sends when a final result was cut off
-(see "Server-Side MapReduce" below). Servers without
+(see "Server-Side MapReduce" below), but it logs every reported failure that
+is no file read failure at WARN first (`The mapreduce result may be
+incomplete|<server>: <reason>; ...`, `MaprClient.finish`). Servers without
 `command-failure-v1` report nothing, so with them a missing file still exits `0`.
 A session cut short (it ended without `.syn close connection`,
 `handlers.SessionOutcome.Completed` false: e.g. a dserver SIGKILLed, crashed or
@@ -530,15 +532,28 @@ validation flags them as stale, while the runtime still ignores them.
   generation) or the connection's `IdleSessionTimeoutS` ends it early. It
   used to stop after a fixed 10 s, dropping the unsent groups while the
   session still closed normally (an incomplete outfile with exit status 0).
-  Should a final result still not reach the output in full
-  (`Aggregate.FinalResultComplete` false), the session's graceful shutdown
-  reports `.syn command failed map: incomplete result`
-  (`protocol.CommandFailureMapIncomplete`, `reportIncompleteMapResult` in
+  The finalization records a three-way outcome: none (it never ran, e.g.
+  an abort won because the command was canceled or the session generation
+  was replaced, which has no final result), complete, or interrupted (the
+  finalization context ended while it waited for the processors or part way
+  through the sends). An interrupted final serialization drops the unsent
+  groups instead of re-merging them, as nothing would send them any more,
+  and logs one WARN (`Aggregate final serialization interrupted; final
+  result incomplete`, with the number of unsent groups). As a defensive
+  guard, the session's graceful shutdown then reports `.syn command failed
+  map: incomplete result` (`protocol.CommandFailureMapIncomplete`,
+  `Aggregate.FinalResultInterrupted`, `reportIncompleteMapResult` in
   `internal/handlers/basehandler.go`) before the close handshake, so a
-  scheduled job writes no outfile. Interactive `dmap` keeps its exit status
-  and its outfile (see "Client Exit Statuses" below).
-  `integrationtests/dmap_slow_client_test.go` stops a client for 15 s during
-  a 100,000-group final result and requires every group in the outfile.
+  scheduled job writes no outfile. With the deadline gone, the context ends
+  listed above tear the session down rather than close it gracefully, so a
+  client normally sees a session cut short instead; the report covers any
+  path that still ends a final result early and then closes normally.
+  Interactive `dmap` keeps its exit status and its outfile but warns (see
+  "Client Exit Statuses" below). Each final serialization logs `Aggregate
+  final serialization started` with its group count at INFO.
+  `integrationtests/dmap_slow_client_test.go` stops a client for 15 s once
+  that line shows all 100,000 groups still to be sent, and requires every
+  group in the outfile and no interrupted serialization in the server log.
 
 **Output limits and deadlines (server config):**
 The output path exposes four optional settings: `OutputBufferMaxBytes`,

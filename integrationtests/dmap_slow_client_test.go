@@ -30,10 +30,11 @@ const (
 // and stops (SIGSTOP) the client while dserver sends the final result, for
 // longer than the former 10 s deadline of that final serialization. dserver
 // must wait for the client instead of dropping groups: the outfile has every
-// group with its full count. Should the result nevertheless not reach the
-// client in full, dserver reports the failed command (map: incomplete
-// result) and the server log says so; either way the test fails, as there
-// is no reason for an incomplete result here.
+// group with its full count, and the server log has neither an interrupted
+// serialization nor an incomplete final result. Should the result
+// nevertheless not reach the client in full, dserver also reports the failed
+// command (map: incomplete result); either way the test fails, as there is
+// no reason for an incomplete result here.
 func TestDMapSlowClientGetsEveryGroup(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 	cleanupTmpFiles(t)
@@ -47,27 +48,38 @@ func TestDMapSlowClientGetsEveryGroup(t *testing.T) {
 	server := startSharedReadServer(t, sharedReadModes()[0], nil)
 	query := fmt.Sprintf("from STATS select count($line),user group by user outfile %s", csvFile)
 	client := startSlowDMapClient(t, server.address, inFile, query, outFile)
-
-	// The read starts once the client sent its commands; the final
-	// serialization follows when the read ended. Stopping the client now
-	// stops it from draining any of the result.
-	server.waitForReaders(t, inFile, 1)
-	if err := client.Process.Signal(syscall.SIGSTOP); err != nil {
-		t.Fatalf("stop dmap: %v", err)
-	}
-	time.Sleep(slowClientPause)
-	if err := client.Process.Signal(syscall.SIGCONT); err != nil {
-		t.Fatalf("continue dmap: %v", err)
-	}
+	pauseDuringFinalResult(t, server, inFile, client)
 
 	waitErr := client.Wait()
 	if status := exitCodeFromError(waitErr); status != 0 {
 		t.Fatalf("dmap exit status = %d, want 0 (%v)", status, waitErr)
 	}
-	if n := server.logs.count("final result incomplete"); n != 0 {
-		t.Errorf("dserver logged %d incomplete final results", n)
-	}
+	server.requireLogCount(t, "Aggregate serialize interrupted", 0)
+	server.requireLogCount(t, "final result incomplete", 0)
 	verifySlowClientOutfile(t, csvFile)
+}
+
+// pauseDuringFinalResult stops the client as soon as dserver started reading
+// inFile for it, so that it drains none of the result, waits until dserver's
+// final serialization started (the read of the input takes well under the 5
+// s interval of the periodic serialization) and continues the client
+// slowClientPause later. While the client is stopped the final serialization
+// can send no more than the SSH channel window and the session's queues
+// hold, so it is blocked for the whole pause.
+func pauseDuringFinalResult(t *testing.T, server *sharedReadServer, inFile string, client *exec.Cmd) {
+	t.Helper()
+	server.waitForReaders(t, inFile, 1)
+	if err := client.Process.Signal(syscall.SIGSTOP); err != nil {
+		t.Fatalf("stop dmap: %v", err)
+	}
+	server.waitForLog(t, "Aggregate final serialization started", 1)
+	// Every group is still to be sent: no periodic serialization took any
+	// of them (and blocked on the stopped client) before the final one.
+	server.requireLogCount(t, fmt.Sprintf("Aggregate final serialization started|groups|%d", slowClientGroups), 1)
+	time.Sleep(slowClientPause)
+	if err := client.Process.Signal(syscall.SIGCONT); err != nil {
+		t.Fatalf("continue dmap: %v", err)
+	}
 }
 
 // writeSlowClientInput writes slowClientLinesPerGroup MAPREDUCE:STATS lines

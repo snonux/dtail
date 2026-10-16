@@ -120,25 +120,49 @@ func (s *serializer) loop(ctx context.Context, done <-chan struct{}, tick func()
 
 // serialize sends every group aggregated so far to the output and reports
 // whether all of them were handed over. It reports false when ctx ended
-// before it got the permit or in the middle of the sends (the unsent groups
-// are then re-merged, see mergeRemaining) and when no output is bound. A
-// periodic serialization's unsent groups go out with the next one; the final
-// serialization has no next one (see Aggregate.FinalResultComplete).
+// before it got the permit or in the middle of the sends, and when no output
+// is bound. The groups a periodic serialization could not send are re-merged
+// (see mergeRemaining) and go out with the next one.
 func (s *serializer) serialize(ctx context.Context) bool {
+	remaining, ok := s.send(ctx)
+	if len(remaining) > 0 {
+		s.mergeRemaining(remaining)
+	}
+	return ok
+}
+
+// serializeFinal is serialize for the final serialization, which has no next
+// one: the groups it could not send are dropped instead of re-merged, and
+// their number is returned with whether every group was handed over (see
+// Aggregate.FinalResultInterrupted). Groups still held because ctx ended
+// before the permit was acquired are counted too.
+func (s *serializer) serializeFinal(ctx context.Context) (unsent int, ok bool) {
+	remaining, ok := s.send(ctx)
+	if ok {
+		return 0, true
+	}
+	return len(remaining) + s.countGroups(), false
+}
+
+// send hands a snapshot of every group aggregated so far to the output. It
+// returns the groups it could not send once ctx ended part way through, and
+// whether every group was handed over; the caller decides what becomes of
+// the unsent groups.
+func (s *serializer) send(ctx context.Context) (map[string]*mapr.AggregateSet, bool) {
 	if !s.acquire(ctx) {
-		return false
+		return nil, false
 	}
 	defer s.release()
 
 	output := s.output.Load()
 	if output == nil {
 		s.logger.Error("Aggregate maprMessages channel is nil")
-		return false
+		return nil, false
 	}
 
 	snapshot := s.swapGroupSets()
 	if len(snapshot) == 0 {
-		return true
+		return nil, true
 	}
 
 	group := mapr.NewGroupSet(s.logger)
@@ -148,11 +172,7 @@ func (s *serializer) serialize(ctx context.Context) bool {
 	}
 
 	remaining := group.Serialize(ctx, output.messages)
-	if len(remaining) > 0 {
-		s.mergeRemaining(remaining)
-		return false
-	}
-	return true
+	return remaining, len(remaining) == 0
 }
 
 // aggregateBatch merges the parsed lines of one batch into their groups under

@@ -1063,8 +1063,10 @@ func TestAggregatePreparedContextControlsStartOwnedFinalization(t *testing.T) {
 	if emitted != cap(messages) {
 		t.Fatalf("emitted %d results, want the %d that fit before cancellation", emitted, cap(messages))
 	}
-	if remaining := aggregate.countGroups(); remaining == 0 {
-		t.Fatal("expected canceled finalization to retain unsent groups")
+	// The final serialization drops what it could not send (nothing would
+	// send it any more) and reports the result as interrupted instead.
+	if !aggregate.FinalResultInterrupted() {
+		t.Fatal("canceled finalization did not report its final result as interrupted")
 	}
 }
 

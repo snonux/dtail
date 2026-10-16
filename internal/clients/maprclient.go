@@ -152,11 +152,20 @@ func (mode MaprClientMode) scheduled() bool {
 // consuming the remaining interval for a non-cumulative query. ctxErr is the
 // error of the client's context by then. As for interim reports, output errors
 // are logged; only scheduled modes change the exit status on publication errors.
+//
+// Outside the scheduled modes a failed command a server reported does not
+// change the exit status or keep the result from being written (dmap opts out
+// of the failed command status, see clientProfile.failedCommandStatus), but
+// every one that is no file read failure, e.g. "map: incomplete result", is
+// logged at WARN first, so the user learns that the result may lack data.
 func (c *MaprClient) finish(ctxErr error, status int) int {
 	if c.mode.scheduled() {
 		return c.finishScheduled(ctxErr, status)
 	}
 
+	if failures := c.reportedCommandFailures(); len(failures) > 0 {
+		c.clientLogger().Warn("The mapreduce result may be incomplete", strings.Join(failures, "; "))
+	}
 	// Publish already-received data even if the connections were canceled.
 	c.clientLogger().Debug("Writing final mapreduce result")
 	if err := c.reportResults(true); err != nil {
@@ -257,6 +266,28 @@ func sessionOutcome(server string, handler handlers.Handler) (incomplete string,
 		fileFailures = append(fileFailures, server+": "+reason)
 	}
 	return "", fileFailures
+}
+
+// reportedCommandFailures returns the failed commands the servers reported
+// that are no file read failures (see protocol.IsFileReadFailure), each as
+// "<server>: <reason>". Interactive dmap does not fail on them, it only warns
+// (see finish). File read failures are left out: they mean that a file had
+// no data to give (it was missing, not permitted or unreadable), not that a
+// command was rejected or data the server read was lost on the way.
+func (c *MaprClient) reportedCommandFailures() []string {
+	var failures []string
+	for _, conn := range c.snapshotConnections() {
+		reporter, ok := conn.Handler().(sessionOutcomeReporter)
+		if !ok {
+			continue
+		}
+		for _, reason := range reporter.Outcome().Failures {
+			if !protocol.IsFileReadFailure(reason) {
+				failures = append(failures, conn.Server()+": "+reason)
+			}
+		}
+	}
+	return failures
 }
 
 // incompleteQueryReason returns why a query whose connections ended with

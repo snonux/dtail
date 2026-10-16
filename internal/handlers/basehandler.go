@@ -218,17 +218,27 @@ const (
 )
 
 // reportIncompleteMapResult reports the session's map command as failed when
-// the final result of its aggregate did not reach the output in full, e.g.
-// because the finalization context ended part way through the groups, or
-// Shutdown returned while the finalization still ran. shutdown calls it
-// before the close handshake, so the client never takes a result with
-// missing groups for a complete one: a scheduled job writes no outfile, as
-// for every failure that is no file read failure.
+// the final serialization of its aggregate ran but was interrupted, so that
+// some groups never reached the output. shutdown calls it before the close
+// handshake, so the client never takes a result with missing groups for a
+// complete one: a scheduled job writes no outfile, as for every failure that
+// is no file read failure, and interactive dmap warns.
+//
+// It is a defensive guard. The final serialization has no deadline of its
+// own, only the finalization context ends it early, and the context ends
+// that do (session teardown, dserver shutdown, an idle connection) tear the
+// session down rather than close it gracefully, so the client sees a session
+// cut short anyway. An aggregate that never finalized is not reported: one
+// aborted by a canceled command or a replaced session generation has no
+// final result, and neither has one whose finalization still runs when
+// Shutdown returned because ctx ended (the session is ending then).
+// The aggregate already logged the interruption at WARN, with the number of
+// unsent groups; this logs the report at INFO only.
 func (h *baseHandler) reportIncompleteMapResult(aggregate *mapaggregate.Aggregate) {
-	if aggregate.FinalResultComplete() {
+	if !aggregate.FinalResultInterrupted() {
 		return
 	}
-	h.Logger().Warn(h.user, "MapReduce final result did not reach the client in full, reporting a failed command")
+	h.Logger().Info(h.user, "MapReduce final result did not reach the client in full, reporting a failed command")
 	h.reportCommandFailure(commandFailureMapIncomplete)
 }
 

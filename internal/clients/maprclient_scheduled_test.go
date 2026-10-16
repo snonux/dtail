@@ -229,6 +229,52 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 	}
 }
 
+// TestMaprClientFinishWarnsOnReportedFailures covers interactive dmap, which
+// keeps its exit status and writes its result whatever failed commands the
+// servers reported: it warns about every one that is no file read failure,
+// e.g. a final result dserver could not send in full, and not about file read
+// failures or a clean run.
+func TestMaprClientFinishWarnsOnReportedFailures(t *testing.T) {
+	t.Parallel()
+
+	incompleteResult := handlers.SessionOutcome{Completed: true, Failures: []string{
+		protocol.CommandFailureNoFile, protocol.CommandFailureMapIncomplete}}
+	tests := []struct {
+		name     string
+		outcomes []handlers.SessionOutcome
+		want     []string
+	}{
+		{name: "complete", outcomes: []handlers.SessionOutcome{{Completed: true}}},
+		{name: "file read failure", outcomes: []handlers.SessionOutcome{
+			{Completed: true, Failures: []string{protocol.CommandFailureNoFile}}}},
+		{name: "incomplete result on the second server", outcomes: []handlers.SessionOutcome{
+			{Completed: true}, incompleteResult},
+			want: []string{"The mapreduce result may be incomplete|srv2: " + protocol.CommandFailureMapIncomplete}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			outfile := filepath.Join(t.TempDir(), "result.csv")
+			client := newOutfileTestClient(outfileTestQuery(t, outfile, false), DefaultMode)
+			logger := &warnRecorder{}
+			client.loggers.Client = logger
+			mergeOutfileTestRow(t, client.session.Snapshot(), 7)
+			for i, outcome := range tt.outcomes {
+				client.connections = append(client.connections, &retryTestConnector{
+					server: fmt.Sprintf("srv%d", i+1), handler: &statusTestHandler{outcome: outcome}})
+			}
+
+			if got := client.finish(nil, 0); got != 0 {
+				t.Fatalf("finish() status = %d, want 0", got)
+			}
+			assertScheduledTestFile(t, outfile, "count(foo)\n7\n")
+			if got := logger.warnings(); !slices.Equal(got, tt.want) {
+				t.Fatalf("warnings = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestMaprClientScheduledStartWritesNoInterimResult runs a scheduled client
 // whose only connection aggregates a row and stays open well past the first
 // interim report, then ends with the given status. No outfile may appear

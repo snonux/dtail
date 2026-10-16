@@ -3,6 +3,9 @@ package aggregate
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -115,13 +118,17 @@ func TestAggregateFinalSerializationHasNoDeadline(t *testing.T) {
 }
 
 // TestAggregateFinalSerializationCanceledIsIncomplete cancels the
-// finalization context part way through the groups: the serialization
-// stops, keeps the unsent groups and reports the result as incomplete, which
-// the session handler then reports to the client as a failed command.
+// finalization context part way through the groups: the serialization stops
+// and reports the result as interrupted, which the session handler then
+// reports to the client as a failed command. The unsent groups are dropped,
+// not re-merged (no serialization follows the final one), and the server
+// logs the cut-off result once, with the number of unsent groups.
 func TestAggregateFinalSerializationCanceledIsIncomplete(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const sent = 50
 		a := newFinalTestAggregate(t, finalTestGroups)
+		logger := &finalWarnRecorder{}
+		a.logger, a.serializer.logger = logger, logger
 		messages := make(chan string)
 		a.PrepareOutput(context.Background(), messages)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -133,27 +140,58 @@ func TestAggregateFinalSerializationCanceledIsIncomplete(t *testing.T) {
 
 		a.Shutdown(ctx)
 
-		if a.FinalResultComplete() {
-			t.Fatal("FinalResultComplete() = true after a canceled final serialization")
+		if a.FinalResultComplete() || !a.FinalResultInterrupted() {
+			t.Fatalf("FinalResultComplete() = %v, FinalResultInterrupted() = %v after a canceled "+
+				"final serialization, want false, true", a.FinalResultComplete(), a.FinalResultInterrupted())
 		}
-		if got, want := a.countGroups(), finalTestGroups-sent; got != want {
-			t.Fatalf("unsent groups kept = %d, want %d", got, want)
+		if got := a.countGroups(); got != 0 {
+			t.Fatalf("groups kept after the final serialization = %d, want 0 (dropped, not re-merged)", got)
+		}
+		want := fmt.Sprintf("Aggregate final serialization interrupted; final result incomplete|unsent|%d",
+			finalTestGroups-sent)
+		if got := logger.warnings(); !slices.Equal(got, []string{want}) {
+			t.Fatalf("warnings = %q, want only %q", got, want)
 		}
 	})
 }
 
-// TestAggregateFinalResultIncompleteWithoutFinalization pins that an
-// aggregate whose terminal state is an abort, or that never finalized, has
-// no complete final result.
-func TestAggregateFinalResultIncompleteWithoutFinalization(t *testing.T) {
+// TestAggregateFinalResultWithoutFinalization pins that an aggregate whose
+// terminal state is an abort, or that never finalized, has neither a
+// complete nor an interrupted final result: there is nothing to report.
+func TestAggregateFinalResultWithoutFinalization(t *testing.T) {
 	a := newFinalTestAggregate(t, 1)
-	if a.FinalResultComplete() {
-		t.Fatal("FinalResultComplete() = true before finalization")
+	if a.FinalResultComplete() || a.FinalResultInterrupted() {
+		t.Fatal("final result complete or interrupted before finalization")
 	}
 	a.Abort()
 	a.PrepareOutput(context.Background(), make(chan string, 1))
 	a.Shutdown(context.Background())
-	if a.FinalResultComplete() {
-		t.Fatal("FinalResultComplete() = true after Abort won the terminal state")
+	if a.FinalResultComplete() || a.FinalResultInterrupted() {
+		t.Fatal("final result complete or interrupted after Abort won the terminal state")
 	}
+}
+
+// finalWarnRecorder records the warnings logged, each with its arguments
+// joined with "|".
+type finalWarnRecorder struct {
+	logging.NopLogger
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *finalWarnRecorder) Warn(args ...any) string {
+	parts := make([]string, len(args))
+	for i, arg := range args {
+		parts[i] = fmt.Sprint(arg)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, strings.Join(parts, "|"))
+	return ""
+}
+
+func (l *finalWarnRecorder) warnings() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return slices.Clone(l.lines)
 }
