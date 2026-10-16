@@ -51,8 +51,15 @@ func NewMaprHandler(server string, session *client.SessionState, logger clientlo
 // is dropped before the frame is decoded, so an aggregate frame's trailing
 // newline does not reach the aggregate parser; a non-aggregate message gets
 // exactly one trailing newline back from handleMessage. No escape sequence of
-// the session framing contains a newline byte, so dropping it before
-// decoding is the same as dropping it after. Each frame is decoded in the
+// the session framing contains a newline byte, so for a well-formed frame
+// dropping it before decoding is the same as dropping it after. Only a
+// malformed frame tells them apart: FF 0A 01 (an escape byte, a newline, then
+// an escape code) decodes to 0xAC when the newline is dropped first, but is
+// kept verbatim as a malformed sequence and becomes FF 01 when it is dropped
+// after. No encoder produces that sequence (the escape byte is always
+// followed by its code directly), and the handler before the batched receive
+// also skipped newlines while accumulating a frame, before decoding it, so
+// this is no change in behaviour. Each frame is decoded in the
 // session framing (see baseHandler.decodeFrame), so group keys and values
 // containing e.g. '€' are not cut at their 0xAC byte.
 //

@@ -76,9 +76,9 @@ func TestAggregateSetMergeMissingFields(t *testing.T) {
 	}
 }
 
-// TestGlobalGroupSetMergeMissingFields drives the client's merge path: a
-// group set per server message merged into the global group set, where a
-// later message of the same group lacks the min/max/last/len fields.
+// TestGlobalGroupSetMergeMissingFields merges a set per server message into
+// the global group set's set of its group under the global lock (Update),
+// where a later message of the same group lacks the min/max/last/len fields.
 func TestGlobalGroupSetMergeMissingFields(t *testing.T) {
 	query := mustMergeTestQuery(t)
 	global := NewGlobalGroupSet(logging.NopLogger{})
@@ -86,9 +86,11 @@ func TestGlobalGroupSetMergeMissingFields(t *testing.T) {
 		{samples: 1, lat: mergeFloat(5), neg: mergeFloat(-3), name: "alice", status: mergeFloat(1)},
 		{samples: 1, status: mergeFloat(1)},
 	} {
-		group := NewGroupSet(logging.NopLogger{})
-		*group.GetSet("host1") = *buildMergeTestSet(set)
-		if err := global.Merge(query, group); err != nil {
+		var err error
+		global.Update(func(group *GroupSet) {
+			err = group.GetSet("host1").Merge(query, buildMergeTestSet(set))
+		})
+		if err != nil {
 			t.Fatalf("Merge() error = %v", err)
 		}
 	}

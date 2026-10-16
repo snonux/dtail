@@ -30,13 +30,11 @@ func TestMaprClientCommitSessionSpecResetsSharedState(t *testing.T) {
 	}
 
 	initial := client.session.Snapshot()
-	group := mapr.NewGroupSet(logging.NopLogger{})
-	set := group.GetSet("ERROR")
-	set.Samples = 1
-	set.FValues[query.Select[0].FieldStorage] = 1
-	if err := initial.GlobalGroup.Merge(query, group); err != nil {
-		t.Fatalf("Merge() error = %v", err)
-	}
+	initial.GlobalGroup.Update(func(group *mapr.GroupSet) {
+		set := group.GetSet("ERROR")
+		set.Samples = 1
+		set.FValues[query.Select[0].FieldStorage] = 1
+	})
 	if changed, ok := client.session.CommitRenderedResult(initial.Generation, "old-result"); !ok || !changed {
 		t.Fatalf("CommitRenderedResult() = changed:%v ok:%v, want changed and ok", changed, ok)
 	}
@@ -364,11 +362,14 @@ func outfileTestQuery(t *testing.T, outfile string, appendMode bool) *mapr.Query
 func mergeOutfileTestRow(t *testing.T, snapshot maprclient.SessionSnapshot, count int) {
 	t.Helper()
 
-	group := mapr.NewGroupSet(logging.NopLogger{})
-	set := group.GetSet("host-a")
+	set := mapr.NewAggregateSet()
 	set.Samples = 1
 	set.FValues["count(foo)"] = float64(count)
-	if err := snapshot.GlobalGroup.Merge(snapshot.Query, group); err != nil {
+	var err error
+	snapshot.GlobalGroup.Update(func(group *mapr.GroupSet) {
+		err = group.GetSet("host-a").Merge(snapshot.Query, set)
+	})
+	if err != nil {
 		t.Fatalf("Merge() error = %v", err)
 	}
 }

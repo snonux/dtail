@@ -14,9 +14,9 @@ import (
 func TestUpdateNoblockSemaphoreReleasedOnPanic(t *testing.T) {
 	g := NewGlobalGroupSet(logging.NopLogger{})
 
-	// Merging a nil *GroupSet in the callback causes a nil-pointer
-	// dereference when it iterates over group.sets. We catch the panic in a
-	// goroutine and verify that the GlobalGroupSet is still usable afterwards.
+	// Calling GetSet on a nil *GroupSet in the callback causes a nil-pointer
+	// dereference. We catch the panic in a goroutine and verify that the
+	// GlobalGroupSet is still usable afterwards.
 
 	done := make(chan struct{})
 	go func() {
@@ -28,8 +28,9 @@ func TestUpdateNoblockSemaphoreReleasedOnPanic(t *testing.T) {
 			close(done)
 		}()
 		// This must panic internally; with the bug the semaphore is never released.
-		g.UpdateNoblock(func(set *GroupSet) {
-			_ = mergeGroupSet(&Query{}, set, nil)
+		g.UpdateNoblock(func(*GroupSet) {
+			var nilGroup *GroupSet
+			nilGroup.GetSet("key")
 		})
 	}()
 
@@ -64,20 +65,17 @@ func TestUpdateNoblockSemaphoreReleasedOnPanic(t *testing.T) {
 // false without calling its callback.
 func TestUpdateNoblockNormalOperation(t *testing.T) {
 	g := NewGlobalGroupSet(logging.NopLogger{})
-	group := NewGroupSet(logging.NopLogger{})
 
-	// Populate the group set with one entry so there is something to merge.
-
+	// One aggregate set, so there is something to merge.
 	set := NewAggregateSet()
 	set.FValues["count"] = 1
-	group.sets["key1"] = set
 
-	// A minimal query is enough; the merge loop only needs query.Select which
-	// can be empty for this structural test (no select conditions to iterate).
+	// A minimal query is enough; the merge only needs query.Select, which can
+	// be empty for this structural test (no select conditions to iterate).
 	query := &Query{}
 
 	var err error
-	merged := g.UpdateNoblock(func(set *GroupSet) { err = mergeGroupSet(query, set, group) })
+	merged := g.UpdateNoblock(func(dst *GroupSet) { err = dst.GetSet("key1").Merge(query, set) })
 	if err != nil {
 		t.Errorf("unexpected error from the merge: %v", err)
 	}

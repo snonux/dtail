@@ -8,6 +8,12 @@ import (
 
 // GlobalGroupSet is used on the dtail client to merge multiple group sets
 // (one group set per remote server) to one single global group set.
+//
+// The client aggregates into it with Update and UpdateNoblock only (see
+// client.Aggregate): each received message is added straight to the global
+// set's GetSetBytes entry, as merging a set holding only that message with
+// AggregateSet.Merge would; no per-message group set is built and merged as a
+// whole.
 type GlobalGroupSet struct {
 	GroupSet
 	semaphore chan struct{}
@@ -25,13 +31,6 @@ func NewGlobalGroupSet(logger logging.Logger) *GlobalGroupSet {
 // String representation of the global group set.
 func (g *GlobalGroupSet) String() string {
 	return fmt.Sprintf("GlobalGroupSet(%s)", g.GroupSet.String())
-}
-
-// Merge (blocking) a group set into the global group set.
-func (g *GlobalGroupSet) Merge(query *Query, group *GroupSet) error {
-	var err error
-	g.Update(func(set *GroupSet) { err = mergeGroupSet(query, set, group) })
-	return err
 }
 
 // Update calls fn with the global group set while it holds the global group
@@ -58,17 +57,6 @@ func (g *GlobalGroupSet) UpdateNoblock(fn func(*GroupSet)) bool {
 	default:
 		return false
 	}
-}
-
-// mergeGroupSet merges every aggregate set of group into dst.
-func mergeGroupSet(query *Query, dst, group *GroupSet) error {
-	for groupKey, set := range group.sets {
-		s := dst.GetSet(groupKey)
-		if err := s.Merge(query, set); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // IsEmpty determines whether the global group set has any data in it.

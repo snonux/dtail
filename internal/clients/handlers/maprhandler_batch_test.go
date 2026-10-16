@@ -97,9 +97,11 @@ func TestMaprHandlerWriteResultIndependentOfChunking(t *testing.T) {
 
 	reference := mapr.NewGlobalGroupSet(logging.NopLogger{})
 	for _, s := range sets {
-		group := mapr.NewGroupSet(logging.NopLogger{})
-		*group.GetSet(s.groupKey) = *s.set
-		if err := reference.Merge(query, group); err != nil {
+		var err error
+		reference.Update(func(group *mapr.GroupSet) {
+			err = group.GetSet(s.groupKey).Merge(query, s.set)
+		})
+		if err != nil {
 			t.Fatalf("Merge() error = %v", err)
 		}
 	}
