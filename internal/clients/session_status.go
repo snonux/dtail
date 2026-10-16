@@ -1,6 +1,10 @@
 package clients
 
-import "github.com/mimecast/dtail/internal/clients/handlers"
+import (
+	"context"
+
+	"github.com/mimecast/dtail/internal/clients/handlers"
+)
 
 // ExitStatusFailedCommand is the exit status of dcat and dgrep (grep's error
 // status) when a server reported a failed command of their session through
@@ -17,15 +21,28 @@ import "github.com/mimecast/dtail/internal/clients/handlers"
 // server rejected or did not acknowledge, commands that could not be sent, a
 // journal target the server does not support (no journal-v1), a path
 // containing a space or starting with base64% the server cannot read (no
-// encoded-read-path-v1), a failed serverless
-// in-process session: every error ServerConnection.Start and Serverless.Start
-// pass to Handler.ReportServerError) stays 1 unless such a report raises it;
-// the client exits with the highest status of all its connections (see
-// baseClient.runConnections). A session cut short without the server's close
-// handshake (e.g. a SIGKILLed server mid-read) currently keeps status 0, as
-// ServerConnection.handle returns only the dispatch error and
-// SessionOutcome.Completed is not checked here.
+// encoded-read-path-v1), a failed serverless in-process session: every error
+// ServerConnection.Start and Serverless.Start pass to
+// Handler.ReportServerError; and a session cut short, see
+// exitStatusCutShort) stays 1 unless such a report raises it; the client
+// exits with the highest status of all its connections (see
+// baseClient.runConnections).
 const ExitStatusFailedCommand = 2
+
+// exitStatusCutShort is the exit status of dcat and dgrep for a session that
+// ended without the server's close handshake (handlers.SessionOutcome
+// Completed is false) although the client did not end it itself: e.g. a
+// dserver killed, crashed or shut down in the middle of a read, or a lost
+// connection, so that the output may be incomplete. Servers of every protocol
+// version end a session they completed with the handshake (".syn close
+// connection", sent after all of the session's output; the in-process server
+// of serverless mode too), so no capability gates this. A session the client
+// ended itself keeps its status: SIGINT/SIGTERM cancel the context of
+// Client.Start, and :quit and the end of the control TTY of an
+// --interactive-query session cancel the context of runConnections. A
+// connection that failed before (status 1, already reported) keeps 1, and a
+// reported failed command (status 2) outweighs it.
+const exitStatusCutShort = 1
 
 // sessionOutcomeReporter is a client handler that knows how its session
 // ended.
@@ -34,20 +51,40 @@ type sessionOutcomeReporter interface {
 }
 
 // sessionStatus returns the exit status of a connection whose session ran
-// with handler: the handler's status, raised to the profile's
+// with handler under ctx, the context of all of the client's connections (not
+// that of the one connection, which its connector cancels itself when the
+// session ends): the handler's status, raised to the profile's
 // failedCommandStatus when that is set and the server reported a failed
-// command. The reports are counted whether or not the session completed,
-// and the higher of the two statuses wins. A session cut short gets no
-// status of its own from this (see ExitStatusFailedCommand): only the
-// failures it reported before it ended raise its status.
-func (c *baseClient) sessionStatus(handler handlers.Handler) int {
+// command, and to the profile's cutShortStatus when that is set and the
+// session was cut short (see exitStatusCutShort) while ctx was not done. The
+// reports are counted whether or not the session completed, and the highest
+// status wins. A handler that cannot tell how its session ended keeps its
+// status.
+func (c *baseClient) sessionStatus(ctx context.Context, handler handlers.Handler) int {
 	status := handler.Status()
-	if c.profile.failedCommandStatus == 0 {
-		return status
-	}
 	reporter, ok := handler.(sessionOutcomeReporter)
-	if !ok || len(reporter.Outcome().Failures) == 0 {
+	if !ok {
 		return status
 	}
-	return max(status, c.profile.failedCommandStatus)
+	outcome := reporter.Outcome()
+	if c.profile.failedCommandStatus != 0 && len(outcome.Failures) > 0 {
+		status = max(status, c.profile.failedCommandStatus)
+	}
+	if c.profile.cutShortStatus != 0 && !outcome.Completed && ctx.Err() == nil {
+		c.reportCutShort(handler)
+		status = max(status, c.profile.cutShortStatus)
+	}
+	return status
+}
+
+// reportCutShort logs that the session of handler was cut short, unless the
+// handler already reported an error of its connection (a positive status;
+// client handlers start with -1 and keep it while no error is reported),
+// which then is why the session ended.
+func (c *baseClient) reportCutShort(handler handlers.Handler) {
+	if handler.Status() > 0 {
+		return
+	}
+	c.clientLogger().Error(handler.Server(),
+		"Session ended without the server's close handshake, the output may be incomplete")
 }

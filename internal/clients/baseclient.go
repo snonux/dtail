@@ -279,14 +279,7 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 	retryRandom := newRetryRandom(i)
 
 	for {
-		connCtx, cancel := context.WithCancel(ctx)
-
-		conn.Start(connCtx, cancel, c.throttleCh, c.stats.connectionsEstCh)
-		cancel()
-		// Retrieve the connection's exit status from its handler, raised for
-		// dcat and dgrep when the server reported a failed command (see
-		// sessionStatus); the client exits with the highest one.
-		status = c.sessionStatus(conn.Handler())
+		status = c.runSession(ctx, conn)
 
 		// Do we want to retry?
 		if !c.profile.retry {
@@ -320,6 +313,20 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 		}
 		c.replaceConnection(i, conn)
 	}
+}
+
+// runSession runs one session of conn under a context of its own derived
+// from ctx and returns the connection's exit status from its handler, raised
+// for dcat and dgrep when the server reported a failed command or the session
+// was cut short (see sessionStatus); the client exits with the highest one.
+// sessionStatus takes ctx, not the session's context, which the connector
+// cancels itself when the session ends: only a cancellation by the client
+// itself tells a session it ended from one cut short.
+func (c *baseClient) runSession(ctx context.Context, conn connectors.Connector) int {
+	connCtx, cancel := context.WithCancel(ctx)
+	conn.Start(connCtx, cancel, c.throttleCh, c.stats.connectionsEstCh)
+	cancel()
+	return c.sessionStatus(ctx, conn.Handler())
 }
 
 func nextRetryDelay(current time.Duration) time.Duration {

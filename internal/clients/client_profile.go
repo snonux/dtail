@@ -16,6 +16,13 @@ type clientProfile struct {
 	// scheduled modes handle the failures themselves) and dtailhealth keep
 	// their exit statuses.
 	failedCommandStatus int
+	// cutShortStatus is the least exit status of a connection whose session
+	// ended without the server's close handshake although the client did not
+	// end it itself (see sessionStatus and exitStatusCutShort); 0 leaves the
+	// handler's status as it is, so that dtail's follow mode (which
+	// reconnects), dmap (whose scheduled modes check the outcome themselves)
+	// and dtailhealth keep their exit statuses.
+	cutShortStatus int
 }
 
 func clientHandlerProfile(logger clientlog.Logger, retry bool) clientProfile {
@@ -28,10 +35,12 @@ func clientHandlerProfile(logger clientlog.Logger, retry bool) clientProfile {
 }
 
 // readClientProfile is the profile of the one-shot read clients dcat and
-// dgrep: no retry, and exit status ExitStatusFailedCommand when a server
-// reported a failed command, e.g. a file it could not read.
+// dgrep: no retry, exit status ExitStatusFailedCommand when a server
+// reported a failed command, e.g. a file it could not read, and
+// exitStatusCutShort when a session was cut short, e.g. by a killed server.
 func readClientProfile(logger clientlog.Logger) clientProfile {
 	profile := clientHandlerProfile(logger, false)
 	profile.failedCommandStatus = ExitStatusFailedCommand
+	profile.cutShortStatus = exitStatusCutShort
 	return profile
 }

@@ -396,7 +396,8 @@ the SSH handshake failed or no SSH session could be opened, the server rejected
 or did not acknowledge an `--interactive-query` `SESSION START` or the commands
 could not be sent, a server lacks `journal-v1` for a requested journal target
 or `encoded-read-path-v1` for a path containing a space or starting with
-`base64%`, a serverless session failed, or the client could not start, and `2`
+`base64%`, a serverless session failed, a session was cut short (below), or the
+client could not start, and `2`
 (`clients.ExitStatusFailedCommand`, also the status of an invalid flag) when any
 server reported a failed command of the session with `.syn command failed
 <reason>` (capability `command-failure-v1`, `handlers.SessionOutcome.Failures`).
@@ -412,12 +413,25 @@ client (`clientProfile.failedCommandStatus`, set by `readClientProfile`):
 `dtail` follow mode, `dmap` (its scheduled modes handle failures, see "Failed
 scheduled jobs" below) and `dtailhealth` keep their statuses. Servers without
 `command-failure-v1` report nothing, so with them a missing file still exits `0`.
-Known gaps: a session cut short mid-read (no `.syn close connection`, e.g. a
-SIGKILLed dserver) currently exits `0`, as `ServerConnection.handle` returns
-only the dispatch error and the client does not check
-`SessionOutcome.Completed` (scheduled jobs do); in `--plain` server mode a
-payload line starting with `.syn command failed` is taken as a failure report
-(exit `2`) until the plain-mode framing bug is fixed. With
+A session cut short (it ended without `.syn close connection`,
+`handlers.SessionOutcome.Completed` false: e.g. a dserver SIGKILLed, crashed or
+stopped mid-read, or a lost connection) exits `1` (`clients.exitStatusCutShort`
+via `clientProfile.cutShortStatus`, which only `readClientProfile` sets), and the
+client logs `Session ended without the server's close handshake, the output may
+be incomplete` for that server, unless the connection already reported an
+error (handler status above 0; client handlers start at `-1`). A session the
+client ended itself keeps its status: `baseClient.sessionStatus` checks the
+context of all connections (`runSession` passes `ctx`, not the per-connection
+`connCtx`, which the connector cancels itself when its session ends), which
+SIGINT/SIGTERM (cancel of `Client.Start`'s context) and an `--interactive-query`
+`:quit` or control TTY end (cancel of `runConnections`' context) cancel. A
+reported failed command (`2`) outweighs it. Servers of every protocol version
+(since v1.0.0, also the in-process server of serverless mode) send the close
+handshake after a completed session's output, so no capability gates this;
+`--max` stops on the server, which then closes normally.
+Known gap: in `--plain` server mode a payload line starting with `.syn command
+failed` is taken as a failure report (exit `2`) until the plain-mode framing bug
+is fixed. With
 `--interactive-query` the client keeps the failures of every workload of the
 session that reached it, also of workloads a `:reload` replaced; dserver drops
 queued messages of a stale generation (`outputCoordinator.shouldDropGeneration`),

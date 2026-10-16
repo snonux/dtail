@@ -91,7 +91,9 @@ type SessionOutcome struct {
 	// Completed is true when the server ended the session with its close
 	// handshake, after it had sent all of the session's output. A session
 	// that ended otherwise (connection lost, server killed or shut down, the
-	// client canceled it) is incomplete.
+	// client canceled it) is incomplete. An incomplete session the client
+	// did not cancel itself makes dcat and dgrep exit with status 1 (see
+	// clients.exitStatusCutShort).
 	Completed bool
 	// Failures are the distinct reasons of the commands the server reported
 	// as failed (protocol.HiddenCommandFailedPrefix), in the order of their
