@@ -174,21 +174,23 @@ working with every other one:
    handling it may wait for output: a `SESSION START` acks its spec only
    once the server message channel has room, which its reads can fill
    (e.g. with one `Unable to read file(s)` message per missing file), and
-   an unknown command or failed map query that is the session's only
-   command shuts the session down, whose flush waits for the held back
-   output. That shutdown runs on a goroutine of its own
-   (`ServerHandler.finishUserCommand`), not on the command input
-   goroutine, so the client's close acknowledgement is handled at once
-   instead of after the 5 s acknowledgement timeout. The replies of such a command may therefore follow a
-   close handshake queued before it, as they always did before control
-   frames existed; clients acknowledge the close either way. The framing
-   also settles after an escaped framing request when the server does not
-   advertise `control-frames-v1` or the request switched nothing, after
-   the second command in any case, and when the session ends (e.g. its
-   input ended). Clients send the requests in one write, together with or
-   right before their first commands, so the frames are held back for no
-   noticeable time; a held back read does not count as an active one, so a
-   flush with nothing queued does not wait for it either.
+   held back output would never make room. An unknown command or failed
+   map query that is the session's only command does not block the command
+   input goroutine: it starts the session's shutdown, whose flush waits for
+   the output, on a goroutine of its own (`ServerHandler.finishUserCommand`),
+   so the client's close acknowledgement is handled at once instead of
+   after the 5 s acknowledgement timeout. Settling before the command has a
+   cost: its replies may follow a frame queued before it, e.g. the close
+   handshake of a dserver shutting down in the session's first moment, as
+   they always did before control frames existed; clients acknowledge the
+   close either way. The framing also settles after an escaped framing
+   request when the server does not advertise `control-frames-v1` or the
+   request switched nothing, after the second command in any case, and
+   when the session ends (e.g. its input ended). Clients send the requests
+   in one write, together with or right before their first commands, so
+   the frames are held back for no noticeable time; a held back read does
+   not count as an active one, so a flush with nothing queued does not
+   wait for it either.
 5. The client decides the framing from the session's first frame only: if
    that frame is the capabilities frame and lists `escaped-framing-v1` (and
    the client sent the requests), it decodes every later frame as escaped,

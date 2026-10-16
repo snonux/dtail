@@ -287,12 +287,12 @@ func (h *ServerHandler) PendingAndActive() (pending int32, activeCommands int32)
 	return pending, activeCommands
 }
 
-// TriggerShutdown starts the handler shutdown sequence.
+// TriggerShutdown runs the idle shutdown on the calling goroutine if the
+// session is idle and nothing claimed that shutdown yet (claimIdleShutdown).
 func (h *ServerHandler) TriggerShutdown(ctx context.Context) {
-	if h.sessionState.keepAlive() || h.isStopping() {
-		return
+	if h.claimIdleShutdown(h.PendingAndActive()) {
+		h.shutdown(ctx)
 	}
-	h.triggerIdleShutdown(ctx)
 }
 
 // DebugReadLifecycle records shutdown-coordination diagnostics without exposing

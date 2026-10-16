@@ -259,16 +259,22 @@ func (h *ServerHandler) newCommandFinished(ctx context.Context, shutdownOnComple
 // end the session (shouldShutdownOnCommandCompletion), as user commands may
 // still follow in it.
 //
-// The shutdown always runs on a goroutine of its own
-// (idleShutdownAfterCommand). A command can finish on the command input
-// goroutine, e.g. an unknown command or a failed map query, and that
-// goroutine also handles the client's close acknowledgement: a shutdown on
-// it would block until the acknowledgement timeout (5 s) passed. A command
-// queues its output before it calls commandFinished, and the shutdown
-// flushes everything queued before it requests the close, so the close
-// handshake still comes after all of the session's output. The command's context and its commandWg slot are only
-// released once the shutdown returned, as when it ran inline: the shutdown
-// uses that context, and graceful shutdown waits on commandWg.
+// Whether the session is idle is decided, and the idle shutdown claimed,
+// right here (claimIdleShutdown), while the counts read are still current:
+// a command inside an open input batch must not end the session, also not
+// once the batch completed while a later command of it runs. Only the
+// shutdown itself runs on a goroutine of its own (idleShutdownAfterCommand).
+// A command can finish on the command input goroutine, e.g. an unknown
+// command or a failed map query, and that goroutine also handles the
+// client's close acknowledgement: a shutdown on it would block until the
+// acknowledgement timeout (5 s) passed. A command queues its output before
+// it calls commandFinished, and the shutdown flushes everything queued
+// before it requests the close, so the close handshake still comes after all
+// of the session's output.
+//
+// The command's context and its commandWg slot are only released once the
+// shutdown returned, as when it ran inline: the shutdown uses that context,
+// and graceful shutdown waits on commandWg.
 func (h *ServerHandler) finishUserCommand(ctx context.Context, shutdownOnCompletion bool) {
 	handedOver := false
 	defer func() {
@@ -280,9 +286,7 @@ func (h *ServerHandler) finishUserCommand(ctx context.Context, shutdownOnComplet
 	pendingFiles := atomic.LoadInt32(&h.pendingFiles)
 	h.Logger().Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
 
-	// Only shut down if no active commands AND no pending files.
-	if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 &&
-		!h.sessionState.keepAlive() && !h.isStopping() {
+	if shutdownOnCompletion && h.claimIdleShutdown(pendingFiles, activeCommands) {
 		handedOver = true
 		go h.idleShutdownAfterCommand(ctx)
 		return
@@ -293,13 +297,13 @@ func (h *ServerHandler) finishUserCommand(ctx context.Context, shutdownOnComplet
 	cancelCommandContext(ctx)
 }
 
-// idleShutdownAfterCommand runs the idle shutdown finishUserCommand handed
-// over, then releases the finished command's context and commandWg slot.
+// idleShutdownAfterCommand runs the idle shutdown finishUserCommand claimed,
+// then releases the finished command's context and commandWg slot.
 func (h *ServerHandler) idleShutdownAfterCommand(ctx context.Context) {
 	defer h.finishCommand()
 	defer cancelCommandContext(ctx)
 	defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
-	h.triggerIdleShutdown(ctx)
+	h.shutdown(ctx)
 }
 
 // handleAckControl handles the ".ack" control commands. The close
@@ -420,23 +424,30 @@ func (h *ServerHandler) finishCommandBatch(ctx context.Context, batch *commandBa
 	for _, aggregate := range batch.complete() {
 		aggregate.FinishInput()
 	}
-	pending, active := h.PendingAndActive()
-	if pending == 0 && active == 0 && !h.sessionState.keepAlive() && !h.isStopping() {
+	if h.claimIdleShutdown(h.PendingAndActive()) {
 		// The marker is processed by the sole client-to-server writer. Run the
 		// close handshake separately so that writer remains free to deliver its
-		// acknowledgement.
+		// acknowledgement; it was claimed above, with the counts it depends on.
 		go func() {
 			defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
-			h.triggerIdleShutdown(ctx)
+			h.shutdown(ctx)
 		}()
 	}
 }
 
-func (h *ServerHandler) triggerIdleShutdown(ctx context.Context) {
-	if h.commandBatch.isOpen() || !h.idleShutdownStarted.CompareAndSwap(false, true) {
-		return
+// claimIdleShutdown reports whether the session is idle, given its pending
+// file and active command counts, and if so claims its one idle shutdown,
+// which the caller must then run (h.shutdown). The session is not idle while
+// it is kept alive, stopping, or inside an open input batch, whose remaining
+// commands may still follow. Callers that run the shutdown on another
+// goroutine claim it here first, so a later change of these conditions
+// cannot be missed by a check the goroutine would only make later.
+func (h *ServerHandler) claimIdleShutdown(pendingFiles, activeCommands int32) bool {
+	if pendingFiles != 0 || activeCommands != 0 || h.sessionState.keepAlive() ||
+		h.isStopping() || h.commandBatch.isOpen() {
+		return false
 	}
-	h.shutdown(ctx)
+	return h.idleShutdownStarted.CompareAndSwap(false, true)
 }
 
 func shouldShutdownOnCommandCompletion(commandName string) bool {

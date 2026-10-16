@@ -265,15 +265,15 @@ func (f *sessionFramer) settleFraming() {
 // anything either. Later commands find the framing settled already.
 //
 // Settling before such a command, not only after it, matters because the
-// command input goroutine may wait for output while it handles the
-// command: a SESSION START queues its ack after it started its reads, whose
-// messages (e.g. one "Unable to read file(s)" per missing file) can fill the
-// server message channel first, so the ack waits for room. An unknown
+// command input goroutine may wait for output while it handles the command:
+// a SESSION START queues its ack after it started its reads, whose messages
+// (e.g. one "Unable to read file(s)" per missing file) can fill the server
+// message channel first, so the ack waits for room, and Read must be able
+// to drain meanwhile. That is the one case left that blocks: an unknown
 // command or failed map query of an idle session starts the session's
-// shutdown, whose flush waits for Read too; that shutdown runs on a
-// goroutine of its own (ServerHandler.finishUserCommand), so the command
-// input goroutine stays free to handle the client's close acknowledgement.
-// Read must be able to drain meanwhile.
+// shutdown, whose flush waits for Read, on a goroutine of its own
+// (ServerHandler.finishUserCommand), so the command input goroutine returns
+// and stays free to handle the client's close acknowledgement.
 // The cost is that the replies such a command queues may follow a frame
 // queued before it on its own, e.g. the close handshake of a dserver
 // shutting down in the session's first moment; that frame is still encoded
