@@ -179,7 +179,15 @@ working with every other one:
    input goroutine: it starts the session's shutdown, whose flush waits for
    the output, on a goroutine of its own (`ServerHandler.finishUserCommand`),
    so the client's close acknowledgement is handled at once instead of
-   after the 5 s acknowledgement timeout. Settling before the command has a
+   after the 5 s acknowledgement timeout. A command frame the server
+   rejects before any handler ran (a protocol version mismatch, a frame
+   that does not decode, an invalid `timeout N` prefix or options that do
+   not parse) admits no command, so none finishes; when it leaves the
+   session without work (no other command, pending read, open input batch
+   or `SESSION`), it starts the same shutdown the same way
+   (`ServerHandler.frameRejected`), right after its error and failure
+   report, instead of leaving the session open until `IdleSessionTimeoutS`.
+   Settling before the command has a
    cost: its replies may follow a frame queued before it, e.g. the close
    handshake of a dserver shutting down in the session's first moment, as
    they always did before control frames existed; clients acknowledge the

@@ -112,12 +112,21 @@ func TestServerHandlerFailingOnlyCommandsDoNotWaitForTimeouts(t *testing.T) {
 }
 
 // runFailingCommandSession sends the first command frames and then command,
-// acknowledges the close handshake with an ".ack close connection" command
-// frame like a client, checks that the session ends well under a second,
-// i.e. without waiting for the flush timeout (2 s) or the close
-// acknowledgement timeout (5 s), and returns all bytes sent to the client.
+// like runFailingFramesSession.
 func runFailingCommandSession(t *testing.T, handler *ServerHandler, first []string,
 	command string) string {
+	t.Helper()
+	return runFailingFramesSession(t, handler,
+		encodeTestCommands(append(append([]string(nil), first...), command)...))
+}
+
+// runFailingFramesSession writes frames, raw command frames as a client
+// sends them, acknowledges the close handshake with an ".ack close
+// connection" command frame like a client, checks that the session ends well
+// under a second, i.e. without waiting for the flush timeout (2 s) or the
+// close acknowledgement timeout (5 s), and returns all bytes sent to the
+// client.
+func runFailingFramesSession(t *testing.T, handler *ServerHandler, frames string) string {
 	t.Helper()
 	output := &testOutput{}
 	var writeMu sync.Mutex
@@ -125,8 +134,7 @@ func runFailingCommandSession(t *testing.T, handler *ServerHandler, first []stri
 	output.waitForContains(t, protocol.HiddenCapabilitiesPrefix, 5*time.Second)
 
 	started := time.Now()
-	writeTestCommandsWithin(t, handler, &writeMu, 10*time.Second,
-		append(append([]string(nil), first...), command)...)
+	writeTestFramesWithin(t, handler, &writeMu, 10*time.Second, frames)
 	select {
 	case <-readerDone:
 	case <-time.After(10 * time.Second):
@@ -138,21 +146,35 @@ func runFailingCommandSession(t *testing.T, handler *ServerHandler, first []stri
 	return output.String()
 }
 
-// writeTestCommandsWithin writes commands as command frames in one write and
-// fails the test unless the write returns within timeout, i.e. unless the
-// command input goroutine handled them all.
+// writeTestCommandsWithin writes commands as command frames in one write,
+// like writeTestFramesWithin.
 func writeTestCommandsWithin(t *testing.T, handler *ServerHandler, writeMu *sync.Mutex,
 	timeout time.Duration, commands ...string) {
 	t.Helper()
+	writeTestFramesWithin(t, handler, writeMu, timeout, encodeTestCommands(commands...))
+}
+
+// encodeTestCommands returns commands as command frames, like a client
+// sends them.
+func encodeTestCommands(commands ...string) string {
 	var frames strings.Builder
 	for _, command := range commands {
 		frames.WriteString(encodeTestCommand(command))
 	}
+	return frames.String()
+}
+
+// writeTestFramesWithin writes frames in one write and fails the test unless
+// the write returns within timeout, i.e. unless the command input goroutine
+// handled them all.
+func writeTestFramesWithin(t *testing.T, handler *ServerHandler, writeMu *sync.Mutex,
+	timeout time.Duration, frames string) {
+	t.Helper()
 	written := make(chan error, 1)
 	go func() {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		_, err := handler.Write([]byte(frames.String()))
+		_, err := handler.Write([]byte(frames))
 		written <- err
 	}()
 	select {

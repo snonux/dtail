@@ -19,6 +19,7 @@ const maxCommandTimeoutSeconds = 24 * 60 * 60
 type handleCommandCb func(context.Context, lcontext.LContext, int, []string, string)
 type prepareCommandContextCb func(context.Context, string) (context.Context, func())
 type commandRejectedCb func(context.Context, string)
+type frameRejectedCb func()
 
 type commandCancelKeyType struct{}
 type sessionCommandAdmissionKeyType struct{}
@@ -35,13 +36,21 @@ type commandDispatcher struct {
 	// commandRejectedCb, if set, learns of a command that dispatchCommand
 	// rejected before its handler ran, by command name.
 	commandRejectedCb commandRejectedCb
-	codec             protocolCodec
-	activeCommands    int32
-	commandMu         sync.Mutex
-	commandInitWg     sync.WaitGroup
-	commandWg         sync.WaitGroup
-	stopping          bool
-	aborting          bool
+	// frameRejectedCb, if set, runs after handleCommand rejected a command
+	// frame before any handler ran (protocol version mismatch, undecodable
+	// frame, or a dispatchCommand error such as an invalid timeout prefix
+	// or unparsable options) and queued its error and failure report. No
+	// command was admitted for such a frame, so no command finishes and
+	// nothing else would notice that the session may have no work left.
+	frameRejectedCb frameRejectedCb
+
+	codec          protocolCodec
+	activeCommands int32
+	commandMu      sync.Mutex
+	commandInitWg  sync.WaitGroup
+	commandWg      sync.WaitGroup
+	stopping       bool
+	aborting       bool
 
 	// optionsOnce applies the quiet/plain options of the session's first
 	// command carrying options (handleOptions); later ones change nothing.
@@ -143,6 +152,7 @@ func (d *commandDispatcher) handleCommand(command string) {
 		// No failed-command message here: a client of another protocol
 		// version may not know hidden messages or their framing.
 		h.send(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err)+add)
+		d.frameRejected()
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
@@ -150,6 +160,7 @@ func (d *commandDispatcher) handleCommand(command string) {
 	if err != nil {
 		h.sendln(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, err))
 		h.reportCommandFailure(commandFailureProtocol)
+		d.frameRejected()
 		return
 	}
 
@@ -159,6 +170,17 @@ func (d *commandDispatcher) handleCommand(command string) {
 		cancel()
 		h.sendln(h.serverMessages, logging.ErrorMessage(h.Logger(), h.user, dispatchErr))
 		h.reportCommandFailure(commandFailureRejected)
+		d.frameRejected()
+	}
+}
+
+// frameRejected tells frameRejectedCb, if set, that handleCommand rejected a
+// command frame. It runs after the frame's error and failure report were
+// queued, so a shutdown it starts still sends them before the close
+// handshake.
+func (d *commandDispatcher) frameRejected() {
+	if d.frameRejectedCb != nil {
+		d.frameRejectedCb()
 	}
 }
 

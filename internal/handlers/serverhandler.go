@@ -130,6 +130,7 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 	h.handleCommandCb = h.handleUserCommand
 	h.prepareCommandContextCb = h.prepareCommandContext
 	h.commandRejectedCb = h.commandRejected
+	h.frameRejectedCb = h.frameRejected
 	h.commands = h.newCommandRegistry()
 	h.output.configure(h.outputManagerConfig(), loggers.Diagnostics)
 	h.activeGeneration = h.sessionState.currentGeneration
@@ -424,15 +425,40 @@ func (h *ServerHandler) finishCommandBatch(ctx context.Context, batch *commandBa
 	for _, aggregate := range batch.complete() {
 		aggregate.FinishInput()
 	}
-	if h.claimIdleShutdown(h.PendingAndActive()) {
-		// The marker is processed by the sole client-to-server writer. Run the
-		// close handshake separately so that writer remains free to deliver its
-		// acknowledgement; it was claimed above, with the counts it depends on.
-		go func() {
-			defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
-			h.shutdown(ctx)
-		}()
+	// The marker is processed by the sole client-to-server writer, which
+	// must stay free to deliver the close acknowledgement.
+	h.startIdleShutdown(ctx)
+}
+
+// frameRejected ends a session whose command frame the dispatcher rejected
+// before any handler ran (commandDispatcher.frameRejected: protocol version
+// mismatch, undecodable frame, invalid timeout prefix or unparsable
+// options), when that left the session without work. No command was
+// admitted for such a frame, so finishUserCommand never runs for it, and
+// without this a session whose only command was rejected stayed open until
+// IdleSessionTimeoutS. The frame's error and failure report are already
+// queued, so the close handshake still follows them. A frame rejected inside
+// an open input batch, or while other commands run or a SESSION keeps the
+// session alive, closes nothing (claimIdleShutdown): the batch end or the
+// last command to finish does.
+func (h *ServerHandler) frameRejected() {
+	h.startIdleShutdown(h.connCtx)
+}
+
+// startIdleShutdown claims the session's idle shutdown if the session is
+// idle (claimIdleShutdown) and runs it on a goroutine of its own. Callers
+// run on the command input goroutine, the sole client-to-server writer,
+// which also handles the client's close acknowledgement: a shutdown on it
+// would wait for the acknowledgement timeout (5 s). The claim is made here,
+// synchronously, while the counts it depends on are still current.
+func (h *ServerHandler) startIdleShutdown(ctx context.Context) {
+	if !h.claimIdleShutdown(h.PendingAndActive()) {
+		return
 	}
+	go func() {
+		defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
+		h.shutdown(ctx)
+	}()
 }
 
 // claimIdleShutdown reports whether the session is idle, given its pending

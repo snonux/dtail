@@ -49,7 +49,7 @@ func TestServerHandlerFailingCommandInBatchDoesNotEndSessionEarly(t *testing.T) 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			for i := 0; i < 10; i++ {
-				stream := runBatchedFailingSession(t, tc.failing, cat)
+				stream := runBatchedFailingSession(t, encodeTestCommand(tc.failing), cat)
 				if closes := strings.Count(stream, ".syn close connection"); closes != 1 {
 					t.Fatalf("iteration %d: %d close handshakes, want 1", i, closes)
 				}
@@ -60,8 +60,9 @@ func TestServerHandlerFailingCommandInBatchDoesNotEndSessionEarly(t *testing.T) 
 	}
 }
 
-// runBatchedFailingSession sends failing and cat inside one input batch,
-// waits for the session to end and returns all bytes sent to the client.
+// runBatchedFailingSession sends failing, a raw command frame, and cat
+// inside one input batch, waits for the session to end and returns all
+// bytes sent to the client.
 func runBatchedFailingSession(t *testing.T, failing, cat string) string {
 	t.Helper()
 	handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
@@ -70,8 +71,9 @@ func runBatchedFailingSession(t *testing.T, failing, cat string) string {
 	readerDone := startTestReader(handler, output, &writeMu)
 	output.waitForContains(t, protocol.HiddenCapabilitiesPrefix, 5*time.Second)
 
-	writeTestCommandsWithin(t, handler, &writeMu, 10*time.Second,
-		protocol.InputBatchBeginCommand, failing, cat, protocol.InputBatchCompleteCommand)
+	frames := encodeTestCommand(protocol.InputBatchBeginCommand) + failing +
+		encodeTestCommands(cat, protocol.InputBatchCompleteCommand)
+	writeTestFramesWithin(t, handler, &writeMu, 10*time.Second, frames)
 	select {
 	case <-readerDone:
 	case <-time.After(20 * time.Second):
