@@ -507,6 +507,80 @@ func TestReadOnceWarnsEveryMemberAboutLongLines(t *testing.T) {
 	}
 }
 
+// TestReadOnceReadsLinesAboveTheScannerBuffer checks that the shared one-shot
+// read, which goes through the snapshot reader, delivers a line longer than
+// the pooled 1 MiB scanner buffer of exactly MaxLineLength (2 MiB, where the
+// scanner buffer fills at exactly the limit) whole and without a warning, and
+// splits a line one byte longer with exactly one warning per member, as a
+// private read does.
+func TestReadOnceReadsLinesAboveTheScannerBuffer(t *testing.T) {
+	const limit = 2 * 1024 * 1024
+	exact := strings.Repeat("x", limit)
+	tests := []struct {
+		name         string
+		content      string
+		wantLines    []string
+		wantWarnings int
+	}{
+		{name: "line of exactly MaxLineLength", content: "a\n" + exact + "\nb\n",
+			wantLines: []string{"a\n", exact + "\n", "b\n"}},
+		{name: "line above MaxLineLength", content: "a\n" + exact + "y\nb\n",
+			wantLines: []string{"a\n", exact, "y\n", "b\n"}, wantWarnings: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeFile(t, tt.content)
+			hub := New(Options{Logger: textLogger{}, GroupWait: time.Hour, MaxLineLength: limit})
+			group := Group{ID: "g", Members: 2}
+			members := []*testMember{
+				startGroupMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group),
+				startGroupMember(t, hub, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), group),
+			}
+			private := privateSnapshotSplitAt(t, omode.CatClient, path, lcontext.LContext{}, regex.NewNoop(), limit)
+			if got := private.lines(); !reflect.DeepEqual(got, tt.wantLines) {
+				t.Fatalf("private read lines have lengths %v, want %v", textLengths(got), textLengths(tt.wantLines))
+			}
+			want := snapshotLineEvents(private)
+			for _, m := range members {
+				if err := m.wait(t); err != nil {
+					t.Fatalf("ReadOnce() = %v", err)
+				}
+				if got := snapshotLineEvents(m.recorder); !reflect.DeepEqual(got, want) {
+					t.Errorf("member lines differ from the private read (%d lines, want %d)", len(got), len(want))
+				}
+				if got := longLineWarnings(m.messages); got != tt.wantWarnings {
+					t.Errorf("member got %d long-line warnings, want %d", got, tt.wantWarnings)
+				}
+			}
+		})
+	}
+}
+
+// textLengths returns the lengths of texts, to report multi-MiB lines.
+func textLengths(texts []string) []int {
+	lengths := make([]int, len(texts))
+	for i, text := range texts {
+		lengths[i] = len(text)
+	}
+	return lengths
+}
+
+// longLineWarnings counts the long-line warnings queued in messages, which
+// the member's read already finished sending.
+func longLineWarnings(messages chan string) int {
+	count := 0
+	for {
+		select {
+		case message := <-messages:
+			if strings.Contains(message, "Long log line") {
+				count++
+			}
+		default:
+			return count
+		}
+	}
+}
+
 func TestReadOnceRejectsInvalidReads(t *testing.T) {
 	path := writeFile(t, "a\n")
 	hub := newGroupHub(time.Hour)

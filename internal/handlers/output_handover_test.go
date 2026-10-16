@@ -401,7 +401,7 @@ func TestOutputManagerAdoptionAccounting(t *testing.T) {
 		smallSize = outputAdoptMinBytes - 1
 	)
 	// The smallest cap the server handler accepts, for 1 KiB lines.
-	minimumCap := minimumOutputBufferMaxBytes(kib)
+	minimumCap := mustMinimumOutputBufferMaxBytes(t, kib)
 	tests := []struct {
 		name         string
 		maxBytes     int
@@ -681,7 +681,7 @@ func fillBytes(t *testing.T, manager *outputManager, plain bool, lineLen, total 
 func TestOutputQueueHoldsTwoBatchesAtMinimumCap(t *testing.T) {
 	const maxLineLength = 1024
 	for _, plain := range []bool{false, true} {
-		manager := newHandoverTestManager(minimumOutputBufferMaxBytes(maxLineLength))
+		manager := newHandoverTestManager(mustMinimumOutputBufferMaxBytes(t, maxLineLength))
 		retained, buffered, entries := fillUntilBackpressure(t, manager, plain, 99)
 		if entries != 2 || buffered < 2*networkWriterBufferSize {
 			t.Fatalf("plain=%v: queued %d entries with %d payload bytes (%d retained) at the minimum cap, want 2 full batches",

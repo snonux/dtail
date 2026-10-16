@@ -58,12 +58,15 @@ func TestFollowLengthSplitHasNoSyntheticTerminator(t *testing.T) {
 		filter:    newFilteringProcessor(lcontext.LContext{}, processor, regex.NewNoop(), &stats{}, "source"),
 		processor: processor, partialLine: new(bytes.Buffer),
 	}
-	for _, chunk := range []string{"1234", "x\r", "\n"} {
+	// "12345" is one byte above the limit, so it is split off without a
+	// terminator (a pending line of exactly the limit would wait for its
+	// newline instead), and the rest keeps its real CRLF.
+	for _, chunk := range []string{"12345", "x\r", "\n"} {
 		if stop, err := p.processChunk(context.Background(), []byte(chunk)); stop || err != nil {
 			t.Fatalf("processChunk: stop=%v err=%v", stop, err)
 		}
 	}
-	if want := []string{"1234", "x\r\n"}; !reflect.DeepEqual(processor.lines, want) {
+	if want := []string{"12345", "x\r\n"}; !reflect.DeepEqual(processor.lines, want) {
 		t.Fatalf("lines=%q, want=%q", processor.lines, want)
 	}
 }

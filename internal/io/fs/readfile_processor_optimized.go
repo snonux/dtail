@@ -19,11 +19,10 @@ import (
 )
 
 // minReadScannerTokenSize is the smallest maximum token size of the snapshot
-// read scanner and the size of the pooled buffer it starts with (see
-// pool.ScannerBufferPool). The actual maximum follows the configured
-// MaxLineLength (see scannerTokenLimit), so the scanner never asks for a line
-// longer than its buffer may grow.
-const minReadScannerTokenSize = 1024 * 1024
+// read scanner: the size of the pooled buffer it starts with. The actual
+// maximum follows the configured MaxLineLength (see scannerTokenLimit), so the
+// scanner never asks for a line longer than its buffer may grow.
+const minReadScannerTokenSize = pool.ScannerBufferSize
 
 // After a follow read found its file rotated away from the path, it reads the
 // old file to its end, then polls it rotationDrainPollInterval later for lines
@@ -142,15 +141,22 @@ func isEarlyStop(err error) bool {
 // scannerTokenLimit returns the maximum token size of the snapshot read
 // scanner: one byte more than the line limit, so that a line of exactly
 // lineLimit() bytes fits together with its newline, but at least
-// minReadScannerTokenSize. scanLinesWithMaxLength cuts every line at
-// lineLimit() bytes, so a scanner buffer of this size never fills up without a
+// minReadScannerTokenSize. scanLinesWithMaxLength asks for more data while it
+// holds at most lineLimit() bytes without a newline and cuts a line once it
+// holds more, so a scanner buffer of this size never fills up without a
 // token; a smaller one would make bufio.Scanner fail with ErrTooLong on a line
 // longer than the buffer but shorter than MaxLineLength (MaxLineLength above
 // 1 MiB), ending the read and losing every following line.
 //
-// The scanner only grows its buffer this far for a line that long, so the
-// memory a reader holds follows the longest line it read, bounded by
-// MaxLineLength, as the follow read's partial line buffer is.
+// The one extra byte matters when the limit is on bufio.Scanner's doubling
+// sequence from the pooled buffer (1, 2, 4, 8 MiB...): the buffer then fills
+// at exactly lineLimit() bytes, and only the extra byte lets the scanner grow
+// once more to see whether a newline follows, so that a line of exactly the
+// limit stays whole.
+//
+// The scanner grows its buffer by doubling, but never past this limit, so the
+// buffer a reader holds is at most about twice the longest line it read,
+// capped at MaxLineLength + 1 bytes.
 func (f *ReadFile) scannerTokenLimit() int {
 	limit := f.lineLimit()
 	switch {
@@ -163,55 +169,50 @@ func (f *ReadFile) scannerTokenLimit() int {
 	}
 }
 
-// scanLinesWithMaxLength is a custom split function for bufio.Scanner that respects MaxLineLength.
-// It is kept context-aware so long-line warnings can still be dropped when the reader is canceled.
+// scanLinesWithMaxLength is a custom split function for bufio.Scanner that
+// respects MaxLineLength: a line of up to lineLimit() bytes before its newline
+// (or the end of the input) is one token, a longer one is cut into chunks of
+// lineLimit() bytes. It is kept context-aware so long-line warnings can still
+// be dropped when the reader is canceled.
 func (f *ReadFile) scanLinesWithMaxLength(ctx context.Context, data []byte, atEOF bool) (advance int, token []byte, err error) {
 	if atEOF && len(data) == 0 {
 		return 0, nil, nil
 	}
 
 	maxLineLen := f.lineLimit()
-
-	// Look for a newline
 	if i := bytes.IndexByte(data, '\n'); i >= 0 {
-		// Check if the line before the newline exceeds max length
 		if i > maxLineLen {
-			// Line is too long, split it at maxLineLen
-			if !f.warnAboutLongLine(ctx) {
-				return 0, nil, ctx.Err()
-			}
-			return maxLineLen, data[0:maxLineLen], nil
+			return f.splitLongLine(ctx, data, maxLineLen)
 		}
-		// We have a full line within the limit
-		f.warnedAboutLongLine = false // Reset warning for next long line sequence
+		// A full line within the limit ends a sequence of split chunks, so
+		// the next long line warns again.
+		f.warnedAboutLongLine = false
 		return i + 1, data[0 : i+1], nil
 	}
 
-	// If we're at EOF, we have a final, non-terminated line
+	// Without a newline in sight, a line of up to maxLineLen bytes may still
+	// end with the next byte, so ask for more data (scannerTokenLimit leaves
+	// room for it) unless this is the final, non-terminated line; only more
+	// than maxLineLen bytes are a line too long, which matches the
+	// "i > maxLineLen" check above and the follow read.
+	if len(data) > maxLineLen {
+		return f.splitLongLine(ctx, data, maxLineLen)
+	}
 	if atEOF {
-		if len(data) > maxLineLen {
-			// Even at EOF, respect max line length
-			if !f.warnAboutLongLine(ctx) {
-				return 0, nil, ctx.Err()
-			}
-			return maxLineLen, data[0:maxLineLen], nil
-		}
 		return len(data), data, nil
 	}
-
-	// If the line is too long, split it
-	if len(data) >= maxLineLen {
-		// Warn about long line (only once)
-		if !f.warnAboutLongLine(ctx) {
-			return 0, nil, ctx.Err()
-		}
-
-		// Return a chunk up to MaxLineLength
-		return maxLineLen, data[0:maxLineLen], nil
-	}
-
-	// Request more data
 	return 0, nil, nil
+}
+
+// splitLongLine returns the first maxLineLen bytes of data, the start of a
+// line longer than that, as a token of their own, after warning the client
+// about the long line (once per sequence of split chunks). It returns the
+// context's error instead when the reader is canceled during the warning.
+func (f *ReadFile) splitLongLine(ctx context.Context, data []byte, maxLineLen int) (int, []byte, error) {
+	if !f.warnAboutLongLine(ctx) {
+		return 0, nil, ctx.Err()
+	}
+	return maxLineLen, data[0:maxLineLen], nil
 }
 
 // Start reads a log file using buffered line reading and a line processor.
@@ -375,10 +376,12 @@ func (p *followLineProcessor) processChunk(ctx context.Context, data []byte) (bo
 }
 
 // processFragment keeps fragment, the unfinished end of a read of readLen
-// bytes, unless the pending line grew as long as the maximum line length.
+// bytes, unless the pending line grew longer than the maximum line length.
+// A pending line of exactly the maximum length is kept, as the newline that
+// may follow still makes it a whole line, as in a snapshot read.
 func (p *followLineProcessor) processFragment(ctx context.Context, fragment []byte, readLen int) (bool, error) {
 	p.partialLine.Write(fragment)
-	if p.partialLine.Len() < p.file.lineLimit() {
+	if p.partialLine.Len() <= p.file.lineLimit() {
 		return false, nil
 	}
 	if !p.file.warnAboutLongLine(ctx) {

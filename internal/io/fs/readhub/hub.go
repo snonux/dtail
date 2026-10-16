@@ -46,7 +46,7 @@ var ErrReaderFailed = errors.New("shared reader failed")
 type Options struct {
 	// Logger receives the hub's diagnostics.
 	Logger logging.Logger
-	// MaxLineLength is the line length at which the reader splits a line.
+	// MaxLineLength is the line length above which the reader splits a line.
 	MaxLineLength int
 	// RetryInterval is the pause before the reader opens the file again after
 	// a read ended, e.g. because the file was rotated, as the read command's

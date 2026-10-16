@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -218,6 +220,54 @@ func TestOutputBufferConfigRejectsCapBelowMaximumLineEnvelope(t *testing.T) {
 	if err == nil {
 		t.Fatal("validateOutputBufferConfig accepted a cap with no room for framing")
 	}
+}
+
+// TestOutputBufferConfigRejectsOverflowingMaxLineLength checks that a
+// MaxLineLength whose minimum OutputBufferMaxBytes does not fit an int is
+// rejected with a config error instead of wrapping the minimum around to a
+// negative number that every cap passes, and that the largest MaxLineLength
+// whose minimum still fits is checked against the cap as usual.
+func TestOutputBufferConfigRejectsOverflowingMaxLineLength(t *testing.T) {
+	largest := math.MaxInt - outputBufferLineOverhead
+	tests := []struct {
+		name          string
+		maxLineLength int
+		bufferMax     int
+		wantErr       string
+	}{
+		{name: "overflowing by one", maxLineLength: largest + 1, bufferMax: math.MaxInt,
+			wantErr: "is too large"},
+		{name: "largest int", maxLineLength: math.MaxInt, bufferMax: math.MaxInt,
+			wantErr: "is too large"},
+		{name: "largest fitting, cap at the minimum", maxLineLength: largest, bufferMax: math.MaxInt},
+		{name: "largest fitting, cap below the minimum", maxLineLength: largest, bufferMax: math.MaxInt - 1,
+			wantErr: "must be at least"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateOutputBufferConfig(&config.ServerConfig{
+				MaxLineLength:        tt.maxLineLength,
+				OutputBufferMaxBytes: tt.bufferMax,
+			})
+			switch {
+			case tt.wantErr == "" && err != nil:
+				t.Fatalf("validateOutputBufferConfig() = %v, want nil", err)
+			case tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)):
+				t.Fatalf("validateOutputBufferConfig() = %v, want an error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// mustMinimumOutputBufferMaxBytes returns the minimum OutputBufferMaxBytes
+// for maxLineLength, failing the test when it does not fit an int.
+func mustMinimumOutputBufferMaxBytes(t *testing.T, maxLineLength int) int {
+	t.Helper()
+	minimum, ok := minimumOutputBufferMaxBytes(maxLineLength)
+	if !ok {
+		t.Fatalf("minimum OutputBufferMaxBytes for MaxLineLength %d overflows", maxLineLength)
+	}
+	return minimum
 }
 
 func TestOutputManagerCoalescesAndReleasesManyTinyPayloads(t *testing.T) {

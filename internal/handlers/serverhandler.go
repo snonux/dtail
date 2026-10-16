@@ -125,11 +125,19 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 }
 
 // validateOutputBufferConfig prevents a valid maximum-length line from being
-// rejected after protocol framing. Zero values use the safe defaults.
+// rejected after protocol framing. Zero values use the safe defaults. A
+// MaxLineLength so large that the required minimum does not fit an int is
+// rejected as well: the minimum would otherwise wrap around to a negative
+// number and let every OutputBufferMaxBytes pass.
 func validateOutputBufferConfig(serverCfg *config.ServerConfig) error {
 	maxLineLength := positiveIntOrDefault(serverCfg.MaxLineLength, 1024*1024)
 	bufferMaxBytes := positiveIntOrDefault(serverCfg.OutputBufferMaxBytes, defaultOutputBufferMaxBytes)
-	minimum := minimumOutputBufferMaxBytes(maxLineLength)
+	minimum, ok := minimumOutputBufferMaxBytes(maxLineLength)
+	if !ok {
+		return fmt.Errorf("create server handler: MaxLineLength %d is too large: "+
+			"OutputBufferMaxBytes must be at least MaxLineLength + %d, which exceeds the largest supported value %d",
+			maxLineLength, outputBufferLineOverhead, math.MaxInt)
+	}
 	if bufferMaxBytes < minimum {
 		return fmt.Errorf("create server handler: OutputBufferMaxBytes %d must be at least %d for MaxLineLength %d",
 			bufferMaxBytes, minimum, maxLineLength)
@@ -137,19 +145,27 @@ func validateOutputBufferConfig(serverCfg *config.ServerConfig) error {
 	return nil
 }
 
+// outputBufferLineOverhead is what OutputBufferMaxBytes must hold beyond one
+// maximum-length line: a flush can contain the tail of the normal 64 KiB
+// writer batch plus a maximum-length line, so another full batch is reserved
+// as bounded framing/path overhead.
+const outputBufferLineOverhead = 2 * networkWriterBufferSize
+
 // minimumOutputBufferMaxBytes is the smallest OutputBufferMaxBytes accepted
-// for maxLineLength. A flush can contain the tail of the normal 64 KiB writer
-// batch plus a maximum-length line, so another full batch is reserved as
-// bounded framing/path overhead. The output queue copies rather than adopts a
-// batch whose spare capacity would crowd out the next one (see
-// tryEnqueueLocked), so two full batches still queue at this minimum.
-func minimumOutputBufferMaxBytes(maxLineLength int) int {
-	return maxLineLength + 2*networkWriterBufferSize
+// for maxLineLength, maxLineLength + outputBufferLineOverhead. The output
+// queue copies rather than adopts a batch whose spare capacity would crowd
+// out the next one (see tryEnqueueLocked), so two full batches still queue at
+// this minimum. It reports false when the sum does not fit an int.
+func minimumOutputBufferMaxBytes(maxLineLength int) (int, bool) {
+	if maxLineLength > math.MaxInt-outputBufferLineOverhead {
+		return 0, false
+	}
+	return maxLineLength + outputBufferLineOverhead, true
 }
 
 // escapedOutputBufferMaxBytes is the output buffer cap of a session that
 // uses escaped framing: minimumOutputBufferMaxBytes plus another
-// maxLineLength. Escaping replaces each 0xAC and 0xFF byte by two bytes, so
+// maxLineLength, i.e. 2*maxLineLength + outputBufferLineOverhead. Escaping replaces each 0xAC and 0xFF byte by two bytes, so
 // the frame of a maximum-length line can grow to almost twice its raw size,
 // and the batch holding it with it; this cap admits that batch just as the
 // minimum admits the raw one. A session switching to escaped framing raises
@@ -158,11 +174,16 @@ func minimumOutputBufferMaxBytes(maxLineLength int) int {
 // bound of about one more maximum-length line per session. It reports false
 // when the sum does not fit an int; the session then keeps the configured
 // cap (which is then at least about half of math.MaxInt anyway).
+//
+// It builds on minimumOutputBufferMaxBytes, so the escaped cap always exceeds
+// the raw minimum validateOutputBufferConfig enforces by exactly one
+// maxLineLength, and both report an overflow the same way.
 func escapedOutputBufferMaxBytes(maxLineLength int) (int, bool) {
-	if maxLineLength > (math.MaxInt-2*networkWriterBufferSize)/2 {
+	minimum, ok := minimumOutputBufferMaxBytes(maxLineLength)
+	if !ok || maxLineLength > math.MaxInt-minimum {
 		return 0, false
 	}
-	return 2*maxLineLength + 2*networkWriterBufferSize, true
+	return minimum + maxLineLength, true
 }
 
 func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LContext,

@@ -377,7 +377,7 @@
         },
         "MaxLineLength": {
           "type": "integer",
-          "description": "Maximum line length in bytes before a line is split into multiple smaller lines. Shorter lines are read whole, also when the limit is above 1 MiB; a reader then holds a buffer as large as the longest line it read, up to this limit. OutputBufferMaxBytes must be at least MaxLineLength + 131072. 0 or less uses the 1 MiB default. The minimum of 1024 is a recommendation of this schema; dserver uses any positive value as is.",
+          "description": "Maximum line length in bytes before a line is split into multiple smaller lines. Lines of up to this length (without the newline) are read whole, also when the limit is above 1 MiB. A read starts with a 1 MiB buffer and grows it by doubling for longer lines, so each concurrent read can hold a buffer of up to about twice the longest line it read, capped at MaxLineLength + 1 bytes. OutputBufferMaxBytes must be at least MaxLineLength + 131072; dserver refuses a MaxLineLength so large that this sum exceeds the largest integer. 0 or less uses the 1 MiB default. The minimum of 1024 is a recommendation of this schema; dserver uses any positive value as is.",
           "minimum": 1024,
           "default": 1048576
         },

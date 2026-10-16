@@ -886,8 +886,10 @@ func TestReadWithProcessorOptimizedTransfersCurrentBufferBeforeContextPanic(t *t
 			pattern:       "MATCH",
 		},
 		{
-			name:          "forced long line",
-			input:         "x\nMATC",
+			name: "forced long line",
+			// One byte above the limit, so the reader splits it into
+			// "MATC" and "H" instead of reading it as a whole final line.
+			input:         "x\nMATCH",
 			maxLineLength: 4,
 			pattern:       "MATC",
 		},

@@ -315,7 +315,7 @@ func TestServerHandlerDeliversEscapedMaxLengthLinesAtMinimumBuffer(t *testing.T)
 				handler := newFramingTestServerHandlerWithConfig(t, ServerCapabilities("linux", false),
 					&config.ServerConfig{MapreduceLogFormat: "default", AuthKeyEnabled: true,
 						MaxLineLength:        escapedMaxLineLength,
-						OutputBufferMaxBytes: minimumOutputBufferMaxBytes(escapedMaxLineLength)})
+						OutputBufferMaxBytes: mustMinimumOutputBufferMaxBytes(t, escapedMaxLineLength)})
 				stream := runFramingCatSession(t, handler, path, options, true)
 				frames := splitFrames(stream, protocol.EscapedFraming)
 				for _, frame := range frames {
@@ -332,9 +332,9 @@ func TestServerHandlerDeliversEscapedMaxLengthLinesAtMinimumBuffer(t *testing.T)
 }
 
 func TestEscapedFramingRaisesOnlyAnEscapedSessionsBufferCap(t *testing.T) {
-	minimum := minimumOutputBufferMaxBytes(escapedMaxLineLength)
+	minimum := mustMinimumOutputBufferMaxBytes(t, escapedMaxLineLength)
 	escaped, ok := escapedOutputBufferMaxBytes(escapedMaxLineLength)
-	if !ok || escaped != 2*escapedMaxLineLength+2*networkWriterBufferSize {
+	if !ok || escaped != 2*escapedMaxLineLength+outputBufferLineOverhead {
 		t.Fatalf("escapedOutputBufferMaxBytes = %d, %v", escaped, ok)
 	}
 	for _, test := range []struct {
@@ -371,9 +371,12 @@ func TestEscapedOutputBufferMaxBytesRejectsOverflow(t *testing.T) {
 	if _, ok := escapedOutputBufferMaxBytes(math.MaxInt / 2); ok {
 		t.Fatal("escapedOutputBufferMaxBytes accepted a sum that does not fit an int")
 	}
-	largest := (math.MaxInt - 2*networkWriterBufferSize) / 2
+	largest := (math.MaxInt - outputBufferLineOverhead) / 2
 	if got, ok := escapedOutputBufferMaxBytes(largest); !ok || got < largest {
 		t.Fatalf("escapedOutputBufferMaxBytes(%d) = %d, %v", largest, got, ok)
+	}
+	if _, ok := escapedOutputBufferMaxBytes(largest + 1); ok {
+		t.Fatalf("escapedOutputBufferMaxBytes(%d) accepted a sum that does not fit an int", largest+1)
 	}
 }
 
