@@ -7,7 +7,8 @@ import "testing"
 // ended only when every failure is one, so a reason moving between the two
 // kinds changes what a failed scheduled job writes. In particular, output
 // dropped as too large for the session output buffer is no file read
-// failure: the file was read, but its lines were lost on the way.
+// failure: the file was read, but its lines were lost on the way; nor is a
+// map result whose final serialization did not reach the client in full.
 func TestIsFileReadFailure(t *testing.T) {
 	tests := []struct {
 		reason string
@@ -23,6 +24,7 @@ func TestIsFileReadFailure(t *testing.T) {
 		{CommandFailureRejected, false},
 		{CommandFailureUnknown, false},
 		{CommandFailureMapQuery, false},
+		{CommandFailureMapIncomplete, false},
 		{CommandFailureReadCommand, false},
 		{"", false},
 		{"read: a reason this client does not know", false},

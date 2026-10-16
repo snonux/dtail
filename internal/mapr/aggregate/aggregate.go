@@ -70,7 +70,10 @@ type Aggregate struct {
 	// finalizationCtx is fixed when finalization wins the terminal-state
 	// transition. Start may subsequently be the goroutine that executes
 	// finalization, but it must use the graceful caller's output context.
-	finalizationCtx       context.Context
+	finalizationCtx context.Context
+	// finalComplete is set by the finalizer once the final serialization
+	// handed every group to the output channel (see FinalResultComplete).
+	finalComplete         atomic.Bool
 	finalizationOwnerHook func()
 	serializationLoopHook func()
 	serializationTickHook func()
@@ -148,8 +151,22 @@ func (a *Aggregate) countGroups() int {
 // Shutdown finalizes the aggregation while output remains writable.
 // Canceling ctx abandons blocked final sends promptly; the unsent snapshot is
 // re-merged before shutdown completes so cancellation never corrupts state.
+// The final serialization has no deadline of its own: a slow consumer only
+// slows it down (output backpressure), and only the finalization context
+// (the session's) ends it early, see FinalResultComplete.
 func (a *Aggregate) Shutdown(ctx context.Context) {
 	a.shutdown(ctx, false)
+}
+
+// FinalResultComplete reports whether the final serialization ran to its end
+// and handed every group to the output channel. It is false while the
+// finalization still runs, when it never ran (e.g. Abort won the terminal
+// state) and when the finalization context ended before every group was
+// sent: the unsent groups are then re-merged but never reach the client, so
+// a caller about to end the session normally must report the result as
+// incomplete instead (see the handlers' reportIncompleteMapResult).
+func (a *Aggregate) FinalResultComplete() bool {
+	return a.finalComplete.Load()
 }
 
 // shutdown finalizes the aggregate and waits for either completion or the
@@ -166,23 +183,7 @@ func (a *Aggregate) shutdown(ctx context.Context, retainOutput bool) {
 		if a.finalizationOwnerHook != nil {
 			a.finalizationOwnerHook()
 		}
-		func() {
-			defer close(a.shutdownDone)
-			processorsDone := a.sealProcessors()
-			a.done.Shutdown()
-			a.stopSerializeTicker()
-			finalizeCtx, cancel := context.WithTimeout(finalizationCtx, 10*time.Second)
-			defer cancel()
-			// Every processor drains its own batch in Close before it
-			// releases its registration, so once processorsDone is closed all
-			// accepted lines have reached the serializer.
-			select {
-			case <-processorsDone:
-			case <-finalizeCtx.Done():
-				return
-			}
-			a.doSerialize(finalizeCtx)
-		}()
+		a.finalize(finalizationCtx)
 	}
 	if retainOutput {
 		// The finalizer observes finalizationCtx itself. The Start goroutine must
@@ -195,6 +196,38 @@ func (a *Aggregate) shutdown(ctx context.Context, retainOutput bool) {
 	case <-a.shutdownDone:
 	case <-ctx.Done():
 	}
+}
+
+// finalize stops background processing, waits for the processors and sends
+// the final result, then closes shutdownDone. It runs on the one goroutine
+// that won finalization ownership.
+//
+// Neither the processor join nor the final serialization has a deadline of
+// its own; ctx, the output lifetime claimFinalization bound (the session's
+// context in dserver), alone ends them early. A fixed 10 s deadline here used
+// to cut off the sends of a large result to a slow client, and the session
+// then still closed normally, so the client wrote an incomplete outfile and
+// exited 0. A client that stops reading is still bounded: the idle timeout
+// of its connection closes the session, which cancels ctx.
+func (a *Aggregate) finalize(ctx context.Context) {
+	defer close(a.shutdownDone)
+	processorsDone := a.sealProcessors()
+	a.done.Shutdown()
+	a.stopSerializeTicker()
+	// Every processor drains its own batch in Close before it releases its
+	// registration, so once processorsDone is closed all accepted lines have
+	// reached the serializer.
+	select {
+	case <-processorsDone:
+	case <-ctx.Done():
+		a.logger.Warn("Aggregate finalization canceled before its input ended; final result incomplete")
+		return
+	}
+	if !a.doSerialize(ctx) {
+		a.logger.Warn("Aggregate final serialization interrupted; final result incomplete")
+		return
+	}
+	a.finalComplete.Store(true)
 }
 
 // PrepareShutdown claims final serialization and binds the output lifetime
@@ -520,12 +553,13 @@ func (a *Aggregate) Serialize(ctx context.Context) {
 	a.serializer.request(ctx, a.done.Done())
 }
 
-// doSerialize performs the actual serialization.
-func (a *Aggregate) doSerialize(ctx context.Context) {
+// doSerialize performs the actual serialization and reports whether every
+// group was handed to the output (see serializer.serialize).
+func (a *Aggregate) doSerialize(ctx context.Context) bool {
 	if ctx == nil {
 		panic("aggregate: nil serialization context")
 	}
-	a.serializer.serialize(ctx)
+	return a.serializer.serialize(ctx)
 }
 
 // Processor implements the line processor interface for aggregation. Each

@@ -194,6 +194,7 @@ func (h *baseHandler) shutdown(ctx context.Context) {
 	if aggregate := h.getAggregate(); aggregate != nil {
 		h.Logger().Info(h.user, "Shutting down output aggregate in shutdown()")
 		aggregate.Shutdown(ctx)
+		h.reportIncompleteMapResult(aggregate)
 	}
 
 	if err := h.flushContext(ctx); err != nil {
@@ -209,11 +210,27 @@ func (h *baseHandler) shutdown(ctx context.Context) {
 // Reasons a session command reports with reportCommandFailure; the read
 // command has its own (see readCommand.reportFailure).
 const (
-	commandFailureProtocol = protocol.CommandFailureDecode
-	commandFailureRejected = protocol.CommandFailureRejected
-	commandFailureUnknown  = protocol.CommandFailureUnknown
-	commandFailureMapQuery = protocol.CommandFailureMapQuery
+	commandFailureProtocol      = protocol.CommandFailureDecode
+	commandFailureRejected      = protocol.CommandFailureRejected
+	commandFailureUnknown       = protocol.CommandFailureUnknown
+	commandFailureMapQuery      = protocol.CommandFailureMapQuery
+	commandFailureMapIncomplete = protocol.CommandFailureMapIncomplete
 )
+
+// reportIncompleteMapResult reports the session's map command as failed when
+// the final result of its aggregate did not reach the output in full, e.g.
+// because the finalization context ended part way through the groups, or
+// Shutdown returned while the finalization still ran. shutdown calls it
+// before the close handshake, so the client never takes a result with
+// missing groups for a complete one: a scheduled job writes no outfile, as
+// for every failure that is no file read failure.
+func (h *baseHandler) reportIncompleteMapResult(aggregate *mapaggregate.Aggregate) {
+	if aggregate.FinalResultComplete() {
+		return
+	}
+	h.Logger().Warn(h.user, "MapReduce final result did not reach the client in full, reporting a failed command")
+	h.reportCommandFailure(commandFailureMapIncomplete)
+}
 
 // reportCommandFailure tells the client that a command of the session failed
 // (see protocol.HiddenCommandFailedPrefix). Like the error message sent before

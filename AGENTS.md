@@ -433,7 +433,10 @@ status of its connections (`baseClient.runConnections`), so a read failure on
 one server outweighs a connection failure on another. The raise is opt-in per
 client (`clientProfile.failedCommandStatus`, set by `readClientProfile`):
 `dtail` follow mode, `dmap` (its scheduled modes handle failures, see "Failed
-scheduled jobs" below) and `dtailhealth` keep their statuses. Servers without
+scheduled jobs" below) and `dtailhealth` keep their statuses; interactive
+`dmap` thus exits `0` and writes its outfile also after a reported `map:
+incomplete result`, which dserver only sends when a final result was cut off
+(see "Server-Side MapReduce" below). Servers without
 `command-failure-v1` report nothing, so with them a missing file still exits `0`.
 A session cut short (it ended without `.syn close connection`,
 `handlers.SessionOutcome.Completed` false: e.g. a dserver SIGKILLed, crashed or
@@ -520,6 +523,22 @@ validation flags them as stale, while the runtime still ignores them.
   `MaxLineLength` bytes of queued groups (the session queue, the map command's
   16-entry forwarding channel and the forwarder's message in hand). Typical
   groups are a few dozen bytes; the aggregate itself holds all groups anyway.
+- The final serialization of a map command (`Aggregate.finalize` in
+  `internal/mapr/aggregate/aggregate.go`) has no deadline of its own: a slow
+  or paused client only slows it down through output backpressure, and only
+  the session's context (session teardown, dserver shutdown, a replaced
+  generation) or the connection's `IdleSessionTimeoutS` ends it early. It
+  used to stop after a fixed 10 s, dropping the unsent groups while the
+  session still closed normally (an incomplete outfile with exit status 0).
+  Should a final result still not reach the output in full
+  (`Aggregate.FinalResultComplete` false), the session's graceful shutdown
+  reports `.syn command failed map: incomplete result`
+  (`protocol.CommandFailureMapIncomplete`, `reportIncompleteMapResult` in
+  `internal/handlers/basehandler.go`) before the close handshake, so a
+  scheduled job writes no outfile. Interactive `dmap` keeps its exit status
+  and its outfile (see "Client Exit Statuses" below).
+  `integrationtests/dmap_slow_client_test.go` stops a client for 15 s during
+  a 100,000-group final result and requires every group in the outfile.
 
 **Output limits and deadlines (server config):**
 The output path exposes four optional settings: `OutputBufferMaxBytes`,
@@ -723,9 +742,11 @@ failure are told apart:
   `base64%`, `journal-v1` for `journal:` targets), which sets exit status 1;
   and a failed command that is no file read
   failure (`command: unable to decode command`, `command: rejected`,
-  `command: unknown command`, `map: invalid query`, `read: unable to parse
-  command`, `output: too large for the session output buffer`, or a reason
-  the client does not know). The output reason means a read dropped line
+  `command: unknown command`, `map: invalid query`, `map: incomplete result`,
+  `read: unable to parse command`, `output: too large for the session output
+  buffer`, or a reason the client does not know). `map: incomplete result`
+  means the map command's final result did not reach the client in full (see
+  "Server-Side MapReduce" above). The output reason means a read dropped line
   frames that did not fit the session's output buffer (see the output limits
   above); it is no file read failure, as the file was read. A scheduled job's
   server-side MapReduce sends aggregates, not line frames, so it cannot get it.

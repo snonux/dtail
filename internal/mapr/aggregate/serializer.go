@@ -118,21 +118,27 @@ func (s *serializer) loop(ctx context.Context, done <-chan struct{}, tick func()
 	}
 }
 
-func (s *serializer) serialize(ctx context.Context) {
+// serialize sends every group aggregated so far to the output and reports
+// whether all of them were handed over. It reports false when ctx ended
+// before it got the permit or in the middle of the sends (the unsent groups
+// are then re-merged, see mergeRemaining) and when no output is bound. A
+// periodic serialization's unsent groups go out with the next one; the final
+// serialization has no next one (see Aggregate.FinalResultComplete).
+func (s *serializer) serialize(ctx context.Context) bool {
 	if !s.acquire(ctx) {
-		return
+		return false
 	}
 	defer s.release()
 
 	output := s.output.Load()
 	if output == nil {
 		s.logger.Error("Aggregate maprMessages channel is nil")
-		return
+		return false
 	}
 
 	snapshot := s.swapGroupSets()
 	if len(snapshot) == 0 {
-		return
+		return true
 	}
 
 	group := mapr.NewGroupSet(s.logger)
@@ -144,7 +150,9 @@ func (s *serializer) serialize(ctx context.Context) {
 	remaining := group.Serialize(ctx, output.messages)
 	if len(remaining) > 0 {
 		s.mergeRemaining(remaining)
+		return false
 	}
+	return true
 }
 
 // aggregateBatch merges the parsed lines of one batch into their groups under

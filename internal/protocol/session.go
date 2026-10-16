@@ -32,6 +32,12 @@ const (
 	// for each read command following the failed map command of a command
 	// stream, as dserver does not run those reads.
 	CommandFailureMapQuery = "map: invalid query"
+	// CommandFailureMapIncomplete: a map command's final result did not
+	// reach the client in full before the session ended normally, e.g. its
+	// final serialization was canceled part way through its groups. It is no
+	// file read failure: what the client got is missing groups, so a
+	// scheduled job writes no outfile.
+	CommandFailureMapIncomplete = "map: incomplete result"
 	// CommandFailureReadCommand: a read command could not be parsed.
 	CommandFailureReadCommand = "read: unable to parse command"
 	// CommandFailureOutputTooLarge: a read produced output (a batch of line
