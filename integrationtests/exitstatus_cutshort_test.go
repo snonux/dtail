@@ -24,6 +24,18 @@ import (
 // the client.
 const cutShortLines = 400000
 
+// cutShortLookalikes are lines of the file the cut short tests read that
+// look like the server's hidden messages: the close handshake and a command
+// failure (see the client's baseHandler.handleHiddenMessage and
+// protocol.HiddenCommandFailedPrefix). writeCutShortFile writes them ahead of
+// the payload lines, so a client reads them before the test stops the run.
+// The client asks for marked control frames (protocol.ControlFramesCommand),
+// so they reach it as payload: printed, and neither a close handshake that
+// would hide a cut short read nor a command failure. They do not contain
+// exitStatusLine, so they are not counted as payload lines, and dgrep, which
+// greps for that line, does not print them.
+var cutShortLookalikes = []string{".syn close connection", ".syn command failed x"}
+
 // cutShortError is the error dcat and dgrep log for a session cut short (see
 // clients.baseClient.reportCutShort).
 const cutShortError = "Session ended without the server's close handshake"
@@ -72,7 +84,9 @@ type cutShortStop func(control cutShortControl)
 // TestDCatDGrepExitStatusCutShort checks that dcat and dgrep exit with status
 // 1 when dserver is SIGKILLed in the middle of a read, so that the session
 // ends without the server's close handshake, with --plain and with framed
-// output, that the same read exits with status 0 when it completes, and that
+// output, also with a forged close handshake line in the file
+// (cutShortLookalikes), that the same read exits with status 0 when it
+// completes and prints the lookalike lines as payload, and that
 // a client stopped by SIGTERM or a double SIGINT keeps exit status 0 and
 // stops before the read completed (so a signal the client ignored, which lets
 // the read complete with status 0, does not pass).
@@ -101,6 +115,11 @@ func TestDCatDGrepExitStatusCutShort(t *testing.T) {
 			t.Fatalf("dcat exit status = %d with %d of %d lines, want 0 with all lines; output:\n%s",
 				run.exitCode, run.lines, cutShortLines, run.output)
 		}
+		for _, lookalike := range cutShortLookalikes {
+			if !strings.Contains(run.output, lookalike+"\n") {
+				t.Fatalf("dcat output lacks the payload line %q; output:\n%s", lookalike, run.output)
+			}
+		}
 	})
 	for name, stop := range map[string]cutShortStop{"SIGTERM": stopCutShortClientTerm,
 		"double SIGINT": stopCutShortClientInterrupt} {
@@ -127,7 +146,8 @@ func cutShortCommands(file string) []exitStatusCase {
 	}
 }
 
-// writeCutShortFile writes the file of cutShortLines lines the tests read.
+// writeCutShortFile writes the file the tests read: the cutShortLookalikes
+// lines followed by cutShortLines payload lines.
 func writeCutShortFile(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cutshort.log")
@@ -136,6 +156,11 @@ func writeCutShortFile(t *testing.T) string {
 		t.Fatal(err)
 	}
 	writer := bufio.NewWriter(fd)
+	for _, lookalike := range cutShortLookalikes {
+		if _, err := fmt.Fprintln(writer, lookalike); err != nil {
+			t.Fatal(err)
+		}
+	}
 	padding := strings.Repeat("x", 64)
 	for i := 1; i <= cutShortLines; i++ {
 		if _, err := fmt.Fprintf(writer, "%s %07d %s\n", exitStatusLine, i, padding); err != nil {
