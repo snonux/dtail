@@ -77,11 +77,17 @@ func appendPacedSplit(t *testing.T, file *testFile, fast *lastLineProcessor, lin
 
 // A session that cuts long lines, evicted by bursts of cut lines written in
 // parts split in the middle of a line, gets the same pieces with the same
-// numbers and long line warnings as a private follow read of the same
-// MaxLineLength, from the shared reader, its private reader and after it
-// rejoined, across several eviction and rejoin cycles. The evictions happen
-// at the end of a line (see appendPacedSplit); after a rejoin, a cut line
-// written in two parts reaches the session through the shared reader.
+// numbers as a private follow read of the same MaxLineLength, from the shared
+// reader, its private reader and after it rejoined, across several eviction
+// and rejoin cycles. The evictions happen at the end of a line (see
+// appendPacedSplit); after a rejoin, a cut line written in two parts reaches
+// the session through the shared reader. Long line warnings are not compared
+// here: an eviction that queued a cut line's warning but not the chunk of the
+// line has the session send the drained warning and its private reader,
+// which reads the line again, warn about it once more (see subscriber.drain),
+// so the session can get one warning more than the private read.
+// TestEvictionInTheMiddleOfACutLine counts the warnings of an eviction that
+// is deterministic.
 func TestEvictedSessionRejoinsAcrossBurstsOfCutLines(t *testing.T) {
 	logger := &capturingLogger{}
 	hub := newRejoiningHub(logger)
@@ -216,9 +222,14 @@ func evictAtACut(t *testing.T, hub *Hub, file *testFile, fast *lastLineProcessor
 	return int64(len("pause\n") + cutLineLength)
 }
 
-// rejoinAfterACut writes a cut line the evicted slow session reads privately,
-// waits until it rejoined, and writes a cut line in two parts and a last line
-// through the shared reader, each once both sessions got the one before.
+// rejoinAfterACut writes a cut line and waits until both sessions got it and
+// the evicted slow session rejoined, then writes a cut line in two parts and
+// a last line, which slow gets through the shared reader, each once both
+// sessions got the one before. Whether slow reads the first cut line (the
+// E/F/G line) privately or from the shared reader depends on timing: its
+// private reader may already have rejoined at the end of the evicted line,
+// before that line is written, or rejoin only after reading it. Either way
+// slow must get the same pieces as the private read.
 func rejoinAfterACut(t *testing.T, hub *Hub, file *testFile, fast *lastLineProcessor,
 	slow *follower, private *recorder) {
 

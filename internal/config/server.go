@@ -82,7 +82,9 @@ type ServerConfig struct {
 	// the "\r" of a CRLF ending, that file reads pass on whole; a longer line
 	// is cut into pieces of this length. journal: targets do not use it yet:
 	// their reader (internal/io/journal) reads entries of up to 1 MiB whole
-	// and does not cut them at MaxLineLength.
+	// and does not cut them at MaxLineLength, and a journal entry longer than
+	// 1 MiB currently ends the journal read with an error (bufio.Scanner:
+	// token too long) instead of being cut, until task 3f3 fixes this.
 	MaxLineLength int
 	// The user permissions.
 	Permissions Permissions `json:",omitempty"`
@@ -120,7 +122,11 @@ type ServerConfig struct {
 	ReadGlobRetryIntervalMs int `json:",omitempty"`
 	// Retry interval for re-reading in tail/cat loops in milliseconds.
 	ReadRetryIntervalMs int `json:",omitempty"`
-	// Maximum payload backing memory retained by the output buffer per SSH session.
+	// Maximum payload backing memory retained by the output buffer per SSH
+	// session. It must be at least MaxLineLength + 131072, otherwise dserver
+	// refuses to start (handlers.ValidateOutputBufferConfig in server.New); a
+	// session using escaped framing raises its own cap to at least
+	// 2*MaxLineLength + 131072.
 	OutputBufferMaxBytes int `json:",omitempty"`
 	// Maximum time to wait for the session reader to drain output, in milliseconds.
 	OutputFlushTimeoutMs int `json:",omitempty"`
