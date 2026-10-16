@@ -17,12 +17,15 @@ func legacyResultRows(g *GroupSet, q *Query, widths bool) ([]result, []int, erro
 	stats := resultStats{percentageTotals: make(map[string]float64), percentileValues: make(map[string][]float64)}
 	for _, set := range g.sets {
 		for _, sc := range q.Select {
-			value := set.FValues[sc.FieldStorage]
+			value, ok := set.FValues[sc.FieldStorage]
 			switch sc.Operation {
 			case Percentage:
 				stats.percentageTotals[sc.FieldStorage] += value
 			case Percentile:
-				stats.percentileValues[sc.FieldStorage] = append(stats.percentileValues[sc.FieldStorage], value)
+				// Mirrors makeResultStats: groups lacking the field are not ranked.
+				if ok {
+					stats.percentileValues[sc.FieldStorage] = append(stats.percentileValues[sc.FieldStorage], value)
+				}
 			}
 		}
 	}

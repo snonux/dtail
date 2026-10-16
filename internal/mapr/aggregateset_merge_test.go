@@ -98,12 +98,27 @@ func TestGlobalGroupSetMergeMissingFields(t *testing.T) {
 }
 
 // TestAggregateSetMergeUnknownOperation verifies that an unknown aggregation
-// still fails the merge, also when the source set lacks that field.
+// still fails the merge, also when the source set lacks that field, and that
+// the failed merge leaves the receiver unchanged: the known operations before
+// the unknown one, and Samples, must not have been merged already.
 func TestAggregateSetMergeUnknownOperation(t *testing.T) {
-	query := &Query{Select: []selectCondition{{FieldStorage: "x", Operation: AggregateOperation(-1)}}}
-	for _, src := range []*AggregateSet{NewAggregateSet(), {FValues: map[string]float64{"x": 1}}} {
-		if err := NewAggregateSet().Merge(query, src); err == nil {
+	query := &Query{Select: []selectCondition{
+		{FieldStorage: "count(y)", Operation: Count},
+		{FieldStorage: "last(z)", Operation: Last},
+		{FieldStorage: "x", Operation: AggregateOperation(-1)},
+	}}
+	sources := []*AggregateSet{NewAggregateSet(), {Samples: 2,
+		FValues: map[string]float64{"x": 1, "count(y)": 2},
+		SValues: map[string]string{"last(z)": "new"}}}
+	for _, src := range sources {
+		dest := &AggregateSet{Samples: 1, FValues: map[string]float64{"count(y)": 1},
+			SValues: map[string]string{"last(z)": "old"}}
+		if err := dest.Merge(query, src); err == nil {
 			t.Fatalf("Merge(%v) error = nil, want unknown aggregation error", src)
+		}
+		if dest.Samples != 1 || len(dest.FValues) != 1 || dest.FValues["count(y)"] != 1 ||
+			len(dest.SValues) != 1 || dest.SValues["last(z)"] != "old" {
+			t.Errorf("Merge(%v) failed but changed the receiver to %v", src, dest)
 		}
 	}
 }

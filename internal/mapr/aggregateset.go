@@ -43,13 +43,21 @@ func (s *AggregateSet) String() string {
 // absent key means "no value", not 0 or "": merging it as one would turn
 // min() of positive or max() of negative values into 0 and blank last() and
 // len(). Skipping it also keeps additive operations from creating keys no
-// line ever had; they render as 0 either way.
+// line ever had: they render as 0 either way, but percentile() ranks only the
+// groups that have the key (GroupSet.makeResultStats).
+//
+// On error (an unknown aggregation, which the query parser rejects) s is left
+// unchanged: every operation is checked before anything is merged, so a caller
+// never ends up with a partially merged set.
 func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
+	for _, sc := range query.Select {
+		if !sc.Operation.mergeable() {
+			return fmt.Errorf("unknown aggregation method '%v'", sc.Operation)
+		}
+	}
 	s.Samples += set.Samples
 	for _, sc := range query.Select {
-		if err := s.mergeField(sc.FieldStorage, sc.Operation, set); err != nil {
-			return err
-		}
+		s.mergeField(sc.FieldStorage, sc.Operation, set)
 	}
 	return nil
 }
@@ -96,9 +104,21 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 	}
 }
 
+// mergeable reports whether Merge knows how to merge op; mergeField handles
+// exactly these operations.
+func (op AggregateOperation) mergeable() bool {
+	switch op {
+	case Count, Sum, Avg, Percentage, Percentile, Min, Max, Last, Len:
+		return true
+	default:
+		return false
+	}
+}
+
 // mergeField merges the value of one storage key of set into s, if set has
-// one (see Merge).
-func (s *AggregateSet) mergeField(storage string, op AggregateOperation, set *AggregateSet) error {
+// one (see Merge). Merge checked op with mergeable before, so an operation
+// not listed here cannot reach it.
+func (s *AggregateSet) mergeField(storage string, op AggregateOperation, set *AggregateSet) {
 	switch op {
 	case Count, Sum, Avg, Percentage, Percentile:
 		if value, ok := set.FValues[storage]; ok {
@@ -123,10 +143,7 @@ func (s *AggregateSet) mergeField(storage string, op AggregateOperation, set *Ag
 			s.setString(storage, value)
 			s.setFloat(storage, set.FValues[storage])
 		}
-	default:
-		return fmt.Errorf("unknown aggregation method '%v'", op)
 	}
-	return nil
 }
 
 // Add a float value.

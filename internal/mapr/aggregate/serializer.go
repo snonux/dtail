@@ -229,7 +229,10 @@ func (s *serializer) mergeRemaining(remaining map[string]*mapr.AggregateSet) {
 		if ok {
 			if err := unsent.Merge(s.query, live); err != nil {
 				// Only an unknown aggregation fails, which the query parser
-				// rejects; keep the live set rather than a partial merge.
+				// rejects. Merge then changed neither set: the live set stays
+				// and the unsent group is dropped (logged here), as a set
+				// that cannot be merged could not be merged by the client
+				// either.
 				s.logger.Error("Aggregate re-merge failed", err.Error(), "group", key)
 				continue
 			}
