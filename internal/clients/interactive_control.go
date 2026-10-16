@@ -61,8 +61,15 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 
 	select {
 	case status := <-statusCh:
+		// The connections ended first: stop the control loop and wait for
+		// it, so that it is done with the TTY before the deferred close. The
+		// session's status decides the exit code; an error of the control
+		// loop at this point (e.g. a TTY write racing with the cancellation)
+		// no longer affects anything and is only logged for debugging.
 		cancel()
-		<-controlErrCh
+		if controlErr := <-controlErrCh; controlErr != nil {
+			c.clientLogger().Debug("Interactive query control stopped after the session ended", controlErr)
+		}
 		return status
 	case controlErr := <-controlErrCh:
 		if controlErr != nil {

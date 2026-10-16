@@ -87,18 +87,19 @@ func startSlottedMember(t *testing.T, hub *Hub, mode omode.Mode, path string, lt
 	go func() { m.done <- hub.ReadOnce(ctx, mode, session, group, acquire) }()
 	t.Cleanup(func() {
 		cancel()
-		<-m.done
+		checkSessionEnd(t, "ReadOnce()", m.done)
 		m.done <- nil
 	})
 	return m
 }
 
-// wait returns what ReadOnce returned.
+// wait returns what ReadOnce returned. It hands nil back to m.done for the
+// cleanup, as the caller checks the result.
 func (m *testMember) wait(t *testing.T) error {
 	t.Helper()
 	select {
 	case err := <-m.done:
-		m.done <- err // for the cleanup
+		m.done <- nil // checked by the caller; see checkSessionEnd
 		return err
 	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("ReadOnce did not return")

@@ -122,7 +122,7 @@ func startPausableFollowerWithMessages(t *testing.T, hub *Hub, file *testFile, l
 	t.Cleanup(func() {
 		pauser.resume()
 		cancel()
-		<-f.done
+		checkSessionEnd(t, "Follow()", f.done)
 	})
 	return f
 }

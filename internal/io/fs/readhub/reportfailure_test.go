@@ -115,7 +115,8 @@ func TestPrivateReadAfterAnEvictionReportsItsFailedReads(t *testing.T) {
 	// when the test failed meanwhile.
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		// The processor's failures are reported and retried, not returned.
+		checkSessionEnd(t, "readPrivately()", done)
 		reading.close()
 	})
 	waitFor(t, "the failure report of the private read", func() bool {

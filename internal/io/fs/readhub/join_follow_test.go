@@ -364,7 +364,7 @@ func TestEvictedSessionGetsTheReaderPanicThatDidNotFit(t *testing.T) {
 
 	select {
 	case err := <-slow.done:
-		slow.done <- err
+		slow.done <- nil // checked here; see checkSessionEnd
 		if !errors.Is(err, ErrReaderFailed) || !errors.Is(err, fs.ErrReaderWorkerPanic) {
 			t.Errorf("Follow() = %v, want an error wrapping ErrReaderFailed and fs.ErrReaderWorkerPanic", err)
 		}

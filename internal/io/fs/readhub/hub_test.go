@@ -258,18 +258,31 @@ func startFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LContext
 	go func() { f.done <- hub.Follow(ctx, session) }()
 	t.Cleanup(func() {
 		cancel()
-		<-f.done
+		checkSessionEnd(t, "Follow()", f.done)
 	})
 	return f
 }
 
-// stop cancels the session and returns what Follow returned.
+// checkSessionEnd receives the result of a session (or read) the cleanup
+// just canceled and fails the test unless it is nil: a canceled session ends
+// without an error. A test that checks a result itself, e.g. an expected
+// failure via stop or wait, hands nil back for the cleanup, so an error here
+// is one no test expected.
+func checkSessionEnd(t *testing.T, what string, done <-chan error) {
+	t.Helper()
+	if err := <-done; err != nil {
+		t.Errorf("%s = %v after cancel, want nil", what, err)
+	}
+}
+
+// stop cancels the session and returns what Follow returned. It hands nil
+// back to f.done for the cleanup, as the caller checks the result.
 func (f *follower) stop(t *testing.T) error {
 	t.Helper()
 	f.cancel()
 	select {
 	case err := <-f.done:
-		f.done <- err // for the cleanup
+		f.done <- nil // checked by the caller; see checkSessionEnd
 		return err
 	case <-time.After(waitBound(t, waitTimeout)):
 		t.Fatal("Follow did not return after its context ended")
@@ -669,7 +682,7 @@ func startFollowerWithPath(t *testing.T, hub *Hub, file *testFile, path string) 
 	go func() { f.done <- hub.Follow(ctx, session) }()
 	t.Cleanup(func() {
 		cancel()
-		<-f.done
+		checkSessionEnd(t, "Follow()", f.done)
 	})
 	return f
 }
@@ -729,7 +742,7 @@ func TestFollowSurvivesAReaderPanic(t *testing.T) {
 			for _, f := range followers {
 				select {
 				case err := <-f.done:
-					f.done <- err
+					f.done <- nil // checked here; see checkSessionEnd
 					if !errors.Is(err, ErrReaderFailed) || !errors.Is(err, fs.ErrReaderWorkerPanic) {
 						t.Errorf("Follow() = %v, want an error wrapping ErrReaderFailed and fs.ErrReaderWorkerPanic", err)
 					}
@@ -839,7 +852,7 @@ func startPrivateFollower(t *testing.T, file *testFile, ltx lcontext.LContext, r
 	go func() { privateDone <- reader.Start(ctx, ltx, private.newProcessor(), re) }()
 	t.Cleanup(func() {
 		cancel()
-		<-privateDone
+		checkSessionEnd(t, "private reference read: Start()", privateDone)
 	})
 	return private
 }

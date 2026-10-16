@@ -112,7 +112,7 @@ func startFastFollower(t *testing.T, hub *Hub, file *testFile) *lastLineProcesso
 	go func() { done <- hub.Follow(ctx, session) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		checkSessionEnd(t, "fast session: Follow()", done)
 	})
 	return processor
 }
@@ -149,7 +149,7 @@ func startGatedFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LCo
 			close(gate)
 		}
 		cancel()
-		<-f.done
+		checkSessionEnd(t, "Follow()", f.done)
 	})
 	return f
 }

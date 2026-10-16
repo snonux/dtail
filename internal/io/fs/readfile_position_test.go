@@ -105,7 +105,10 @@ func TestFollowReaderReportsWhereEachLineEnds(t *testing.T) {
 	go func() { done <- reader.Start(ctx, lcontext.LContext{}, processor, regex.NewNoop()) }()
 	defer func() {
 		cancel()
-		<-done
+		// A follow read that is canceled ends without an error.
+		if err := <-done; err != nil {
+			t.Errorf("Start() = %v after cancel, want nil", err)
+		}
 	}()
 
 	// The reader seeks to the end first; append until it reads what follows.
