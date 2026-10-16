@@ -24,7 +24,10 @@ const (
 type Discovery struct {
 	// To plug in a custom server discovery module.
 	module string
-	// To specify optional server discovery module options.
+	// Optional module options, the part after the colon of "MODULE:options".
+	// They are only an extension point for modules a build adds; the built-in
+	// COMMA and FILE modules ignore them and read the server value instead,
+	// so "comma:a,b" or "file:/path" does not carry the server list.
 	options string
 	// To either filter a server list or to secify an exact list.
 	server string
@@ -36,7 +39,9 @@ type Discovery struct {
 	logger logging.Logger
 }
 
-// New returns a new discovery method.
+// New returns a new discovery method. The method is a module name, optionally
+// followed by ":options" (see the options field); the server list, or the
+// server list file of the FILE module, always comes from server.
 func New(method, server string, order ServerOrder, logger logging.Logger) (*Discovery, error) {
 	module := method
 	options := ""

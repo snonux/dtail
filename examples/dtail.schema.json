@@ -452,7 +452,7 @@
               },
               "Discovery": {
                 "type": "string",
-                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more), optionally with options as MODULE:options. It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
+                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more). It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE; the servers never come from Discovery itself. A MODULE:options suffix is accepted for modules a build adds, but COMMA and FILE ignore it, so comma:server1,server2 or file:/path/to/serverlist still read Servers. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
               },
               "Servers": {
                 "type": "array",
@@ -518,7 +518,7 @@
               },
               "Discovery": {
                 "type": "string",
-                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more), optionally with options as MODULE:options. It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
+                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more). It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE; the servers never come from Discovery itself. A MODULE:options suffix is accepted for modules a build adds, but COMMA and FILE ignore it, so comma:server1,server2 or file:/path/to/serverlist still read Servers. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
               },
               "Servers": {
                 "type": "array",

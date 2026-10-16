@@ -376,3 +376,66 @@ func TestServerListIgnoresWhitespaceAroundTheFilePath(t *testing.T) {
 		t.Fatal("IsServerListFile of a missing file = true, want false")
 	}
 }
+
+// TestBuiltInModulesIgnoreTheirOptions pins the documented Discovery
+// semantics: the options of "MODULE:options" never carry the server list for
+// the built-in modules. COMMA and FILE read the server value, so
+// "comma:other1,other2" yields the server value's list and
+// "file:/other/list" reads the file the server value names, and a server
+// list given only as options is not used.
+func TestBuiltInModulesIgnoreTheirOptions(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	listPath := filepath.Join(dir, "servers.txt")
+	optionsPath := filepath.Join(dir, "options.txt")
+	if err := os.WriteFile(listPath, []byte("alpha\nbeta\n"), 0o600); err != nil {
+		t.Fatalf("write server list file: %v", err)
+	}
+	if err := os.WriteFile(optionsPath, []byte("gamma\n"), 0o600); err != nil {
+		t.Fatalf("write options file: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		server string
+		want   []string
+	}{
+		{name: "comma options ignored", method: "comma:other1,other2", server: "alpha,beta",
+			want: []string{"alpha", "beta"}},
+		{name: "file options ignored", method: "file:" + optionsPath, server: listPath,
+			want: []string{"alpha", "beta"}},
+		// Negative: a server list only in the options is not used.
+		{name: "comma list only in options", method: "comma:other1,other2", server: "",
+			want: []string{""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			finder, err := New(tt.method, tt.server, ServerOrder(99), testLogger)
+			if err != nil {
+				t.Fatalf("New(%q, %q) error = %v", tt.method, tt.server, err)
+			}
+			servers, err := finder.ServerList()
+			if err != nil {
+				t.Fatalf("ServerList() error = %v", err)
+			}
+			if !reflect.DeepEqual(servers, tt.want) {
+				t.Fatalf("ServerList() = %q, want %q", servers, tt.want)
+			}
+		})
+	}
+
+	// Negative: a server list file only in the options is not read; FILE
+	// opens the (missing) file the server value names instead.
+	missing := filepath.Join(dir, "missing")
+	finder, err := New("file:"+optionsPath, missing, ServerOrder(99), testLogger)
+	if err != nil {
+		t.Fatalf("New file discovery with options: %v", err)
+	}
+	if _, err := finder.ServerList(); err == nil || !strings.Contains(err.Error(), missing) {
+		t.Fatalf("ServerList() error = %v, want missing file %q", err, missing)
+	}
+}
