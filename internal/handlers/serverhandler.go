@@ -170,10 +170,11 @@ func minimumOutputBufferMaxBytes(maxLineLength int) (int, bool) {
 
 // escapedOutputBufferMaxBytes is the output buffer cap of a session that
 // uses escaped framing: minimumOutputBufferMaxBytes plus another
-// maxLineLength, i.e. 2*maxLineLength + outputBufferLineOverhead. Escaping replaces each 0xAC and 0xFF byte by two bytes, so
-// the frame of a maximum-length line can grow to almost twice its raw size,
-// and the batch holding it with it; this cap admits that batch just as the
-// minimum admits the raw one. A session switching to escaped framing raises
+// maxLineLength, i.e. 2*maxLineLength + outputBufferLineOverhead. Escaping
+// replaces each 0xAC and 0xFF byte by two bytes, so the frame of a
+// maximum-length line can grow to almost twice its raw size, and the batch
+// holding it with it; this cap admits that batch just as the minimum admits
+// the raw one. A session switching to escaped framing raises
 // its cap to this value when OutputBufferMaxBytes is smaller, so every
 // configuration valid for raw framing keeps working, at a higher memory
 // bound of about one more maximum-length line per session. It reports false
@@ -181,7 +182,7 @@ func minimumOutputBufferMaxBytes(maxLineLength int) (int, bool) {
 // cap (which is then at least about half of math.MaxInt anyway).
 //
 // It builds on minimumOutputBufferMaxBytes, so the escaped cap always exceeds
-// the raw minimum validateOutputBufferConfig enforces by exactly one
+// the raw minimum ValidateOutputBufferConfig enforces by exactly one
 // maxLineLength, and both report an overflow the same way.
 func escapedOutputBufferMaxBytes(maxLineLength int) (int, bool) {
 	minimum, ok := minimumOutputBufferMaxBytes(maxLineLength)

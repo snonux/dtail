@@ -288,12 +288,14 @@ func TestServerHandlerHonoursOnlyAFirstEscapedFramingRequest(t *testing.T) {
 // line no longer fits the minimum raw buffer cap, yet quick to read.
 const escapedMaxLineLength = 256 * 1024
 
-// writeMaxLengthLineFile writes a file holding a short line, one line of
-// exactly escapedMaxLineLength bytes (with its newline) built from unit, and
-// another short line, and returns its path and content.
+// writeMaxLengthLineFile writes a file holding a short line, a line of
+// exactly escapedMaxLineLength bytes before its newline (MaxLineLength does
+// not count the "\n"), built from unit and padded with 'x' when unit does not
+// divide the length, and another short line, and returns its path and content.
 func writeMaxLengthLineFile(t *testing.T, unit string) (string, string) {
 	t.Helper()
-	long := strings.Repeat(unit, (escapedMaxLineLength-1)/len(unit))
+	long := strings.Repeat(unit, escapedMaxLineLength/len(unit)) +
+		strings.Repeat("x", escapedMaxLineLength%len(unit))
 	content := "first line\n" + long + "\n" + "tail line\n"
 	path := filepath.Join(t.TempDir(), "long.log")
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
