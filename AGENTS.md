@@ -255,6 +255,30 @@ Journal targets use `journal:unit.service` syntax. Permission rules should match
 - Journal reads use `journalctl` via `os/exec` only; there is no cgo or `libsystemd` path, and the feature is Linux-only at runtime.
 - Non-follow reads the current journal snapshot once. Follow mode adds `-f -n 0` and keeps restarting `journalctl` until canceled.
 
+### Wire Framing (server-to-client stream)
+Every server-to-client message (frame) ends with `protocol.MessageDelimiter`,
+the single byte 0xAC. That byte is also a UTF-8 continuation byte (`€` is
+E2 82 AC, `Ь` D0 AC, `¬` C2 AC, about 1/64 of all CJK characters), so raw
+framing cuts such lines in two and drops the byte. Sessions therefore
+negotiate escaped framing (`internal/protocol/framing.go`; design in
+`docs/dev/wire_framing.md`):
+- dserver (and the in-process serverless server) advertises capability
+  `escaped-framing-v1` in its capabilities frame, always the first frame and
+  always raw.
+- `NewClientHandler` and `NewMaprHandler` send `.ack framing escaped-v1` as the
+  very first command frame, before `AUTHKEY` and `.ack input begin`, without
+  waiting for the capabilities. The health handler does not (the server's health
+  handler ends the session after the first command).
+- The server switches the session to escaped framing on that request (only if it
+  advertised it, and only after its capabilities frame was encoded); every later
+  frame body has 0xAC replaced by `FF 01` and 0xFF by `FF 02`. The client
+  decodes every frame after a capabilities frame listing the capability as
+  escaped. Valid UTF-8 never contains 0xFF, so frames without 0xAC are
+  byte-identical in both framings.
+- Mixed versions keep the legacy raw framing (and its corruption of such lines):
+  older dservers ignore the unknown `.ack` like any other, and older clients
+  never ask. `ProtocolCompat` stays `4.1`.
+
 ### Client Log Contents: Diagnostics vs Payload
 The default client logger is `fout` (stdout + a daily file at
 `<LogDir>/YYYYMMDD.log`, `LogDir` defaults to `~/log`). The logger and log

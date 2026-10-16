@@ -73,7 +73,10 @@ func NewDirectWriterWithColorizer(writer io.Writer, hostname string, plain, serv
 		format = lineFormatNewline
 	}
 
-	w := newDirectWriter(writer, newLineFormatter(format, hostname, colorizer))
+	// A DirectWriter has no negotiated session framing: in production it only
+	// serves serverless mode, whose line formats write terminal output rather
+	// than frames, so the frame-producing formats keep RawFraming.
+	w := newDirectWriter(writer, newLineFormatter(format, hostname, colorizer, protocol.RawFraming))
 	if serverless {
 		w.messageSink = discardServerMessage
 		if flusher, ok := writer.(interface{ Flush() error }); ok {
@@ -171,7 +174,7 @@ func (w *DirectWriter) writeServerMessage(hostname string, plain bool, message s
 	if plain || len(message) > 0 && message[0] == '.' {
 		kind = protocol.MessagePlain
 	}
-	protocol.EncodeMessage(&w.writeBuf, protocol.Message{
+	protocol.RawFraming.EncodeMessage(&w.writeBuf, protocol.Message{
 		Kind:     kind,
 		Hostname: hostname,
 		Content:  message,
@@ -249,7 +252,8 @@ type NetworkWriter struct {
 var _ LineWriter = (*NetworkWriter)(nil)
 
 // NewNetworkWriter creates a NetworkWriter that batches formatted
-// lines into a 64KB buffer before sending them to the output channel.
+// lines into a 64KB buffer before sending them to the output channel. Its
+// line frames use protocol.RawFraming; see NewFramedNetworkWriter.
 //
 // bufSize is the field the previous bare struct literal in makeWriter
 // omitted. With bufSize left at its zero value the flush condition in
@@ -266,11 +270,22 @@ var _ LineWriter = (*NetworkWriter)(nil)
 func NewNetworkWriter(ctx context.Context, outputLines chan<- []byte,
 	serverMessages chan<- string, hostname string, plain, serverless bool,
 	generation uint64, activeGeneration func() uint64, logger logging.Logger) *NetworkWriter {
+	return NewFramedNetworkWriter(ctx, protocol.RawFraming, outputLines, serverMessages, hostname,
+		plain, serverless, generation, activeGeneration, logger)
+}
+
+// NewFramedNetworkWriter is NewNetworkWriter for a session that negotiated
+// framing: every line frame it formats is written in that framing (see
+// protocol.Framing). Server messages go to serverMessages unframed; the
+// session framer frames them when it sends them.
+func NewFramedNetworkWriter(ctx context.Context, framing protocol.Framing, outputLines chan<- []byte,
+	serverMessages chan<- string, hostname string, plain, serverless bool,
+	generation uint64, activeGeneration func() uint64, logger logging.Logger) *NetworkWriter {
 	format := lineFormatProtocol
 	if plain || serverless {
 		format = lineFormatDelimited
 	}
-	w := newNetworkWriter(ctx, outputLines, newLineFormatter(format, hostname, nil), generation,
+	w := newNetworkWriter(ctx, outputLines, newLineFormatter(format, hostname, nil, framing), generation,
 		activeGeneration, logger)
 	if serverless || serverMessages == nil {
 		w.messageSink = discardServerMessage

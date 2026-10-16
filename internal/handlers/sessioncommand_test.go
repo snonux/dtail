@@ -162,6 +162,7 @@ func TestServerCapabilitiesAdvertisesJournalOnlyOnLinuxWithJournalctl(t *testing
 			want: []string{
 				protocol.CapabilityQueryUpdateV1,
 				protocol.CapabilityCommandFailureV1,
+				protocol.CapabilityEscapedFramingV1,
 				protocol.CapabilityJournalV1,
 			},
 		},
@@ -169,19 +170,22 @@ func TestServerCapabilitiesAdvertisesJournalOnlyOnLinuxWithJournalctl(t *testing
 			name:                "linux without journalctl",
 			goos:                "linux",
 			journalctlAvailable: false,
-			want:                []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1},
+			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
+				protocol.CapabilityEscapedFramingV1},
 		},
 		{
 			name:                "non linux with journalctl",
 			goos:                "freebsd",
 			journalctlAvailable: true,
-			want:                []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1},
+			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
+				protocol.CapabilityEscapedFramingV1},
 		},
 		{
 			name:                "non linux without journalctl",
 			goos:                "darwin",
 			journalctlAvailable: false,
-			want:                []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1},
+			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
+				protocol.CapabilityEscapedFramingV1},
 		},
 	}
 

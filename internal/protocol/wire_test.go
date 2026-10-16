@@ -23,7 +23,7 @@ func TestLineCodecRoundTrip(t *testing.T) {
 	}
 
 	var encoded bytes.Buffer
-	EncodeLine(&encoded, line)
+	RawFraming.EncodeLine(&encoded, line)
 
 	got, err := DecodeLine(encodedPayload(t, &encoded))
 	if err != nil {
@@ -99,7 +99,7 @@ func TestMessageCodec(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var encoded bytes.Buffer
-			EncodeMessage(&encoded, test.want)
+			RawFraming.EncodeMessage(&encoded, test.want)
 
 			got, err := DecodeMessage(encodedPayload(t, &encoded))
 			if err != nil {

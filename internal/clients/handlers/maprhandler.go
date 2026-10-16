@@ -12,13 +12,12 @@ import (
 type MaprHandler struct {
 	baseHandler
 	aggregate *client.Aggregate
-	removedNl bool
 }
 
 // NewMaprHandler returns a new mapreduce client handler.
 func NewMaprHandler(server string, session *client.SessionState, logger clientlog.Logger) *MaprHandler {
 	logger = clientlog.OrNop(logger)
-	return &MaprHandler{
+	h := &MaprHandler{
 		baseHandler: baseHandler{
 			server:         server,
 			shellStarted:   false,
@@ -32,38 +31,44 @@ func NewMaprHandler(server string, session *client.SessionState, logger clientlo
 		},
 		aggregate: client.NewAggregate(server, session, logger),
 	}
+	h.requestEscapedFraming()
+	return h
 }
 
-// Read data from the dtail server via Writer interface.
+// Write receives data from the dtail server via the io.Writer interface.
+// Newlines are dropped from every message, so an aggregate frame's trailing
+// newline does not reach the aggregate parser; a non-aggregate message gets
+// exactly one trailing newline back from handleMessage. Each message is
+// decoded in the session framing (see baseHandler.decodeFrame), so group keys
+// and values containing e.g. '€' are not cut at their 0xAC byte.
 func (h *MaprHandler) Write(p []byte) (n int, err error) {
 	for _, b := range p {
 		switch b {
 		case '\n':
-			h.removedNl = true
 		case protocol.MessageDelimiter:
-			message := h.receiveBuf.String()
-			if len(message) == 0 {
-				h.receiveBuf.Reset()
-				h.removedNl = false
-				continue
-			}
-			h.log().Debug(message)
-			if aggregateMessage, decodeErr, ok := decodeAggregateMessage(message); ok {
-				h.handleAggregateMessage(message, aggregateMessage, decodeErr)
-			} else {
-				if h.removedNl {
-					h.receiveBuf.WriteByte('\n')
-				}
-				h.handleMessage(h.receiveBuf.Bytes())
-			}
+			h.handleFrame()
 			h.receiveBuf.Reset()
-			h.removedNl = false
 		default:
 			h.receiveBuf.WriteByte(b)
 		}
 	}
 
 	return len(p), nil
+}
+
+// handleFrame handles the message accumulated in receiveBuf.
+func (h *MaprHandler) handleFrame() {
+	if h.receiveBuf.Len() == 0 {
+		return
+	}
+	frame := h.decodeFrame(h.receiveBuf.Bytes())
+	message := string(frame)
+	h.log().Debug(message)
+	if aggregateMessage, decodeErr, ok := decodeAggregateMessage(message); ok {
+		h.handleAggregateMessage(message, aggregateMessage, decodeErr)
+		return
+	}
+	h.handleMessage(frame)
 }
 
 // isAggregateMessage reports whether a wire message starts with a mapreduce

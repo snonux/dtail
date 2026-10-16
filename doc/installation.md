@@ -151,6 +151,7 @@ A few pointers beyond the table:
 * **Auth-key fast reconnect**: ``AuthKeyEnabled``/``AuthKeyTTLSeconds``/``AuthKeyMaxPerUser`` tune the in-memory auth-key cache, see [auth-key-fast-reconnect.md](auth-key-fast-reconnect.md).
 * **Session/output tuning**: ``IdleSessionTimeoutS`` plus the ``Output*`` keys above bound idle sessions and slow clients; ``SharedReadsDisable`` trades the shared-read optimization for per-session readers; ``MaxConnections``/``MaxConcurrentCats``/``MaxConcurrentTails`` size the connection and read slots.
 * **Journal support**: dserver advertises the ``journal-v1`` capability on Linux when ``journalctl`` is on ``PATH``; clients can then read ``journal:unit.service`` targets (permission rules must match the full ``journal:...`` target).
+* **UTF-8 lines with `€`, `¬`, `Ь`**: dserver advertises the ``escaped-framing-v1`` capability. Only when both the client and dserver are of this version or newer are such characters (whose UTF-8 encoding contains the protocol's 0xAC message delimiter byte) transferred intact; with an older client or an older dserver, server-mode output still splits those lines as before. Upgrade both sides to get them unchanged.
 * **Scheduled and continuous MapReduce jobs**: the ``Schedule`` and ``Continuous`` config arrays run MapReduce queries periodically (``TimeRange`` hours) or continuously and write CSV outfiles; see the config schema for the job fields.
 
 # Start it

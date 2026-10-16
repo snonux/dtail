@@ -13,4 +13,20 @@ const (
 	// CapabilityCommandFailureV1 marks that the server reports failed session
 	// commands with a hidden HiddenCommandFailedPrefix message.
 	CapabilityCommandFailureV1 = "command-failure-v1"
+
+	// CapabilityEscapedFramingV1 marks that the server switches a session to
+	// EscapedFraming when the client sends EscapedFramingCommand. The
+	// capabilities frame is the first frame of a session and is always sent
+	// in RawFraming; a client that sent EscapedFramingCommand decodes every
+	// frame after a capabilities frame listing this capability as escaped.
+	CapabilityEscapedFramingV1 = "escaped-framing-v1"
 )
+
+// EscapedFramingCommand asks the server to escape every frame it sends after
+// its capabilities frame (see Framing). Clients send it as the very first
+// command of a session, before any command that produces output, and without
+// waiting for the capabilities: servers that do not advertise
+// CapabilityEscapedFramingV1 ignore it like any other ".ack" they do not know
+// and keep RawFraming, and older clients never send it, so their sessions
+// stay on RawFraming too.
+const EscapedFramingCommand = ".ack framing escaped-v1"

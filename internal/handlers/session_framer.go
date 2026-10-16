@@ -2,7 +2,11 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/mimecast/dtail/internal/protocol"
 )
@@ -10,12 +14,35 @@ import (
 // sessionFramer owns byte-stream boundaries in both directions. The SSH
 // transport presents arbitrary chunks, so command frames and output messages
 // must retain partial bytes across calls.
+//
+// It also owns the session's output framing (see protocol.Framing). A session
+// starts in RawFraming and switches to EscapedFraming at most once, when the
+// client asks for it (enableEscapedFraming). The switch waits until the
+// capabilities frame, the first frame of the session, has been encoded, so
+// that frame is always raw and the client, which decodes every frame after
+// it as escaped, agrees with the server on every frame.
 type sessionFramer struct {
 	handler  *baseHandler
 	readBuf  bytes.Buffer
 	writeBuf bytes.Buffer
 
 	maxCommandFrameSize int
+
+	// escaped is set once the session switched to EscapedFraming. It is
+	// written by the command input goroutine and read by the output
+	// goroutine (Read) and by the command goroutines creating line writers.
+	escaped atomic.Bool
+	// capabilitiesFramed is closed once Read encoded the capabilities frame.
+	capabilitiesFramed     chan struct{}
+	capabilitiesFramedOnce sync.Once
+}
+
+func newSessionFramer(handler *baseHandler, maxCommandFrameSize int) *sessionFramer {
+	return &sessionFramer{
+		handler:             handler,
+		maxCommandFrameSize: maxCommandFrameSize,
+		capabilitiesFramed:  make(chan struct{}),
+	}
 }
 
 // Read emits one or more bytes from the next coordinated output item.
@@ -91,10 +118,13 @@ func (f *sessionFramer) readServerMessage(p []byte, message string) int {
 	}
 	message = decodedMessage
 	if len(message) > 0 && message[0] == '.' {
-		protocol.EncodeMessage(&f.readBuf, protocol.Message{
+		f.framing().EncodeMessage(&f.readBuf, protocol.Message{
 			Kind:    protocol.MessagePlain,
 			Content: message,
 		})
+		if strings.HasPrefix(message, protocol.HiddenCapabilitiesPrefix) {
+			f.capabilitiesFramedOnce.Do(func() { close(f.capabilitiesFramed) })
+		}
 		return f.drainReadBuf(p)
 	}
 	if h.serverless || h.plain && (message == "" || message == "\n") {
@@ -104,7 +134,7 @@ func (f *sessionFramer) readServerMessage(p []byte, message string) int {
 	if h.plain {
 		kind = protocol.MessagePlain
 	}
-	protocol.EncodeMessage(&f.readBuf, protocol.Message{
+	f.framing().EncodeMessage(&f.readBuf, protocol.Message{
 		Kind:     kind,
 		Hostname: h.hostname,
 		Content:  message,
@@ -118,12 +148,39 @@ func (f *sessionFramer) readMaprMessage(p []byte, message string) int {
 	if h.shouldDropGeneration(generation) {
 		return 0
 	}
-	protocol.EncodeMessage(&f.readBuf, protocol.Message{
+	f.framing().EncodeMessage(&f.readBuf, protocol.Message{
 		Kind:     protocol.MessageAggregate,
 		Hostname: h.hostname,
 		Content:  decodedMessage,
 	})
 	return f.drainReadBuf(p)
+}
+
+// framing returns the framing of the frames the session encodes from now on.
+func (f *sessionFramer) framing() protocol.Framing {
+	if f.escaped.Load() {
+		return protocol.EscapedFraming
+	}
+	return protocol.RawFraming
+}
+
+// enableEscapedFraming switches the session to EscapedFraming once the
+// capabilities frame has been encoded. It runs on the command input
+// goroutine, so no later command of the session is handled, and none of
+// its frames encoded, before the switch. It gives up without switching when
+// ctx or the session ends first. In practice it does not wait at all: the
+// capabilities frame is queued when the session handler is built, before the
+// client can send anything.
+func (f *sessionFramer) enableEscapedFraming(ctx context.Context) bool {
+	select {
+	case <-f.capabilitiesFramed:
+	case <-ctx.Done():
+		return false
+	case <-f.handler.done.Done():
+		return false
+	}
+	f.escaped.Store(true)
+	return true
 }
 
 func (f *sessionFramer) drainReadBuf(p []byte) int {

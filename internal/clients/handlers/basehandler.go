@@ -38,14 +38,25 @@ type baseHandler struct {
 	// the buffer io.Copy hands to Read (32KB), so the remainder is kept here
 	// and drained by subsequent Read calls instead of being dropped, which
 	// would corrupt the server-side command stream. Only touched by Read
-	// (single output-copy goroutine).
+	// (single output-copy goroutine), and by requestEscapedFraming before the
+	// handler is used.
 	pendingCommand []byte
 	// lineBuf is scratch space for appending the newline to a payload message
 	// that lacks one. It is released after a message that grew it beyond
 	// maxRetainedLineBufBytes. Only touched by Write (single input-copy
 	// goroutine).
 	lineBuf []byte
-	status  int
+	// frameBuf is scratch space for decoding an escaped frame (see
+	// decodeFrame); released like lineBuf. Only touched by Write.
+	frameBuf []byte
+	status   int
+
+	// escapedFramingRequested is set when the handler sends
+	// protocol.EscapedFramingCommand as its first frame. escapedFraming is
+	// set once the server's capabilities frame confirmed it: every frame
+	// after that one is decoded as protocol.EscapedFraming.
+	escapedFramingRequested bool
+	escapedFraming          atomic.Bool
 
 	capabilitiesMu sync.RWMutex
 	capabilities   map[string]struct{}
@@ -168,7 +179,7 @@ func (h *baseHandler) SendMessage(command string) error {
 	h.log().Debug("Sending command", h.server, loggedCommand, loggedEncoded)
 
 	select {
-	case h.commands <- fmt.Sprintf("protocol %s base64 %v;", protocol.ProtocolCompat, encoded):
+	case h.commands <- commandFrame(encoded):
 	case <-time.After(time.Second * 5):
 		return fmt.Errorf("timed out sending command '%s' (base64: '%s')", loggedCommand, loggedEncoded)
 	case <-h.Done():
@@ -178,10 +189,51 @@ func (h *baseHandler) SendMessage(command string) error {
 	return nil
 }
 
+// requestEscapedFraming makes protocol.EscapedFramingCommand the first frame
+// Read sends, ahead of every command passed to SendMessage (e.g. AUTHKEY and
+// the read commands), whichever connector drives the handler. Servers that do
+// not advertise protocol.CapabilityEscapedFramingV1 ignore it, so the session
+// then keeps raw framing. It must be called before the handler is used.
+func (h *baseHandler) requestEscapedFraming() {
+	h.escapedFramingRequested = true
+	h.pendingCommand = []byte(commandFrame(
+		base64.StdEncoding.EncodeToString([]byte(protocol.EscapedFramingCommand))))
+}
+
+// commandFrame frames a base64-encoded command for the server.
+func commandFrame(encodedCommand string) string {
+	return fmt.Sprintf("protocol %s base64 %v;", protocol.ProtocolCompat, encodedCommand)
+}
+
+// framing returns the framing of the frames received from now on.
+func (h *baseHandler) framing() protocol.Framing {
+	if h.escapedFraming.Load() {
+		return protocol.EscapedFraming
+	}
+	return protocol.RawFraming
+}
+
+// decodeFrame returns the body of a received frame (without its delimiter)
+// in the session framing. The result aliases frame or frameBuf and is only
+// valid until the next decodeFrame call; frame itself is never modified.
+func (h *baseHandler) decodeFrame(frame []byte) []byte {
+	decoded := h.framing().DecodeFrame(frame, &h.frameBuf)
+	if cap(h.frameBuf) > maxRetainedLineBufBytes {
+		// decoded stays valid: only the handler's reference is dropped, so
+		// an oversized frame does not pin its buffer (same policy as lineBuf).
+		h.frameBuf = nil
+	}
+	return decoded
+}
+
 // Write receives data from the dtail server via the io.Writer interface.
 //
 // The stream is a sequence of messages terminated by protocol.MessageDelimiter;
-// newlines are ordinary payload bytes. Each chunk is scanned with
+// newlines are ordinary payload bytes. Each message is decoded in the session
+// framing (decodeFrame) before it is handled; under escaped framing no
+// payload byte equals the delimiter, so a line containing e.g. '€' (whose
+// UTF-8 encoding ends in the delimiter byte 0xAC) stays one message. Each
+// chunk is scanned with
 // bytes.IndexByte instead of byte by byte. A message that lies completely
 // inside p is handled as a sub-slice of p without copying; only the unfinished
 // tail of a chunk is kept in receiveBuf until a later chunk completes it.
@@ -196,10 +248,10 @@ func (h *baseHandler) Write(p []byte) (n int, err error) {
 			break
 		}
 		if h.receiveBuf.Len() == 0 {
-			h.handleMessage(p[:end])
+			h.handleMessage(h.decodeFrame(p[:end]))
 		} else {
 			h.receiveBuf.Write(p[:end])
-			h.handleMessage(h.receiveBuf.Bytes())
+			h.handleMessage(h.decodeFrame(h.receiveBuf.Bytes()))
 			h.receiveBuf.Reset()
 		}
 		p = p[end+1:]
@@ -404,6 +456,13 @@ func (h *baseHandler) handleCapabilitiesMessage(message string) {
 			continue
 		}
 		h.capabilities[capability] = struct{}{}
+	}
+	// The server switches to escaped framing right after this frame when it
+	// advertises the capability and got our request (see
+	// protocol.CapabilityEscapedFramingV1); this runs on the Write goroutine,
+	// so the next frame is already decoded accordingly.
+	if _, ok := h.capabilities[protocol.CapabilityEscapedFramingV1]; ok && h.escapedFramingRequested {
+		h.escapedFraming.Store(true)
 	}
 
 	h.capabilitiesOk.Do(func() {

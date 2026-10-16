@@ -80,10 +80,7 @@ func newBaseHandler(connCtx context.Context, cfg baseHandlerConfig) *baseHandler
 		done:             internal.NewDone(),
 		user:             cfg.user,
 	}
-	h.sessionFramer = &sessionFramer{
-		handler:             h,
-		maxCommandFrameSize: cfg.maxCommandFrameSize,
-	}
+	h.sessionFramer = newSessionFramer(h, cfg.maxCommandFrameSize)
 	h.commandDispatcher = &commandDispatcher{
 		handler: h,
 		codec:   newProtocolCodec(cfg.user, cfg.logger),

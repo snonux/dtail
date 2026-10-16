@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -37,6 +38,10 @@ type ServerHandler struct {
 	sessionState        sessionCommandState
 	commandBatch        commandBatch
 	idleShutdownStarted atomic.Bool
+	// escapedFramingAdvertised is set when the session's capabilities frame
+	// lists protocol.CapabilityEscapedFramingV1, the only case in which the
+	// client's protocol.EscapedFramingCommand switches the session framing.
+	escapedFramingAdvertised bool
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
 }
@@ -102,6 +107,8 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 		authKeyStore: dependencies.AuthKeyStore,
 		colorizer:    dependencies.Colorizer,
 		regex:        ".",
+		escapedFramingAdvertised: slices.Contains(dependencies.Capabilities,
+			protocol.CapabilityEscapedFramingV1),
 	}
 	h.handleCommandCb = h.handleUserCommand
 	h.prepareCommandContextCb = h.prepareCommandContext
@@ -143,23 +150,8 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	argc int, args []string, commandName string) {
 
 	h.Logger().Debug(h.user, "Handling user command", argc, argsForLog(args))
-	// The close acknowledgement completes an existing shutdown handshake; it
-	// is protocol control traffic rather than new workload. Process it even
-	// after graceful shutdown has sealed command admission, and keep it out of
-	// commandWg so shutdown never waits on its own acknowledgement.
 	if strings.EqualFold(commandName, ".ack") {
-		if isInputBatchBegin(argc, args) {
-			h.BeginCommandBatch()
-			cancelCommandContext(ctx)
-			return
-		}
-		if isInputBatchComplete(argc, args) {
-			h.completeCommandBatch(h.connCtx)
-			cancelCommandContext(ctx)
-			return
-		}
-		h.handleAckCommand(argc, args)
-		cancelCommandContext(ctx)
+		h.handleAckControl(ctx, argc, args)
 		return
 	}
 	shutdownOnCompletion := shouldShutdownOnCommandCompletion(commandName)
@@ -210,6 +202,44 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	}
 
 	handler(ctx, ltx, argc, args, commandFinished)
+}
+
+// handleAckControl handles the ".ack" control commands. The close
+// acknowledgement completes an existing shutdown handshake; it is protocol
+// control traffic rather than new workload. All of them are processed even
+// after graceful shutdown has sealed command admission, and kept out of
+// commandWg so shutdown never waits on its own acknowledgement. Unknown ones
+// are ignored (handleAckCommand), which is what lets a client send
+// protocol.EscapedFramingCommand to servers that do not know it.
+func (h *ServerHandler) handleAckControl(ctx context.Context, argc int, args []string) {
+	defer cancelCommandContext(ctx)
+	switch {
+	case isInputBatchBegin(argc, args):
+		h.BeginCommandBatch()
+	case isInputBatchComplete(argc, args):
+		h.completeCommandBatch(h.connCtx)
+	case isEscapedFramingRequest(argc, args):
+		h.handleEscapedFramingRequest(ctx)
+	default:
+		h.handleAckCommand(argc, args)
+	}
+}
+
+// handleEscapedFramingRequest switches the session to escaped framing when
+// its capabilities frame advertised it; otherwise the request is ignored, as
+// by a server that does not know it, and the session stays on raw framing.
+func (h *ServerHandler) handleEscapedFramingRequest(ctx context.Context) {
+	if !h.escapedFramingAdvertised {
+		h.Logger().Debug(h.user, "Ignoring escaped framing request of a session not advertising it")
+		return
+	}
+	if h.enableEscapedFraming(ctx) {
+		h.Logger().Debug(h.user, "Switched session to escaped framing")
+	}
+}
+
+func isEscapedFramingRequest(argc int, args []string) bool {
+	return argc == 3 && strings.Join(args, " ") == protocol.EscapedFramingCommand
 }
 
 func isInputBatchBegin(argc int, args []string) bool {
