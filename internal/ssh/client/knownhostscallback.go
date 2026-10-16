@@ -31,8 +31,10 @@ const (
 	// (--trustAllHosts or an "all" answer). Nobody is asked, so there is no
 	// reason to wait for a quiet period: the window starts with the first
 	// unknown host of a batch and is not restarted by later ones, which
-	// bounds the handshake delay of every host to about this value while
-	// still writing hosts that arrive together to known_hosts in one update.
+	// bounds the handshake delay of every host to about this value plus the
+	// known_hosts update (a host arriving while a batch is being written
+	// waits for that write, including its up to 5 s lock wait), while still
+	// writing hosts that arrive together to known_hosts in one update.
 	trustAllHostsBatchDelay = 20 * time.Millisecond
 	// unknownHostsMaxBatch caps the size of a batch: once that many unknown
 	// hosts are pending they are handled without waiting for the timer.
@@ -195,7 +197,9 @@ func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 }
 
 // PromptAddHosts collects the unknown hosts that Wrap reports into batches
-// and asks the user once per batch whether to add them to the known hosts.
+// and handles each batch at once: in trust-all mode it trusts the hosts
+// without asking, otherwise it asks the user whether to add them (see
+// promptAddHosts).
 // A batch is handled when its timer fires (see batchTimerDelay) or once
 // unknownHostsMaxBatch hosts are pending. The timer only runs while hosts are
 // pending, so an idle client does not wake up periodically. If ctx is

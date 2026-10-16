@@ -178,6 +178,8 @@ func firstTrustTime(t *testing.T, results <-chan trustResult, hosts int,
 // and leave the batch unanswered. The next host then starts a new batch and
 // stays pending. Only if the hand-over of the batch took as long as the
 // debounce could the debounce have split the batch; the test is skipped then.
+// Likewise, the pending check of the next host is skipped if stopping came
+// only after its debounce, when its prompt may already have run.
 func TestPromptAddHostsBatchCap(t *testing.T) {
 	callback := newBatchTestCallback(t, false)
 	withPromptInput(t, "yes\n", func() {
@@ -191,11 +193,20 @@ func TestPromptAddHostsBatchCap(t *testing.T) {
 				len(hosts), handOver, unknownHostsPromptDelay)
 		}
 		next := batchUnknownHosts(unknownHostsMaxBatch, 1)
+		sentNext := time.Now()
 		sendUnknownHosts(t, callback, next)
 		assertAnswered(t, hosts, trustHost, "batch cap")
 		assertKnownHostsLines(t, callback.knownHostsPath, batchHostLines(unknownHostsMaxBatch))
 
 		stop()
+		// The next host armed the debounce. Had it fired before stop, the
+		// prompt for that host read EOF from the exhausted input, which counts
+		// as "no", so the host is legitimately answered and cannot be checked.
+		if since := time.Since(sentNext); since >= unknownHostsPromptDelay {
+			t.Logf("stopping took %v after the next host, not less than the %v debounce; skipping its pending check",
+				since, unknownHostsPromptDelay)
+			return
+		}
 		select {
 		case resp := <-next[0].responseCh:
 			t.Fatalf("host after a full batch was answered %s, want it pending", responseName(resp))
