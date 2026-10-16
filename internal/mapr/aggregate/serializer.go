@@ -172,7 +172,7 @@ func (s *serializer) aggregateLocked(fields map[string]string, groupKey []byte) 
 			continue
 		}
 		// Allocate the set only after a select field matches. Empty sets would
-		// otherwise reach the client with Samples==0 and produce NaN for avg().
+		// otherwise reach the client as rows of groups no line had a field of.
 		if set == nil {
 			// Looking up with m[string(b)] takes no allocation; only a group
 			// seen for the first time copies the borrowed key, because the
@@ -187,13 +187,17 @@ func (s *serializer) aggregateLocked(fields map[string]string, groupKey []byte) 
 			// err can alias the borrowed line (a *strconv.NumError keeps
 			// the value it failed to parse), and the caller recycles that
 			// buffer as soon as the line is processed. Format it now
-			// rather than handing the alias to the logger.
+			// rather than handing the alias to the logger. The failed value
+			// added nothing, so an avg() of it keeps its value count too.
 			s.logger.Error("Aggregate aggregation error", err.Error(),
 				"field", sc.Field, "operation", sc.Operation)
 			continue
 		}
 		addedSample = true
 	}
+	// Samples counts the line once whichever fields it had. avg() does not
+	// divide by it but by its own value count (see mapr.AggregateSet); it is
+	// still sent for older clients, which divide avg() by it.
 	if addedSample {
 		set.Samples++
 	}

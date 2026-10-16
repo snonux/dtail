@@ -201,14 +201,16 @@ func TestFieldMergerForCoversAggregate(t *testing.T) {
 		if merger == nil {
 			continue
 		}
-		// Every merger must carry a value the source set has into the receiver.
+		// Every merger must carry a value the source set has into the receiver,
+		// including the value count of avg().
 		src := NewAggregateSet()
 		if err := src.Aggregate("k", op, "1", false); err != nil {
 			t.Fatalf("operation %d: Aggregate() error = %v", op, err)
 		}
 		dest := NewAggregateSet()
 		merger(dest, "k", src)
-		if len(dest.FValues) != len(src.FValues) || len(dest.SValues) != len(src.SValues) {
+		if len(dest.FValues) != len(src.FValues) || len(dest.SValues) != len(src.SValues) ||
+			len(dest.ValueCounts) != len(src.ValueCounts) {
 			t.Errorf("operation %d: merged %v into an empty set, got %v", op, src, dest)
 		}
 	}

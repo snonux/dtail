@@ -11,13 +11,29 @@ import (
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
+// avgCountSuffix turns an avg() storage key into the wire key of the number
+// of values its sum holds (see AvgCountKey). It starts with a double quote,
+// which no select storage key can contain (the query tokenizer splits on it),
+// so the count key never collides with the storage key of a selected field,
+// also not on an older client that receives it.
+const avgCountSuffix = "\"count"
+
 // AggregateSet represents aggregated key/value pairs from the
 // MAPREDUCE log lines. These could be either string values or float
 // values.
 type AggregateSet struct {
+	// Samples counts the lines of the group in which at least one selected
+	// field could be aggregated. avg() does not divide by it (see
+	// ValueCounts); it is still sent because an older client divides avg() by
+	// it, and it stands in for the value count an older server does not send.
 	Samples int
 	FValues map[string]float64
 	SValues map[string]string
+	// ValueCounts holds, per avg() storage key, the number of values its sum
+	// in FValues holds, so a line lacking the averaged field, or whose value
+	// is not a number, does not lower the average. It is keyed like FValues
+	// (no per-line key to build) and is nil until the first avg() value.
+	ValueCounts map[string]int
 }
 
 // NewAggregateSet creates a new empty aggregate set.
@@ -30,8 +46,14 @@ func NewAggregateSet() *AggregateSet {
 
 // String representation of aggregate set.
 func (s *AggregateSet) String() string {
-	return fmt.Sprintf("AggregateSet(Samples:%d,FValues:%v,SValues:%v)",
-		s.Samples, s.FValues, s.SValues)
+	return fmt.Sprintf("AggregateSet(Samples:%d,FValues:%v,SValues:%v,ValueCounts:%v)",
+		s.Samples, s.FValues, s.SValues, s.ValueCounts)
+}
+
+// AvgCountKey returns the key under which a serialized set carries the number
+// of values the avg() sum of storage holds (ValueCounts[storage]).
+func AvgCountKey(storage string) string {
+	return storage + avgCountSuffix
 }
 
 // Merge one aggregate set into this one. set is treated as the newer of the
@@ -63,11 +85,13 @@ func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 	return nil
 }
 
-// Serialize the aggregate set so it can be sent over the wire. Returns true
-// when the serialized message was successfully sent, and false when the
-// context was cancelled before the send completed. Callers that own the
-// source state (e.g. Aggregate) must re-merge unsent sets so data is
-// not silently lost.
+// Serialize the aggregate set so it can be sent over the wire. The value
+// count of each avg() field is sent as one more key/value pair under
+// AvgCountKey; an older client only reads the keys of its selected fields and
+// ignores it. Returns true when the serialized message was successfully sent,
+// and false when the context was cancelled before the send completed. Callers
+// that own the source state (e.g. Aggregate) must re-merge unsent sets so
+// data is not silently lost.
 func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<- string,
 	logger logging.Logger) bool {
 
@@ -84,17 +108,13 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 	sb.WriteString(protocol.AggregateDelimiter)
 
 	for k, v := range s.FValues {
-		sb.WriteString(k)
-		sb.WriteString(protocol.AggregateKVDelimiter)
-		sb.WriteString(strconv.FormatFloat(v, 'f', -1, 64))
-		sb.WriteString(protocol.AggregateDelimiter)
+		writeSerializedField(sb, k, "", strconv.FormatFloat(v, 'f', -1, 64))
 	}
-
 	for k, v := range s.SValues {
-		sb.WriteString(k)
-		sb.WriteString(protocol.AggregateKVDelimiter)
-		sb.WriteString(v)
-		sb.WriteString(protocol.AggregateDelimiter)
+		writeSerializedField(sb, k, "", v)
+	}
+	for k, n := range s.ValueCounts {
+		writeSerializedField(sb, k, avgCountSuffix, strconv.Itoa(n))
 	}
 
 	select {
@@ -103,6 +123,17 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// writeSerializedField appends one key/value pair of a serialized set. The
+// key is written as storage followed by suffix, so that the avg() count key
+// (AvgCountKey) needs no string of its own.
+func writeSerializedField(sb *strings.Builder, storage, suffix, value string) {
+	sb.WriteString(storage)
+	sb.WriteString(suffix)
+	sb.WriteString(protocol.AggregateKVDelimiter)
+	sb.WriteString(value)
+	sb.WriteString(protocol.AggregateDelimiter)
 }
 
 // fieldMerger merges the value of one storage key of set into s, if set has
@@ -116,8 +147,10 @@ type fieldMerger func(s *AggregateSet, storage string, set *AggregateSet)
 // here (TestFieldMergerForCoversAggregate checks it against Aggregate).
 func fieldMergerFor(op AggregateOperation) fieldMerger {
 	switch op {
-	case Count, Sum, Avg, Percentage, Percentile:
+	case Count, Sum, Percentage, Percentile:
 		return mergeAdditive
+	case Avg:
+		return mergeAvg
 	case Min:
 		return mergeMin
 	case Max:
@@ -134,6 +167,16 @@ func fieldMergerFor(op AggregateOperation) fieldMerger {
 func mergeAdditive(s *AggregateSet, storage string, set *AggregateSet) {
 	if value, ok := set.FValues[storage]; ok {
 		s.addFloat(storage, value)
+	}
+}
+
+// mergeAvg merges an avg() sum and the number of values it holds. A set that
+// has the sum has its count too (AggregateAvg adds both), so both are merged
+// or neither is.
+func mergeAvg(s *AggregateSet, storage string, set *AggregateSet) {
+	mergeAdditive(s, storage, set)
+	if count, ok := set.ValueCounts[storage]; ok {
+		s.addValueCount(storage, count)
 	}
 }
 
@@ -197,6 +240,15 @@ func (s *AggregateSet) addFloatMax(key string, value float64) {
 	}
 }
 
+// addValueCount adds count to the number of values the avg() sum of storage
+// holds, allocating ValueCounts on the first avg() value.
+func (s *AggregateSet) addValueCount(storage string, count int) {
+	if s.ValueCounts == nil {
+		s.ValueCounts = make(map[string]int)
+	}
+	s.ValueCounts[storage] += count
+}
+
 // Set a string.
 func (s *AggregateSet) setString(key, value string) {
 	s.SValues[key] = value
@@ -207,56 +259,98 @@ func (s *AggregateSet) setFloat(key string, value float64) {
 	s.FValues[key] = value
 }
 
+// AggregateAvg adds value, a number, to the avg() sum of storage and count to
+// the number of values that sum holds. A dserver aggregating a line passes a
+// count of 1; a client aggregating a server's sum passes the count the server
+// sent with it. A value that is not a number adds neither, so it does not
+// lower the average.
+func (s *AggregateSet) AggregateAvg(storage, value string, count int) error {
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return err
+	}
+	s.addFloat(storage, f)
+	s.addValueCount(storage, count)
+	return nil
+}
+
 // Aggregate data to the aggregate set. The value is only borrowed for the
 // duration of the call: every string the set keeps is stored as a copy.
-func (s *AggregateSet) Aggregate(key string, agg AggregateOperation, value string, clientAggregation bool) (err error) {
-	var f float64
-	// First check if we can aggregate anything without converting value to float.
+//
+// With clientAggregation the value is one a server already aggregated. An
+// avg() sum then needs the number of values it holds, which only the caller
+// knows, so it must be added with AggregateAvg instead.
+func (s *AggregateSet) Aggregate(key string, agg AggregateOperation, value string, clientAggregation bool) error {
 	switch agg {
 	case Count:
-		if clientAggregation {
-			f, err = strconv.ParseFloat(value, 64)
-			if err != nil {
-				return
-			}
-			s.addFloat(key, f)
-			return
-		}
-		s.addFloat(key, 1)
-		return
+		return s.aggregateCount(key, value, clientAggregation)
 	case Last:
 		// value may borrow memory that the caller reuses for the next line
 		// (see aggregate.parseLine), so anything retained must be a copy.
 		s.setString(key, strings.Clone(value))
-		return
+		return nil
 	case Len:
 		s.setString(key, strings.Clone(value))
 		s.setFloat(key, float64(len(value)))
-		return
-	default:
-	}
-
-	// No, we have to convert to float.
-	f, err = strconv.ParseFloat(value, 64)
-	if err != nil {
-		return
-	}
-
-	switch agg {
-	case Sum:
-		fallthrough
+		return nil
 	case Avg:
-		fallthrough
-	case Percentage:
-		fallthrough
-	case Percentile:
-		s.addFloat(key, f)
+		if clientAggregation {
+			return fmt.Errorf("aggregated avg() value of '%s' needs its value count", key)
+		}
+		return s.AggregateAvg(key, value, 1)
+	case Sum, Percentage, Percentile, Min, Max:
+		return s.aggregateNumber(key, agg, value)
+	default:
+		return fmt.Errorf("unknown aggregation method '%v'", agg)
+	}
+}
+
+// aggregateCount counts one line, or with clientAggregation adds the count a
+// server sent.
+func (s *AggregateSet) aggregateCount(key, value string, clientAggregation bool) error {
+	if !clientAggregation {
+		s.addFloat(key, 1)
+		return nil
+	}
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return err
+	}
+	s.addFloat(key, f)
+	return nil
+}
+
+// aggregateNumber aggregates value, which must be a number, with one of the
+// numeric operations sum, percentage, percentile, min and max.
+func (s *AggregateSet) aggregateNumber(key string, agg AggregateOperation, value string) error {
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return err
+	}
+	switch agg {
 	case Min:
 		s.addFloatMin(key, f)
 	case Max:
 		s.addFloatMax(key, f)
 	default:
-		err = fmt.Errorf("unknown aggregation method '%v'", agg)
+		// Sum, Percentage and Percentile all add up the values.
+		s.addFloat(key, f)
 	}
-	return
+	return nil
+}
+
+// avg returns the average of the values aggregated into the avg() sum of
+// storage, or 0 when there are none. A set without a value count for it,
+// which AggregateAvg never makes, falls back to Samples, as avg() did before
+// value counts existed.
+func (s *AggregateSet) avg(storage string) float64 {
+	count, ok := s.ValueCounts[storage]
+	if !ok {
+		count = s.Samples
+	}
+	// Guard against 0/0, which would render as "NaN" (e.g. an empty set).
+	if count == 0 {
+		return 0
+	}
+	return s.FValues[storage] / float64(count)
 }

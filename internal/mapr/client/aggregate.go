@@ -74,22 +74,8 @@ func (a *Aggregate) Aggregate(message string) error {
 		return fmt.Errorf("unable to parse sample count '%s': %w", parts[1], parseErr)
 	}
 
-	fields := a.makeFields(parts[2:])
 	set := a.group.GetSet(groupKey)
-	var addedSamples bool
-
-	for _, sc := range snapshot.Query.Select {
-		if val, ok := fields[sc.FieldStorage]; ok {
-			if aggregateErr := set.Aggregate(sc.FieldStorage, sc.Operation, val, true); aggregateErr != nil {
-				a.logger.Error(aggregateErr)
-				continue
-			}
-			addedSamples = true
-		}
-	}
-	if addedSamples {
-		set.Samples += samples
-	}
+	a.aggregateFields(snapshot.Query, set, a.makeFields(parts[2:]), samples)
 
 	// Merge data from group into global group.
 	isMerged, err := snapshot.GlobalGroup.MergeNoblock(snapshot.Query, a.group)
@@ -129,6 +115,58 @@ func (a *Aggregate) Flush() error {
 	}
 	a.group.InitSet()
 	return nil
+}
+
+// aggregateFields aggregates the selected fields one server message carries
+// into set. A field whose value cannot be aggregated is logged and skipped;
+// the message's samples are added when any field was aggregated.
+func (a *Aggregate) aggregateFields(query *mapr.Query, set *mapr.AggregateSet,
+	fields map[string]string, samples int) {
+
+	var addedSamples bool
+	for _, sc := range query.Select {
+		val, ok := fields[sc.FieldStorage]
+		if !ok {
+			continue
+		}
+		var err error
+		if sc.Operation == mapr.Avg {
+			err = aggregateAvg(set, sc.FieldStorage, val, fields, samples)
+		} else {
+			err = set.Aggregate(sc.FieldStorage, sc.Operation, val, true)
+		}
+		if err != nil {
+			a.logger.Error(err)
+			continue
+		}
+		addedSamples = true
+	}
+	if addedSamples {
+		set.Samples += samples
+	}
+}
+
+// aggregateAvg adds a server's avg() sum of storage, and the number of values
+// it holds, to set. A current dserver sends that number under
+// mapr.AvgCountKey(storage). An older one sends none: its sample count (the
+// lines of the group with any selected field) is then taken instead, so such a
+// server's average is what it always was. A count that is not a positive
+// integer rejects the field, sum included.
+func aggregateAvg(set *mapr.AggregateSet, storage, sum string,
+	fields map[string]string, samples int) error {
+
+	count := samples
+	if raw, ok := fields[mapr.AvgCountKey(storage)]; ok {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("unable to parse value count of '%s': %w", storage, err)
+		}
+		if parsed <= 0 {
+			return fmt.Errorf("invalid value count '%s' of '%s'", raw, storage)
+		}
+		count = parsed
+	}
+	return set.AggregateAvg(storage, sum, count)
 }
 
 // Create a map of key-value pairs from a part list such as ["foo=bar",  "bar=baz"].

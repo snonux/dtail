@@ -117,13 +117,19 @@ FUNCTION := md5sum|maskdigits
   * `last` and `len` keep the most recently received value (`len` its
     length); a field no line of the group had shows as empty (`last`) or `0`
     (`len`).
-  * `avg` is an exception: it divides the sum of the field's values by the
-    number of lines of the group with at least one selected field whose
-    value could be aggregated, not only the lines that had the averaged
-    field. So `select avg(bytes),count(status)` over the two lines `bytes=10|status=ok`
-    and `status=ok` of a group gives `5`, not `10`. To average only over the
-    lines having the field, select `sum(bytes)` and `count(bytes)` and
-    divide, or select no other fields that a line can have without it.
+  * `avg` divides the sum of the field's values by the number of those
+    values. Only the lines of the group that have the field with a numeric
+    value count: a line lacking the field, or whose value is no number
+    (logged as an aggregation error), does not lower the average. So
+    `select avg(bytes),count(status)` over the three lines
+    `bytes=10|status=ok`, `status=ok` and `bytes=abc|status=ok` of a group
+    gives `10`; a group without any numeric value of the field shows `0`.
+    A current dserver sends the number of values with its sum. An older
+    dserver sends none, and its results are then averaged as before:
+    divided by the number of lines of the group with at least one selected
+    field whose value could be aggregated (the example above gives
+    `3.333333` from such a server). An older client ignores the number and
+    also divides that way.
   * `percentage` adds nothing to the total for a group without the field,
     and that group shows `0`.
   * `percentile` ranks only the groups that have the field; a group without
