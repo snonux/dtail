@@ -158,12 +158,22 @@ func TestPromptAddHostsLogsAfterResume(t *testing.T) {
 }
 
 // TestPromptAddHostsFailureLogsAfterResume makes the known_hosts update of a
-// trusting answer fail: the host must then be rejected exactly once, the
-// failure logged once after the prompt resumed logging, and an "all" answer
-// must leave trust-all mode off.
+// trusting answer fail: the host must then be rejected exactly once and the
+// failure logged once after the prompt resumed logging. An "all" answer must
+// leave trust-all mode off. With --trustAllHosts nobody is asked, and the
+// failed update must reject the host the same way.
 func TestPromptAddHostsFailureLogsAfterResume(t *testing.T) {
-	for _, answer := range []string{"yes\n", "all\n"} {
-		t.Run(strings.TrimSpace(answer), func(t *testing.T) {
+	tests := []struct {
+		name     string
+		answer   string
+		trustAll bool
+	}{
+		{name: "yes", answer: "yes\n"},
+		{name: "all", answer: "all\n"},
+		{name: "trustAllHosts", trustAll: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			tmp := t.TempDir()
 			knownHostsPath := filepath.Join(tmp, "known_hosts")
 			if err := os.WriteFile(knownHostsPath, nil, 0o600); err != nil {
@@ -171,18 +181,18 @@ func TestPromptAddHostsFailureLogsAfterResume(t *testing.T) {
 			}
 
 			logger := &recordingLogger{}
-			callback := testKnownHostsCallbackWithLogger(t, knownHostsPath, logger)
+			callback := newTestKnownHostsCallback(t, knownHostsPath, test.trustAll, logger)
 			if err := os.RemoveAll(tmp); err != nil {
 				t.Fatalf("remove known-hosts directory: %v", err)
 			}
 			host := testPromptHost()
-			withPromptInput(t, answer, func() {
+			withPromptInput(t, test.answer, func() {
 				callback.promptAddHosts([]unknownHost{host})
 			})
 
 			assertAnsweredOnce(t, host, dontTrustHost)
-			if callback.trustAll() {
-				t.Fatalf("trust-all mode is on after the known_hosts update for %q failed", answer)
+			if !test.trustAll && callback.trustAll() {
+				t.Fatalf("trust-all mode is on after the known_hosts update for %q failed", test.answer)
 			}
 			if got := logger.errorCount.Load(); got != 1 {
 				t.Fatalf("Error calls = %d, want 1", got)
@@ -526,8 +536,16 @@ func testKnownHostsCallback(t *testing.T, knownHostsPath string) *KnownHostsCall
 func testKnownHostsCallbackWithLogger(t *testing.T, knownHostsPath string,
 	logger logging.Logger) *KnownHostsCallback {
 	t.Helper()
+	return newTestKnownHostsCallback(t, knownHostsPath, false, logger)
+}
 
-	callback, err := NewKnownHostsCallback(knownHostsPath, false, logger, logger)
+// newTestKnownHostsCallback builds a KnownHostsCallback for tests; trustAll
+// is the --trustAllHosts setting, logger serves as both of its loggers.
+func newTestKnownHostsCallback(t *testing.T, knownHostsPath string, trustAll bool,
+	logger logging.Logger) *KnownHostsCallback {
+	t.Helper()
+
+	callback, err := NewKnownHostsCallback(knownHostsPath, trustAll, logger, logger)
 	if err != nil {
 		t.Fatalf("NewKnownHostsCallback failed: %v", err)
 	}

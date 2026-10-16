@@ -98,7 +98,7 @@ func TestPromptAddHostsTrustAllAnswersQuickly(t *testing.T) {
 }
 
 // TestPromptAddHostsTrustAllWindowIsNotRestarted streams trust-all hosts
-// every few milliseconds for longer than trustAllStreamDuration. Since later
+// every few milliseconds for about trustAllStreamDuration. Since later
 // hosts do not restart the coalescing window, the first handshake is trusted
 // long before the stream ends; a window that every host restarts would hold
 // all of them until the stream stopped.
@@ -117,22 +117,40 @@ func TestPromptAddHostsTrustAllWindowIsNotRestarted(t *testing.T) {
 	callback := newBatchTestCallback(t, true)
 	ctx, _ := startPromptAddHosts(t, callback)
 
-	type result struct {
-		err error
-		at  time.Time
-	}
-	results := make(chan result, maxHosts)
+	results := make(chan trustResult, maxHosts)
 	start := time.Now()
 	hosts := 0
 	for ; hosts < maxHosts && time.Since(start) < trustAllStreamDuration; hosts++ {
 		go func(i int) {
 			err := callUnknownHost(ctx, callback, i)
-			results <- result{err: err, at: time.Now()}
+			results <- trustResult{err: err, at: time.Now()}
 		}(hosts)
 		time.Sleep(interval)
 	}
 	streamEnd := time.Since(start)
 
+	first := firstTrustTime(t, results, hosts, start)
+	t.Logf("%d hosts streamed over %v, first trusted after %v", hosts, streamEnd, first)
+	if first >= firstMaxWait {
+		t.Fatalf("first trust-all host returned after %v, want < %v (stream lasted %v)",
+			first, firstMaxWait, streamEnd)
+	}
+	assertKnownHostsLines(t, callback.knownHostsPath, batchHostLines(hosts))
+}
+
+// trustResult is the outcome of one handshake callback and when it returned.
+type trustResult struct {
+	err error
+	at  time.Time
+}
+
+// firstTrustTime collects the results of hosts handshake callbacks, each of
+// which must succeed within trustAllMaxWait for all of them, and returns how
+// long after start the first of them returned.
+func firstTrustTime(t *testing.T, results <-chan trustResult, hosts int,
+	start time.Time) time.Duration {
+
+	t.Helper()
 	var first time.Duration
 	deadline := time.After(trustAllMaxWait)
 	for i := range hosts {
@@ -148,12 +166,7 @@ func TestPromptAddHostsTrustAllWindowIsNotRestarted(t *testing.T) {
 			t.Fatalf("trust-all host key callbacks did not return within %v after the stream", trustAllMaxWait)
 		}
 	}
-	t.Logf("%d hosts streamed over %v, first trusted after %v", hosts, streamEnd, first)
-	if first >= firstMaxWait {
-		t.Fatalf("first trust-all host returned after %v, want < %v (stream lasted %v)",
-			first, firstMaxWait, streamEnd)
-	}
-	assertKnownHostsLines(t, callback.knownHostsPath, batchHostLines(hosts))
+	return first
 }
 
 // TestPromptAddHostsBatchCap verifies that the interactive prompt does not
@@ -377,7 +390,9 @@ func sendUnknownHosts(t *testing.T, callback *KnownHostsCallback, hosts []unknow
 }
 
 // waitForAnswers waits for the answer of every host, each of which must be
-// want, until deadline fires once for all of them.
+// want, until deadline fires once for all of them. Once every host was
+// answered, it checks that none of them got a second answer (see
+// assertNoSecondAnswer).
 func waitForAnswers(t *testing.T, hosts []unknownHost, want response,
 	deadline <-chan time.Time, mode string) {
 
@@ -393,9 +408,13 @@ func waitForAnswers(t *testing.T, hosts []unknownHost, want response,
 			t.Fatalf("only %d of %d %s hosts were answered before the deadline", i, len(hosts), mode)
 		}
 	}
+	for _, host := range hosts {
+		assertNoSecondAnswer(t, host, mode)
+	}
 }
 
-// assertAnswered checks, without waiting, that every host was answered want.
+// assertAnswered checks, without waiting, that every host was answered want,
+// and only once (see assertNoSecondAnswer).
 func assertAnswered(t *testing.T, hosts []unknownHost, want response, mode string) {
 	t.Helper()
 	for _, host := range hosts {
@@ -408,6 +427,24 @@ func assertAnswered(t *testing.T, hosts []unknownHost, want response, mode strin
 		default:
 			t.Fatalf("%s host %s was not answered yet", mode, host.server)
 		}
+		assertNoSecondAnswer(t, host, mode)
+	}
+}
+
+// assertNoSecondAnswer checks, without waiting, that host got no further
+// answer after the one its caller already received. batchUnknownHosts gives
+// each responseCh room for that second answer, so a host answered twice
+// shows up here instead of blocking PromptAddHosts. The check does not wait,
+// so it only catches a second answer sent before it runs; callers run it
+// after the first answers arrived, which for a synchronous promptAddHosts
+// call (assertAnswered) includes every answer it sent.
+func assertNoSecondAnswer(t *testing.T, host unknownHost, mode string) {
+	t.Helper()
+	select {
+	case got := <-host.responseCh:
+		t.Fatalf("%s host %s was answered twice, the second time %s", mode, host.server,
+			responseName(got))
+	default:
 	}
 }
 

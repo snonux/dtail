@@ -343,8 +343,9 @@ func (c *KnownHostsCallback) allAnswer(hosts []unknownHost) prompt.Answer {
 			}
 			// Batches are answered one after another on the PromptAddHosts
 			// goroutine, so no other "all" answer runs concurrently. The
-			// close goes through sync.Once so that it stays idempotent
-			// alongside the --trustAllHosts path of NewKnownHostsCallback.
+			// sync.Once in closeTrustAllHostsCh is only defensive here: with
+			// --trustAllHosts, NewKnownHostsCallback already closed the
+			// channel and nobody is asked, so this answer never runs then.
 			c.closeTrustAllHostsCh()
 			c.answerHosts(hosts, trustHost)
 		},

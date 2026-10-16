@@ -202,7 +202,8 @@ func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) 
 	}
 	// Can be nil when serverless.
 	if c.hostKeyCallback != nil {
-		// Periodically check for unknown hosts, and ask the user whether to trust them or not.
+		// Collect unknown hosts into batches and trust them or ask the user about
+		// them (see KnownHostsCallback.PromptAddHosts).
 		go c.hostKeyCallback.PromptAddHosts(ctx)
 	}
 	// Print client stats every time something on statsCh is received.
