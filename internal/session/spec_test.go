@@ -50,6 +50,11 @@ func TestNewSpec(t *testing.T) {
 			want:       Spec{Mode: omode.HealthClient, Options: "serverless=true"},
 		},
 		{
+			name:       "keeps inner spaces of a path",
+			parameters: Parameters{Mode: omode.CatClient, What: " /var/log/my app/a b.log ,c.log"},
+			want:       Spec{Mode: omode.CatClient, Files: []string{"/var/log/my app/a b.log", "c.log"}},
+		},
+		{
 			name:       "blank input stays empty in remote mode",
 			parameters: Parameters{Mode: omode.TailClient, What: " ,  , "},
 			want:       Spec{Mode: omode.TailClient, Files: []string{}},
@@ -155,6 +160,37 @@ func TestSpecCommands(t *testing.T) {
 			want: []string{
 				"map:plain=true from STATS select count(*)",
 				"timeout 9 tail stats.log regex:default,literal WARN",
+			},
+		},
+		// A path containing a space, or starting with the encoded prefix, is
+		// encoded into one word; other paths stay verbatim, as older servers
+		// expect them.
+		{
+			name: "encodes paths containing a space",
+			spec: Spec{
+				Mode:    omode.CatClient,
+				Files:   []string{"/var/log/my app/a b.log", "/var/log/app.log", "base64%x.log"},
+				Options: "plain=true",
+				Regex:   "ERROR",
+			},
+			want: []string{
+				"cat:plain=true " + encodedPath("/var/log/my app/a b.log") + " regex:default,literal ERROR",
+				"cat:plain=true /var/log/app.log regex:default,literal ERROR",
+				"cat:plain=true " + encodedPath("base64%x.log") + " regex:default,literal ERROR",
+			},
+		},
+		{
+			name: "encodes spaced paths of timeout query reads",
+			spec: Spec{
+				Mode:    omode.TailClient,
+				Files:   []string{"/var/log/my app/*.log"},
+				Query:   "from STATS select count(*)",
+				Regex:   "WARN",
+				Timeout: 9,
+			},
+			want: []string{
+				"map: from STATS select count(*)",
+				"timeout 9 tail " + encodedPath("/var/log/my app/*.log") + " regex:default,literal WARN",
 			},
 		},
 		{
@@ -311,6 +347,33 @@ func TestSpecHasJournalFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSpecHasEncodedFiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		files []string
+		want  bool
+	}{
+		{name: "plain files", files: []string{"/var/log/app.log", "journal:ssh.service", "-"}},
+		{name: "no files"},
+		{name: "path with a space", files: []string{"/var/log/app.log", "/var/log/my app.log"}, want: true},
+		{name: "path with the encoded prefix", files: []string{"base64%app.log"}, want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := (Spec{Files: tc.files}).HasEncodedFiles(); got != tc.want {
+				t.Fatalf("HasEncodedFiles() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func encodedPath(path string) string {
+	return "base64%" + base64.StdEncoding.EncodeToString([]byte(path))
 }
 
 func decodeSpecPayload(payload string, out *Spec) error {

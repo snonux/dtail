@@ -57,6 +57,14 @@ Hint: You can also use the shorthand version (omitting the `--files`)
 % dtail --servers serverlist.txt --grep INFO "/var/log/dserver/*.log"
 ```
 
+Hint: `--files` (and the shorthand arguments) take a comma-separated list of
+files or globs, with blanks around each entry removed, so paths containing a
+comma cannot be read. Paths containing spaces work when quoted for the shell,
+e.g. `--files '/var/log/my app/*.log'`; this needs a dserver of the same
+version or newer (capability `encoded-read-path-v1`), and the client fails
+with `file paths containing spaces require server capability
+encoded-read-path-v1` against an older one.
+
 ### Aggregating logs
 
 To run ad-hoc map-reduce aggregations on newly written log lines you must add a query. The following example follows all remote log lines and prints out every few seconds the result to standard output.

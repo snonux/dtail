@@ -214,22 +214,45 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 		r.reportFailure(ctx, readFailureCommand)
 		return
 	}
+	path, ok := r.parsePath(ctx, args[1])
+	if !ok {
+		return
+	}
 
 	// In serverless mode, can also read data from pipe
 	// e.g.: grep foo bar.log | dmap 'from STATS select ...'
 	// Only read from pipe if no file argument is provided
-	isPipe := r.isInputFromPipe() && (argc < 2 || args[1] == "" || args[1] == "-")
+	isPipe := r.isInputFromPipe() && (path == "" || path == "-")
 	switch {
 	case isPipe:
 		r.logger.Debug("Reading data from stdin pipe")
 		r.readPipe(ctx, ltx, re)
-	case fs.IsJournalSpec(args[1]):
+	case fs.IsJournalSpec(path):
 		r.logger.Debug("Reading data from journal")
-		r.readJournal(ctx, ltx, args[1], re)
+		r.readJournal(ctx, ltx, path, re)
 	default:
 		r.logger.Debug("Reading data from file(s)")
-		r.readGlob(ctx, ltx, args[1], re, retries)
+		r.readGlob(ctx, ltx, path, re, retries)
 	}
+}
+
+// parsePath returns the path (a file, glob, journal target or "-") of a read
+// command from its second word, which clients encode with
+// protocol.EncodeReadPath when the path contains a space (the command is
+// split on spaces) or starts with protocol.EncodedReadPathPrefix. Everything
+// downstream (glob expansion, the readfiles permission check, the journal
+// target, the shared read hub) sees the decoded path only. It reports false,
+// after telling the client, when the word carries the prefix but does not
+// decode; such a command reads nothing.
+func (r *readCommand) parsePath(ctx context.Context, word string) (string, bool) {
+	path, err := protocol.DecodeReadPath(word)
+	if err != nil {
+		r.sendServerMessage(ctx, r.logger.Error(r.logContext,
+			"Unable to parse command", err))
+		r.reportFailure(ctx, readFailureCommand)
+		return "", false
+	}
+	return path, true
 }
 
 // parseRegex returns the regex of a read command, which starts at args[2] and

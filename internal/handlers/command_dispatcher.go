@@ -194,7 +194,9 @@ func (d *commandDispatcher) handleBase64(args []string, argc int) ([]string, int
 // --invert, "regex:invert,literal " (no line), and its trailing empty field
 // rejoins to the same regex the legacy path gets; dropping that field would
 // leave readCommand.parseRegex to read the lone flags word as an empty
-// pattern.
+// pattern. A read command's path is always the single word args[1]: the
+// builder encodes a path containing a space (protocol.EncodeReadPath) and
+// readCommand.parsePath decodes it.
 func (d *commandDispatcher) handleRawCommand(ctx context.Context, command string) error {
 	if command == "" {
 		return fmt.Errorf("empty command")

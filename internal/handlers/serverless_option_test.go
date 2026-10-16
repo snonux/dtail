@@ -108,7 +108,15 @@ func runCatWithServerlessOption(t *testing.T, handler *ServerHandler, path strin
 	if err != nil {
 		t.Fatalf("build commands: %v", err)
 	}
+	return runLegacyCommands(t, handler, commands)
+}
 
+// runLegacyCommands writes commands to handler as base64 command frames, as
+// a client's legacy command stream does, waits for the session of one-shot
+// reads to shut down and returns everything the handler sent to its
+// transport.
+func runLegacyCommands(t *testing.T, handler *ServerHandler, commands []string) string {
+	t.Helper()
 	commandWg := wrapHandlerCommandsForJoin(handler)
 	output := &testOutput{}
 	var writeMu sync.Mutex

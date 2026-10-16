@@ -101,10 +101,15 @@ splits a command line, without any variable, command or glob expansion
 * Only leading blanks and the line ending are removed before splitting, so
   an escaped trailing blank stays part of the value: `--regex foo\ ` (with
   a space after the backslash) is the regex `foo ` with the trailing space.
-* File paths containing spaces cannot be read: the servers split each read
-  command on spaces, so such a path would arrive as several arguments. To
-  read several files, list them comma-separated, e.g.
-  `:reload --files /var/log/a.log,/var/log/b.log`.
+* A file path containing spaces is quoted or escaped like any other value:
+  `:reload --files '/var/log/my app/a.log'`. The servers must advertise the
+  capability `encoded-read-path-v1` (dserver of this version or newer);
+  otherwise the reload is rejected with `file paths containing spaces
+  require server capability encoded-read-path-v1` and the current workload
+  keeps running. To read several files, list them comma-separated, e.g.
+  `:reload --files /var/log/a.log,/var/log/b.log`; a comma therefore always
+  separates two files, so paths containing a comma cannot be read, and
+  blanks around each path are removed.
 
 ## Examples
 

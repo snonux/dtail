@@ -26,6 +26,10 @@ var (
 	ErrUnexpectedSessionAck = errors.New("unexpected session acknowledgement")
 	// ErrJournalUnsupported indicates that the remote side did not advertise journal support.
 	ErrJournalUnsupported = errors.New("journal file targets unsupported by server")
+	// ErrEncodedReadPathUnsupported indicates that the remote side did not
+	// advertise support for encoded read paths, so it cannot read a path
+	// containing a space.
+	ErrEncodedReadPathUnsupported = errors.New("file paths containing spaces unsupported by server")
 )
 
 const defaultSessionAckTimeout = 2 * time.Second
@@ -85,7 +89,7 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 	logger = logging.OrNop(logger)
 
 	if !interactiveQuery || initialSpec.Mode == omode.Unknown {
-		if err := requireJournalCapability(server, handler, initialSpec, defaultCapabilityWait); err != nil {
+		if err := requireSpecCapabilities(server, handler, initialSpec, defaultCapabilityWait); err != nil {
 			return err
 		}
 		return sendLegacyCommands(handler, commands)
@@ -125,7 +129,7 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 		_, generation, _ = state.snapshot()
 	}
 
-	if err := requireJournalCapability(server, handler, spec, defaultCapabilityWait); err != nil {
+	if err := requireSpecCapabilities(server, handler, spec, defaultCapabilityWait); err != nil {
 		return err
 	}
 	if !supportsQueryUpdates(handler, defaultCapabilityWait) {
@@ -175,23 +179,58 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 	return nil
 }
 
+// requireSpecCapabilities checks, before any read command of spec is sent
+// (legacy commands, SESSION START or a :reload's SESSION UPDATE), that the
+// server advertises every capability the spec's read targets need, and fails
+// the session with a clear message otherwise.
+func requireSpecCapabilities(server string, handler handlers.Handler, spec sessionspec.Spec, timeout time.Duration) error {
+	if err := requireJournalCapability(server, handler, spec, timeout); err != nil {
+		return err
+	}
+	return requireEncodedReadPathCapability(server, handler, spec, timeout)
+}
+
 func requireJournalCapability(server string, handler handlers.Handler, spec sessionspec.Spec, timeout time.Duration) error {
 	if !spec.HasJournalFiles() {
 		return nil
 	}
+	return requireCapability(server, handler, protocol.CapabilityJournalV1,
+		"journal file targets", ErrJournalUnsupported, timeout)
+}
+
+// requireEncodedReadPathCapability refuses a spec with a path that has to be
+// encoded (one containing a space, see sessionspec.Spec.HasEncodedFiles) for
+// a server that cannot decode it. An older server would split such a path at
+// its spaces and fail with "Unable to parse command", or look for a file
+// named after the encoded word; the client fails clearly instead, before
+// sending any read command. Space-free paths need no capability and keep
+// working with every server.
+func requireEncodedReadPathCapability(server string, handler handlers.Handler, spec sessionspec.Spec, timeout time.Duration) error {
+	if !spec.HasEncodedFiles() {
+		return nil
+	}
+	return requireCapability(server, handler, protocol.CapabilityEncodedReadPathV1,
+		"file paths containing spaces", ErrEncodedReadPathUnsupported, timeout)
+}
+
+// requireCapability waits up to timeout for the server's capabilities and
+// returns nil if they list capability. Otherwise it reports "<what> require
+// server capability <capability>" to the user (which also sets a non-zero
+// exit status) and returns sentinel wrapped with the server name.
+func requireCapability(server string, handler handlers.Handler, capability, what string,
+	sentinel error, timeout time.Duration) error {
 	if handler == nil {
-		return ErrJournalUnsupported
+		return sentinel
 	}
 	if timeout <= 0 {
 		timeout = defaultCapabilityWait
 	}
-	if handler.WaitForCapabilities(timeout) && handler.HasCapability(protocol.CapabilityJournalV1) {
+	if handler.WaitForCapabilities(timeout) && handler.HasCapability(capability) {
 		return nil
 	}
 
-	message := fmt.Sprintf("journal file targets require server capability %s", protocol.CapabilityJournalV1)
-	handler.ReportServerError(message)
-	return fmt.Errorf("%w: %s", ErrJournalUnsupported, server)
+	handler.ReportServerError(fmt.Sprintf("%s require server capability %s", what, capability))
+	return fmt.Errorf("%w: %s", sentinel, server)
 }
 
 func sendLegacyCommands(handler handlers.Handler, commands []string) error {
@@ -214,6 +253,11 @@ func sendLegacyCommands(handler handlers.Handler, commands []string) error {
 	return nil
 }
 
+// containsReadCommand reports whether commands hold a cat, grep or tail read
+// command, also in the "timeout N <mode> <path> <regex>" form. It looks at
+// the command name only, which comes before the path, and the path of a read
+// command is a single word anyway (protocol.EncodeReadPath encodes a path
+// containing a space).
 func containsReadCommand(commands []string) bool {
 	for _, command := range commands {
 		fields := strings.Fields(command)

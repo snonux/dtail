@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/regex"
 )
 
@@ -73,6 +74,19 @@ func (s Spec) HasJournalFiles() bool {
 	return false
 }
 
+// HasEncodedFiles reports whether a read command of this session carries an
+// encoded path (protocol.ReadPathNeedsEncoding), which only servers
+// advertising protocol.CapabilityEncodedReadPathV1 can read: a path that
+// contains a space, or one that starts with protocol.EncodedReadPathPrefix.
+func (s Spec) HasEncodedFiles() bool {
+	for _, file := range s.Files {
+		if protocol.ReadPathNeedsEncoding(file) {
+			return true
+		}
+	}
+	return false
+}
+
 // StartCommand returns the SESSION START command for this specification.
 func (s Spec) StartCommand() (string, error) {
 	payload, err := s.encodedPayload()
@@ -123,16 +137,23 @@ func (s Spec) queryCommands() ([]string, error) {
 	}
 
 	for _, file := range s.Files {
+		path := protocol.EncodeReadPath(file)
 		if s.Timeout > 0 {
-			commands = append(commands, fmt.Sprintf("timeout %d %s %s %s", s.Timeout, readMode, file, regexValue))
+			commands = append(commands, fmt.Sprintf("timeout %d %s %s %s", s.Timeout, readMode, path, regexValue))
 			continue
 		}
-		commands = append(commands, fmt.Sprintf("%s:%s %s %s", readMode, s.Options, file, regexValue))
+		commands = append(commands, fmt.Sprintf("%s:%s %s %s", readMode, s.Options, path, regexValue))
 	}
 
 	return commands, nil
 }
 
+// readCommands returns one "<mode>:<options> <path> <regex>" command per
+// file. Servers split commands on single spaces and take the second word as
+// the path, so each path goes through protocol.EncodeReadPath (verbatim
+// unless it contains a space or starts with the encoded prefix);
+// queryCommands does the same for its read commands, including the
+// "timeout N <mode> <path> <regex>" form.
 func (s Spec) readCommands(mode string) ([]string, error) {
 	switch s.Mode {
 	case omode.TailClient, omode.CatClient, omode.GrepClient:
@@ -147,7 +168,8 @@ func (s Spec) readCommands(mode string) ([]string, error) {
 
 	var commands []string
 	for _, file := range s.Files {
-		commands = append(commands, fmt.Sprintf("%s:%s %s %s", mode, s.Options, file, regexValue))
+		commands = append(commands, fmt.Sprintf("%s:%s %s %s", mode, s.Options,
+			protocol.EncodeReadPath(file), regexValue))
 	}
 
 	return commands, nil
@@ -168,6 +190,11 @@ func serializedRegex(pattern string, invert bool) (string, error) {
 	return re.Serialize()
 }
 
+// splitFiles splits a --files value (or a job's Files) at its commas, trims
+// whitespace around every entry and drops empty entries. A comma therefore
+// always separates two files, so paths containing a comma cannot be read,
+// and neither can paths with leading or trailing whitespace. Inner spaces
+// are kept (see protocol.EncodeReadPath).
 func splitFiles(what string) []string {
 	if strings.TrimSpace(what) == "" {
 		return nil

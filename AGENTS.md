@@ -246,6 +246,38 @@ Auth-key fast reconnect is enabled by default. The client can register a public 
 - Server config: `AuthKeyTTLSeconds` (default `86400`)
 - Server config: `AuthKeyMaxPerUser` (default `5`)
 
+### File Paths With Spaces
+dserver splits every command on single spaces and a read command is
+`<mode>:<options> <path> <regex>`, so a path is one word. `session.Spec.Commands`
+(the one builder of read commands, for the legacy stream and for the commands
+dserver builds from `SESSION START`/`UPDATE` Files, including the
+`timeout N <mode> <path> <regex>` form) passes every path through
+`protocol.EncodeReadPath` (`internal/protocol/readpath.go`): a path containing a
+space, or starting with the prefix `base64%`, is sent as `base64%` + standard
+base64 of the path (the prefix config option values already use); every other
+path is sent verbatim, byte-identical to older clients. `readCommand.parsePath`
+decodes the word before anything else sees it, so globbing, the `readfiles`
+permission check (which must match the decoded path), `journal:` targets and
+shared reads all use the real path; a prefixed word that does not decode fails
+the command with `read: unable to parse command` and reads nothing.
+
+**Compatibility:** dserver (and the serverless runtime) advertise capability
+`encoded-read-path-v1`. Clients check it before sending any read command of a
+spec with such a path (`requireSpecCapabilities` in
+`internal/clients/connectors/sessiontransport.go`, legacy commands, `SESSION
+START` and `:reload` updates) and otherwise fail with `file paths containing
+spaces require server capability encoded-read-path-v1` (exit status 1; a
+`:reload` is rejected and the workload keeps running), instead of letting an
+older dserver split the path. Space-free paths need no capability. Older
+clients still send a spaced path unencoded, which fails as before; a path an
+older client sends that starts with `base64%` is decoded by a new dserver.
+
+**Commas:** `--files`, positional arguments (joined with commas) and job `Files`
+are split at commas with blanks around each entry trimmed (`splitFiles` in
+`internal/session/spec.go`), so paths containing a comma, or with leading or
+trailing blanks, cannot be read. The scheduler's job grouping parses the same
+comma lists, so this is not changed.
+
 ### Journal Source Reads
 Journal targets use `journal:unit.service` syntax. Permission rules should match the full target, for example `Server.Permissions.Users[user]: ["readfiles:^journal:.*\\.service$"]`.
 
