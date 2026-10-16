@@ -195,9 +195,10 @@ func (h *baseHandler) shutdown(ctx context.Context) {
 // closeWithoutHandshake drains output like shutdown and then closes the
 // session without the close handshake (no ".syn close connection", no wait
 // for its acknowledgement). It ends sessions whose client speaks another
-// protocol version, other than an older one (protocol <= 3), whose session
-// stays open (commandDispatcher.rejectProtocolVersion), which can not
-// be relied on to recognize or acknowledge the handshake. The client sees
+// protocol version, which can not be relied on to recognize or acknowledge
+// the handshake; a legacy client (protocol <= 3, an unparsable version or no
+// protocol prefix) keeps its session instead
+// (commandDispatcher.rejectProtocolVersion). The client sees
 // the queued error and then the end of the session without its close
 // handshake, i.e. an incomplete session. Read still hands out everything
 // queued before it reports EOF.

@@ -473,12 +473,13 @@ handshake after a completed session's output, so no capability gates this;
 `--max` stops on the server, which then closes normally. A session whose
 frames are of another protocol version is no completed one: dserver sends the
 mismatch error once (`handlers.commandDispatcher.rejectProtocolVersion`).
-For an older client (protocol major version <= 3) it then keeps the session
-open, as before, until the client exits or `IdleSessionTimeoutS`: such clients
-do not check the close handshake, and those that retry (v3 `dtail`, v3 `dmap`
-in tail mode without outfile) reconnect 2 s after a session ended, so ending
-it would make them reconnect in a loop with full SSH handshakes and server log
-lines. For any other version (e.g. a future 4.x+ client) it ends the session
+For a legacy client (protocol major version <= 3, an unparsable version, or no
+`protocol` prefix at all, as v1.x clients send `%s;` frames) it then keeps the
+session open, as before, until the client exits or `IdleSessionTimeoutS`: such
+clients do not check the close handshake, and those that retry (v1.x-v3
+`dtail`, v3 `dmap` in tail mode without outfile) reconnect 2 s after a session
+ended, so ending it would make them reconnect in a loop with full SSH
+handshakes and server log lines. For any other version (e.g. a future 4.x+ client) it ends the session
 without the close handshake (`handlers.baseHandler.closeWithoutHandshake`),
 as such a client may not recognize or acknowledge it, so it sees the error and
 the session ends at once instead of after the 5 s acknowledgement timeout.

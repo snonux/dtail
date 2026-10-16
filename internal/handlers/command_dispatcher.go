@@ -47,9 +47,10 @@ type commandDispatcher struct {
 	// have no work left.
 	frameRejectedCb frameRejectedCb
 	// versionRejectedCb, if set, runs after handleCommand rejected a command
-	// frame of another protocol version (or none) and queued its error
-	// (rejectProtocolVersion), unless the frame is of an older client
-	// (protocol <= 3), whose session stays open. Such a session ends without
+	// frame of another protocol version and queued its error
+	// (rejectProtocolVersion), unless the frame is of a legacy client
+	// (protocol <= 3, an unparsable version or no protocol prefix), whose
+	// session stays open. Such a session ends without
 	// the close handshake.
 	versionRejectedCb versionRejectedCb
 	// sessionClosingCb, if set, reports whether the session's end (with or
@@ -165,10 +166,10 @@ func (d *commandDispatcher) handleCommand(command string) {
 	// output, which Read must not hold back meanwhile. The framing requests
 	// settle it themselves, or after they were handled
 	// (sessionFramer.settleFramingAfterCommand).
-	args, argc, add, err := d.codec.handleProtocolVersion(strings.Split(command, " "))
+	args, argc, add, legacy, err := d.codec.handleProtocolVersion(strings.Split(command, " "))
 	if err != nil {
 		h.settleFramingBeforeCommand(false, argc, args)
-		d.rejectProtocolVersion(add, err)
+		d.rejectProtocolVersion(add, legacy, err)
 		return
 	}
 	args, argc, err = d.codec.handleBase64(args, argc)
@@ -191,21 +192,24 @@ func (d *commandDispatcher) handleCommand(command string) {
 }
 
 // rejectProtocolVersion handles a command frame of another protocol version
-// (or none). It queues the mismatch error, once per session: later frames of
-// another version get none (versionErrorSent), and none at all once the
-// session is closing (sessionClosingCb), so nothing of the session follows
-// its end or its close handshake. There is no failed-command message here: a
-// client of another protocol version may not know hidden messages or their
-// framing.
+// (or of no version, i.e. without a protocol prefix). It queues the mismatch
+// error followed by add, the separator the client expects after it, once per
+// session: later frames of another version get none (versionErrorSent), and
+// none at all once the session is closing (sessionClosingCb), so nothing of
+// the session follows its end or its close handshake. There is no
+// failed-command message here: a client of another protocol version may not
+// know hidden messages or their framing.
 //
-// How the session goes on depends on the client's protocol major version
-// (add is non-empty exactly for protocol 3 or lower, see
-// protocolCodec.handleProtocolVersion):
-//   - An older client (protocol <= 3) keeps its session: the session ends when the client exits or at IdleSessionTimeoutS, as
-//     it always did. Such clients do not check the close handshake, and
-//     those that retry (dtail, dmap in tail mode without outfile) reconnect
-//     2 s after a session ended, so ending it would make them reconnect in a
-//     loop, each time with a full SSH handshake and server log lines.
+// How the session goes on depends on legacy
+// (protocolCodec.handleProtocolVersion):
+//   - A legacy client (protocol major version <= 3, an unparsable version,
+//     or no protocol prefix at all, as v1.x clients send) keeps its
+//     session: the session ends when the client exits or at
+//     IdleSessionTimeoutS, as it always did. Such clients do not check the
+//     close handshake, and those that retry (dtail, dmap in tail mode
+//     without outfile; v1.x dtail too) reconnect 2 s after a session ended,
+//     so ending it would make them reconnect in a loop, each time with a
+//     full SSH handshake and server log lines.
 //   - Any other client of another version (e.g. a future 4.x+ client) gets
 //     the session ended without the close handshake (versionRejectedCb,
 //     ServerHandler.versionRejected): it can not be relied on to read the
@@ -217,7 +221,7 @@ func (d *commandDispatcher) handleCommand(command string) {
 //     payload and never acknowledges it, so the session would wait for the
 //     close acknowledgement timeout (5 s). Ending the session after the
 //     error instead shows it the error and an incomplete session at once.
-func (d *commandDispatcher) rejectProtocolVersion(add string, err error) {
+func (d *commandDispatcher) rejectProtocolVersion(add string, legacy bool, err error) {
 	h := d.handler
 	if d.sessionClosingCb != nil && d.sessionClosingCb() {
 		h.Logger().Debug(h.user, "Dropping frame of another protocol version after the close", err)
@@ -228,8 +232,8 @@ func (d *commandDispatcher) rejectProtocolVersion(add string, err error) {
 	} else {
 		h.Logger().Debug(h.user, "Dropping further frame of another protocol version", err)
 	}
-	if olderClient := add != ""; olderClient {
-		h.Logger().Debug(h.user, "Keeping session of an older protocol version open", err)
+	if legacy {
+		h.Logger().Debug(h.user, "Keeping session of a legacy protocol version open", err)
 		return
 	}
 	if d.versionRejectedCb != nil {
@@ -292,7 +296,7 @@ func (d *commandDispatcher) dispatchCommand(ctx context.Context, args []string, 
 	return nil
 }
 
-func (d *commandDispatcher) handleProtocolVersion(args []string) ([]string, int, string, error) {
+func (d *commandDispatcher) handleProtocolVersion(args []string) ([]string, int, string, bool, error) {
 	return d.codec.handleProtocolVersion(args)
 }
 
