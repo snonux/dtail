@@ -616,6 +616,11 @@ failure are told apart:
   the same command stream (legacy stream or session generation,
   `internal/handlers/mapqueryfailure.go`): each reports `map: invalid query`
   too, so no line is streamed as plain payload in place of MapReduce results.
+  This includes a map command rejected before it runs (e.g. options that do
+  not parse), which itself reports `command: rejected`. A SESSION START or
+  UPDATE builds its map command before it changes the session, so one that
+  can not be built rejects the request and a running generation keeps
+  running.
 - **File read failures**, reported by dservers advertising capability
   `command-failure-v1` with the hidden message `.syn command failed <reason>`
   (fixed reasons from `internal/protocol/session.go`, no paths or error

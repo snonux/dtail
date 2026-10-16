@@ -46,6 +46,10 @@ type ServerHandler struct {
 	// mapQueryFailures records which command streams had a failed map
 	// command, so that their reads are rejected (see mapqueryfailure.go).
 	mapQueryFailures mapQueryFailures
+	// mapParserFactory creates the log format parser of a map command; nil
+	// means logformat.NewParserWithHostname. Tests replace it to make
+	// building a map command fail after its query parsed.
+	mapParserFactory mapParserFactory
 	// Track pending files waiting for limiter slots
 	pendingFiles int32
 }
@@ -118,6 +122,7 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 	}
 	h.handleCommandCb = h.handleUserCommand
 	h.prepareCommandContextCb = h.prepareCommandContext
+	h.commandRejectedCb = h.commandRejected
 	h.commands = h.newCommandRegistry()
 	h.output.configure(h.outputManagerConfig(), loggers.Diagnostics)
 	h.activeGeneration = h.sessionState.currentGeneration
@@ -434,9 +439,9 @@ func (h *ServerHandler) makeReadCommandHandler(mode omode.Mode, tailBackoff int)
 }
 
 func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContext, _ int, args []string, commandFinished func()) {
-	command, aggregate, err := newMapCommand(h, args)
+	command, aggregate, err := h.mapCommandFor(ctx, args)
 	if err != nil {
-		h.sendln(h.serverMessages, err.Error())
+		h.sendln(h.serverMessages, h.messageText(err.Error()))
 		h.Logger().Error(h.user, err)
 		h.reportCommandFailure(commandFailureMapQuery)
 		h.mapQueryFailures.mark(sessionGenerationFromContext(ctx))
@@ -461,6 +466,16 @@ func (h *ServerHandler) handleMapCommand(ctx context.Context, _ lcontext.LContex
 		defer recoverHandlerPanic(h.Logger(), h.user, "map command", h.abortAfterPanic)
 		command.Start(ctx, maprMessages)
 	}()
+}
+
+// commandRejected learns of a command rejected before its handler ran, e.g.
+// for options that do not parse. A rejected map command failed like one whose
+// query is invalid, so the reads of its command stream are rejected as well
+// (see mapQueryFailures) instead of streaming plain payload.
+func (h *ServerHandler) commandRejected(ctx context.Context, commandName string) {
+	if commandName == "map" {
+		h.mapQueryFailures.mark(sessionGenerationFromContext(ctx))
+	}
 }
 
 func (h *ServerHandler) handleAckUserCommand(_ context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {

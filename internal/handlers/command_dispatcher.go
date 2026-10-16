@@ -17,6 +17,7 @@ const maxCommandTimeoutSeconds = 24 * 60 * 60
 
 type handleCommandCb func(context.Context, lcontext.LContext, int, []string, string)
 type prepareCommandContextCb func(context.Context, string) (context.Context, func())
+type commandRejectedCb func(context.Context, string)
 
 type commandCancelKeyType struct{}
 type sessionCommandAdmissionKeyType struct{}
@@ -30,13 +31,16 @@ type commandDispatcher struct {
 	handler                 *baseHandler
 	handleCommandCb         handleCommandCb
 	prepareCommandContextCb prepareCommandContextCb
-	codec                   protocolCodec
-	activeCommands          int32
-	commandMu               sync.Mutex
-	commandInitWg           sync.WaitGroup
-	commandWg               sync.WaitGroup
-	stopping                bool
-	aborting                bool
+	// commandRejectedCb, if set, learns of a command that dispatchCommand
+	// rejected before its handler ran, by command name.
+	commandRejectedCb commandRejectedCb
+	codec             protocolCodec
+	activeCommands    int32
+	commandMu         sync.Mutex
+	commandInitWg     sync.WaitGroup
+	commandWg         sync.WaitGroup
+	stopping          bool
+	aborting          bool
 
 	optionsOnce sync.Once
 	optionsMu   sync.Mutex
@@ -147,6 +151,9 @@ func (d *commandDispatcher) dispatchCommand(ctx context.Context, args []string, 
 	if len(parts) == 2 && len(parts[1]) != 0 {
 		options, parsedContext, deserializeErr := config.DeserializeOptions([]string{parts[1]})
 		if deserializeErr != nil {
+			if d.commandRejectedCb != nil {
+				d.commandRejectedCb(ctx, commandName)
+			}
 			return deserializeErr
 		}
 		d.handleOptions(options)

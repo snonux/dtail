@@ -2,12 +2,15 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/mapr"
+	"github.com/mimecast/dtail/internal/mapr/logformat"
 	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/session"
@@ -53,6 +56,12 @@ func runLegacyCommandStream(t *testing.T, spec session.Spec) string {
 	if err != nil {
 		t.Fatalf("build commands: %v", err)
 	}
+	return runLegacyCommands(t, commands)
+}
+
+// runLegacyCommands is runLegacyCommandStream for the given commands.
+func runLegacyCommands(t *testing.T, commands []string) string {
+	t.Helper()
 	handler := newMapTestHandler(t)
 	commandWg := wrapHandlerCommandsForJoin(handler)
 	output := &testOutput{}
@@ -66,7 +75,7 @@ func runLegacyCommandStream(t *testing.T, spec session.Spec) string {
 	}
 	frames.WriteString(encodeTestCommand(protocol.InputBatchCompleteCommand))
 	writeMu.Lock()
-	_, err = handler.Write([]byte(frames.String()))
+	_, err := handler.Write([]byte(frames.String()))
 	writeMu.Unlock()
 	if err != nil {
 		t.Fatalf("write commands: %v", err)
@@ -215,5 +224,172 @@ func assertNoDispatchedCommand(t *testing.T, recorder *sessionDispatchRecorder) 
 	case command := <-recorder.starts:
 		t.Fatalf("unexpected dispatched command %q", command.command)
 	default:
+	}
+}
+
+// TestRejectedMapCommandRejectsLaterReads covers a map command that
+// dispatchCommand rejects before handleMapCommand runs, here for options
+// that do not parse: its reads must be rejected as well instead of
+// streaming the file as plain payload.
+func TestRejectedMapCommandRejectsLaterReads(t *testing.T) {
+	commands, err := session.Spec{
+		Mode:  omode.MapClient,
+		Files: []string{writeTestStatsFile(t, 25)},
+		Query: "from STATS select count($time) group by $time",
+		Regex: ".",
+	}.Commands()
+	if err != nil {
+		t.Fatalf("build commands: %v", err)
+	}
+	if !strings.HasPrefix(commands[0], "map: ") {
+		t.Fatalf("unexpected map command %q", commands[0])
+	}
+	commands[0] = "map:bogus" + strings.TrimPrefix(commands[0], "map:")
+
+	output := runLegacyCommands(t, commands)
+	if strings.Contains(output, "MAPREDUCE:STATS") {
+		t.Fatalf("read after a rejected map command streamed payload: %q", output)
+	}
+	for _, want := range []string{
+		protocol.HiddenCommandFailedPrefix + protocol.CommandFailureRejected,
+		protocol.HiddenCommandFailedPrefix + protocol.CommandFailureMapQuery,
+		".syn close connection",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output lacks %q: %q", want, output)
+		}
+	}
+}
+
+// failingMapParserFactory makes building a map command fail after its query
+// parsed, which no query a client sends does as things stand.
+func failingMapParserFactory(string, *mapr.Query, string) (logformat.Parser, error) {
+	return nil, errors.New("forced parser failure")
+}
+
+// TestSessionStartRejectsAMapCommandThatCanNotBeBuilt checks that a SESSION
+// START whose map command can not be built is rejected with the reason before
+// any of its commands is dispatched.
+func TestSessionStartRejectsAMapCommandThatCanNotBeBuilt(t *testing.T) {
+	handler, recorder := newQuerySessionDispatchTestHandler("session-unbuildable-map-user")
+	readServerMessage(t, handler.serverMessages)
+	handler.mapParserFactory = failingMapParserFactory
+
+	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
+		[]string{"SESSION", "START", mustSessionPayload(t, querySessionSpec())}, func() {})
+
+	assertUnbuildableMapRejected(t, handler)
+	if handler.sessionState.activeSession() {
+		t.Fatal("a rejected SESSION START must not start the session")
+	}
+	assertNoDispatchedCommand(t, recorder)
+}
+
+// TestSessionUpdateRejectsAMapCommandThatCanNotBeBuilt checks :reload with a
+// map command that can not be built: the update is rejected before the
+// running generation is cancelled, which keeps running, so that the next
+// :reload is still accepted.
+func TestSessionUpdateRejectsAMapCommandThatCanNotBeBuilt(t *testing.T) {
+	handler, recorder := newQuerySessionDispatchTestHandler("session-reload-unbuildable-map-user")
+	readServerMessage(t, handler.serverMessages)
+	spec := querySessionSpec()
+	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
+		[]string{"SESSION", "START", mustSessionPayload(t, spec)}, func() {})
+	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+		t.Fatalf("unexpected session start ack: %q", message)
+	}
+	started := []recordedCommand{recorder.waitForStart(t), recorder.waitForStart(t)}
+
+	handler.mapParserFactory = failingMapParserFactory
+	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 4,
+		[]string{"SESSION", "UPDATE", "2", mustSessionPayload(t, spec)}, func() {})
+
+	assertUnbuildableMapRejected(t, handler)
+	if generation := handler.sessionState.currentGeneration(); generation != 1 {
+		t.Fatalf("generation = %d after a rejected update, want 1", generation)
+	}
+	for _, command := range started {
+		if command.ctx.Err() != nil {
+			t.Fatalf("a rejected update cancelled the running command %q", command.command)
+		}
+	}
+	assertNoDispatchedCommand(t, recorder)
+
+	handler.mapParserFactory = nil
+	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
+		[]string{"SESSION", "UPDATE", mustSessionPayload(t, spec)}, func() {})
+	if message := readServerMessage(t, handler.serverMessages); message != sessionAckUpdateOKPrefix+" 2" {
+		t.Fatalf("unexpected session update ack after a rejected update: %q", message)
+	}
+}
+
+// TestSessionClearsAStaleMapQueryFailure checks that a failure left by an
+// earlier command stream of the same generation, e.g. of a session rejected
+// after its map command failed, does not reject the reads of a later SESSION
+// START or UPDATE of that generation that has no query.
+func TestSessionClearsAStaleMapQueryFailure(t *testing.T) {
+	handler := newSessionTestHandler("session-stale-map-failure-user")
+	readServerMessage(t, handler.serverMessages)
+	rejected := make(chan bool, 4)
+	handler.commands["tail"] = func(ctx context.Context, _ lcontext.LContext, _ int, _ []string, commandFinished func()) {
+		rejected <- handler.mapQueryFailures.failed(sessionGenerationFromContext(ctx))
+		commandFinished()
+	}
+	spec := session.Spec{Mode: omode.TailClient, Files: []string{"/var/log/app.log"}, Regex: "."}
+
+	handler.mapQueryFailures.mark(1)
+	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
+		[]string{"SESSION", "START", mustSessionPayload(t, spec)}, func() {})
+	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+		t.Fatalf("unexpected session start ack: %q", message)
+	}
+	if <-rejected {
+		t.Fatal("a stale failure of generation 1 rejected a read of a new SESSION START")
+	}
+
+	handler.mapQueryFailures.mark(5)
+	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 4,
+		[]string{"SESSION", "UPDATE", "5", mustSessionPayload(t, spec)}, func() {})
+	if message := readServerMessage(t, handler.serverMessages); message != sessionAckUpdateOKPrefix+" 5" {
+		t.Fatalf("unexpected session update ack: %q", message)
+	}
+	if <-rejected {
+		t.Fatal("a stale failure of generation 5 rejected a read of SESSION UPDATE 5")
+	}
+}
+
+// TestMapCommandDiagnosticKeepsTheFraming checks that the error a failed map
+// command sends, which quotes the query, is sanitized for raw framing only.
+func TestMapCommandDiagnosticKeepsTheFraming(t *testing.T) {
+	args := strings.Split("map: from STATS select count(a€),count(a€) group by $time", " ")
+	for _, escaped := range []bool{false, true} {
+		handler := newSessionTestHandler("map-diagnostic-user")
+		readServerMessage(t, handler.serverMessages)
+		handler.escaped.Store(escaped)
+		handler.handleMapCommand(context.Background(), lcontext.LContext{}, len(args), args, func() {})
+
+		message := readServerMessage(t, handler.serverMessages)
+		hasDelimiter := strings.IndexByte(message, protocol.MessageDelimiter) >= 0
+		if !strings.Contains(message, "more than once") || hasDelimiter == !escaped {
+			t.Fatalf("escaped=%v: unexpected map command diagnostic %q", escaped, message)
+		}
+	}
+}
+
+func querySessionSpec() session.Spec {
+	return session.Spec{
+		Mode:  omode.TailClient,
+		Files: []string{"/var/log/app.log"},
+		Query: "from STATS select count($time) group by $time",
+		Regex: ".",
+	}
+}
+
+func assertUnbuildableMapRejected(t *testing.T, handler *ServerHandler) {
+	t.Helper()
+	message := readServerMessage(t, handler.serverMessages)
+	if !strings.HasPrefix(message, sessionAckErrorPrefix+"invalid session query: ") ||
+		!strings.Contains(message, "forced parser failure") {
+		t.Fatalf("unexpected session error: %q", message)
 	}
 }

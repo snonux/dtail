@@ -21,9 +21,13 @@ import (
 // command stream of a connection, and each SESSION START or UPDATE generation
 // of an interactive session. A failure of one generation therefore does not
 // affect the reads of another, e.g. of a later successful :reload. A map
-// command that succeeds clears the failure of its generation, as a retried
-// SESSION START reuses generation 1. Sessions whose map command succeeded,
-// and sessions without one, are not affected.
+// command counts as failed when it can not be built (handleMapCommand) and
+// when dispatchCommand rejects it before its handler runs (commandRejected).
+// A failure is cleared when a map command of its generation succeeds and when
+// a SESSION START or UPDATE (re)uses its generation: a retried SESSION START
+// reuses generation 1, and the client may number an UPDATE as an earlier,
+// rejected one, possibly without a query. Sessions whose map command
+// succeeded, and sessions without one, are not affected.
 type mapQueryFailures struct {
 	// generation holds the failed generation plus one, so 0 means none. Only
 	// the last failure is kept: a client starts a new generation only after

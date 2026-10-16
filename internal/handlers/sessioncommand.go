@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -10,15 +9,12 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/lcontext"
 	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/omode"
-	"github.com/mimecast/dtail/internal/protocol"
 	"github.com/mimecast/dtail/internal/session"
 )
 
@@ -47,12 +43,15 @@ type sessionCommandState struct {
 	cancel     context.CancelFunc
 }
 
+// handleSessionCommand handles SESSION START and SESSION UPDATE. An error
+// acknowledgement may carry the reason a query was rejected, which contains
+// the client's query text, so it goes through messageText.
 func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
 	defer commandFinished()
 
 	action, generation, spec, err := parseSessionCommand(args, argc, h.Logger())
 	if err != nil {
-		h.send(h.serverMessages, sessionAckErrorPrefix+err.Error())
+		h.sendSessionError(err.Error())
 		return
 	}
 
@@ -60,24 +59,31 @@ func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lconte
 	case "START":
 		generation, err = h.sessionState.start(parentCtx, h, spec)
 		if err != nil {
-			h.send(h.serverMessages, sessionAckErrorPrefix+err.Error())
+			h.sendSessionError(err.Error())
 			return
 		}
 		h.send(h.serverMessages, fmt.Sprintf("%s %d", sessionAckStartOKPrefix, generation))
 	case "UPDATE":
 		if !h.sessionState.activeSession() {
-			h.send(h.serverMessages, sessionAckErrorPrefix+"session not started")
+			h.sendSessionError("session not started")
 			return
 		}
 		generation, err = h.sessionState.update(parentCtx, h, spec, generation)
 		if err != nil {
-			h.send(h.serverMessages, sessionAckErrorPrefix+err.Error())
+			h.sendSessionError(err.Error())
 			return
 		}
 		h.send(h.serverMessages, fmt.Sprintf("%s %d", sessionAckUpdateOKPrefix, generation))
 	default:
-		h.send(h.serverMessages, sessionAckErrorPrefix+"unknown action")
+		h.sendSessionError("unknown action")
 	}
+}
+
+// sendSessionError sends a session error acknowledgement. Clients, also
+// older ones, take the whole rest of the acknowledgement as the error and
+// show it, so it may say why a query was rejected.
+func (h *ServerHandler) sendSessionError(reason string) {
+	h.send(h.serverMessages, sessionAckErrorPrefix+h.messageText(reason))
 }
 
 func parseSessionCommand(args []string, argc int, logger logging.Logger) (action string, generation uint64, spec session.Spec, err error) {
@@ -125,7 +131,7 @@ func validateSessionSpec(spec session.Spec, logger logging.Logger) error {
 	}
 	if spec.Query != "" {
 		if _, err := mapr.NewQuery(spec.Query, logger); err != nil {
-			return fmt.Errorf("invalid session spec: %s", sessionErrorReason(err))
+			return fmt.Errorf("invalid session spec: %w", err)
 		}
 	}
 
@@ -140,10 +146,23 @@ func validateSessionSpec(spec session.Spec, logger logging.Logger) error {
 	return nil
 }
 
+// start starts the session with generation 1. Its map command, if any, is
+// built before the session changes, so that one that can not be built
+// rejects the request (see prepareSessionMapCommand).
 func (s *sessionCommandState) start(parentCtx context.Context, handler *ServerHandler, spec session.Spec) (uint64, error) {
 	commands, err := prepareSessionCommands(spec)
 	if err != nil {
 		return 0, err
+	}
+	// Checked before building the map command too, so that a repeated START
+	// gets this error rather than one of its query, without building it.
+	if s.activeSession() {
+		return 0, fmt.Errorf("session already started")
+	}
+	ctx, err := handler.prepareSessionMapCommand(
+		sessionCommandContext(handler.commandRootCtx, parentCtx), commands)
+	if err != nil {
+		return 0, fmt.Errorf("invalid session query: %w", err)
 	}
 
 	s.mu.Lock()
@@ -151,7 +170,7 @@ func (s *sessionCommandState) start(parentCtx context.Context, handler *ServerHa
 		s.mu.Unlock()
 		return 0, fmt.Errorf("session already started")
 	}
-	ctx, cancel := context.WithCancel(sessionCommandContext(handler.commandRootCtx, parentCtx))
+	ctx, cancel := context.WithCancel(ctx)
 	s.active = true
 	s.generation.Store(1)
 	s.spec = spec
@@ -159,6 +178,9 @@ func (s *sessionCommandState) start(parentCtx context.Context, handler *ServerHa
 	s.mu.Unlock()
 	ctx = withSessionGeneration(ctx, 1)
 
+	// An earlier session, rejected after its map command failed, may have
+	// left a failure of generation 1, which this one reuses.
+	handler.mapQueryFailures.clear(1)
 	handler.resetSessionAggregates()
 	if dispatchErr := handler.dispatchSessionCommands(ctx, commands); dispatchErr != nil {
 		cancel()
@@ -169,10 +191,20 @@ func (s *sessionCommandState) start(parentCtx context.Context, handler *ServerHa
 	return 1, nil
 }
 
+// update replaces the running generation with a new one, the client's
+// generation or else the next one. Its map command, if any, is built before
+// the previous generation is cancelled, so that one that can not be built
+// rejects the update while the running generation keeps running (see
+// prepareSessionMapCommand).
 func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerHandler, spec session.Spec, generation uint64) (uint64, error) {
 	commands, err := prepareSessionCommands(spec)
 	if err != nil {
 		return 0, err
+	}
+	ctx, err := handler.prepareSessionMapCommand(
+		sessionCommandContext(handler.commandRootCtx, parentCtx), commands)
+	if err != nil {
+		return 0, fmt.Errorf("invalid session query: %w", err)
 	}
 
 	s.mu.Lock()
@@ -181,7 +213,7 @@ func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerH
 		return 0, fmt.Errorf("session not started")
 	}
 	oldCancel := s.cancel
-	ctx, cancel := context.WithCancel(sessionCommandContext(handler.commandRootCtx, parentCtx))
+	ctx, cancel := context.WithCancel(ctx)
 	if generation == 0 {
 		generation = s.generation.Load() + 1
 	}
@@ -196,6 +228,9 @@ func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerH
 		oldCancel()
 	}
 
+	// A failure of this generation may be left from an earlier session or
+	// update that the client numbered alike.
+	handler.mapQueryFailures.clear(generation)
 	handler.resetSessionAggregates()
 	if dispatchErr := handler.dispatchSessionCommands(ctx, commands); dispatchErr != nil {
 		cancel()
@@ -224,24 +259,6 @@ func sessionCommandContext(connCtx, parent context.Context) context.Context {
 		ctx = withSessionCommandAdmission(ctx)
 	}
 	return ctx
-}
-
-// sessionErrorReason returns err's text for a session error acknowledgement.
-// Clients, also older ones, take the whole rest of the acknowledgement as the
-// error and show it, so it may say why a query was rejected. The query comes
-// from the client's JSON spec and may contain characters that would break the
-// message framing, which has no escaping: control characters and every
-// character whose UTF-8 encoding contains the message delimiter byte are
-// replaced with blanks.
-func sessionErrorReason(err error) string {
-	return strings.Map(func(r rune) rune {
-		var encoded [utf8.UTFMax]byte
-		n := utf8.EncodeRune(encoded[:], r)
-		if unicode.IsControl(r) || bytes.IndexByte(encoded[:n], protocol.MessageDelimiter) >= 0 {
-			return ' '
-		}
-		return r
-	}, err.Error())
 }
 
 func validateSessionOptions(raw string) error {
@@ -303,11 +320,12 @@ func (h *ServerHandler) dispatchSessionCommands(ctx context.Context, commands []
 		if admission != nil && !admission.admitted {
 			return fmt.Errorf("server is shutting down")
 		}
-		// validateSessionSpec parsed the query already, so this is a later
-		// failure of the map command (e.g. creating its aggregate). Its reads
-		// are rejected (see mapQueryFailures); stop dispatching them and let
-		// the caller reject the request rather than acknowledge a workload
-		// without its aggregate.
+		// start and update built the map command before dispatching it (see
+		// prepareSessionMapCommand), so it does not fail here as things
+		// stand. Should it nevertheless, its reads are rejected (see
+		// mapQueryFailures); stop dispatching them and let the caller reject
+		// the request rather than acknowledge a workload without its
+		// aggregate.
 		if h.mapQueryFailures.failed(sessionGenerationFromContext(ctx)) {
 			return fmt.Errorf("invalid session query")
 		}

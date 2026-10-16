@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -651,15 +650,24 @@ func waitForContextDone(ctx context.Context, t *testing.T) {
 	}
 }
 
-// TestSessionErrorReasonKeepsTheFraming checks that a query error put into a
-// session error acknowledgement can not split or end the message: the
-// delimiter byte appears in '¬' and as the last byte of '€'.
-func TestSessionErrorReasonKeepsTheFraming(t *testing.T) {
-	got := sessionErrorReason(errors.New("invalid query: 'a¬b€c\nd'"))
+// TestMessageTextKeepsTheRawFraming checks that text put into a server
+// message, such as a query error in a session error acknowledgement, can not
+// split or end the message of a raw-framing (e.g. older) client: the
+// delimiter byte appears in '¬' and as the last byte of '€'. Under escaped
+// framing the text is transported unchanged.
+func TestMessageTextKeepsTheRawFraming(t *testing.T) {
+	text := "invalid query: 'a¬b€c\nd'"
+	handler := newSessionTestHandler("message-text-user")
+	got := handler.messageText(text)
 	if want := "invalid query: 'a b c d'"; got != want {
-		t.Fatalf("sessionErrorReason = %q, want %q", got, want)
+		t.Fatalf("raw framing messageText = %q, want %q", got, want)
 	}
 	if strings.IndexByte(got, protocol.MessageDelimiter) >= 0 {
-		t.Fatalf("sessionErrorReason = %q contains the message delimiter", got)
+		t.Fatalf("raw framing messageText = %q contains the message delimiter", got)
+	}
+
+	handler.escaped.Store(true)
+	if got := handler.messageText(text); got != text {
+		t.Fatalf("escaped framing messageText = %q, want %q", got, text)
 	}
 }
