@@ -175,8 +175,11 @@ working with every other one:
    once the server message channel has room, which its reads can fill
    (e.g. with one `Unable to read file(s)` message per missing file), and
    an unknown command or failed map query that is the session's only
-   command shuts the session down and flushes its output on the command
-   input goroutine. The replies of such a command may therefore follow a
+   command shuts the session down, whose flush waits for the held back
+   output. That shutdown runs on a goroutine of its own
+   (`ServerHandler.finishUserCommand`), not on the command input
+   goroutine, so the client's close acknowledgement is handled at once
+   instead of after the 5 s acknowledgement timeout. The replies of such a command may therefore follow a
    close handshake queued before it, as they always did before control
    frames existed; clients acknowledge the close either way. The framing
    also settles after an escaped framing request when the server does not

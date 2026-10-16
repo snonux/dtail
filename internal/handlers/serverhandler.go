@@ -215,7 +215,6 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		h.handleAckControl(ctx, argc, args)
 		return
 	}
-	shutdownOnCompletion := shouldShutdownOnCommandCompletion(commandName)
 	if !h.beginCommand(hasSessionCommandAdmission(ctx)) {
 		cancelCommandContext(ctx)
 		return
@@ -224,28 +223,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	if strings.EqualFold(commandName, "SESSION") {
 		ctx = withSessionCommandAdmission(ctx)
 	}
-	var commandFinishOnce sync.Once
-	commandFinished := func() {
-		commandFinishOnce.Do(func() {
-			defer h.finishCommand()
-			activeCommands := h.decrementActiveCommands()
-			pendingFiles := atomic.LoadInt32(&h.pendingFiles)
-			h.Logger().Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
-
-			// Only shutdown if no active commands AND no pending files.
-			// AUTHKEY is a session-side effect command and should not terminate the shell
-			// because user commands may still follow in the same session.
-			if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 &&
-				!h.sessionState.keepAlive() && !h.isStopping() {
-				h.triggerIdleShutdown(ctx)
-			}
-
-			// Release this command's child context after any final output has
-			// drained. The handler's connection-derived root handles session-wide
-			// cancellation directly, without a watcher goroutine per command.
-			cancelCommandContext(ctx)
-		})
-	}
+	commandFinished := h.newCommandFinished(ctx, shouldShutdownOnCommandCompletion(commandName))
 	defer recoverHandlerPanic(h.Logger(), h.user, "command dispatch cleanup", h.abortAfterPanic)
 	defer h.finishCommandInitialization()
 	defer recoverHandlerPanic(h.Logger(), h.user, "command dispatch", func() {
@@ -263,6 +241,65 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 	}
 
 	handler(ctx, ltx, argc, args, commandFinished)
+}
+
+// newCommandFinished returns the commandFinished callback of an admitted
+// command: it finishes the command once (finishUserCommand), however often
+// and from whichever goroutine it is called.
+func (h *ServerHandler) newCommandFinished(ctx context.Context, shutdownOnCompletion bool) func() {
+	var once sync.Once
+	return func() {
+		once.Do(func() { h.finishUserCommand(ctx, shutdownOnCompletion) })
+	}
+}
+
+// finishUserCommand ends an admitted command. When it was the session's last
+// work it starts the idle shutdown, which drains the output and then runs the
+// close handshake. AUTHKEY and SESSION are session-side commands and do not
+// end the session (shouldShutdownOnCommandCompletion), as user commands may
+// still follow in it.
+//
+// The shutdown always runs on a goroutine of its own
+// (idleShutdownAfterCommand). A command can finish on the command input
+// goroutine, e.g. an unknown command or a failed map query, and that
+// goroutine also handles the client's close acknowledgement: a shutdown on
+// it would block until the acknowledgement timeout (5 s) passed. A command
+// queues its output before it calls commandFinished, and the shutdown
+// flushes everything queued before it requests the close, so the close
+// handshake still comes after all of the session's output. The command's context and its commandWg slot are only
+// released once the shutdown returned, as when it ran inline: the shutdown
+// uses that context, and graceful shutdown waits on commandWg.
+func (h *ServerHandler) finishUserCommand(ctx context.Context, shutdownOnCompletion bool) {
+	handedOver := false
+	defer func() {
+		if !handedOver {
+			h.finishCommand()
+		}
+	}()
+	activeCommands := h.decrementActiveCommands()
+	pendingFiles := atomic.LoadInt32(&h.pendingFiles)
+	h.Logger().Debug(h.user, "Command finished", "activeCommands", activeCommands, "pendingFiles", pendingFiles)
+
+	// Only shut down if no active commands AND no pending files.
+	if shutdownOnCompletion && activeCommands == 0 && pendingFiles == 0 &&
+		!h.sessionState.keepAlive() && !h.isStopping() {
+		handedOver = true
+		go h.idleShutdownAfterCommand(ctx)
+		return
+	}
+	// Release this command's child context. The handler's connection-derived
+	// root handles session-wide cancellation directly, without a watcher
+	// goroutine per command.
+	cancelCommandContext(ctx)
+}
+
+// idleShutdownAfterCommand runs the idle shutdown finishUserCommand handed
+// over, then releases the finished command's context and commandWg slot.
+func (h *ServerHandler) idleShutdownAfterCommand(ctx context.Context) {
+	defer h.finishCommand()
+	defer cancelCommandContext(ctx)
+	defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
+	h.triggerIdleShutdown(ctx)
 }
 
 // handleAckControl handles the ".ack" control commands. The close

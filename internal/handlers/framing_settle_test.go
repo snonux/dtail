@@ -1,9 +1,7 @@
 package handlers
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -63,18 +61,30 @@ func TestServerHandlerSessionStartWithManyMissingFilesDoesNotDeadlock(t *testing
 	}
 }
 
-// TestServerHandlerFailingFirstCommandsDoNotWaitForTheFlushTimeout: an
-// unknown command or a failed map query that is a session's only command
-// shuts the session down on the command input goroutine, flushing its
-// output. The framing settles before that command is handled, so the flush
-// does not wait for a Read held back until the command returned, which would
-// take the full flush timeout and report a bogus flush error.
-func TestServerHandlerFailingFirstCommandsDoNotWaitForTheFlushTimeout(t *testing.T) {
+// TestServerHandlerFailingOnlyCommandsDoNotWaitForTimeouts: an unknown
+// command or a failed map query that is a session's only command shuts the
+// session down, flushing its output and then running the close handshake.
+// The framing settles before that command is handled, so the flush does not
+// wait for a Read held back until the command returned, which would take the
+// full flush timeout and report a bogus flush error. The shutdown runs off
+// the command input goroutine (ServerHandler.finishUserCommand), so the
+// client's close acknowledgement, a later command frame, is handled at once
+// instead of after the acknowledgement timeout (5 s).
+func TestServerHandlerFailingOnlyCommandsDoNotWaitForTimeouts(t *testing.T) {
 	commands := map[string]string{
 		"unknown command":  "bogus command",
 		"failed map query": "map: from STATS select count(a),count(a) group by $time",
 	}
+	// A current client's session settles with its framing requests, before
+	// the failing command; the close acknowledgement must not wait there
+	// either.
+	clients := map[string][]string{
+		"current client": {protocol.EscapedFramingCommand, protocol.ControlFramesCommand},
+	}
 	for client, first := range settleTestClients {
+		clients[client] = first
+	}
+	for client, first := range clients {
 		for name, command := range commands {
 			t.Run(client+"/"+name, func(t *testing.T) {
 				handler := newFramingTestServerHandler(t, ServerCapabilities("linux", false))
@@ -82,8 +92,19 @@ func TestServerHandlerFailingFirstCommandsDoNotWaitForTheFlushTimeout(t *testing
 				if strings.Contains(stream, "Unable to flush session output") {
 					t.Fatalf("shutdown flush waited for a held back Read: %q", stream)
 				}
-				if !strings.Contains(stream, ".syn close connection") {
+				closeAt := strings.Index(stream, ".syn close connection")
+				if closeAt < 0 {
 					t.Fatalf("session ended without the close handshake: %q", stream)
+				}
+				// The close handshake still comes after all of the
+				// session's output, here the command's failure report.
+				if failedAt := strings.Index(stream, protocol.HiddenCommandFailedPrefix); failedAt < 0 || failedAt > closeAt {
+					t.Fatalf("failure report missing or after the close handshake: %q", stream)
+				}
+				select {
+				case <-handler.ackCloseReceived:
+				default:
+					t.Fatalf("session ended without the close acknowledgement: %q", stream)
 				}
 			})
 		}
@@ -91,20 +112,16 @@ func TestServerHandlerFailingFirstCommandsDoNotWaitForTheFlushTimeout(t *testing
 }
 
 // runFailingCommandSession sends the first command frames and then command,
-// checks that the session ends well within the flush timeout, and returns
-// all bytes sent to the client.
-//
-// The shutdown such a command starts runs on the command input goroutine,
-// so a client's close acknowledgement, a later command frame, would only be
-// handled once the acknowledgement timeout (5 s) passed, as before escaped
-// framing existed. The test acknowledges the close directly instead, so the
-// time it measures is the flush wait alone.
+// acknowledges the close handshake with an ".ack close connection" command
+// frame like a client, checks that the session ends well under a second,
+// i.e. without waiting for the flush timeout (2 s) or the close
+// acknowledgement timeout (5 s), and returns all bytes sent to the client.
 func runFailingCommandSession(t *testing.T, handler *ServerHandler, first []string,
 	command string) string {
 	t.Helper()
 	output := &testOutput{}
 	var writeMu sync.Mutex
-	readerDone := startDirectAckTestReader(handler, output)
+	readerDone := startTestReader(handler, output, &writeMu)
 	output.waitForContains(t, protocol.HiddenCapabilitiesPrefix, 5*time.Second)
 
 	started := time.Now()
@@ -115,31 +132,10 @@ func runFailingCommandSession(t *testing.T, handler *ServerHandler, first []stri
 	case <-time.After(10 * time.Second):
 		t.Fatal("reader did not observe EOF after handler shutdown")
 	}
-	if elapsed := time.Since(started); elapsed >= defaultOutputFlushTimeout/2 {
-		t.Fatalf("session took %s to end, want no wait for the flush timeout", elapsed)
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("session took %s to end, want no wait for a flush or ack timeout", elapsed)
 	}
 	return output.String()
-}
-
-// startDirectAckTestReader reads handler's output into output like
-// startTestReader, but acknowledges the close handshake directly rather
-// than with a command frame.
-func startDirectAckTestReader(handler *ServerHandler, output *testOutput) <-chan struct{} {
-	readerDone := make(chan struct{})
-	go func() {
-		defer close(readerDone)
-		p := make([]byte, 4096)
-		for {
-			n, err := handler.Read(p)
-			if n > 0 && strings.Contains(output.append(p[:n]), ".syn close connection") {
-				handler.acknowledgeClose()
-			}
-			if errors.Is(err, io.EOF) {
-				return
-			}
-		}
-	}()
-	return readerDone
 }
 
 // writeTestCommandsWithin writes commands as command frames in one write and
