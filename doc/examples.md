@@ -11,6 +11,7 @@ This page demonstrates the primary usage of DTail. Please also see `--help` for 
 * How to use `dgrep`
 * How to use `dmap`
 * How to use the DTail serverless mode
+* Exit statuses of `dcat` and `dgrep`
 * More examples
 
 ## How to use `dtail`
@@ -222,6 +223,28 @@ dgrep --regex ERROR --files /var/log/dserver/dserver.log
 
 ```shell
 dgrep --before 10 --after 10 --max 10 --grep ERROR /var/log/dserver/dserver.log
+```
+
+## Exit statuses of `dcat` and `dgrep`
+
+`dcat` and `dgrep` exit with one of these statuses, in server and in serverless mode alike:
+
+| Status | Meaning |
+|---|---|
+| `0` | Every server read what was asked. `dgrep` exits `0` also when no line matched (unlike `grep`, which exits `1` then). |
+| `1` | A connection failed (refused, failed SSH handshake, lost connection), or the client could not start (e.g. a configuration error or no server to connect to). |
+| `2` | A server reported that a command of the session failed, or the command line had an invalid flag. |
+
+A server reports a failed command when a file is missing (also a glob that matched no file after its retries), denied by the read permissions, or could not be opened or read; when a glob matched more files than the server reads (`MaxGlobTargets`); when it could not parse the read command; and when a read produced more output than the session output buffer (`OutputBufferMaxBytes`) holds. The output of the other files and servers is still printed, and the reason is in the server's warnings and log. With several servers the client exits with the highest status of them all, so a read failure on one server (`2`) outweighs a connection failure on another (`1`). In an `--interactive-query` session a failure reported for any workload of the session counts.
+
+Only servers advertising capability `command-failure-v1` report failed commands. With an older `dserver` a missing or unreadable file still exits `0`, as before.
+
+The other clients keep their exit statuses: `dtail` (follow mode) is not affected by failed reads, `dmap` handles them in its scheduled modes (see the [Server Configuration Guide](./server-configuration.md)), and `dtailhealth` has its own statuses.
+
+```shell
+% dcat --servers serverlist.txt --files /var/log/missing.log; echo $?
+...
+2
 ```
 
 ## More examples

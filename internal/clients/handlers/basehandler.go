@@ -96,7 +96,8 @@ type SessionOutcome struct {
 	// Failures are the distinct reasons of the commands the server reported
 	// as failed (protocol.HiddenCommandFailedPrefix), in the order of their
 	// first report. Only servers advertising
-	// protocol.CapabilityCommandFailureV1 report failures.
+	// protocol.CapabilityCommandFailureV1 report failures. Any failure makes
+	// dcat and dgrep exit with status 2 (see clients.ExitStatusFailedCommand).
 	Failures []string
 }
 

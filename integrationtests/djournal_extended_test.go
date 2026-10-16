@@ -141,9 +141,10 @@ func testDJournalExtendedPermissions(t *testing.T, logger *TestLogger) {
 	}, nil)
 	denyServer := startDJournalExtendedServer(t, logger, denyEnv.configFile, denyEnv.mock.Env(), "debug", false)
 	denyOut := "djournal_extended_permission_deny.stdout.tmp"
-	// A permission-denied dcat exits cleanly after receiving the server WARN, so
-	// its error is not meaningful here; the assertion is on the server logs.
-	_, _ = runCommand(denyServer.ctx, t, denyOut, "../dcat",
+	// A permission-denied dcat exits with status 2 after receiving the server
+	// WARN and its failed command report (the server advertises
+	// command-failure-v1); the other assertions are on the server logs.
+	denyExit, denyErr := runCommand(denyServer.ctx, t, denyOut, "../dcat",
 		"--cfg", "none",
 		"--logLevel", "error",
 		"--servers", denyServer.address,
@@ -152,6 +153,10 @@ func testDJournalExtendedPermissions(t *testing.T, logger *TestLogger) {
 		"--noColor",
 	)
 	denyOutput := readTestFile(t, denyOut)
+	if denyExit != 2 {
+		t.Fatalf("permission-denied dcat exit status = %d (%v), want 2; output:\n%s",
+			denyExit, denyErr, denyOutput)
+	}
 	// Poll the server logs rather than reading them synchronously: the server
 	// runs with the (buffered) stdout logger, so the "No permission" diagnostic
 	// can lag the client's exit by up to the logger's idle-flush interval.

@@ -283,8 +283,10 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 
 		conn.Start(connCtx, cancel, c.throttleCh, c.stats.connectionsEstCh)
 		cancel()
-		// Retrieve status code from handler (dtail client will exit with that status)
-		status = conn.Handler().Status()
+		// Retrieve the connection's exit status from its handler, raised for
+		// dcat and dgrep when the server reported a failed command (see
+		// sessionStatus); the client exits with the highest one.
+		status = c.sessionStatus(conn.Handler())
 
 		// Do we want to retry?
 		if !c.profile.retry {

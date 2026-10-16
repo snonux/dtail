@@ -233,12 +233,6 @@ func (c *MaprClient) scheduledQueryOutcome(ctxErr error, status int) scheduledOu
 	return outcome
 }
 
-// sessionOutcomeReporter is a client handler that knows how its session
-// ended.
-type sessionOutcomeReporter interface {
-	Outcome() handlers.SessionOutcome
-}
-
 // sessionOutcome returns why the session of handler with server did not
 // complete, or "" if it did, and the file read failures (see
 // protocol.IsFileReadFailure) the server reported, each as "<server>:

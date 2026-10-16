@@ -349,6 +349,26 @@ the full payload size. Payload always still goes to STDOUT/terminal, unchanged.
   calls, and rejects later admissions with a diagnostic. A blocked sink still
   applies backpressure. The default payload-disabled fout path is unchanged.
 
+### Client Exit Statuses (dcat, dgrep)
+`dcat` and `dgrep` exit `0` on success (`dgrep` also when no line matched, unlike
+`grep`), `1` when a connection failed or the client could not start, and `2`
+(`clients.ExitStatusFailedCommand`, also the status of an invalid flag) when any
+server reported a failed command of the session with `.syn command failed
+<reason>` (capability `command-failure-v1`, `handlers.SessionOutcome.Failures`).
+This covers the file read failures (`protocol.IsFileReadFailure`: missing, not
+permitted, unreadable, reader not created, glob capped) and deliberately also the
+other reasons (`command: ...`, `map: invalid query`, `read: unable to parse
+command`, `output: too large for the session output buffer`), as each means
+output that was asked for is missing. Serverless mode behaves the same, as its
+in-process server reports failures the same way. The client exits with the highest
+status of its connections (`baseClient.runConnections`), so a read failure on
+one server outweighs a connection failure on another. The raise is opt-in per
+client (`clientProfile.failedCommandStatus`, set by `readClientProfile`):
+`dtail` follow mode, `dmap` (its scheduled modes handle failures, see "Failed
+scheduled jobs" below) and `dtailhealth` keep their statuses. Servers without
+`command-failure-v1` report nothing, so with them a missing file still exits `0`.
+User docs: `doc/examples.md` ("Exit statuses of `dcat` and `dgrep`").
+
 ### Output Path and MapReduce Operations
 DTail uses a single, channel-less read/output path for both direct output
 operations (cat, grep, tail) and MapReduce operations in server mode. This was
