@@ -39,8 +39,10 @@ Mode-specific flags:
 * `dcat`: the shared flags only
 
 `--grep` is an alias of `--regex` and behaves as on the `dgrep` and `dtail`
-command lines: a non-empty `--grep` wins over `--regex` whatever their order,
-and `--grep ''` is ignored. Use `--regex ''` to clear the regex.
+command lines: a non-empty `--grep` wins over `--regex` whatever their order.
+The command lines ignore `--grep ''`; a reload rejects it with an error
+instead of restarting the unchanged workload. Use `--regex ''` to clear the
+regex.
 
 A reload must leave the session something to do: `--files` needs at least
 one non-blank file (`--files ''`, `--files ' '` and `--files ,` are rejected),
@@ -69,7 +71,12 @@ splits a command line, without any variable, command or glob expansion
 * Quoted and unquoted parts next to each other form one argument, and an
   unterminated quote or a trailing backslash rejects the whole line with an
   error, leaving the current workload unchanged.
-* Non-ASCII text, even invalid UTF-8, is passed through byte for byte.
+* Non-ASCII text is passed through byte for byte. A line that is not valid
+  UTF-8 is rejected with an error, as the update sent to the servers is JSON,
+  which cannot carry invalid UTF-8 unchanged.
+* Only leading blanks and the line ending are removed before splitting, so
+  an escaped trailing blank stays part of the value: `--regex foo\ ` (with
+  a space after the backslash) is the regex `foo ` with the trailing space.
 
 ## Examples
 

@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
@@ -85,8 +87,11 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 	}()
 
 	for reader.Scan() {
-		line := strings.TrimSpace(reader.Text())
-		if line == "" {
+		// The line is passed on untrimmed: parseInteractiveCommand trims it
+		// only to recognise the command, so that an escaped trailing blank of
+		// a :reload value (`--regex foo\ `) survives.
+		line := reader.Text()
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
 
@@ -281,41 +286,61 @@ func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 	return writeControlLine(writer, line)
 }
 
+// parseInteractiveCommand parses one control line. The line is trimmed only
+// to recognise the command; the flags of a :reload line are tokenized as
+// typed, see parseInteractiveReload.
 func parseInteractiveCommand(current config.Args, line string, logger logging.Logger) (interactiveCommand, error) {
-	line = strings.TrimSpace(line)
+	trimmed := strings.TrimSpace(line)
 
 	switch {
-	case line == ":help":
+	case trimmed == ":help":
 		return interactiveCommand{kind: "help"}, nil
-	case line == ":show":
+	case trimmed == ":show":
 		return interactiveCommand{kind: "show"}, nil
-	case line == ":quit":
+	case trimmed == ":quit":
 		return interactiveCommand{kind: "quit"}, nil
-	case strings.HasPrefix(line, ":reload"):
-		remainder := strings.TrimSpace(strings.TrimPrefix(line, ":reload"))
-		if remainder == "" {
-			return interactiveCommand{}, errors.New("reload requires flags to change")
-		}
-		tokens, err := splitInteractiveArgs(remainder)
-		if err != nil {
-			return interactiveCommand{}, err
-		}
-		nextArgs, err := parseInteractiveReloadArgs(current, tokens)
-		if err != nil {
-			return interactiveCommand{}, err
-		}
-		nextSpec, err := buildInteractiveSessionSpec(nextArgs, logger)
-		if err != nil {
-			return interactiveCommand{}, err
-		}
-		return interactiveCommand{
-			kind: "reload",
-			next: nextArgs,
-			spec: nextSpec,
-		}, nil
+	case strings.HasPrefix(trimmed, ":reload"):
+		return parseInteractiveReload(current, line, logger)
 	default:
-		return interactiveCommand{}, fmt.Errorf("unknown command %q", line)
+		return interactiveCommand{}, fmt.Errorf("unknown command %q", trimmed)
 	}
+}
+
+// parseInteractiveReload parses a :reload line into the next arguments and
+// session spec. Only leading blanks and a trailing line ending are removed
+// before the flags are tokenized: trailing blanks are separators to the
+// tokenizer anyway, while an escaped one (`--regex foo\ `) is part of the
+// value, as in a POSIX shell, and must not be trimmed away first.
+//
+// A line that is not valid UTF-8 is rejected: the SESSION UPDATE payload is
+// the JSON encoding of the spec, and encoding/json would silently replace
+// each invalid byte with U+FFFD, so e.g. a file path would change.
+func parseInteractiveReload(current config.Args, line string, logger logging.Logger) (interactiveCommand, error) {
+	if !utf8.ValidString(line) {
+		return interactiveCommand{}, errors.New("reload line is not valid UTF-8")
+	}
+	remainder := strings.TrimPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), ":reload")
+	remainder = strings.TrimRight(remainder, "\r\n")
+	if strings.TrimSpace(remainder) == "" {
+		return interactiveCommand{}, errors.New("reload requires flags to change")
+	}
+	tokens, err := splitInteractiveArgs(remainder)
+	if err != nil {
+		return interactiveCommand{}, err
+	}
+	nextArgs, err := parseInteractiveReloadArgs(current, tokens)
+	if err != nil {
+		return interactiveCommand{}, err
+	}
+	nextSpec, err := buildInteractiveSessionSpec(nextArgs, logger)
+	if err != nil {
+		return interactiveCommand{}, err
+	}
+	return interactiveCommand{
+		kind: "reload",
+		next: nextArgs,
+		spec: nextSpec,
+	}, nil
 }
 
 // parseInteractiveReloadArgs applies the flags of a `:reload` line to a copy
@@ -347,8 +372,9 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 	}
 	// --grep is an alias of --regex with the semantics of the dgrep and dtail
 	// command lines (cmd/dgrep, cmd/dtail): a non-empty --grep wins over
-	// --regex whatever their order, and an empty --grep is ignored, so
-	// `--regex ''` is the way to clear the regex.
+	// --regex whatever their order. An empty --grep, which the command lines
+	// ignore, is rejected by validateInteractiveReloadArgs, so `--regex ''`
+	// is the way to clear the regex.
 	if grep != nil && *grep != "" {
 		next.RegexStr = *grep
 	}
@@ -384,9 +410,12 @@ func bindInteractiveGrepFlags(fs *flag.FlagSet, next *config.Args, current confi
 // non-blank file (an empty or blank value, or only commas) would cancel the
 // running work and read nothing, and a blank --query would silently turn a
 // query session into a plain one (dtail) or an unsupported one (dmap), after
-// which --query could not even be reloaded anymore. Values not given on the
-// line keep the current ones and are not checked, so e.g. a serverless stdin
-// session with no files can still reload other flags.
+// which --query could not even be reloaded anymore. An empty --grep is
+// rejected as well: the command lines ignore it, so a reload would restart
+// the unchanged workload (in dgrep reading and printing the file again)
+// although the user most likely meant to clear the regex. Values not given
+// on the line keep the current ones and are not checked, so e.g. a
+// serverless stdin session with no files can still reload other flags.
 func validateInteractiveReloadArgs(fs *flag.FlagSet, next config.Args) error {
 	var err error
 	fs.Visit(func(f *flag.Flag) {
@@ -396,6 +425,8 @@ func validateInteractiveReloadArgs(fs *flag.FlagSet, next config.Args) error {
 			err = fmt.Errorf("--files needs at least one non-blank file, got %q", next.What)
 		case f.Name == "query" && strings.TrimSpace(next.QueryStr) == "":
 			err = fmt.Errorf("--query must not be blank, got %q", next.QueryStr)
+		case f.Name == "grep" && f.Value.String() == "":
+			err = errors.New("--grep '' is ignored; use --regex '' to clear the regex")
 		}
 	})
 	return err

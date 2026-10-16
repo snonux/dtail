@@ -103,7 +103,7 @@ func TestDTailInteractiveReloadReusesSessionAndDropsLateOldMatches(t *testing.T)
 		t.Fatalf("expected reload success message in output:\n%s", clientOutput)
 	}
 	if countSubstring(serverLogs.snapshot(), "Creating new server handler") != 1 {
-		t.Fatalf("expected one SSH session on the server, logs:\n%s", strings.Join(serverLogs.snapshot(), "\n"))
+		t.Fatalf("expected one SSH session on the server, logs:\n%s", serverLogs.dump())
 	}
 }
 
@@ -205,7 +205,7 @@ func TestDTailInteractiveReloadReusesSessionOnImmediateBoundaryAndDropsLateOldMa
 		t.Fatalf("expected first-generation ERROR output to precede reload success:\n%s", clientOutput)
 	}
 	if countSubstring(serverLogs.snapshot(), "Creating new server handler") != 1 {
-		t.Fatalf("expected one SSH session on the server, logs:\n%s", strings.Join(serverLogs.snapshot(), "\n"))
+		t.Fatalf("expected one SSH session on the server, logs:\n%s", serverLogs.dump())
 	}
 }
 
@@ -257,7 +257,7 @@ func TestDGrepInteractiveReloadReusesSessionAfterCompletedRead(t *testing.T) {
 		t.Fatalf("expected reload success message in output:\n%s", clientOutput)
 	}
 	if countSubstring(serverLogs.snapshot(), "Creating new server handler") != 1 {
-		t.Fatalf("expected one SSH session on the server, logs:\n%s", strings.Join(serverLogs.snapshot(), "\n"))
+		t.Fatalf("expected one SSH session on the server, logs:\n%s", serverLogs.dump())
 	}
 }
 
@@ -317,12 +317,6 @@ func TestDGrepInteractiveReloadQuoting(t *testing.T) {
 // port for an interactive test and returns the port once the server accepts
 // connections, together with a collector of its output lines, reset at that
 // point so it holds only what the test caused.
-//
-// The server's stdout and stderr are written straight into the collector by
-// os/exec instead of going through startCommand's line channels: nothing can
-// block on an unread channel, and t.Cleanup stops the server and waits for
-// it, which also waits for the output copying, so the test leaks neither the
-// process nor a goroutine.
 func startInteractiveTestServer(ctx context.Context, t *testing.T) (int, *processOutputCollector) {
 	t.Helper()
 	port := getUniquePortNumber()
@@ -333,33 +327,53 @@ func startInteractiveTestServer(ctx context.Context, t *testing.T) (int, *proces
 		"--bindAddress", "localhost",
 		"--port", fmt.Sprintf("%d", port),
 	}
-	if logger := GetTestLogger(ctx); logger != nil {
-		logger.LogCommand("../dserver", args)
+	collector := &processOutputCollector{}
+	launchInteractiveTestServer(ctx, t, "../dserver", args, collector)
+	if err := waitForServerReady(ctx, "localhost", port); err != nil {
+		t.Fatalf("wait for dserver: %v", err)
 	}
+	collector.reset()
+	return port, collector
+}
+
+// launchInteractiveTestServer starts the server binary cmdStr with args and
+// registers a t.Cleanup that stops it again.
+//
+// The server's stdout and stderr are written straight into the collector by
+// os/exec instead of going through startCommand's line channels: nothing can
+// block on an unread channel, and the cleanup stops the server and waits for
+// it, which also waits for the output copying, so the test leaks neither the
+// process nor a goroutine. WaitDelay bounds that wait should a child process
+// keep the output pipes open after the server was killed.
+func launchInteractiveTestServer(ctx context.Context, t *testing.T, cmdStr string,
+	args []string, collector *processOutputCollector) {
+	t.Helper()
+	if _, err := os.Stat(cmdStr); err != nil {
+		t.Fatalf("no such executable '%s', please compile first: %v", cmdStr, err)
+	}
+	if logger := GetTestLogger(ctx); logger != nil {
+		logger.LogCommand(cmdStr, args)
+	}
+	t.Log(cmdStr, strings.Join(args, " "))
 
 	serverCtx, stopServer := context.WithCancel(ctx)
-	collector := &processOutputCollector{}
-	cmd := exec.CommandContext(serverCtx, "../dserver", args...)
+	cmd := exec.CommandContext(serverCtx, cmdStr, args...)
+	cmd.WaitDelay = 5 * time.Second
 	// The same comparable writer for both streams makes os/exec serialize
 	// the writes, so Write needs no extra care for concurrent callers.
 	cmd.Stdout, cmd.Stderr = collector, collector
 	if err := cmd.Start(); err != nil {
 		stopServer()
-		t.Fatalf("start dserver: %v", err)
+		t.Fatalf("start %s: %v", cmdStr, err)
 	}
 	t.Cleanup(func() {
 		stopServer()
 		// The exit status is that of a killed process; only the wait matters.
 		_ = cmd.Wait()
 		if t.Failed() {
-			t.Logf("dserver output:\n%s", strings.Join(collector.snapshot(), "\n"))
+			t.Logf("%s output:\n%s", cmdStr, collector.dump())
 		}
 	})
-	if err := waitForServerReady(ctx, "localhost", port); err != nil {
-		t.Fatalf("wait for dserver: %v", err)
-	}
-	collector.reset()
-	return port, collector
 }
 
 // startProcessOutputCollector collects the lines of startCommand's output
@@ -420,10 +434,26 @@ func (c *processOutputCollector) snapshot() []string {
 	return out
 }
 
+// dump returns the collected lines for a failure message, including an
+// unfinished last line that Write still holds back for its newline.
+func (c *processOutputCollector) dump() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	out := strings.Join(c.lines, "\n")
+	if len(c.partial) > 0 {
+		out += "\n" + string(c.partial) + " (unfinished line)"
+	}
+	return out
+}
+
+// reset drops everything collected so far, an unfinished last line included,
+// so that the collector holds only output written afterwards.
 func (c *processOutputCollector) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.lines = c.lines[:0]
+	c.partial = c.partial[:0]
 }
 
 func appendLinesOnSchedule(ctx context.Context, path string, steps []interactiveStep) error {

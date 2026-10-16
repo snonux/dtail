@@ -110,12 +110,16 @@ func TestSplitInteractiveArgs(t *testing.T) {
 		{name: "double quotes escape dollar", raw: `--regex "\$x\$"`, want: []string{"--regex", "$x$"}},
 		{name: "double quotes escape backtick", raw: "--regex \"a\\`b\"", want: []string{"--regex", "a`b"}},
 		{name: "single quotes keep escaped dollar", raw: `--regex '\$x'`, want: []string{"--regex", `\$x`}},
+		// The tokenizer keeps invalid UTF-8; parseInteractiveReload rejects
+		// such a line before it gets here.
 		{name: "invalid utf-8 is kept", raw: "--regex \xff'\xfe' \"\xfd\"", want: []string{"--regex", "\xff\xfe", "\xfd"}},
 		{name: "unquoted backslash before multibyte", raw: `--files /tmp/\é.log`, want: []string{"--files", "/tmp/é.log"}},
 		{name: "double-quoted backslash before multibyte", raw: `--regex "\é"`, want: []string{"--regex", `\é`}},
 		{name: "unquoted backslash before invalid byte", raw: "--regex \\\xff", want: []string{"--regex", "\xff"}},
 		{name: "unquoted backslash escapes space", raw: `--files /a\ b`, want: []string{"--files", "/a b"}},
 		{name: "unquoted backslash escapes quote", raw: `--regex it\'s`, want: []string{"--regex", "it's"}},
+		{name: "escaped trailing space", raw: `--regex foo\ `, want: []string{"--regex", "foo "}},
+		{name: "escaped trailing tab", raw: "--regex foo\\\t", want: []string{"--regex", "foo\t"}},
 		{name: "unquoted backslash escapes backslash", raw: `--regex a\\d`, want: []string{"--regex", `a\d`}},
 		{name: "empty single quotes", raw: `--regex ''`, want: []string{"--regex", ""}},
 		{name: "empty double quotes", raw: `--regex ""`, want: []string{"--regex", ""}},
@@ -185,12 +189,15 @@ func TestParseInteractiveCommandReloadRegexQuoting(t *testing.T) {
 		{name: "empty regex clears it", line: `:reload --regex ''`, wantRegex: "", wantMax: 7},
 		{name: "empty regex keeps following flag", line: `:reload --regex '' --max 1`, wantRegex: "", wantMax: 1},
 		// --grep follows the dgrep/dtail command lines: a non-empty --grep
-		// wins whatever the order, and an empty --grep is ignored.
-		{name: "empty grep alias is ignored", line: `:reload --grep ""`, wantRegex: "ERROR", wantMax: 7},
+		// wins whatever the order (an empty one is rejected, see
+		// TestParseInteractiveCommandRejectsBlankValues).
 		{name: "grep wins when given first", line: `:reload --grep WARN --regex INFO`, wantRegex: "WARN", wantMax: 7},
 		{name: "grep wins when given last", line: `:reload --regex INFO --grep WARN`, wantRegex: "WARN", wantMax: 7},
-		{name: "empty grep keeps regex", line: `:reload --regex INFO --grep ''`, wantRegex: "INFO", wantMax: 7},
-		{name: "empty grep keeps cleared regex", line: `:reload --grep '' --regex ''`, wantRegex: "", wantMax: 7},
+		// Only the command is trimmed: an escaped trailing blank is kept.
+		{name: "escaped trailing space", line: `:reload --regex foo\ `, wantRegex: "foo ", wantMax: 7},
+		{name: "escaped trailing tab", line: ":reload --regex foo\\\t", wantRegex: "foo\t", wantMax: 7},
+		{name: "escaped trailing space before line ending", line: ":reload --regex foo\\ \r\n", wantRegex: "foo ", wantMax: 7},
+		{name: "leading blanks and trailing blanks", line: " \t:reload --regex foo  \t", wantRegex: "foo", wantMax: 7},
 	}
 
 	for _, tt := range tests {
@@ -237,6 +244,13 @@ func TestParseInteractiveCommandRejectsBlankValues(t *testing.T) {
 		{name: "empty dtail query", current: tailQuery, line: `:reload --query ""`, wantErr: "--query must not be blank"},
 		{name: "empty extra argument", current: grep, line: `:reload --plain ''`, wantErr: `unexpected arguments: ""`},
 		{name: "extra arguments quoted", current: cat, line: `:reload --plain foo ' '`, wantErr: `unexpected arguments: "foo" " "`},
+		{name: "empty grep", current: grep, line: `:reload --grep ""`, wantErr: "--grep '' is ignored; use --regex '' to clear the regex"},
+		{name: "empty grep with regex", current: grep, line: `:reload --regex INFO --grep ''`, wantErr: "--grep '' is ignored"},
+		{name: "empty grep with empty regex", current: grep, line: `:reload --grep '' --regex ''`, wantErr: "--grep '' is ignored"},
+		{name: "empty grep after equals", current: grep, line: `:reload --grep=`, wantErr: "--grep '' is ignored"},
+		{name: "invalid utf-8 regex", current: grep, line: ":reload --regex '\xff'", wantErr: "reload line is not valid UTF-8"},
+		{name: "invalid utf-8 files", current: cat, line: ":reload --files /tmp/\xfe.log", wantErr: "reload line is not valid UTF-8"},
+		{name: "blank reload", current: cat, line: ":reload \t ", wantErr: "reload requires flags to change"},
 	}
 
 	for _, tt := range tests {

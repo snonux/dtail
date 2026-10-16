@@ -209,8 +209,9 @@ The controlling TTY accepts `:reload <flags>`, `:show`, `:help`, and `:quit`.
 (`internal/clients/interactive_args.go`): single quotes are literal, double
 quotes keep backslashes except `\\`, `\"`, `\$` and ``\` ``, and `''`/`""` is
 an empty value (`--regex ''` clears the regex). `--grep` follows the CLI: a
-non-empty `--grep` wins over `--regex`, `--grep ''` is ignored. Blank
-`--files` and blank `--query` values are rejected. Full rules:
+non-empty `--grep` wins over `--regex`; `--grep ''` (ignored by the CLI) is
+rejected with a hint to use `--regex ''`. Blank `--files`, blank `--query`
+values and lines that are not valid UTF-8 are rejected. Full rules:
 `doc/interactive-query.md`.
 
 **Compatibility and session semantics:**

@@ -31,8 +31,10 @@ import (
 //
 // The tokenizer walks the input byte by byte rather than rune by rune: every
 // special character is ASCII and no byte of a multi-byte UTF-8 sequence is
-// below 0x80, so non-ASCII text (and even invalid UTF-8) passes through
-// unchanged instead of being replaced with U+FFFD.
+// below 0x80, so non-ASCII text passes through unchanged. The tokenizer
+// itself keeps invalid UTF-8 bytes as well, but parseInteractiveReload
+// rejects such a line before tokenizing it, because the JSON-encoded
+// SESSION UPDATE payload would replace them with U+FFFD.
 type interactiveArgTokenizer struct {
 	tokens  []string
 	current strings.Builder
