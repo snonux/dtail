@@ -246,6 +246,8 @@ A few more one-liners:
 # Prints all lines NOT matching the regex
 ```
 
+The patterns `''`, `.` and `.*` (`dtail` and `dgrep` default to `.`) select every line, empty lines included. With `--invert` they are matched like any other regex, as `grep -v` does: `--invert --grep '.*'` (or `''`) prints no line, and `--invert --grep .` (also `--invert` without `--grep`) prints only the empty lines. A line ending in `\r\n` is not empty.
+
 ```shell
 % dcat --servers serverlist.txt --trustAllHosts /etc/hostname
 # Skips the unknown-host trust prompt (use with care)

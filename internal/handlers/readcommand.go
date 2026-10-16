@@ -195,8 +195,12 @@ func (r *readCommand) Start(ctx context.Context, ltx lcontext.LContext,
 	defer func() { r.releasePendingInputReservation(ctx) }()
 	r.generation = sessionGenerationFromContext(ctx)
 
+	// The regex starts at args[2]. It may be a single word: a SESSION command
+	// is split at runs of whitespace, which drops the empty pattern of
+	// "regex:invert ", and regex.Deserialize reads the flags alone as one. A
+	// single third word which is no regex has always been ignored.
 	re := regex.NewNoop()
-	if argc >= 4 {
+	if argc >= 4 || (argc == 3 && strings.HasPrefix(args[2], "regex")) {
 		deserializedRegex, err := regex.Deserialize(strings.Join(args[2:], " "))
 		if err != nil {
 			r.sendServerMessage(ctx, r.logger.Error(r.logContext,
