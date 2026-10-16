@@ -151,6 +151,13 @@ func TestDynamicServerListIgnoresWhitespaceAroundTheFilePath(t *testing.T) {
 	if dynamicServerList(config.Args{ServersStr: "alpha, beta"}) {
 		t.Fatal("dynamicServerList of a comma list = true, want false")
 	}
+	// The FILE module name is normalized like discovery.New does it, with
+	// strings.ToUpper, so "fıle" (dotless ı) selects FILE in both.
+	for _, method := range []string{"file", "FILE", "fıle"} {
+		if !dynamicServerList(config.Args{Discovery: method, ServersStr: "alpha"}) {
+			t.Fatalf("dynamicServerList with Discovery %q = false, want true", method)
+		}
+	}
 }
 
 // TestSchedulerBacksOffAJobWithNoServer runs a scheduled job with a real
@@ -222,6 +229,73 @@ func TestSchedulerBacksOffAJobWithNoServer(t *testing.T) {
 		if strings.HasPrefix(line, "ERROR ") {
 			t.Fatalf("log has an ERROR line %q, want WARN only", line)
 		}
+	}
+}
+
+// TestSchedulerBacksOffAJobWithDiscoveryOptions runs a scheduled job with a
+// real mapreduce client, the old documented Discovery "comma:server1,server2"
+// and empty Servers. The COMMA module takes no options, so creating the
+// client fails with "takes no options" instead of the job silently querying
+// this dserver (its empty Servers) and writing a wrong outfile that the
+// scheduler would then skip for the rest of its period. The failure must be
+// a failed run like any other: no outfile, the creation failure logged at
+// ERROR (it is a configuration error, not clients.ErrNoServers) and the job
+// backed off.
+func TestSchedulerBacksOffAJobWithDiscoveryOptions(t *testing.T) {
+	dir := t.TempDir()
+	outfile := filepath.Join(dir, "result.csv")
+
+	cfg := config.RuntimeConfig{
+		Server: config.NewDefaultServerConfigForTest(),
+		Client: &config.ClientConfig{},
+		Common: &config.CommonConfig{HostnameOverride: "test-host"},
+	}
+	job := config.Scheduled{}
+	job.Name = "commaoptions"
+	job.Enable = true
+	job.TimeRange = [2]int{0, 24}
+	job.Discovery = "comma:server1,server2"
+	job.Files = filepath.Join(dir, "app.log")
+	job.Query = "from STATS select count($line) group by $hostname"
+	job.Outfile = outfile
+	cfg.Server.Schedule = []config.Scheduled{job}
+
+	s := newScheduler(cfg, jobTestLoggers)
+	logger := &levelLogger{}
+	s.logger = logger
+	now := time.Date(2026, 9, 22, 1, 0, 0, 0, time.Local)
+	s.now = func() time.Time { return now }
+	var createErr error
+	s.newMaprClient = func(args config.Args, mode clients.MaprClientMode) (backgroundClient, error) {
+		args.KnownHostsPath = filepath.Join(dir, "known_hosts")
+		args.TrustAllHosts = true
+		client, err := clients.NewMaprClient(args, cfg, mode, jobTestLoggers)
+		if err != nil {
+			createErr = err
+			return nil, err
+		}
+		return client, nil
+	}
+
+	s.runJobs(context.Background())
+	if createErr == nil || !strings.Contains(createErr.Error(), "takes no options") {
+		t.Fatalf("client creation error = %v, want takes no options", createErr)
+	}
+	if _, err := os.Stat(outfile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("failed run left %s (stat error %v)", outfile, err)
+	}
+	wantCreate := "ERROR Unable to create job commaoptions"
+	if !slices.ContainsFunc(logger.lines, func(line string) bool {
+		return strings.HasPrefix(line, wantCreate) && strings.Contains(line, "takes no options")
+	}) {
+		t.Fatalf("log = %q, want a line %q ... takes no options", logger.lines, wantCreate)
+	}
+	wantBackoff := "Job commaoptions failed and wrote no outfile " + outfile + " (failure 1 in a row), " +
+		"it runs again from about 2026-09-22 01:01:00"
+	if !slices.ContainsFunc(logger.lines, func(line string) bool {
+		return strings.HasSuffix(line, wantBackoff)
+	}) {
+		t.Fatalf("log = %q, want a line ending in %q", logger.lines, wantBackoff)
 	}
 }
 

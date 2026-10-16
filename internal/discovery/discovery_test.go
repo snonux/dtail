@@ -385,7 +385,9 @@ func (d *Discovery) ServerListFromTESTOPTS() ([]string, error) {
 }
 
 // TestBuiltInModulesRejectOptions checks that "MODULE:options" is rejected
-// for the built-in COMMA and FILE modules in any case. The options never
+// for the built-in COMMA and FILE modules in any case, including names such
+// as "fıle" (dotless ı) that strings.ToUpper maps to FILE although
+// strings.EqualFold does not match them with "file". The options never
 // carried the server list: "comma:server1,server2" with an empty server value
 // used to query this dserver silently, so a scheduled job wrote a wrong
 // outfile and was skipped for the rest of its period.
@@ -394,7 +396,7 @@ func TestBuiltInModulesRejectOptions(t *testing.T) {
 
 	for _, method := range []string{
 		"comma:x", "COMMA:server1,server2", "Comma:a:b",
-		"file:/p", "FILE:/path/to/serverlist", "File:x",
+		"file:/p", "FILE:/path/to/serverlist", "File:x", "fıle:/p",
 	} {
 		for _, server := range []string{"", "alpha,beta"} {
 			_, err := New(method, server, ServerOrder(99), testLogger)

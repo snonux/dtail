@@ -92,18 +92,24 @@ func parseMethod(method string) (module, options string, err error) {
 }
 
 // rejectBuiltInOptions rejects options for the built-in COMMA and FILE
-// modules (case-insensitive), which read their servers from the server value
-// and take no options. Before they were rejected, an old documented form such
+// modules, which read their servers from the server value and take no
+// options. Before they were rejected, an old documented form such
 // as "comma:server1,server2" with an empty server value was accepted
 // silently: a scheduled job then queried this dserver instead (see
 // jobs.jobServersStr), wrote a wrong outfile and was skipped for the rest of
 // its period. Now the client fails to configure its discovery, so the job
 // writes nothing and logs why.
+//
+// The module name is normalized with strings.ToUpper, as New does to look the
+// module up as a ServerListFrom method, so both always agree on which module a
+// name selects. strings.EqualFold would not: "fıle" (dotless ı) upper-cases
+// to FILE and selects the FILE module, but does not fold to "file", so its
+// options would slip through. The error keeps the name as it was given.
 func rejectBuiltInOptions(module, options string) error {
 	if options == "" {
 		return nil
 	}
-	if strings.EqualFold(module, "COMMA") || strings.EqualFold(module, "FILE") {
+	if upper := strings.ToUpper(module); upper == "COMMA" || upper == "FILE" {
 		return fmt.Errorf("discovery module %q takes no options; put the servers in Servers/--servers", module)
 	}
 	return nil

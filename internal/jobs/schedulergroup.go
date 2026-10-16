@@ -240,11 +240,13 @@ func (s *scheduler) groupLimit(ctx context.Context, args config.Args, limits *gr
 
 // dynamicServerList mirrors discovery's implicit file selection (the shared
 // discovery.IsServerListFile, which ignores whitespace around the path) as
-// well as its explicit FILE module. Checking the path on every wave also notices a
+// well as its explicit FILE module, whose name it normalizes with
+// strings.ToUpper as discovery.New does (strings.EqualFold would disagree on
+// names such as "fıle"). Checking the path on every wave also notices a
 // file that appears after the first wave.
 func dynamicServerList(args config.Args) bool {
 	method, _, _ := strings.Cut(args.Discovery, ":")
-	if strings.EqualFold(method, "file") {
+	if strings.ToUpper(method) == "FILE" {
 		return true
 	}
 	if method != "" {
