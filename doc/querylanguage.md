@@ -94,10 +94,16 @@ FUNCTION := md5sum|maskdigits
     the results of all servers and of all intervals so far are merged, so a
     server or interval without the field keeps the value earlier ones gave.
   * Non-cumulative (`dtail --query` without an `outfile`, continuous jobs):
-    each interval starts from zero and its rows show only that interval's
-    lines, merged across the servers. A group whose lines in that interval
-    all lack a field shows that field as if no line had it (e.g. `min` `0`),
-    whatever earlier intervals had.
+    each result starts from zero and its rows show the lines received since
+    the previous result, merged across the servers. A group whose lines
+    received in that time all lack a field shows that field as if no line
+    had it (e.g. `min` `0`), whatever earlier results had. Lines can arrive
+    one result late, so a row is not strictly one interval's lines: a
+    dserver puts the groups of an interrupted send back into its next
+    interval, lines a dserver still batches are aggregated with a later
+    interval, and a server's result the client could not merge at once
+    (the global result was busy) joins the global result with that server's
+    next message.
 
   This holds fully only when every dserver is up to date. An older dserver
   whose sending of results was interrupted (its session context cancelled
