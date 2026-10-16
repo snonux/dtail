@@ -95,7 +95,7 @@ CLIENT|workstation01|INFO|STATS:STATS|connected=2|servers=2|connected%=100|new=2
 .
 ```
 
-The client collects unknown hosts whose handshakes arrive close together and asks about them in one question, about 2 seconds after the last of them (or once 50 are pending). With ``--trustAllHosts`` (or after answering ``a=all``) nothing is asked: unknown hosts are trusted and written to ``known_hosts`` right away, batched only over about 20 milliseconds, so a fresh ``known_hosts`` file does not slow down scripts and CI runs.
+The client collects unknown hosts whose handshakes arrive close together and asks about them in one question, about 2 seconds after the last of them (or once 50 are pending). With ``--trustAllHosts`` (or after answering ``a=all``) nothing is asked and there is no 2 second wait: unknown hosts are collected for only about 20 milliseconds and then trusted and written to ``known_hosts``, so a fresh ``known_hosts`` file does not slow down scripts and CI runs. Writing ``known_hosts`` can still wait up to 5 seconds while another dtail client holds its lock to update it.
 
 Without the ``--cfg`` flag, all client commands look for a JSON config file at ``~/.config/dtail/dtail.conf`` first and, if that does not exist, at ``~/.dtail.conf``. The first file that exists wins (they are not merged).
 

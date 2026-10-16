@@ -199,8 +199,11 @@ func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 // A batch is handled when its timer fires (see batchTimerDelay) or once
 // unknownHostsMaxBatch hosts are pending. The timer only runs while hosts are
 // pending, so an idle client does not wake up periodically. If ctx is
-// cancelled, pending hosts are left unanswered; their Wrap callbacks return
-// ctx.Err() on their own.
+// cancelled, pending hosts are left unanswered. Their Wrap callbacks then
+// return ctx.Err() only because their own ctx is cancelled as well: callers
+// must cancel the ctx passed to Wrap no later than this one, or those
+// handshakes block (baseClient derives each connection's handshake ctx from
+// the ctx it passes here).
 func (c *KnownHostsCallback) PromptAddHosts(ctx context.Context) {
 	var hosts []unknownHost
 	// The timer is created stopped and armed by the first pending host. Since
