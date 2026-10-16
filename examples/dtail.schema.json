@@ -452,11 +452,11 @@
               },
               "Discovery": {
                 "type": "string",
-                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more). It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE; the servers never come from Discovery itself. A MODULE:options suffix is accepted for modules a build adds, but COMMA and FILE ignore it, so comma:server1,server2 or file:/path/to/serverlist still read Servers. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
+                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more). It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE; for COMMA and FILE the servers never come from Discovery itself. COMMA and FILE take no options: a MODULE:options suffix such as comma:server1,server2 or file:/path/to/serverlist is rejected for them (in any case) and the job fails; only modules a build adds may read their options. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
               },
               "Servers": {
                 "type": "array",
-                "description": "Servers to query, passed to the Discovery module, joined with commas. Whitespace around entries is trimmed and empty entries are dropped. When empty, or only blank entries, the job queries this dserver itself: its SSHBindAddress at Common.SSHPort, or the loopback address (127.0.0.1, or ::1 for ::) when it listens on every address (empty, 0.0.0.0, ::ffff:0.0.0.0 or ::); AllowFrom must then permit the loopback address.",
+                "description": "Servers to query, passed to the Discovery module, joined with commas. Whitespace around entries is trimmed and empty entries are dropped. When empty, or only blank entries, and Discovery is empty or COMMA, the job queries this dserver itself: its SSHBindAddress at Common.SSHPort, or the loopback address (127.0.0.1, or ::1 for ::) when it listens on every address (empty, 0.0.0.0, ::ffff:0.0.0.0 or ::); AllowFrom must then permit the loopback address. With FILE, an empty Servers makes FILE try to open a file named after this dserver's address (e.g. 127.0.0.1), so the job fails.",
                 "items": {
                   "type": "string"
                 }
@@ -518,11 +518,11 @@
               },
               "Discovery": {
                 "type": "string",
-                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more). It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE; the servers never come from Discovery itself. A MODULE:options suffix is accepted for modules a build adds, but COMMA and FILE ignore it, so comma:server1,server2 or file:/path/to/serverlist still read Servers. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
+                "description": "Server discovery module: COMMA or FILE (case-insensitive; builds may add more). It selects how Servers is read: Servers, joined with commas, is the module's input, for example the server list file for FILE; for COMMA and FILE the servers never come from Discovery itself. COMMA and FILE take no options: a MODULE:options suffix such as comma:server1,server2 or file:/path/to/serverlist is rejected for them (in any case) and the job fails; only modules a build adds may read their options. When empty, a Servers value naming an existing file is read as a server list file, otherwise as a comma-separated list."
               },
               "Servers": {
                 "type": "array",
-                "description": "Servers to query, passed to the Discovery module, joined with commas. Whitespace around entries is trimmed and empty entries are dropped. When empty, or only blank entries, the job queries this dserver itself: its SSHBindAddress at Common.SSHPort, or the loopback address (127.0.0.1, or ::1 for ::) when it listens on every address (empty, 0.0.0.0, ::ffff:0.0.0.0 or ::); AllowFrom must then permit the loopback address.",
+                "description": "Servers to query, passed to the Discovery module, joined with commas. Whitespace around entries is trimmed and empty entries are dropped. When empty, or only blank entries, and Discovery is empty or COMMA, the job queries this dserver itself: its SSHBindAddress at Common.SSHPort, or the loopback address (127.0.0.1, or ::1 for ::) when it listens on every address (empty, 0.0.0.0, ::ffff:0.0.0.0 or ::); AllowFrom must then permit the loopback address. With FILE, an empty Servers makes FILE try to open a file named after this dserver's address (e.g. 127.0.0.1), so the job fails.",
                 "items": {
                   "type": "string"
                 }

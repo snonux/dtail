@@ -149,6 +149,30 @@ func TestMakeConnectionsRejectsNoServer(t *testing.T) {
 	})
 }
 
+// TestMakeConnectionsRejectsBuiltInModuleOptions checks that a COMMA or FILE
+// discovery module with options fails the client before it dials anything,
+// as a configuration error that is no ErrNoServers: "comma:server1,server2"
+// with an empty server value used to query the empty serverless address (or,
+// for a scheduled job, this dserver) instead of failing.
+func TestMakeConnectionsRejectsBuiltInModuleOptions(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []string{"comma:server1,server2", "FILE:/path/to/serverlist"} {
+		var dialled []string
+		c := newDiscoveryTestClient("", false, &dialled)
+		c.Discovery = method
+		err := c.makeConnections()
+		if err == nil || errors.Is(err, ErrNoServers) ||
+			!strings.Contains(err.Error(), "configure server discovery: ") ||
+			!strings.Contains(err.Error(), "takes no options") {
+			t.Fatalf("makeConnections(%q) error = %v, want a rejected discovery configuration", method, err)
+		}
+		if len(dialled) != 0 || len(c.connections) != 0 {
+			t.Fatalf("makeConnections(%q) connected to %q (%d), want none", method, dialled, len(c.connections))
+		}
+	}
+}
+
 // TestMakeConnectionsStillRejectsBadServerEntries pins that discovery only
 // trims surrounding whitespace: entries that are bad in themselves still
 // reach the server address parser, which rejects them. A '#' after an entry

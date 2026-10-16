@@ -26,8 +26,9 @@ type Discovery struct {
 	module string
 	// Optional module options, the part after the colon of "MODULE:options".
 	// They are only an extension point for modules a build adds; the built-in
-	// COMMA and FILE modules ignore them and read the server value instead,
-	// so "comma:a,b" or "file:/path" does not carry the server list.
+	// COMMA and FILE modules read the server value instead and take no
+	// options: New rejects "comma:a,b" or "file:/path" (see
+	// rejectBuiltInOptions), as such a value does not carry the server list.
 	options string
 	// To either filter a server list or to secify an exact list.
 	server string
@@ -40,19 +41,16 @@ type Discovery struct {
 }
 
 // New returns a new discovery method. The method is a module name, optionally
-// followed by ":options" (see the options field); the server list, or the
-// server list file of the FILE module, always comes from server.
+// followed by ":options" (see the options field). For the built-in COMMA and
+// FILE modules, the server list (or FILE's list file) comes from server, and
+// options are rejected; only modules a build adds may read their options.
 func New(method, server string, order ServerOrder, logger logging.Logger) (*Discovery, error) {
-	module := method
-	options := ""
-
-	if strings.Contains(module, ":") {
-		s := strings.SplitN(module, ":", 2)
-		if len(s) != 2 || s[0] == "" || s[1] == "" {
-			return nil, fmt.Errorf("unable to parse discovery module %q", module)
-		}
-		module = s[0]
-		options = s[1]
+	module, options, err := parseMethod(method)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectBuiltInOptions(module, options); err != nil {
+		return nil, err
 	}
 
 	d := Discovery{
@@ -80,6 +78,35 @@ func New(method, server string, order ServerOrder, logger logging.Logger) (*Disc
 	}
 
 	return &d, nil
+}
+
+// parseMethod splits a discovery method "MODULE[:options]" into its module
+// name and options. Options may contain further colons; a method with a colon
+// but an empty module name or empty options is rejected.
+func parseMethod(method string) (module, options string, err error) {
+	module, options, found := strings.Cut(method, ":")
+	if found && (module == "" || options == "") {
+		return "", "", fmt.Errorf("unable to parse discovery module %q", method)
+	}
+	return module, options, nil
+}
+
+// rejectBuiltInOptions rejects options for the built-in COMMA and FILE
+// modules (case-insensitive), which read their servers from the server value
+// and take no options. Before they were rejected, an old documented form such
+// as "comma:server1,server2" with an empty server value was accepted
+// silently: a scheduled job then queried this dserver instead (see
+// jobs.jobServersStr), wrote a wrong outfile and was skipped for the rest of
+// its period. Now the client fails to configure its discovery, so the job
+// writes nothing and logs why.
+func rejectBuiltInOptions(module, options string) error {
+	if options == "" {
+		return nil
+	}
+	if strings.EqualFold(module, "COMMA") || strings.EqualFold(module, "FILE") {
+		return fmt.Errorf("discovery module %q takes no options; put the servers in Servers/--servers", module)
+	}
+	return nil
 }
 
 // isRegexServer reports whether the server value, without surrounding
@@ -160,8 +187,10 @@ func (d *Discovery) serverListFromModule() ([]string, error) {
 }
 
 // The aim of this is that everyone can plug in their own server discovery
-// method to DTail. Just add a method ServerListFrommMODULENAME to type
-// Discovery. Whereas MODULENAME must be a upeprcase string.
+// method to DTail. Just add a method ServerListFromMODULENAME to type
+// Discovery, where MODULENAME is an uppercase string. Such a module may read
+// the options of "MODULENAME:options" from d.options; the built-in COMMA and
+// FILE modules take none (see rejectBuiltInOptions).
 func (d *Discovery) serverListFromReflectedModule() ([]string, error) {
 	methodName := fmt.Sprintf("ServerListFrom%s", d.module)
 	// Now we are reflecting the serve discovery function by it's name.

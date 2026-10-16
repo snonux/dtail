@@ -317,6 +317,8 @@ func TestSchedulerRunsLargeGroupsInBoundedWaves(t *testing.T) {
 			wantWaves: []int{1, 1}},
 		{name: "servers not discoverable", maxConnections: 40, discovery: "nosuchmodule", jobs: 3,
 			wantWaves: []int{1, 1, 1}},
+		{name: "comma module with options rejected", maxConnections: 40, discovery: "comma:server1,server2",
+			jobs: 3, wantWaves: []int{1, 1, 1}},
 		{name: "another dserver", maxConnections: 40, servers: []string{"192.0.2.1:2222"}, jobs: 3,
 			wantWaves: []int{1, 1, 1}},
 		{name: "this and another dserver", maxConnections: 40, servers: []string{"127.0.0.1", "192.0.2.1"},
