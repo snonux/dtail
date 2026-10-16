@@ -166,7 +166,9 @@ func (f *sessionFramer) readServerMessage(p []byte, message string) int {
 		return f.drainReadBuf(p)
 	}
 	kind := protocol.MessageServer
-	if h.plain {
+	// The command input goroutine may set the plain mode meanwhile
+	// (commandDispatcher.handleOptions), hence the atomic read.
+	if h.plainMode() {
 		kind = protocol.MessagePlain
 	}
 	framing.EncodeMessage(&f.readBuf, protocol.Message{

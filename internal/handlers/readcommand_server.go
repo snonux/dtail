@@ -325,7 +325,7 @@ func (h *ServerHandler) newReadLineWriter(ctx context.Context, generation uint64
 		h.SendReadMessage(ctx, generation, ".output wake")
 	}
 	if h.serverless {
-		return NewGeneratedDirectWriterWithColorizer(h.ServerlessOutput(), h.hostname, h.plain, true,
+		return NewGeneratedDirectWriterWithColorizer(h.ServerlessOutput(), h.hostname, h.plainMode(), true,
 			generation, h.sessionState.currentGeneration, h.colorizer)
 	}
 
@@ -340,7 +340,7 @@ func (h *ServerHandler) newReadLineWriter(ctx context.Context, generation uint64
 	// The second switch changes control frames only; the payload bytes of a
 	// line frame are the same under EscapedFraming and
 	// EscapedControlFraming.
-	writer := NewNetworkWriter(ctx, h.framing(), nil, h.serverMessages, h.hostname, h.plain, false,
+	writer := NewNetworkWriter(ctx, h.framing(), nil, h.serverMessages, h.hostname, h.plainMode(), false,
 		generation, h.sessionState.currentGeneration, h.Logger())
 	writer.enqueueOutput = h.EnqueueOutput
 	return writer

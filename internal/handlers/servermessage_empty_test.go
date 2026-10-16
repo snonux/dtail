@@ -38,9 +38,9 @@ func TestSessionFramerDropsEmptyServerMessagesWhenFramed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Active generation 1: a generation-1 message is current output.
 			handler := newGenerationTestHandler(1)
-			if handler.plain || handler.serverless {
+			if handler.plainMode() || handler.serverless {
 				t.Fatalf("handler plain=%v serverless=%v, want a framed session",
-					handler.plain, handler.serverless)
+					handler.plainMode(), handler.serverless)
 			}
 			message := encodeGeneratedMessage(tc.generation, tc.message)
 

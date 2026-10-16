@@ -43,11 +43,25 @@ type commandDispatcher struct {
 	stopping          bool
 	aborting          bool
 
+	// optionsOnce applies the quiet/plain options of the session's first
+	// command carrying options (handleOptions); later ones change nothing.
 	optionsOnce sync.Once
-	optionsMu   sync.Mutex
-	quiet       bool
-	plain       bool
-	serverless  bool
+	// quiet and plain are set by handleOptions on the command input
+	// goroutine, and read concurrently by the output goroutine
+	// (sessionFramer.readServerMessage frames the server messages, such as
+	// an AUTHKEY reply queued before the first command carrying options)
+	// and by the read command goroutines building their line writers
+	// (ServerHandler.newReadLineWriter), some of which started before that
+	// command. Hence atomics; read them with quietMode and plainMode. A
+	// server message framed before the options were handled still goes out
+	// as a tagged server message, as it always could; clients recognise an
+	// AUTHKEY reply in either kind (parseAuthKeyMessage in
+	// internal/clients/handlers).
+	quiet atomic.Bool
+	plain atomic.Bool
+	// serverless is set once when the handler is built (newBaseHandler) and
+	// never changes, so it needs no synchronization.
+	serverless bool
 }
 
 var commandCancelKey commandCancelKeyType
@@ -232,7 +246,7 @@ func (d *commandDispatcher) newCommandContext() (context.Context, context.Cancel
 func (d *commandDispatcher) handleAckCommand(argc int, args []string) {
 	h := d.handler
 	if argc < 3 {
-		if !d.quiet {
+		if !d.quietMode() {
 			h.sendln(h.serverMessages, logging.WarnMessage(h.Logger(), h.user,
 				"Unable to parse command", args, argc))
 		}
@@ -243,18 +257,31 @@ func (d *commandDispatcher) handleAckCommand(argc int, args []string) {
 	}
 }
 
+// quietMode reports whether the session asked for quiet mode. It is safe
+// for concurrent use.
+func (d *commandDispatcher) quietMode() bool {
+	return d.quiet.Load()
+}
+
+// plainMode reports whether the session asked for plain mode. It is safe
+// for concurrent use, e.g. by the output goroutine framing server messages.
+func (d *commandDispatcher) plainMode() bool {
+	return d.plain.Load()
+}
+
+// handleOptions applies the session options of the first command carrying
+// options. sync.Once serializes concurrent callers, and the atomics publish
+// the modes to the goroutines reading them (see the quiet and plain fields).
 func (d *commandDispatcher) handleOptions(options map[string]string) {
 	h := d.handler
-	d.optionsMu.Lock()
-	defer d.optionsMu.Unlock()
 	d.optionsOnce.Do(func() {
 		if quiet := options["quiet"]; quiet == "true" {
 			h.Logger().Debug(h.user, "Enabling quiet mode")
-			d.quiet = true
+			d.quiet.Store(true)
 		}
 		if plain := options["plain"]; plain == "true" {
 			h.Logger().Debug(h.user, "Enabling plain mode")
-			d.plain = true
+			d.plain.Store(true)
 		}
 		// The "serverless" option is deliberately not honoured here. It
 		// decides whether the session payload is written to this process'
