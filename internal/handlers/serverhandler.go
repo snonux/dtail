@@ -495,12 +495,14 @@ func (h *ServerHandler) startIdleEnd(ctx context.Context, end func(context.Conte
 }
 
 // claimIdleShutdown reports whether the session is idle, given its pending
-// file and active command counts, and if so claims its one idle shutdown,
-// which the caller must then run (h.shutdown). The session is not idle while
-// it is kept alive, stopping, or inside an open input batch, whose remaining
-// commands may still follow. Callers that run the shutdown on another
-// goroutine claim it here first, so a later change of these conditions
-// cannot be missed by a check the goroutine would only make later.
+// file and active command counts, and if so claims its one idle shutdown;
+// the caller must then end the session (h.shutdown, or
+// h.closeWithoutHandshake for a version mismatch, see startIdleEnd). The
+// session is not idle while it is kept alive, stopping, or inside an open
+// input batch, whose remaining commands may still follow. Callers that end
+// the session on another goroutine claim it here first, so a later change
+// of these conditions cannot be missed by a check the goroutine would only
+// make later.
 func (h *ServerHandler) claimIdleShutdown(pendingFiles, activeCommands int32) bool {
 	if pendingFiles != 0 || activeCommands != 0 || h.sessionState.keepAlive() ||
 		h.isStopping() || h.commandBatch.isOpen() {

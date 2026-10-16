@@ -199,9 +199,11 @@ working with every other one:
    session stays raw, while the client already chose marked framing from
    the capabilities frame and would print the unmarked close request as
    payload and never acknowledge it. Clients of every version thus see the
-   error and an incomplete session at once (`dcat`/`dgrep` exit 1, a
-   scheduled job counts a transport failure, `dtailhealth` reports
-   CRITICAL). Once the session is closing, further frames of another
+   error and the session ends at once. Clients that check for the close
+   handshake (this fork since ef3) treat it as cut short: `dcat`/`dgrep`
+   exit 1, a scheduled job counts a transport failure, `dtailhealth`
+   reports CRITICAL. Older clients (protocol <= 3) print the error and end
+   with their own exit status, likely 0. Once the session is closing, further frames of another
    version get no error message (`commandDispatcher.rejectProtocolVersion`).
    Settling before the command has a
    cost: its replies may follow a frame queued before it, e.g. the close
