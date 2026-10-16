@@ -538,6 +538,13 @@ the middle of a line being written gets that whole line, where a private read
 gets the rest of it from the join; and a trailing line the writer has not
 finished yet is not passed on when a session leaves.
 
+Long line warnings match too: a session sends one `Long log line, splitting
+into multiple lines` warning per line cut at `MaxLineLength`, as a private
+read does, also when it is evicted between a line's warning and its first
+piece (it holds the warning until that piece arrives and leaves it to its
+private reader otherwise, `sessionRead.longLineWarning`) or in the middle of
+the line (its private reader does not warn again, `StartOffsetInSplitLine`).
+
 A failed read reaches the client the same way, too. A private read reports
 every failed iteration of its retry loop to the client with the hidden
 message `.syn command failed read: unable to read file` (once per command,

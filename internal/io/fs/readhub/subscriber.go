@@ -142,8 +142,10 @@ func (s *subscriber) resubscribe(e *entry, held *os.File) {
 // after it, and then the item that did not fit when it tells the session
 // something its private reader would not see: the file was truncated or
 // rotated, or the shared reader failed a read or failed for good. A line the
-// private reader reads again, and the long line warning it sends again, are
-// left to it.
+// private reader reads again is left to it, and so is the long line warning
+// of a line whose first piece was not queued: the session holds a queued
+// warning until that piece arrives (see sessionRead.longLineWarning), and its
+// private reader warns when it reads the line from its start.
 func (s *subscriber) drain(ctx context.Context, reading *sessionRead) (goPrivate bool, err error) {
 	for {
 		select {
@@ -182,8 +184,10 @@ type sessionRead struct {
 	// skip: lines published before the session joined, which a private
 	// follow read opened at the join would not have read.
 	skip joinSkip
-	// warningPending: a long line warning arrived while the session was
-	// skipping; it is sent only if the split line it precedes is not skipped.
+	// warningPending: a long line warning of a follow read arrived; it is
+	// sent with the first piece of the split line it precedes, once that
+	// reaches the session and is not skipped, and dropped when the session
+	// goes on privately before (see longLineWarning).
 	warningPending bool
 	// rejoin, if set, is asked by the private reader at the end of the file
 	// whether the session rejoined a shared reader there.
@@ -230,11 +234,7 @@ func (r *sessionRead) handle(ctx context.Context, it item) (goPrivate bool, err 
 		r.at = position{offset: 0}
 		r.atLineEnd = false
 	case longLineItem:
-		if r.skip.active {
-			r.warningPending = true
-			return false, nil
-		}
-		r.sendLongLineWarning(ctx)
+		r.longLineWarning(ctx)
 	case failedItem:
 		if errors.Is(it.err, fs.ErrReaderWorkerPanic) {
 			return false, it.err
@@ -310,6 +310,23 @@ func (r *sessionRead) feed(ctx context.Context, c *chunk) error {
 		}
 	}
 	return r.filter.Flush()
+}
+
+// longLineWarning handles the shared reader's warning about the split line
+// it publishes next. A snapshot session sends it right away: its group
+// forwards warnings out of order with the lines anyway (see
+// groupEntry.forwardMessages). A follow session holds it until the chunk with
+// the line's first piece arrives (see feed), as the session may be evicted in
+// between: that chunk did not fit into its queue, or was not published yet
+// when the session handled the warning. Its private reader then reads the
+// line from its start and warns about it itself, so a warning sent before
+// would be the line's second one (see readPrivately).
+func (r *sessionRead) longLineWarning(ctx context.Context) {
+	if r.snapshot {
+		r.sendLongLineWarning(ctx)
+		return
+	}
+	r.warningPending = true
 }
 
 func (r *sessionRead) sendLongLineWarning(ctx context.Context) {
