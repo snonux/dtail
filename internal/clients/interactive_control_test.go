@@ -1,8 +1,10 @@
 package clients
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -959,4 +961,85 @@ func (r *interactiveReloadRecorder) commitSessionSpec(spec SessionSpec, generati
 		spec:       spec,
 	})
 	return nil
+}
+
+// TestRunInteractiveCommand covers the dispatch of one parsed control
+// command: every kind writes its answer line to the TTY, :quit reports quit,
+// a failed reload is answered on the TTY without an error, and only a failed
+// TTY write is returned as an error (which ends the control loop).
+func TestRunInteractiveCommand(t *testing.T) {
+	spec := SessionSpec{Mode: omode.GrepClient, Files: []string{"/var/log/app.log"}, Regex: "ERROR"}
+	args := config.Args{Mode: omode.GrepClient, What: "/var/log/app.log", RegexStr: "ERROR"}
+	nextSpec := SessionSpec{Mode: omode.GrepClient, Files: []string{"/var/log/app.log"}, Regex: "WARN"}
+	nextArgs := config.Args{Mode: omode.GrepClient, What: "/var/log/app.log", RegexStr: "WARN"}
+	writeErr := errors.New("tty gone")
+
+	tests := []struct {
+		name        string
+		command     interactiveCommand
+		connections func() []connectors.Connector
+		failWrite   bool
+		wantQuit    bool
+		wantOutput  string // exact output; empty when wantPrefix is used
+		wantPrefix  string
+		wantErr     error
+		wantRegex   string // client regex after the command
+	}{
+		{name: "quit", command: interactiveCommand{kind: "quit"},
+			wantQuit: true, wantOutput: "quitting interactive session\n", wantRegex: "ERROR"},
+		{name: "reload failure is answered, not returned",
+			command:    interactiveCommand{kind: "reload", next: nextArgs, spec: nextSpec},
+			wantOutput: "reload failed: no active connections\n", wantRegex: "ERROR"},
+		{name: "reload success",
+			command: interactiveCommand{kind: "reload", next: nextArgs, spec: nextSpec},
+			connections: func() []connectors.Connector {
+				return []connectors.Connector{&interactiveReloadConnector{
+					server: "srv1", supported: true, committedSpec: spec, liveSpec: spec, generation: 1}}
+			},
+			wantOutput: "reload applied successfully\n", wantRegex: "WARN"},
+		{name: "show", command: interactiveCommand{kind: "show"},
+			wantPrefix: "mode=", wantRegex: "ERROR"},
+		{name: "help", command: interactiveCommand{kind: "help"},
+			wantOutput: interactiveHelpText(args) + "\n", wantRegex: "ERROR"},
+		{name: "unsupported", command: interactiveCommand{kind: "bogus"},
+			wantOutput: "unsupported command\n", wantRegex: "ERROR"},
+		{name: "quit write error", command: interactiveCommand{kind: "quit"},
+			failWrite: true, wantQuit: true, wantErr: writeErr, wantRegex: "ERROR"},
+		{name: "reload failure write error",
+			command:   interactiveCommand{kind: "reload", next: nextArgs, spec: nextSpec},
+			failWrite: true, wantErr: writeErr, wantRegex: "ERROR"},
+		{name: "help write error", command: interactiveCommand{kind: "help"},
+			failWrite: true, wantErr: writeErr, wantRegex: "ERROR"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &baseClient{mu: newBaseClientMu(), Args: args, sessionSpec: spec}
+			if tt.connections != nil {
+				client.connections = tt.connections()
+			}
+			var out bytes.Buffer
+			var tty io.Writer = &out
+			if tt.failWrite {
+				tty = failedPayloadWriter{err: writeErr}
+			}
+
+			quit, err := client.runInteractiveCommand(tty, tt.command)
+			if quit != tt.wantQuit {
+				t.Fatalf("quit = %v, want %v", quit, tt.wantQuit)
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantOutput != "" && out.String() != tt.wantOutput {
+				t.Fatalf("output = %q, want %q", out.String(), tt.wantOutput)
+			}
+			if tt.wantPrefix != "" && !strings.HasPrefix(out.String(), tt.wantPrefix) {
+				t.Fatalf("output = %q, want prefix %q", out.String(), tt.wantPrefix)
+			}
+			if got, _ := client.snapshotConnectionState(); got.RegexStr != tt.wantRegex {
+				t.Fatalf("client regex = %q, want %q", got.RegexStr, tt.wantRegex)
+			}
+		})
+	}
 }

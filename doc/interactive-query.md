@@ -56,9 +56,15 @@ splits a command line, without any variable, command or glob expansion
 (`$line` and `*` stay as typed):
 
 * Spaces and tabs separate arguments; quote a value to keep its spaces.
-  A value reaches the servers with its blanks exactly as typed (a trailing
-  blank, a run of blanks and a tab stay what they are), so
-  `:reload --regex 'x  y'` matches `x  y` but not `x y`.
+  A `--regex` (or `--grep`) value reaches the servers with its blanks
+  exactly as typed (a leading or trailing blank, a run of blanks and a tab
+  stay what they are), so `:reload --regex 'x  y'` matches `x  y` but not
+  `x y`; so do the blanks inside a `--query`. Other values are trimmed: each
+  comma-separated `--files` entry loses its leading and trailing blanks, and
+  so does the whole `--query`. Older dservers that already accept reloads
+  (capability `query-update-v1`) split the commands they receive at every run
+  of blanks, so they collapse a run of blanks or a tab in a regex or query
+  into one space and drop a regex's leading and trailing blanks.
 * Single quotes keep everything up to the closing quote literally,
   backslashes included. Use them for regular expressions:
   `:reload --regex '\d+ ms'` matches the regex `\d+ ms`.
