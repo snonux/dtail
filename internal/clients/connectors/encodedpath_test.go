@@ -1,7 +1,9 @@
 package connectors
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -182,6 +184,39 @@ func TestCheckSpecCapabilities(t *testing.T) {
 			}
 			if mock.Status() != 0 || mock.serverError != "" {
 				t.Fatalf("check reported %q and set status %d", mock.serverError, mock.Status())
+			}
+		})
+	}
+}
+
+// TestShouldReportConnectionError checks that a missing read-target
+// capability, which requireSpecCapabilities already reported, is not
+// reported a second time when it ends the connection, also when wrapped,
+// while other errors are, unless they are the canceled context's own.
+func TestShouldReportConnectionError(t *testing.T) {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{name: "wrapped encoded read path unsupported", ctx: context.Background(),
+			err: fmt.Errorf("start session: %w", ErrEncodedReadPathUnsupported)},
+		{name: "wrapped journal unsupported", ctx: context.Background(),
+			err: fmt.Errorf("start session: %w", ErrJournalUnsupported)},
+		{name: "plain error", ctx: context.Background(),
+			err: errors.New("connection refused"), want: true},
+		{name: "canceled context error", ctx: canceled,
+			err: fmt.Errorf("dial: %w", context.Canceled)},
+		{name: "other error after cancel", ctx: canceled,
+			err: errors.New("connection refused"), want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldReportConnectionError(tt.ctx, tt.err); got != tt.want {
+				t.Fatalf("shouldReportConnectionError(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}

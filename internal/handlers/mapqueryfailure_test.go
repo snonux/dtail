@@ -3,12 +3,14 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/mimecast/dtail/internal/lcontext"
+	"github.com/mimecast/dtail/internal/logging"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/mapr/logformat"
 	"github.com/mimecast/dtail/internal/omode"
@@ -45,6 +47,50 @@ func TestFailedMapCommandRejectsLaterReads(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// echoErrorLogger returns its Error arguments as the message, which the
+// handlers' NopLogger drops, so a test can see the diagnostic a client gets.
+type echoErrorLogger struct{ logging.NopLogger }
+
+func (echoErrorLogger) Error(args ...any) string { return fmt.Sprint(args...) }
+
+// TestFailedMapCommandNamesTheDecodedPath checks that the diagnostic of a
+// read rejected after a failed map command names a spaced path as the user
+// gave it, not in the base64% form it travels in.
+func TestFailedMapCommandNamesTheDecodedPath(t *testing.T) {
+	const spacedPath = "/var/log/my app/a.log"
+	handler, _ := buildLimiterTestHandler(t, 1)
+	handler.logger = echoErrorLogger{}
+	read := newReadCommand(handler, omode.CatClient)
+	read.rejectAfterMapQueryFailure(context.Background(),
+		[]string{"cat:", protocol.EncodeReadPath(spacedPath), "regex"})
+
+	message := readServerMessage(t, handler.serverMessages)
+	if !strings.Contains(message, "Not reading, the session's map query failed") ||
+		!strings.Contains(message, spacedPath) {
+		t.Fatalf("diagnostic does not name %q: %q", spacedPath, message)
+	}
+}
+
+// TestRejectedReadPath checks the file word shown for a rejected read: an
+// encoded path decoded, a plain one and one that does not decode as sent.
+func TestRejectedReadPath(t *testing.T) {
+	const spacedPath = "/var/log/my app/a.log"
+	invalid := protocol.EncodedReadPathPrefix + "!!!"
+	for _, tt := range []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"cat:"}, want: ""},
+		{args: []string{"cat:", "/var/log/app.log", "regex"}, want: "/var/log/app.log"},
+		{args: []string{"cat:", protocol.EncodeReadPath(spacedPath), "regex"}, want: spacedPath},
+		{args: []string{"cat:", invalid, "regex"}, want: invalid},
+	} {
+		if got := rejectedReadPath(tt.args); got != tt.want {
+			t.Errorf("rejectedReadPath(%q) = %q, want %q", tt.args, got, tt.want)
+		}
 	}
 }
 

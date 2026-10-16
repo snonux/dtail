@@ -393,8 +393,9 @@ the full payload size. Payload always still goes to STDOUT/terminal, unchanged.
 `grep`), `1` when a server could not be connected to (refused or unreachable),
 the SSH handshake failed or no SSH session could be opened, the server rejected
 or did not acknowledge an `--interactive-query` `SESSION START` or the commands
-could not be sent, a server lacks `journal-v1` for a requested journal target,
-a serverless session failed, or the client could not start, and `2`
+could not be sent, a server lacks `journal-v1` for a requested journal target
+or `encoded-read-path-v1` for a path containing a space or starting with
+`base64%`, a serverless session failed, or the client could not start, and `2`
 (`clients.ExitStatusFailedCommand`, also the status of an invalid flag) when any
 server reported a failed command of the session with `.syn command failed
 <reason>` (capability `command-failure-v1`, `handlers.SessionOutcome.Failures`).

@@ -54,13 +54,25 @@ func (f *mapQueryFailures) failed(generation uint64) bool {
 // because the map command of its command stream failed. It reports the
 // failure with the same fixed reason as the map command, which clients
 // de-duplicate and the scheduler counts as a transport failure, so a
-// scheduled job writes no outfile (see protocol.IsFileReadFailure).
+// scheduled job writes no outfile (see protocol.IsFileReadFailure). The
+// message names the file as the user gave it (see rejectedReadPath).
 func (r *readCommand) rejectAfterMapQueryFailure(ctx context.Context, args []string) {
-	file := ""
-	if len(args) > 1 {
-		file = args[1]
-	}
 	r.sendServerMessage(ctx, r.logger.Error(r.logContext,
-		"Not reading, the session's map query failed", file))
+		"Not reading, the session's map query failed", rejectedReadPath(args)))
 	r.reportFailure(ctx, protocol.CommandFailureMapQuery)
+}
+
+// rejectedReadPath returns the file word of a read command's args for a
+// diagnostic. A path containing a space or starting with base64% travels
+// encoded (protocol.EncodeReadPath), so it is decoded back to the path the
+// user gave; a word that does not decode is returned as sent, since the read
+// is rejected anyway and the diagnostic should still show what arrived.
+func rejectedReadPath(args []string) string {
+	if len(args) < 2 {
+		return ""
+	}
+	if path, err := protocol.DecodeReadPath(args[1]); err == nil {
+		return path
+	}
+	return args[1]
 }

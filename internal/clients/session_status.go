@@ -15,7 +15,9 @@ import "github.com/mimecast/dtail/internal/clients/handlers"
 // 1 (a refused or unreachable server, a failed SSH handshake, an SSH session
 // or shell that could not be opened, an --interactive-query SESSION START the
 // server rejected or did not acknowledge, commands that could not be sent, a
-// journal target the server does not support, a failed serverless
+// journal target the server does not support (no journal-v1), a path
+// containing a space or starting with base64% the server cannot read (no
+// encoded-read-path-v1), a failed serverless
 // in-process session: every error ServerConnection.Start and Serverless.Start
 // pass to Handler.ReportServerError) stays 1 unless such a report raises it;
 // the client exits with the highest status of all its connections (see

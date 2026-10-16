@@ -360,6 +360,15 @@ func TestSpacedPathScheduledGroup(t *testing.T) {
 	}
 	server.requireLogCount(t, "|Starting job group of 2 jobs reading", 1)
 	server.requireLogCount(t, sharedOneShotStartedLog, 1)
+	// The read was shared by both members (the second member's join and the
+	// start of the read log members=2/2), and it read the decoded spaced
+	// path: the hub logs the member's resolved path before the message.
+	server.requireLogCount(t, "|members=2/2", 2)
+	resolved, err := filepath.EvalSymlinks(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.requireLogCount(t, "|"+resolved+sharedOneShotStartedLog, 1)
 	server.requireLogCount(t, "Unable to parse command", 0)
 }
 
