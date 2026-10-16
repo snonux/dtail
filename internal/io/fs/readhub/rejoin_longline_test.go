@@ -96,15 +96,18 @@ func TestEvictedSessionRejoinsAcrossBurstsOfCutLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	private := limitedPrivateFollower(t, file, lcontext.LContext{}, regex.NewNoop(), start, cutLineLength, nil)
+	const cycles = 2
+	// Every burst line and the tail line of each cycle are cut lines, of
+	// which a private read warns about each once: a sanity check of the
+	// private read's own count, which the session's is compared with.
+	wantWarnings := cycles * (burstLines + 1)
+	// Room for every warning, and for wrong extra ones to be counted.
+	privateMessages := make(chan string, 2*wantWarnings)
+	private := limitedPrivateFollowerWithMessages(t, file, lcontext.LContext{}, regex.NewNoop(),
+		start, cutLineLength, nil, privateMessages)
 	fast := startFastFollower(t, hub, file)
 	waitFor(t, "fast session to join", func() bool { return subscriberCount(hub, file.path) == 1 })
 	pauser := &pauser{}
-	const cycles = 2
-	// Every burst line and the tail line of each cycle are cut lines, of
-	// which a private read warns about each once.
-	wantWarnings := cycles * (burstLines + 1)
-	// Room for every warning, and for wrong extra ones to be counted.
 	messages := make(chan string, 2*wantWarnings)
 	slow := startPausableFollowerWithMessages(t, hub, file, lcontext.LContext{}, regex.NewNoop(), pauser, messages)
 	waitFor(t, "slow session to join", func() bool { return sessionSubscribed(hub, file.path, "slow") })
@@ -132,8 +135,12 @@ func TestEvictedSessionRejoinsAcrossBurstsOfCutLines(t *testing.T) {
 
 	assertSameStream(t, slow.recorder, private)
 	// A warning is sent before the line it is about, so all are there.
-	if n := len(messages); n != wantWarnings {
-		t.Errorf("slow session got %d long line warnings, want %d as a private read", n, wantWarnings)
+	privateWarnings := len(privateMessages)
+	if privateWarnings != wantWarnings {
+		t.Errorf("private read got %d long line warnings, want one per cut line, %d", privateWarnings, wantWarnings)
+	}
+	if n := len(messages); n != privateWarnings {
+		t.Errorf("slow session got %d long line warnings, want %d as the private read", n, privateWarnings)
 	}
 	// The bursts evict the fast session too, as each cut line is two queue
 	// items; it is subscribed again at the end.

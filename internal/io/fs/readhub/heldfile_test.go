@@ -81,10 +81,22 @@ func limitedPrivateFollower(t *testing.T, file *testFile, ltx lcontext.LContext,
 	start position, maxLineLength int, wrap func(line.Processor) line.Processor) *recorder {
 
 	t.Helper()
+	return limitedPrivateFollowerWithMessages(t, file, ltx, re, start, maxLineLength, wrap, nil)
+}
+
+// limitedPrivateFollowerWithMessages is limitedPrivateFollower with the
+// reader's server messages, e.g. its long line warnings, sent to messages,
+// unless it is nil, so a test can compare them with a shared session's. The
+// reader blocks on a full messages channel until the test ends.
+func limitedPrivateFollowerWithMessages(t *testing.T, file *testFile, ltx lcontext.LContext,
+	re regex.Regex, start position, maxLineLength int, wrap func(line.Processor) line.Processor,
+	messages chan<- string) *recorder {
+
+	t.Helper()
 	target := file.target()
 	options := fs.ReadOptions{
 		Mode: omode.TailClient, Target: &target, FilePath: file.path, GlobID: "private",
-		MaxLineLength: maxLineLength, Logger: logging.NopLogger{},
+		MaxLineLength: maxLineLength, ServerMessages: messages, Logger: logging.NopLogger{},
 	}
 	start.startAt(&options)
 	reader, err := fs.NewReadFile(options)

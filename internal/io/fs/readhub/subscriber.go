@@ -316,11 +316,13 @@ func (r *sessionRead) feed(ctx context.Context, c *chunk) error {
 // it publishes next. A snapshot session sends it right away: its group
 // forwards warnings out of order with the lines anyway (see
 // groupEntry.forwardMessages). A follow session holds it until the chunk with
-// the line's first piece arrives (see feed), as the session may be evicted in
-// between: that chunk did not fit into its queue, or was not published yet
-// when the session handled the warning. Its private reader then reads the
-// line from its start and warns about it itself, so a warning sent before
-// would be the line's second one (see readPrivately).
+// the line's first piece arrives (see feed), as the session may go on
+// privately in between: that chunk did not fit into its queue (an eviction),
+// or the shared reader failed before publishing it (a failed target hand-over,
+// see entry.handOver), and the session goes on privately from the line's
+// start. Its private reader then reads the line and warns about it itself,
+// so a warning sent before would be the line's second one (see
+// readPrivately).
 func (r *sessionRead) longLineWarning(ctx context.Context) {
 	if r.snapshot {
 		r.sendLongLineWarning(ctx)
