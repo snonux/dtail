@@ -89,7 +89,7 @@ Connection, session and read limits:
 | `Server.MaxConcurrentCats` | `2` | Maximum concurrent one-shot reads (`dcat`, `dgrep`, `dmap`) per server. |
 | `Server.MaxConcurrentTails` | `50` | Maximum concurrent follow reads (`dtail`) per server. |
 | `Server.IdleSessionTimeoutS` | `900` | Rolling inactivity timeout for authenticated sessions, in seconds. Connections with no SSH activity are closed about the timeout plus a few seconds later; active follow sessions stay connected as every read or write refreshes the deadline. Values of `0` or less use the default. |
-| `Server.MaxLineLength` | `1048576` | Maximum line length in bytes before a line is split into multiple lines. |
+| `Server.MaxLineLength` | `1048576` | Maximum line length in bytes before a line is split into multiple lines. Shorter lines are read whole, also when the limit is above 1 MiB; a reader then holds a buffer as large as the longest line it read, up to this limit. `Server.OutputBufferMaxBytes` must be at least this plus 128 KiB. |
 | `Server.MaxGlobTargets` | `1000` | Maximum number of file paths a read command's glob may expand to. Excess paths are dropped and the client is told `read: more files than the server reads`. |
 | `Server.MaxCommandFrameSize` | `1048576` | Maximum size in bytes of a single command frame. Larger frames are rejected and the session closed. |
 | `Server.ReadGlobRetryIntervalMs` | `5000` | Retry interval in milliseconds while waiting for a glob to match a file (e.g. a log file that appears later in the day). |

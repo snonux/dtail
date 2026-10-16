@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"time"
 
@@ -17,7 +18,12 @@ import (
 	"github.com/mimecast/dtail/internal/regex"
 )
 
-const maxReadScannerTokenSize = 1024 * 1024
+// minReadScannerTokenSize is the smallest maximum token size of the snapshot
+// read scanner and the size of the pooled buffer it starts with (see
+// pool.ScannerBufferPool). The actual maximum follows the configured
+// MaxLineLength (see scannerTokenLimit), so the scanner never asks for a line
+// longer than its buffer may grow.
+const minReadScannerTokenSize = 1024 * 1024
 
 // After a follow read found its file rotated away from the path, it reads the
 // old file to its end, then polls it rotationDrainPollInterval later for lines
@@ -53,10 +59,13 @@ func (f *ReadFile) readWithProcessorOptimized(ctx context.Context, fd *os.File, 
 
 	defer filterProcessor.resetGeneration()
 
+	// The scanner starts in the pooled 1 MiB buffer and only grows (into a
+	// buffer of its own, which the pool never sees) for a line longer than
+	// that, up to scannerTokenLimit. The pooled buffer is put back unchanged.
 	scanner := bufio.NewScanner(reader)
 	bufPtr := pool.GetScannerBuffer()
 	defer pool.PutScannerBuffer(bufPtr)
-	scanner.Buffer(*bufPtr, maxReadScannerTokenSize)
+	scanner.Buffer(*bufPtr, f.scannerTokenLimit())
 
 	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
 		return f.scanLinesWithMaxLength(ctx, data, atEOF)
@@ -128,6 +137,30 @@ func (f *ReadFile) checkSnapshotTruncation(fd *os.File, truncate <-chan struct{}
 // deliberately do NOT want to mistake for a clean early stop.
 func isEarlyStop(err error) bool {
 	return err == io.EOF //nolint:errorlint // Wrapped EOF is a downstream write failure, not the private early-stop sentinel.
+}
+
+// scannerTokenLimit returns the maximum token size of the snapshot read
+// scanner: one byte more than the line limit, so that a line of exactly
+// lineLimit() bytes fits together with its newline, but at least
+// minReadScannerTokenSize. scanLinesWithMaxLength cuts every line at
+// lineLimit() bytes, so a scanner buffer of this size never fills up without a
+// token; a smaller one would make bufio.Scanner fail with ErrTooLong on a line
+// longer than the buffer but shorter than MaxLineLength (MaxLineLength above
+// 1 MiB), ending the read and losing every following line.
+//
+// The scanner only grows its buffer this far for a line that long, so the
+// memory a reader holds follows the longest line it read, bounded by
+// MaxLineLength, as the follow read's partial line buffer is.
+func (f *ReadFile) scannerTokenLimit() int {
+	limit := f.lineLimit()
+	switch {
+	case limit < minReadScannerTokenSize:
+		return minReadScannerTokenSize
+	case limit == math.MaxInt:
+		return limit
+	default:
+		return limit + 1
+	}
 }
 
 // scanLinesWithMaxLength is a custom split function for bufio.Scanner that respects MaxLineLength.

@@ -5,7 +5,11 @@ import (
 )
 
 // ScannerBufferPool provides a pool of 1MB buffers for scanner operations
-// to reduce allocation overhead in the direct-output read path
+// to reduce allocation overhead in the direct-output read path. A scanner uses
+// the pooled buffer as its initial buffer; when its maximum token size is
+// larger (a snapshot read with MaxLineLength above 1 MiB), bufio.Scanner grows
+// into a buffer of its own for a longer line, and the pooled one is returned
+// unchanged.
 var ScannerBufferPool = sync.Pool{
 	New: func() any {
 		// 1MB buffer for scanner operations
