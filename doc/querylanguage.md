@@ -86,19 +86,35 @@ FUNCTION := md5sum|maskdigits
   clause, otherwise the query fails to parse with an error.
 * If no `interval` clause is given, results are aggregated every 5 seconds.
 * An aggregation only sees the lines of a group that have its field (sparse
-  `key=value` fields, a `where` clause not requiring it). The results of all
-  servers and intervals of a follow query are merged field by field, and a
-  server or interval whose lines of the group all lack a field leaves that
-  field's value as it is. Per function:
+  `key=value` fields, a `where` clause not requiring it). The client merges
+  the results it receives field by field, and results whose lines of the
+  group all lack a field leave that field's value as it is. Which results
+  are merged depends on whether the query is cumulative:
+  * Cumulative (`dmap`, `dtail --query` with an `outfile`, scheduled jobs):
+    the results of all servers and of all intervals so far are merged, so a
+    server or interval without the field keeps the value earlier ones gave.
+  * Non-cumulative (`dtail --query` without an `outfile`, continuous jobs):
+    each interval starts from zero and its rows show only that interval's
+    lines, merged across the servers. A group whose lines in that interval
+    all lack a field shows that field as if no line had it (e.g. `min` `0`),
+    whatever earlier intervals had.
+
+  This holds fully only when every dserver is up to date. An older dserver
+  whose sending of results was interrupted (its session context cancelled
+  while a send was blocked) puts the unsent results back with the old merge
+  rules, so the results it sends after that can carry `0` for `min`/`max`
+  and zero-valued fields no line had.
+
+  Per function:
   * `count`, `sum`, `min` and `max` only use the lines that have the field;
     a field no line of the group had shows as `0`.
   * `last` and `len` keep the most recently received value (`len` its
     length); a field no line of the group had shows as empty (`last`) or `0`
     (`len`).
   * `avg` is an exception: it divides the sum of the field's values by the
-    number of lines of the group that had at least one of the query's
-    selected fields, not only the lines that had the averaged field. So
-    `select avg(bytes),count(status)` over the two lines `bytes=10|status=ok`
+    number of lines of the group with at least one selected field whose
+    value could be aggregated, not only the lines that had the averaged
+    field. So `select avg(bytes),count(status)` over the two lines `bytes=10|status=ok`
     and `status=ok` of a group gives `5`, not `10`. To average only over the
     lines having the field, select `sum(bytes)` and `count(bytes)` and
     divide, or select no other fields that a line can have without it.

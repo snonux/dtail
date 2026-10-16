@@ -148,56 +148,86 @@ func TestAggregateAndFlushAreSafeConcurrently(t *testing.T) {
 	}
 }
 
+// serverMessages are the aggregate messages one server sends, in order.
+type serverMessages struct {
+	server   string
+	messages []string
+}
+
 // TestAggregateMergesMessagesLackingFields verifies the client merge of
 // server messages for one group where a message lacks the min/max/last/len
 // fields: a later interval of the same server, or another server whose lines
 // of the group had no such field. The values of the messages carrying the
-// fields must survive (formerly they became 0 and "").
+// fields must survive (formerly they became 0 and ""). The servers are fed in
+// the given order, so where two servers carry last()/len(), the later one's
+// value must win.
 func TestAggregateMergesMessagesLackingFields(t *testing.T) {
 	full := aggregateTestMessage("host1", "1", "min(lat)", "5", "max(neg)", "-3",
 		"last(name)", "alice", "len(name)", "alice", "count(status)", "1")
+	newer := aggregateTestMessage("host1", "1", "min(lat)", "7", "max(neg)", "-1",
+		"last(name)", "bob", "len(name)", "bob", "count(status)", "1")
 	statusOnly := aggregateTestMessage("host1", "1", "count(status)", "1")
+	fromFull := map[string]float64{"min(lat)": 5, "max(neg)": -3, "len(name)": 5, "count(status)": 2}
 	tests := []struct {
-		name     string
-		messages map[string][]string
+		name       string
+		servers    []serverMessages
+		wantFloats map[string]float64
+		wantName   string
 	}{
-		{"later interval lacks fields", map[string][]string{"srv1": {full, statusOnly}}},
-		{"earlier interval lacks fields", map[string][]string{"srv1": {statusOnly, full}}},
-		{"other server lacks fields", map[string][]string{"srv1": {full}, "srv2": {statusOnly}}},
+		{"later interval lacks fields", []serverMessages{{"srv1", []string{full, statusOnly}}}, fromFull, "alice"},
+		{"earlier interval lacks fields", []serverMessages{{"srv1", []string{statusOnly, full}}}, fromFull, "alice"},
+		{"later server lacks fields", []serverMessages{{"srv1", []string{full}}, {"srv2", []string{statusOnly}}},
+			fromFull, "alice"},
+		{"earlier server lacks fields", []serverMessages{{"srv1", []string{statusOnly}}, {"srv2", []string{full}}},
+			fromFull, "alice"},
+		{"newer server wins, then one lacks fields",
+			[]serverMessages{{"srv1", []string{full}}, {"srv2", []string{newer}}, {"srv3", []string{statusOnly}}},
+			map[string]float64{"min(lat)": 5, "max(neg)": -1, "len(name)": 3, "count(status)": 3}, "bob"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			query := mustSessionStateQuery(t,
-				"select min(lat),max(neg),last(name),len(name),count(status) from stats group by host")
-			state := NewSessionState(query, logging.NopLogger{})
-			for server, messages := range tt.messages {
-				aggregate := NewAggregate(server, state, logging.NopLogger{})
-				for _, message := range messages {
-					if err := aggregate.Aggregate(message); err != nil {
-						t.Fatalf("Aggregate(%q) error = %v", message, err)
-					}
-				}
-				if err := aggregate.Flush(); err != nil {
-					t.Fatalf("Flush() error = %v", err)
-				}
-			}
-			set := state.Snapshot().GlobalGroup.GetSet("host1")
-			wantFloats := map[string]float64{"min(lat)": 5, "max(neg)": -3, "len(name)": 5, "count(status)": 2}
-			for key, want := range wantFloats {
+			set := mergeServerMessages(t, tt.servers)
+			for key, want := range tt.wantFloats {
 				if got := set.FValues[key]; got != want {
 					t.Errorf("%s = %v, want %v", key, got, want)
 				}
 			}
 			for _, key := range []string{"last(name)", "len(name)"} {
-				if got := set.SValues[key]; got != "alice" {
-					t.Errorf("%s = %q, want %q", key, got, "alice")
+				if got := set.SValues[key]; got != tt.wantName {
+					t.Errorf("%s = %q, want %q", key, got, tt.wantName)
 				}
 			}
-			if set.Samples != 2 {
-				t.Errorf("Samples = %d, want 2", set.Samples)
+			// Every message carries one sample.
+			wantSamples := 0
+			for _, server := range tt.servers {
+				wantSamples += len(server.messages)
+			}
+			if set.Samples != wantSamples {
+				t.Errorf("Samples = %d, want %d", set.Samples, wantSamples)
 			}
 		})
 	}
+}
+
+// mergeServerMessages aggregates and flushes each server's messages, one
+// server after the other, into one session and returns the merged host1 set.
+func mergeServerMessages(t *testing.T, servers []serverMessages) *mapr.AggregateSet {
+	t.Helper()
+	query := mustSessionStateQuery(t,
+		"select min(lat),max(neg),last(name),len(name),count(status) from stats group by host")
+	state := NewSessionState(query, logging.NopLogger{})
+	for _, server := range servers {
+		aggregate := NewAggregate(server.server, state, logging.NopLogger{})
+		for _, message := range server.messages {
+			if err := aggregate.Aggregate(message); err != nil {
+				t.Fatalf("Aggregate(%q) error = %v", message, err)
+			}
+		}
+		if err := aggregate.Flush(); err != nil {
+			t.Fatalf("Flush() error = %v", err)
+		}
+	}
+	return state.Snapshot().GlobalGroup.GetSet("host1")
 }
 
 // aggregateTestMessage builds a server aggregate message: the group key, the

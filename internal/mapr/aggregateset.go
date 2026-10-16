@@ -48,16 +48,17 @@ func (s *AggregateSet) String() string {
 //
 // On error (an unknown aggregation, which the query parser rejects) s is left
 // unchanged: every operation is checked before anything is merged, so a caller
-// never ends up with a partially merged set.
+// never ends up with a partially merged set. Both passes look the operation up
+// in fieldMergerFor, the single place that knows how each operation merges.
 func (s *AggregateSet) Merge(query *Query, set *AggregateSet) error {
 	for _, sc := range query.Select {
-		if !sc.Operation.mergeable() {
+		if fieldMergerFor(sc.Operation) == nil {
 			return fmt.Errorf("unknown aggregation method '%v'", sc.Operation)
 		}
 	}
 	s.Samples += set.Samples
 	for _, sc := range query.Select {
-		s.mergeField(sc.FieldStorage, sc.Operation, set)
+		fieldMergerFor(sc.Operation)(s, sc.FieldStorage, set)
 	}
 	return nil
 }
@@ -104,45 +105,62 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 	}
 }
 
-// mergeable reports whether Merge knows how to merge op; mergeField handles
-// exactly these operations.
-func (op AggregateOperation) mergeable() bool {
+// fieldMerger merges the value of one storage key of set into s, if set has
+// one (see Merge).
+type fieldMerger func(s *AggregateSet, storage string, set *AggregateSet)
+
+// fieldMergerFor returns how op merges, or nil when Merge does not know op.
+// It is the only list of mergeable operations: Merge uses it both to reject an
+// unknown operation and to merge, so an operation cannot be accepted by the
+// check but then silently skipped by the merge. A new operation must be added
+// here (TestFieldMergerForCoversAggregate checks it against Aggregate).
+func fieldMergerFor(op AggregateOperation) fieldMerger {
 	switch op {
-	case Count, Sum, Avg, Percentage, Percentile, Min, Max, Last, Len:
-		return true
+	case Count, Sum, Avg, Percentage, Percentile:
+		return mergeAdditive
+	case Min:
+		return mergeMin
+	case Max:
+		return mergeMax
+	case Last:
+		return mergeLast
+	case Len:
+		return mergeLen
 	default:
-		return false
+		return nil
 	}
 }
 
-// mergeField merges the value of one storage key of set into s, if set has
-// one (see Merge). Merge checked op with mergeable before, so an operation
-// not listed here cannot reach it.
-func (s *AggregateSet) mergeField(storage string, op AggregateOperation, set *AggregateSet) {
-	switch op {
-	case Count, Sum, Avg, Percentage, Percentile:
-		if value, ok := set.FValues[storage]; ok {
-			s.addFloat(storage, value)
-		}
-	case Min:
-		if value, ok := set.FValues[storage]; ok {
-			s.addFloatMin(storage, value)
-		}
-	case Max:
-		if value, ok := set.FValues[storage]; ok {
-			s.addFloatMax(storage, value)
-		}
-	case Last:
-		if value, ok := set.SValues[storage]; ok {
-			s.setString(storage, value)
-		}
-	case Len:
-		// Aggregate stores a len() value as the string and its length under
-		// the same key, so the string's presence stands for both.
-		if value, ok := set.SValues[storage]; ok {
-			s.setString(storage, value)
-			s.setFloat(storage, set.FValues[storage])
-		}
+func mergeAdditive(s *AggregateSet, storage string, set *AggregateSet) {
+	if value, ok := set.FValues[storage]; ok {
+		s.addFloat(storage, value)
+	}
+}
+
+func mergeMin(s *AggregateSet, storage string, set *AggregateSet) {
+	if value, ok := set.FValues[storage]; ok {
+		s.addFloatMin(storage, value)
+	}
+}
+
+func mergeMax(s *AggregateSet, storage string, set *AggregateSet) {
+	if value, ok := set.FValues[storage]; ok {
+		s.addFloatMax(storage, value)
+	}
+}
+
+func mergeLast(s *AggregateSet, storage string, set *AggregateSet) {
+	if value, ok := set.SValues[storage]; ok {
+		s.setString(storage, value)
+	}
+}
+
+// mergeLen merges a len() value. Aggregate stores it as the string and its
+// length under the same key, so the string's presence stands for both.
+func mergeLen(s *AggregateSet, storage string, set *AggregateSet) {
+	if value, ok := set.SValues[storage]; ok {
+		s.setString(storage, value)
+		s.setFloat(storage, set.FValues[storage])
 	}
 }
 

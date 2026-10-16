@@ -398,7 +398,8 @@ func TestAggregateDoSerializeReMergesOnCtxCancel(t *testing.T) {
 // cancelled serialization with sparse fields: the unsent snapshot has
 // min()/max()/last()/len() values the newer live set lacks, and the live set
 // has a min() value and count the snapshot lacks. The re-merge must keep every
-// value a set carries and create no key for a field neither set has.
+// value a set carries and create no key for a field neither set has
+// (min($absent): checkRemainingSet compares the exact key sets).
 func TestAggregateDoSerializeReMergesSparseFieldsOnCtxCancel(t *testing.T) {
 	agg, err := newAggregateFromTextForTest(`from STATS select min($lat),max($neg),`+
 		`min($absent),last($name),len($name),count($status) from - group by $service`,
@@ -410,8 +411,7 @@ func TestAggregateDoSerializeReMergesSparseFieldsOnCtxCancel(t *testing.T) {
 	for i, sc := range agg.query.Select {
 		storage[i] = sc.FieldStorage
 	}
-	minLat, maxNeg, minAbsent, last, length, count :=
-		storage[0], storage[1], storage[2], storage[3], storage[4], storage[5]
+	minLat, maxNeg, last, length, count := storage[0], storage[1], storage[3], storage[4], storage[5]
 
 	agg.serializer.groupMu.Lock()
 	agg.serializer.groupSets["svc"] = &mapr.AggregateSet{Samples: 1,
@@ -427,27 +427,9 @@ func TestAggregateDoSerializeReMergesSparseFieldsOnCtxCancel(t *testing.T) {
 	agg.serializer.groupMu.Lock()
 	set := agg.serializer.groupSets["svc"]
 	agg.serializer.groupMu.Unlock()
-	if set == nil {
-		t.Fatal("expected svc group to be re-merged after ctx cancel")
-	}
-	wantF := map[string]float64{minLat: 3, maxNeg: -3, length: 5, count: 1}
-	wantS := map[string]string{last: "alice", length: "alice"}
-	if set.Samples != 2 || len(set.FValues) != len(wantF) || len(set.SValues) != len(wantS) {
-		t.Fatalf("re-merged set = %v, want Samples 2, FValues %v, SValues %v", set, wantF, wantS)
-	}
-	for key, want := range wantF {
-		if got, ok := set.FValues[key]; !ok || got != want {
-			t.Errorf("%s = %v (present %v), want %v", key, got, ok, want)
-		}
-	}
-	for key, want := range wantS {
-		if got := set.SValues[key]; got != want {
-			t.Errorf("%s = %q, want %q", key, got, want)
-		}
-	}
-	if _, ok := set.FValues[minAbsent]; ok {
-		t.Errorf("%s present, want the key absent", minAbsent)
-	}
+	checkRemainingSet(t, "svc", set, 2,
+		map[string]float64{minLat: 3, maxNeg: -3, length: 5, count: 1},
+		map[string]string{last: "alice", length: "alice"})
 }
 
 // cancelSerializeWithNewerLiveSets runs doSerialize on agg's current groups

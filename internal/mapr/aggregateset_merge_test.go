@@ -184,3 +184,32 @@ func checkMergeTestSet(t *testing.T, set *AggregateSet, want mergeTestWant) {
 		}
 	}
 }
+
+// TestFieldMergerForCoversAggregate verifies that Merge knows exactly the
+// operations Aggregate accepts: an operation Aggregate aggregates but Merge
+// cannot merge would fail every client merge, and one Merge accepts but does
+// not merge would silently drop values. The range covers well beyond the
+// defined operations, so a new one added to Aggregate only is caught too.
+func TestFieldMergerForCoversAggregate(t *testing.T) {
+	for op := AggregateOperation(-2); op < 64; op++ {
+		aggregated := NewAggregateSet().Aggregate("k", op, "1", false) == nil
+		merger := fieldMergerFor(op)
+		if aggregated != (merger != nil) {
+			t.Fatalf("operation %d: Aggregate accepts it = %v, but fieldMergerFor returns a merger = %v",
+				op, aggregated, merger != nil)
+		}
+		if merger == nil {
+			continue
+		}
+		// Every merger must carry a value the source set has into the receiver.
+		src := NewAggregateSet()
+		if err := src.Aggregate("k", op, "1", false); err != nil {
+			t.Fatalf("operation %d: Aggregate() error = %v", op, err)
+		}
+		dest := NewAggregateSet()
+		merger(dest, "k", src)
+		if len(dest.FValues) != len(src.FValues) || len(dest.SValues) != len(src.SValues) {
+			t.Errorf("operation %d: merged %v into an empty set, got %v", op, src, dest)
+		}
+	}
+}
