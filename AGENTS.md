@@ -473,7 +473,12 @@ shared reader failing (it reads the file again, as a private reader does, and
 every session of it is told), the shared reader failing for good without a
 panic (each session goes on privately) and a failed read of a session's own
 reader after an eviction. The hub reports the last three through
-`readhub.Session.ReportFailure`. A max-count stop is no failure in either
+`readhub.Session.ReportFailure`, with the error that failed, which the read
+command reports as its own read loop does (`readCommand.reportReadError`):
+output a session's own reader after an eviction dropped as too large for the
+session output buffer gets the `Dropped output too large ...` warning and the
+reason `output: too large for the session output buffer`, not `read: unable to
+read file`. A max-count stop is no failure in either
 path, and a reader worker panic ends the session as a panic in both, without
 a report.
 

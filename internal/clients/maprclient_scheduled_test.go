@@ -69,6 +69,12 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 	failedReadAndQuery := handlers.SessionOutcome{Completed: true, Failures: []string{
 		protocol.CommandFailureNoFile, protocol.CommandFailureRejected}}
 	failedReadCutShort := handlers.SessionOutcome{Failures: []string{protocol.CommandFailureNoFile}}
+	// Output dropped as too large for the session output buffer is no file
+	// read failure: the file was read, its lines were lost on the way.
+	outputTooLarge := handlers.SessionOutcome{Completed: true, Failures: []string{
+		protocol.CommandFailureOutputTooLarge}}
+	failedReadAndTooLarge := handlers.SessionOutcome{Completed: true, Failures: []string{
+		protocol.CommandFailureNoFile, protocol.CommandFailureOutputTooLarge}}
 	tests := []struct {
 		name       string
 		mode       MaprClientMode
@@ -112,6 +118,8 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 			wantStatus: 1},
 		{name: "scheduled failed read keeps earlier outfile", mode: ScheduledMode,
 			outcomes: []handlers.SessionOutcome{failedRead}, existing: true, wantStatus: 1},
+		{name: "scheduled output too large", mode: ScheduledMode,
+			outcomes: []handlers.SessionOutcome{outputTooLarge}, existing: true, wantStatus: 1},
 
 		// After the job's TimeRange ended: file read failures write the
 		// partial result, everything else still writes nothing.
@@ -146,6 +154,14 @@ func TestMaprClientFinishWritesScheduledResultOnlyWhenComplete(t *testing.T) {
 			outcomes: []handlers.SessionOutcome{failedQuery}, wantStatus: 1},
 		{name: "partial failed read and rejected command", mode: ScheduledPartialMode,
 			outcomes: []handlers.SessionOutcome{failedReadAndQuery}, wantStatus: 1},
+		{name: "partial output too large", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{outputTooLarge}, existing: true, wantStatus: 1,
+			wantLog: "Not writing the mapreduce result as the query did not complete|srv1 reported a failed command: " +
+				protocol.CommandFailureOutputTooLarge},
+		{name: "partial failed read and output too large", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{failedReadAndTooLarge}, wantStatus: 1},
+		{name: "partial failed read and output too large on another server", mode: ScheduledPartialMode,
+			outcomes: []handlers.SessionOutcome{failedRead, outputTooLarge}, wantStatus: 1},
 		{name: "partial without servers", mode: ScheduledPartialMode, outcomes: []handlers.SessionOutcome{},
 			wantStatus: 1},
 		{name: "partial write error", mode: ScheduledPartialMode, outcomes: []handlers.SessionOutcome{failedRead},

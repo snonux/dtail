@@ -99,8 +99,12 @@ type Session struct {
 	// goroutine, for every failure it handles itself instead of returning it
 	// (see sessionRead.reportFailure); the caller reports the failures Follow
 	// returns. It may be called more than once for one session, so a caller
-	// that reports only once keeps that to itself.
-	ReportFailure func()
+	// that reports only once keeps that to itself. err is what failed: the
+	// shared reader's error, or the error the session's own reader (and so
+	// possibly its processor, e.g. its output) returned after an eviction,
+	// so that the caller can tell a failed read of the file from output it
+	// had to drop; it may be nil.
+	ReportFailure func(err error)
 }
 
 // Hub shares follow reads of the same file between sessions. It is safe for

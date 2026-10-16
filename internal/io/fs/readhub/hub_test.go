@@ -206,7 +206,7 @@ func startFollower(t *testing.T, hub *Hub, file *testFile, ltx lcontext.LContext
 		Regex:          re,
 		ServerMessages: f.messages,
 		NewProcessor:   f.recorder.newProcessor,
-		ReportFailure:  func() { f.failures.Add(1) },
+		ReportFailure:  func(error) { f.failures.Add(1) },
 	}
 	go func() { f.done <- hub.Follow(ctx, session) }()
 	t.Cleanup(func() {

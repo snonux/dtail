@@ -243,22 +243,22 @@ func (r *sessionRead) handle(ctx context.Context, it item) (goPrivate bool, err 
 			"Shared follow read failed, going on with a private read", "offset", r.at.offset)
 		// A private reader failing ends its read command's read iteration,
 		// which reports that to the client before it reads the file again.
-		r.reportFailure()
+		r.reportFailure(it.err)
 		return true, nil
 	case readErrorItem:
 		// One read of the shared reader failed and it reads the file again;
 		// the read command reports such a read to the client (see
 		// executeReadLoop), so every session of the shared reader does too.
-		r.reportFailure()
+		r.reportFailure(it.err)
 	}
 	return false, nil
 }
 
-// reportFailure tells the session's client that its read failed and its
-// output is incomplete, as the read command does for a private read.
-func (r *sessionRead) reportFailure() {
+// reportFailure tells the session's client that its read failed with err
+// and its output is incomplete, as the read command does for a private read.
+func (r *sessionRead) reportFailure(err error) {
 	if r.session.ReportFailure != nil {
-		r.session.ReportFailure()
+		r.session.ReportFailure(err)
 	}
 }
 

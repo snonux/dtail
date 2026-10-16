@@ -100,7 +100,10 @@ func (r *sessionRead) readPrivately(ctx context.Context, held *os.File) error {
 			// The read command's retry loop reports a failed read of a
 			// private reader to the client before it reads the file again
 			// (see executeReadLoop); this loop is that loop for the session.
-			r.reportFailure()
+			// err goes with the report: it can be the session's processor
+			// failing, e.g. its output dropping lines too large for it,
+			// which the read command reports apart from a failed read.
+			r.reportFailure(err)
 		}
 		if ctx.Err() != nil || !ctxutil.Sleep(ctx, r.options.RetryInterval) {
 			return nil

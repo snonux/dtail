@@ -262,3 +262,32 @@ func checkReported(t *testing.T, server *sharedReadTestServer, reason string) {
 		t.Errorf("failed command messages = %q, want %q", got, want)
 	}
 }
+
+// TestHubFailureReportsOutputTooLargeAfterAnEviction: after an eviction the
+// hub reads the session's file with a private reader of its own and reports
+// each failed iteration through readhub.Session.ReportFailure, with the error
+// (stubbed here as the hub would pass it). Output dropped as too large for the
+// session's output buffer is reported with the output reason and its warning,
+// like the read command's own private read loop does; a failed read of the
+// file, or a failure the hub has no error for, stays a failed read.
+func TestHubFailureReportsOutputTooLargeAfterAnEviction(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantReport string
+	}{
+		{name: "output too large", err: fmt.Errorf("process line: %w", tooLargeError()),
+			wantReport: protocol.CommandFailureOutputTooLarge},
+		{name: "failed read", err: errors.New("read failed"), wantReport: readFailureReadingFile},
+		{name: "no error", wantReport: readFailureReadingFile},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newSharedReadTestServer(t, nil)
+			cmd, _ := newTooLargeReadCommand(server, omode.TailClient, tooLargeLineWriter{})
+
+			cmd.reportHubFailure(context.Background())(tt.err)
+			checkReported(t, server, tt.wantReport)
+		})
+	}
+}

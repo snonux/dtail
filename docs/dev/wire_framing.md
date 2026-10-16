@@ -70,7 +70,10 @@ the 64 KiB of the reserve cover the escaped line header), the read reports it
 instead of dropping it silently: the client gets the warning `Dropped output
 too large for the session output buffer` and the failed-command reason
 `output: too large for the session output buffer`
-(`protocol.CommandFailureOutputTooLarge`, no file read failure).
+(`protocol.CommandFailureOutputTooLarge`, no file read failure). That holds on
+every read path, the private reader of a shared follow session after its
+eviction included: the hub passes the error to `readhub.Session.ReportFailure`,
+and the read command reports it like its own read loop does.
 
 ## Negotiation and mixed versions
 
