@@ -26,4 +26,5 @@ Layout:
 * Top level — dated, point-in-time reports such as
   [code-quality-audit-2026-09-06.md](code-quality-audit-2026-09-06.md),
   [performance-plan-2026-09-15.md](performance-plan-2026-09-15.md) and
-  [upstream-benchmark-2026-09-23.md](upstream-benchmark-2026-09-23.md)
+  [upstream-benchmark-2026-09-23.md](upstream-benchmark-2026-09-23.md) and
+  [upstream-benchmark-2026-11-11.md](upstream-benchmark-2026-11-11.md)
