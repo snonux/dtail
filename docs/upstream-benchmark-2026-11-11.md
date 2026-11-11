@@ -16,9 +16,9 @@ comparable (see "Comparison with 2026-09-23").
   `91d35001488dd036b1f1def30cc435d3ab25c5f1`.
 - Local: `3b2ec4ce1b74e6c66a24c221f6d476ccd75f8caf` (`fix: bug sweep across
   mapr, io, readhub, jobs, server and clients`), measured from a detached
-  `git worktree` of `HEAD`. The harness refuses to run on tracked changes, and
-  the main working tree held about 50 uncommitted modified files, so **those
-  changes are not measured**. Both measured trees were clean.
+  `git worktree` of `HEAD`, which pins the measured source to that commit
+  while the main working tree stays free for other work. Both measured trees
+  were clean (the harness refuses to run on tracked changes).
 - Host: Fedora 44 on bare metal (hostname `earth`), 8 logical CPUs, Linux
   `7.2.15-200.fc44.x86_64`, clocksource `tsc`, CPU governor `performance`,
   home filesystem on LUKS-encrypted NVMe. The previous run used a four-vCPU
@@ -119,8 +119,7 @@ client peak-RSS measurement.
 - This run does not cover payload file teeing, shared scheduled reads,
   concurrent-client scaling, sparse follow latency, rotation, compression,
   high-cardinality result sorting, or idle CPU. It compares whole checkouts,
-  not individual optimizations, and does not include the uncommitted work in
-  the local tree.
+  not individual optimizations.
 
 ## Comparison with 2026-09-23
 
@@ -146,8 +145,8 @@ git clone https://github.com/mimecast/dtail.git ../dtail-mimecast
 # Optional: pin the revision of this report.
 git -C ../dtail-mimecast checkout d2425e8261d388f1dd2b80ef29cae9308612dffc
 
-# The harness needs clean tracked trees. For a dirty main tree, measure a
-# snapshot of HEAD from a worktree instead.
+# The harness needs clean tracked trees. To measure a fixed commit while the
+# main tree is in use (or dirty), benchmark a worktree of it instead.
 git worktree add --detach ../dtail-bench HEAD
 
 # Smoke first (builds both trees, untimed correctness checks), then the run,

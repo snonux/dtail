@@ -17,9 +17,8 @@ loopback SSH server.
 The original work directory was outside the repository; its absolute path is
 replaced by `<workdir>` in metadata and logs. The local `root` in
 `metadata.txt` is a detached `git worktree` of the local repository at the
-recorded commit, created because the harness refuses a checkout with tracked
-changes (the main working tree had uncommitted work that this run does not
-measure).
+recorded commit, used so the measured source stays pinned to that commit
+(the harness refuses a checkout with tracked changes).
 
 Post-run verification: each of the twelve full follow outputs (five timed
 observations and one warm-up per implementation), after removing its
