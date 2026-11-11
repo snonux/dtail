@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -223,7 +224,7 @@ func (h *ServerHandler) handleUserCommand(ctx context.Context, ltx lcontext.LCon
 		return
 	}
 	markCommandAdmitted(ctx)
-	if strings.EqualFold(commandName, "SESSION") {
+	if commandName == "SESSION" {
 		ctx = withSessionCommandAdmission(ctx)
 	}
 	commandFinished := h.newCommandFinished(ctx, shouldShutdownOnCommandCompletion(commandName))
@@ -306,7 +307,16 @@ func (h *ServerHandler) idleShutdownAfterCommand(ctx context.Context) {
 	defer h.finishCommand()
 	defer cancelCommandContext(ctx)
 	defer recoverHandlerPanic(h.Logger(), h.user, "idle shutdown", h.abortAfterPanic)
-	h.shutdown(ctx)
+	// A command that ran into its own deadline ("timeout N ...") leaves an
+	// expired context behind. The shutdown's flushes and its wait for the
+	// close acknowledgement would all return at once with it, and the
+	// session closed while its last output and the close frame were still
+	// on their way. The connection's context bounds the shutdown instead.
+	shutdownCtx := ctx
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && h.connCtx != nil {
+		shutdownCtx = h.connCtx
+	}
+	h.shutdown(shutdownCtx)
 }
 
 // handleAckControl handles the ".ack" control commands. The close
@@ -513,11 +523,14 @@ func (h *ServerHandler) claimIdleShutdown(pendingFiles, activeCommands int32) bo
 	return h.idleShutdownStarted.CompareAndSwap(false, true)
 }
 
+// shouldShutdownOnCommandCompletion reports whether the session may end once
+// commandName completed. AUTHKEY and SESSION keep it open. The names are
+// matched exactly, like the command table: matched case-insensitively,
+// "Session" or "AuthKey" were reported as unknown commands and then still
+// kept the session open until the idle timeout.
 func shouldShutdownOnCommandCompletion(commandName string) bool {
-	switch {
-	case strings.EqualFold(commandName, "AUTHKEY"):
-		return false
-	case strings.EqualFold(commandName, "SESSION"):
+	switch commandName {
+	case "AUTHKEY", "SESSION":
 		return false
 	default:
 		return true

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -49,6 +50,9 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	// Must be set before runConnections starts the host key prompt.
+	answers := c.routePromptAnswers()
+
 	statusCh := make(chan int, 1)
 	go func() {
 		statusCh <- c.runConnections(runCtx, statsCh)
@@ -56,7 +60,8 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 
 	controlErrCh := make(chan error, 1)
 	go func() {
-		controlErrCh <- c.runInteractiveControl(runCtx, cancel, controlTTY)
+		defer answers.close()
+		controlErrCh <- c.runInteractiveControl(runCtx, cancel, controlTTY, answers)
 	}()
 
 	select {
@@ -80,7 +85,82 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 	}
 }
 
-func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.CancelFunc, tty *os.File) error {
+// promptRouter is implemented by a host key callback whose unknown hosts
+// question can be answered through the control loop.
+type promptRouter interface {
+	SetPromptInput(io.Reader)
+	Prompting() bool
+}
+
+// promptAnswers passes lines the control loop read from the terminal on to
+// the unknown hosts question of the host key callback while that is asked.
+// The question reads stdin, which in an interactive session is the terminal
+// the control loop reads too: without the hand-over the answer went to
+// whichever of the two read it first, and "yes" was then rejected as an
+// unknown control command while the question went on waiting. A nil
+// *promptAnswers routes nothing.
+type promptAnswers struct {
+	router promptRouter
+	lines  chan []byte
+	rest   []byte
+	once   sync.Once
+}
+
+// routePromptAnswers lets the control loop answer the host key prompt when
+// the prompt would read the terminal itself, i.e. when stdin is one. With
+// stdin redirected the prompt keeps reading its answers from there.
+func (c *baseClient) routePromptAnswers() *promptAnswers {
+	router, ok := c.hostKeyCallback.(promptRouter)
+	if !ok {
+		return nil
+	}
+	if info, err := os.Stdin.Stat(); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		return nil
+	}
+	answers := &promptAnswers{router: router, lines: make(chan []byte, 16)}
+	router.SetPromptInput(answers)
+	return answers
+}
+
+// take passes line on to the prompt and reports true if a question is being
+// asked; otherwise the line is the control loop's.
+func (a *promptAnswers) take(line string) bool {
+	if a == nil || !a.router.Prompting() {
+		return false
+	}
+	select {
+	case a.lines <- []byte(line + "\n"):
+	default:
+		// The prompt is not reading: drop the line rather than block the
+		// control loop.
+	}
+	return true
+}
+
+// Read hands the prompt the next line typed while it asked, and io.EOF once
+// the control loop ended, which the prompt takes as a "no".
+func (a *promptAnswers) Read(p []byte) (int, error) {
+	if len(a.rest) == 0 {
+		line, ok := <-a.lines
+		if !ok {
+			return 0, io.EOF
+		}
+		a.rest = line
+	}
+	n := copy(p, a.rest)
+	a.rest = a.rest[n:]
+	return n, nil
+}
+
+// close ends the answers: a prompt still waiting gets io.EOF.
+func (a *promptAnswers) close() {
+	if a != nil {
+		a.once.Do(func() { close(a.lines) })
+	}
+}
+
+func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.CancelFunc, tty *os.File,
+	answers *promptAnswers) error {
 	if _, err := fmt.Fprintf(tty,
 		"Interactive query control enabled. Commands: :reload <flags>, :show, :help, :quit\n"); err != nil {
 		return err
@@ -99,6 +179,10 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 		// only to recognise the command, so that an escaped trailing blank of
 		// a :reload value (`--regex foo\ `) survives.
 		line := reader.Text()
+		// A line typed while the host key question is asked answers it.
+		if answers.take(line) {
+			continue
+		}
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -221,10 +305,11 @@ func checkReloadCapabilities(connections []connectors.Connector, nextSpec Sessio
 
 func (c *baseClient) applyInteractiveReloadConnections(connections []connectors.Connector, nextSpec SessionSpec) ([]interactiveReloadState, uint64, error) {
 	var generation uint64
+	baseGeneration := highestCommittedGeneration(connections)
 	applied := make([]interactiveReloadState, 0, len(connections))
 	for _, conn := range connections {
 		prevSpec, prevGeneration, _ := conn.CommittedSession()
-		if err := conn.ApplySessionSpec(nextSpec, interactiveControlTimeout); err != nil {
+		if err := applyReloadSpec(conn, nextSpec, prevGeneration, baseGeneration); err != nil {
 			if shouldRollbackFailedReload(err) {
 				rollbackGeneration := generation
 				if rollbackGeneration == 0 {
@@ -257,6 +342,35 @@ func (c *baseClient) applyInteractiveReloadConnections(connections []connectors.
 		}
 	}
 	return applied, generation, nil
+}
+
+// highestCommittedGeneration returns the highest session generation any of
+// connections committed, 0 if none committed one.
+func highestCommittedGeneration(connections []connectors.Connector) uint64 {
+	var highest uint64
+	for _, conn := range connections {
+		if _, generation, ok := conn.CommittedSession(); ok && generation > highest {
+			highest = generation
+		}
+	}
+	return highest
+}
+
+// applyReloadSpec updates conn to nextSpec on top of baseGeneration, the
+// highest generation of all connections, so that every connection commits
+// the same next generation. A connection that reconnected meanwhile started
+// its session over at generation 1 while the others kept theirs; updating
+// each on top of its own generation then gave mismatched generations, and
+// every later :reload was rejected and rolled back. dserver accepts any
+// generation the client numbers an update with. A connection without a
+// committed session starts one as before.
+func applyReloadSpec(conn connectors.Connector, nextSpec SessionSpec,
+	committedGeneration, baseGeneration uint64) error {
+
+	if committedGeneration == 0 || committedGeneration == baseGeneration {
+		return conn.ApplySessionSpec(nextSpec, interactiveControlTimeout)
+	}
+	return conn.ApplySessionSpecWithGeneration(nextSpec, baseGeneration, interactiveControlTimeout)
 }
 
 func shouldRollbackFailedReload(err error) bool {

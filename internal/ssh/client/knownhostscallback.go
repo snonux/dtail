@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mimecast/dtail/internal/io/fs"
@@ -56,6 +57,22 @@ type unknownHost struct {
 	hostLine   string
 	ipLine     string
 	responseCh chan response
+	// changed reports that known_hosts has another key for this host: the
+	// host is not unknown, its key changed (a reinstalled server, or
+	// someone in the middle).
+	changed bool
+}
+
+// changedServers returns the servers among hosts whose key differs from the
+// one in known_hosts.
+func changedServers(hosts []unknownHost) []string {
+	var servers []string
+	for _, host := range hosts {
+		if host.changed {
+			servers = append(servers, host.server)
+		}
+	}
+	return servers
 }
 
 // KnownHostsCallback is a wrapper around ssh.KnownHosts so that we can add all
@@ -78,6 +95,78 @@ type KnownHostsCallback struct {
 	removeTempFile func(*os.Root, string) error
 	// lockTimeout bounds the wait for another client's known_hosts update.
 	lockTimeout time.Duration
+	// parsed caches the parsed known_hosts file (see knownHostsChecker).
+	parsed parsedKnownHosts
+	// promptInput is where the answers to the unknown hosts question are
+	// read from: stdin, unless SetPromptInput replaced it before
+	// PromptAddHosts started. prompting is set while a question is asked.
+	promptInput io.Reader
+	prompting   atomic.Bool
+	// trustChangedKeys allows trusting a host whose key differs from the
+	// one in known_hosts (see TrustChangedKeys). Set before the callback is
+	// used.
+	trustChangedKeys bool
+}
+
+// TrustChangedKeys sets whether a host whose key differs from the one in
+// known_hosts may be trusted (--trustChangedHostKeys): asked about with a
+// warning, or in trust-all mode replaced with a warning. By default such a
+// host is refused, whatever the mode: its key is not unknown but changed,
+// which is a reinstalled server or someone in the middle, and neither an
+// "unknown host" answer nor --trustAllHosts is meant to wave that through.
+// It must be called before the callback is used.
+func (c *KnownHostsCallback) TrustChangedKeys(trust bool) {
+	c.trustChangedKeys = trust
+}
+
+// SetPromptInput makes the unknown hosts question read its answers from
+// input instead of stdin. It must be called before PromptAddHosts runs. A
+// client that reads the terminal itself (the --interactive-query control
+// loop) uses it together with Prompting to pass the lines typed while a
+// question is asked on to the prompt: with two readers of one terminal, the
+// answer otherwise went to whichever read it first.
+func (c *KnownHostsCallback) SetPromptInput(input io.Reader) {
+	c.promptInput = input
+}
+
+// Prompting reports whether the unknown hosts question is being asked.
+func (c *KnownHostsCallback) Prompting() bool {
+	return c.prompting.Load()
+}
+
+// parsedKnownHosts is the host key check of a parsed known_hosts file
+// together with the identity of the file it was parsed from.
+type parsedKnownHosts struct {
+	mu    sync.Mutex
+	check ssh.HostKeyCallback
+	info  os.FileInfo
+}
+
+// knownHostsChecker returns the host key check of the known_hosts file. The
+// file is parsed again only when it changed (another file, size or
+// modification time; an update by this or another client renames a new file
+// into place). Parsing it for every handshake cost time linear in its size
+// per server, i.e. quadratic for a client connecting to every server listed
+// in it (about 20 ms per check and 100 s of CPU with 5000 servers), and
+// again for every reconnect.
+func (c *KnownHostsCallback) knownHostsChecker() (ssh.HostKeyCallback, error) {
+	c.parsed.mu.Lock()
+	defer c.parsed.mu.Unlock()
+
+	info, err := os.Stat(c.knownHostsPath)
+	if err != nil {
+		return nil, err
+	}
+	if cached := c.parsed.info; c.parsed.check != nil && os.SameFile(cached, info) &&
+		cached.Size() == info.Size() && cached.ModTime().Equal(info.ModTime()) {
+		return c.parsed.check, nil
+	}
+	check, err := knownhosts.New(c.knownHostsPath)
+	if err != nil {
+		return nil, err
+	}
+	c.parsed.check, c.parsed.info = check, info
+	return check, nil
 }
 
 var _ HostKeyCallback = (*KnownHostsCallback)(nil)
@@ -123,6 +212,10 @@ func (c *KnownHostsCallback) closeTrustAllHostsCh() {
 }
 
 func ensureKnownHostsFile(knownHostsFile fs.RootedPath) {
+	// Without the directory (e.g. no ~/.ssh yet) the file can not be
+	// created, and every handshake then failed on the missing known_hosts
+	// file, also with --trustAllHosts.
+	_ = os.MkdirAll(filepath.Dir(knownHostsFile.Path()), 0o700)
 	root, err := knownHostsFile.OpenRoot()
 	if err != nil {
 		return
@@ -146,7 +239,7 @@ func ensureKnownHostsFile(knownHostsFile fs.RootedPath) {
 func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 	return func(server string, remote net.Addr, key ssh.PublicKey) error {
 		// Parse known_hosts file
-		knownHostsCb, err := knownhosts.New(c.knownHostsPath)
+		knownHostsCb, err := c.knownHostsChecker()
 		if err != nil {
 			return err
 		}
@@ -157,6 +250,13 @@ func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 			return nil
 		}
 
+		// A key marked @revoked must never be trusted: it is neither an
+		// unknown host to ask about nor one that --trustAllHosts may add.
+		var revoked *knownhosts.RevokedError
+		if errors.As(err, &revoked) {
+			return fmt.Errorf("host key of %s is revoked in %s: %w", server, c.knownHostsPath, err)
+		}
+
 		unknown := unknownHost{
 			server:     server,
 			remote:     remote,
@@ -164,6 +264,17 @@ func (c *KnownHostsCallback) Wrap(ctx context.Context) ssh.HostKeyCallback {
 			hostLine:   knownhosts.Line([]string{server}, key),
 			ipLine:     knownhosts.Line([]string{remote.String()}, key),
 			responseCh: make(chan response, 1),
+		}
+		var keyErr *knownhosts.KeyError
+		unknown.changed = errors.As(err, &keyErr) && len(keyErr.Want) > 0
+		if unknown.changed && !c.trustChangedKeys {
+			c.mutex.Lock()
+			c.untrustedHosts[server] = true
+			c.mutex.Unlock()
+			return fmt.Errorf("HOST KEY CHANGED: the host key of %s differs from the one in %s "+
+				"(a reinstalled server, or someone in the middle); refusing to connect. "+
+				"Remove its entry from that file, or pass --trustChangedHostKeys to replace it: %w",
+				server, c.knownHostsPath, err)
 		}
 		// Keep host trust discovery diagnostics out of normal command output.
 		// In trust-all and plain modes this warning can corrupt tool output.
@@ -281,6 +392,12 @@ func (c *KnownHostsCallback) promptAddHosts(hosts []unknownHost) {
 	if c.trustAll() {
 		// Trust-all mode is non-interactive; avoid warning-level noise on stdout.
 		c.logger.Debug("Trusting host keys of servers", servers)
+		// A changed key is replaced in trust-all mode, as before, but no
+		// longer silently: it may be a reinstalled server or an attack.
+		if changed := changedServers(hosts); len(changed) > 0 {
+			c.logger.Warn("HOST KEY CHANGED, replacing the known_hosts entries of servers",
+				c.knownHostsPath, changed)
+		}
 		unlocked, err := c.trustHosts(hosts)
 		if err != nil {
 			c.logger.Error("Unable to update known hosts file", c.knownHostsPath, err)
@@ -301,12 +418,25 @@ func (c *KnownHostsCallback) askAddHosts(hosts []unknownHost, servers []string) 
 		strings.Join(servers, ","),
 		"Do you want to trust these hosts?",
 	)
+	// Do not present a host whose key changed as merely unknown.
+	if changed := changedServers(hosts); len(changed) > 0 {
+		question = fmt.Sprintf("WARNING: THE HOST KEY CHANGED for %d of them: '%s'\n"+
+			"(a reinstalled server, or someone in the middle); "+
+			"trusting replaces their entries in %s\n%s",
+			len(changed), strings.Join(changed, ","), c.knownHostsPath, question)
+	}
 	p := prompt.New(question, c.promptLogger)
 	p.Add(c.yesAnswer(hosts))
 	p.Add(c.allAnswer(hosts))
 	p.Add(c.noAnswer(hosts))
 	p.Add(detailsAnswer(hosts))
-	p.Ask(os.Stdin)
+	input := c.promptInput
+	if input == nil {
+		input = os.Stdin
+	}
+	c.prompting.Store(true)
+	defer c.prompting.Store(false)
+	p.Ask(input)
 }
 
 // yesAnswer trusts the hosts of this batch only. The prompt pauses logging

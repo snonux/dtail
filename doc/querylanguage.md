@@ -71,6 +71,19 @@ FUNCTION := md5sum|maskdigits
 * Where conditions are separated by commas or by the keyword `and`
   (`where $a eq 1 and $b ne 2` is the same as `where $a eq 1, $b ne 2`), and
   they are AND-ed together: a line must satisfy every condition to be counted.
+* A bare number as an argument of a string operator is a literal:
+  `where $a eq 1` compares the value of `$a` with the string `1`. A field
+  that is named like a number is given in backticks (`` `1` ``); any other
+  bareword is a field name and a quoted argument is a string.
+* `limit` must not be negative, `interval` must be a non-negative number of
+  seconds, and nothing may follow the closing parenthesis of an aggregation
+  (`count(foo)bar` is rejected).
+* Values that are not finite numbers (`NaN`, `Inf`) are not aggregated by
+  `sum`, `avg`, `min`, `max`, `percentage` and `percentile`; they are logged
+  as aggregation errors like any other non-number.
+* The character `∥` (U+2225) separates the parts of a result on the wire. In
+  group keys and in `last()`/`len()` values (plain select fields included) it
+  is replaced by `||`.
 * If no `group by` clause is given, DTail implicitly groups by the first select
   field. For `select count(*)` that field is `*`, i.e. everything collapses
   into a single group.

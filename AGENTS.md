@@ -225,7 +225,17 @@ values and lines that are not valid UTF-8 are rejected. Full rules:
   `query-update-v1`; unsupported servers cause the reload to be rejected while
   the current workload keeps running
 - Successful reloads reuse the existing SSH session and advance a generation
-  boundary so stale output from older workloads is dropped
+  boundary so stale output from older workloads is dropped. dserver numbers
+  the workloads of a connection itself (`sessionCommandState.generation`,
+  never reused) and only acknowledges the client's generation number, so an
+  update numbered like the running or an earlier workload still makes the
+  replaced workload's queued output stale. A reload updates every connection
+  on top of the highest committed generation of all of them
+  (`applyReloadSpec`), so one that reconnected (and started over at 1) does
+  not make later reloads fail with mismatched generations.
+- A connection takes one session channel and a channel one shell request;
+  further ones are refused (`internal/server/server.go`), so `MaxConnections`
+  bounds the sessions.
 
 ### Auth-Key Fast Reconnect
 Auth-key fast reconnect is enabled by default. The client can register a public key with `dserver` over an already-authenticated session, and subsequent connections can use this in-memory key before falling back to normal SSH auth.
@@ -245,6 +255,20 @@ Auth-key fast reconnect is enabled by default. The client can register a public 
 - Server config: `AuthKeyEnabled` (default `true`)
 - Server config: `AuthKeyTTLSeconds` (default `86400`)
 - Server config: `AuthKeyMaxPerUser` (default `5`)
+
+### Host Key Verification
+The client checks server host keys against `known_hosts`
+(`internal/ssh/client/knownhostscallback.go`). An unknown host is asked about
+on the terminal, or trusted and added without asking with `--trustAllHosts`.
+A host whose key differs from the one in `known_hosts` is not unknown: it is
+refused with a `HOST KEY CHANGED` error in every mode, unless the client was
+started with `--trustChangedHostKeys` (`Args.TrustChangedHostKeys`, all
+clients and `dtailhealth`, which otherwise trusts all hosts). With that flag
+the prompt names the hosts whose key changed, and trust-all mode replaces
+their entries with a WARN. A key marked `@revoked` is never trusted. The
+parsed file is cached until it changes (file identity, size, modification
+time). Scheduled and continuous jobs authenticate with their own auth methods
+and do not use `known_hosts`.
 
 ### File Paths With Spaces
 dserver splits every command on single spaces and a read command is
@@ -326,9 +350,14 @@ negotiate escaped framing (`internal/protocol/framing.go`; design in
   `2*MaxLineLength + 128 KiB` (see the output limits below). Output that still
   does not fit is reported, never dropped silently: a visible warning plus the
   failed-command reason `output: too large for the session output buffer`.
-- Mixed versions keep the legacy raw framing (and its corruption of such lines):
-  older dservers ignore the unknown `.ack` like any other, and older clients
-  never ask. `ProtocolCompat` stays `4.1`.
+- Current clients require `escaped-framing-v1` in the first server frame:
+  without it they report an unsupported-server error with upgrade guidance
+  and set status 1, even after a normal close handshake. Older protocol-4.1
+  servers can finish a session on unknown `.ack` commands before reading files
+  (framing requests and input-batch markers both trigger it), so they must
+  never look like successful empty queries. Servers with escaped framing only
+  remain supported. Older clients keep raw framing against current servers.
+  `ProtocolCompat` stays `4.1`.
 - Control frames (`internal/protocol/control_frames.go`): with `--plain`, log
   lines and control messages (hidden `.syn ...` messages, `AUTHKEY` replies)
   are both untagged frames, so a client told them apart by content only and
@@ -594,7 +623,17 @@ validation flags them as stale, while the runtime still ignores them.
 The output path exposes four optional settings: `OutputBufferMaxBytes`,
 `OutputFlushTimeoutMs`, `OutputReadRetryIntervalMs`, and
 `OutputEOFAckTimeoutMs`. The buffer setting bounds retained payload memory; the
-two timeout settings bound flush and EOF-ack waits. `OutputReadRetryIntervalMs`
+two timeout settings bound flush and EOF-ack waits. The flush timeout of the
+payload buffer (`outputManager.flush`) is a stall timeout: it starts over
+whenever the reader took something since it was last checked, so a client on a
+slow link is waited for. It, the session flush (`flushContext`) and the 5 s
+wait for the close acknowledgement also do not run out while the session
+reader is still writing bytes it already took to the client
+(`outputCoordinator.clientSlow`): a paused client (a pager, a stopped
+pipeline) only applies backpressure, as during the read, and the connection's
+idle timeout bounds one that never comes back. Only a reader that takes
+nothing for a whole timeout without a pending delivery fails the flush.
+`OutputReadRetryIntervalMs`
 is a compatibility fallback for stale-generation writers that do not provide a
 cancellation signal, and values below the implementation safety minimum are
 clamped. Removed `Turbo*`, output-delay, EOF-wait-sizing, flush-poll, and
@@ -756,7 +795,9 @@ scheduler run looks the servers up as soon as a due run is evaluated with
 other runs still pending, even when those all turn out not to be due; a run
 that is not due leaves the group formation before the lookup, so a scheduler
 run whose only due run comes after the others needs no lookup at all.
-Each job sends the option `share=<group>:<members>`; dserver honours it only
+Each job sends the option `share=<group>:<members>`, where members counts
+the sessions of the group (its jobs times the servers each connects to, see
+`scheduler.runGroup`); dserver honours it only
 for the scheduler's user `DTAIL-SCHEDULE` and ignores it elsewhere (older
 dservers ignore it too). Each member passes its own permission check and joins
 with its own validated target. The hub (`internal/io/fs/readhub/oneshot.go`)

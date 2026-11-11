@@ -126,6 +126,8 @@ func newBaseHandler(connCtx context.Context, cfg baseHandlerConfig) *baseHandler
 		outputAbort:      internal.NewDone(),
 		activeGeneration: cfg.activeGeneration,
 	}
+	// Set before any goroutine uses the manager, like its configuration.
+	h.outputCoordinator.output.clientSlow = h.outputCoordinator.clientSlow
 	return h
 }
 

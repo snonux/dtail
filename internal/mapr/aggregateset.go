@@ -3,6 +3,7 @@ package mapr
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -109,7 +110,7 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 	sb := pool.BuilderBuffer.Get().(*strings.Builder)
 	defer pool.RecycleBuilderBuffer(sb)
 
-	sb.WriteString(groupKey)
+	sb.WriteString(sanitizeSerialized(groupKey))
 	sb.WriteString(protocol.AggregateDelimiter)
 	sb.WriteString(strconv.Itoa(s.Samples))
 	sb.WriteString(protocol.AggregateDelimiter)
@@ -123,7 +124,7 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 		}
 	}
 	for k, v := range s.SValues {
-		writeSerializedField(sb, k, "", v)
+		writeSerializedField(sb, k, "", sanitizeSerialized(v))
 	}
 
 	select {
@@ -132,6 +133,25 @@ func (s *AggregateSet) Serialize(ctx context.Context, groupKey string, ch chan<-
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// serializedDelimiterReplacement stands in for protocol.AggregateDelimiter
+// within a group key or string value of a serialized set.
+const serializedDelimiterReplacement = "||"
+
+// sanitizeSerialized returns value without protocol.AggregateDelimiter. The
+// wire format has no escaping, so log content containing the delimiter would
+// otherwise end the value early and have its rest parsed as further fields:
+// a group key with it lost the whole group ("unable to parse sample count"),
+// and a last()/len() value with it could overwrite any numeric column of its
+// row. The replacement is one-way (the value shows "||" for the delimiter),
+// which needs no capability and works with every client version. Values
+// without the delimiter, i.e. practically all, are returned as they are.
+func sanitizeSerialized(value string) string {
+	if !strings.Contains(value, protocol.AggregateDelimiter) {
+		return value
+	}
+	return strings.ReplaceAll(value, protocol.AggregateDelimiter, serializedDelimiterReplacement)
 }
 
 // writeSerializedField appends one key/value pair of a serialized set. The
@@ -218,10 +238,7 @@ func mergeLen(s *AggregateSet, storage string, set *AggregateSet) {
 
 // Add a float value.
 func (s *AggregateSet) addFloat(key string, value float64) {
-	if _, ok := s.FValues[key]; !ok {
-		s.FValues[key] = value
-		return
-	}
+	// A missing key reads as 0, so one map operation does.
 	s.FValues[key] += value
 }
 
@@ -263,6 +280,32 @@ func (s *AggregateSet) setString(key, value string) {
 	s.SValues[key] = value
 }
 
+// setStringCopy stores a copy of value, which the caller only lends. A value
+// equal to the stored one is kept as it is: a plain select field is a last(),
+// and for the usual "select host,count(...) group by host" the value repeats
+// on every line of the group, so this saves an allocation per line under the
+// aggregate's group lock.
+func (s *AggregateSet) setStringCopy(key, value string) {
+	if old, ok := s.SValues[key]; ok && old == value {
+		return
+	}
+	s.setString(key, strings.Clone(value))
+}
+
+// parseNumber parses value as a finite number. strconv.ParseFloat also
+// accepts "NaN" and "Inf": one such log value would turn a sum or avg() into
+// NaN for good and make min()/max() depend on the order of the lines.
+func parseNumber(value string) (float64, error) {
+	f, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("'%s' is not a finite number", value)
+	}
+	return f, nil
+}
+
 // Set a float.
 func (s *AggregateSet) setFloat(key string, value float64) {
 	s.FValues[key] = value
@@ -274,7 +317,7 @@ func (s *AggregateSet) setFloat(key string, value float64) {
 // sent with it. A value that is not a number adds neither, so it does not
 // lower the average.
 func (s *AggregateSet) AggregateAvg(storage, value string, count int) error {
-	f, err := strconv.ParseFloat(value, 64)
+	f, err := parseNumber(value)
 	if err != nil {
 		return err
 	}
@@ -296,10 +339,10 @@ func (s *AggregateSet) Aggregate(key string, agg AggregateOperation, value strin
 	case Last:
 		// value may borrow memory that the caller reuses for the next line
 		// (see aggregate.parseLine), so anything retained must be a copy.
-		s.setString(key, strings.Clone(value))
+		s.setStringCopy(key, value)
 		return nil
 	case Len:
-		s.setString(key, strings.Clone(value))
+		s.setStringCopy(key, value)
 		s.setFloat(key, float64(len(value)))
 		return nil
 	case Avg:
@@ -332,7 +375,7 @@ func (s *AggregateSet) aggregateCount(key, value string, clientAggregation bool)
 // aggregateNumber aggregates value, which must be a number, with one of the
 // numeric operations sum, percentage, percentile, min and max.
 func (s *AggregateSet) aggregateNumber(key string, agg AggregateOperation, value string) error {
-	f, err := strconv.ParseFloat(value, 64)
+	f, err := parseNumber(value)
 	if err != nil {
 		return err
 	}

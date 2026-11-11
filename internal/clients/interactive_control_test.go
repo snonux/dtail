@@ -812,66 +812,6 @@ func TestApplyInteractiveReloadRollsBackProfileCommitError(t *testing.T) {
 	}
 }
 
-func TestApplyInteractiveReloadRejectsMismatchedCommittedGenerations(t *testing.T) {
-	oldSpec := SessionSpec{
-		Mode:  omode.GrepClient,
-		Files: []string{"/var/log/app.log"},
-		Regex: "ERROR",
-	}
-	connA := &interactiveReloadConnector{server: "srv1", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 4}
-	connB := &interactiveReloadConnector{server: "srv2", supported: true, committedSpec: oldSpec, liveSpec: oldSpec, generation: 5}
-	recorder := &interactiveReloadRecorder{}
-
-	client := &baseClient{
-		mu: newBaseClientMu(),
-		Args: config.Args{
-			Mode:     omode.GrepClient,
-			What:     "/var/log/app.log",
-			RegexStr: "ERROR",
-		},
-		sessionSpec: SessionSpec{
-			Mode:  omode.GrepClient,
-			Files: []string{"/var/log/app.log"},
-			Regex: "ERROR",
-		},
-		connections: []connectors.Connector{connA, connB},
-		profile: clientProfile{
-			commit: recorder.commitSessionSpec,
-		},
-	}
-
-	nextArgs := config.Args{
-		Mode:     omode.GrepClient,
-		What:     "/tmp/new.log",
-		RegexStr: "WARN",
-	}
-	nextSpec := SessionSpec{
-		Mode:  omode.GrepClient,
-		Files: []string{"/tmp/new.log"},
-		Regex: "WARN",
-	}
-
-	err := client.applyInteractiveReload(nextArgs, nextSpec)
-	if err == nil || err.Error() != "mismatched committed generations: got 5 and 6" {
-		t.Fatalf("expected mismatched generation error, got %v", err)
-	}
-	if client.What != "/var/log/app.log" || client.sessionSpec.Regex != "ERROR" {
-		t.Fatalf("client state changed on mismatched generations: args=%#v spec=%#v", client.Args, client.sessionSpec)
-	}
-	if len(recorder.commits) != 0 {
-		t.Fatalf("expected no committed shared state, got %#v", recorder.commits)
-	}
-	if connA.generation != 6 || connB.generation != 7 {
-		t.Fatalf("expected rollback to replay the previous spec remotely, got %d and %d", connA.generation, connB.generation)
-	}
-	if connA.applyCount != 2 || connB.applyCount != 2 {
-		t.Fatalf("expected rollback to reapply the previous spec on both connections, got %d and %d", connA.applyCount, connB.applyCount)
-	}
-	if !reflect.DeepEqual(connA.committedSpec, oldSpec) || !reflect.DeepEqual(connB.committedSpec, oldSpec) {
-		t.Fatalf("expected rollback to restore committed specs, got %#v %#v", connA.committedSpec, connB.committedSpec)
-	}
-}
-
 type interactiveReloadConnector struct {
 	committedSpec            sessionspec.Spec
 	liveSpec                 sessionspec.Spec

@@ -14,7 +14,7 @@ import (
 const (
 	// capsNew is the capabilities frame of a server reporting failures.
 	capsNew = protocol.HiddenCapabilitiesPrefix + protocol.CapabilityQueryUpdateV1 + " " +
-		protocol.CapabilityCommandFailureV1
+		protocol.CapabilityCommandFailureV1 + " " + protocol.CapabilityEscapedFramingV1
 	// capsOld is the capabilities frame of a server reporting no failures.
 	capsOld   = protocol.HiddenCapabilitiesPrefix + protocol.CapabilityQueryUpdateV1
 	closeSync = ".syn close connection"
@@ -126,10 +126,10 @@ func TestStartExitStatus(t *testing.T) {
 		{name: "dcat, output too large", profile: readClientProfile(nil),
 			sessions: []messageSession{{messages: []string{capsNew, tooLarge, closeSync}}},
 			want:     ExitStatusFailedCommand},
-		// An old server warns of the missing file and closes the session
-		// normally, but reports no failed command: the status stays 0.
-		{name: "dcat, missing file on old server warns only", profile: readClientProfile(nil),
-			sessions: []messageSession{{messages: []string{capsOld, oldServerWarning, closeSync}}}, want: 0},
+		// An unsupported old server closes normally but cannot be trusted
+		// to have run the read; the compatibility error sets status 1.
+		{name: "dcat, unsupported old server", profile: readClientProfile(nil),
+			sessions: []messageSession{{messages: []string{capsOld, oldServerWarning, closeSync}}}, want: 1},
 		{name: "dcat, missing file on one of two servers", profile: readClientProfile(nil),
 			sessions: []messageSession{ok, readFailure}, want: ExitStatusFailedCommand},
 		{name: "dcat, connection failure", profile: readClientProfile(nil),

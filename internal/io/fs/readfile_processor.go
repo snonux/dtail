@@ -18,7 +18,6 @@ type filteringProcessor struct {
 	// ProcessFilteredRaw falls back to copying matches into a pooled buffer.
 	rawProcessor        line.RawProcessor
 	preserveTerminators bool
-	matchWithoutLF      bool
 	re                  regex.Regex
 	ltx                 lcontext.LContext
 	stats               *stats
@@ -117,22 +116,24 @@ func (fp *filteringProcessor) processLine(data []byte) error {
 	return fp.filterRaw(fp, data)
 }
 
-// processFollowLine keeps the historical LF-free regex input even when a
+// processFollowLine hands the line on without its LF unless a
 // whitespace-sensitive processor needs the physical terminator for parsing.
+// The regex never sees the terminator either way (see matches).
 func (fp *filteringProcessor) processFollowLine(data []byte) error {
 	if !fp.preserveTerminators {
 		return fp.processLine(bytes.TrimSuffix(data, []byte{'\n'}))
 	}
-	fp.matchWithoutLF = true
-	defer func() { fp.matchWithoutLF = false }()
 	return fp.processLine(data)
 }
 
+// matches runs the regex on the line without its terminator, whichever
+// reader the line comes from. Snapshot reads (dcat, dgrep, dmap) pass lines
+// including their LF, and Go's "$" only matches at the very end of the text:
+// matched with the LF, "foo$" only hit a last line without a newline, "^$"
+// never hit an empty line and "foo[^x]" hit a line ending in "foo", all
+// unlike a follow read of the same file.
 func (fp *filteringProcessor) matches(data []byte) bool {
-	if fp.matchWithoutLF {
-		data = bytes.TrimSuffix(data, []byte{'\n'})
-	}
-	return fp.re.Match(data)
+	return fp.re.Match(bytes.TrimSuffix(data, []byte{'\n'}))
 }
 
 func (fp *filteringProcessor) processOwnedContext(data []byte) error {

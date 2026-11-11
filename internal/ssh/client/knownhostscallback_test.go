@@ -608,3 +608,23 @@ func withPromptInput(t *testing.T, contents string, run func()) {
 	}
 	run()
 }
+
+func TestChangedServersListsOnlyHostsWithAnotherKnownKey(t *testing.T) {
+	unknown := testUnknownHost("new.example:2222", "a")
+	changed := testUnknownHost("changed.example:2222", "b")
+	changed.changed = true
+	got := changedServers([]unknownHost{unknown, changed})
+	if len(got) != 1 || got[0] != "changed.example:2222" {
+		t.Fatalf("changedServers = %v, want only changed.example:2222", got)
+	}
+}
+
+func TestEnsureKnownHostsFileCreatesMissingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", ".ssh", "known_hosts")
+	if _, err := NewKnownHostsCallback(path, true, nil, nil); err != nil {
+		t.Fatalf("NewKnownHostsCallback failed: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("known_hosts was not created: %v", err)
+	}
+}

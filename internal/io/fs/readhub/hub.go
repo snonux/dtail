@@ -270,6 +270,12 @@ func (h *Hub) join(sub *subscriber) *entry {
 			// leave the entire hub locked when the caller recovers that panic.
 			defer h.mu.Unlock()
 			sub.joinedAt = measure()
+			// A join of an entry that turned out closed (entry.join below,
+			// in an earlier iteration) left its join skip behind. The new
+			// entry's reader starts at joinedAt, so nothing is to be
+			// skipped: with the stale skip the session dropped new lines
+			// up to the dead reader's offset.
+			sub.skip = joinSkip{}
 			e = newEntry(key, sub.session, sub.joinedAt, nil, h.options, h.logger, h.seams, h.forget)
 			h.entries[key] = e
 			// A new entry is open.

@@ -296,14 +296,6 @@ func (d *commandDispatcher) dispatchCommand(ctx context.Context, args []string, 
 	return nil
 }
 
-func (d *commandDispatcher) handleProtocolVersion(args []string) ([]string, int, string, bool, error) {
-	return d.codec.handleProtocolVersion(args)
-}
-
-func (d *commandDispatcher) handleBase64(args []string, argc int) ([]string, int, error) {
-	return d.codec.handleBase64(args, argc)
-}
-
 // handleRawCommand dispatches one command of a SESSION START/UPDATE spec,
 // which session.Spec.Commands built, without protocol or base64 framing.
 //

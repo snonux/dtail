@@ -241,6 +241,14 @@ In server mode the client prints these warnings as output lines, which its own `
 
 ## Exit statuses of `dcat` and `dgrep`
 
+Current clients require the server to advertise `escaped-framing-v1` in its
+first frame. Older servers without it are unsupported: the client reports a
+missing-capability error, asks you to update DTail server, and exits 1. Some
+such servers share the same protocol label (`4.1`) but close on new control
+commands before reading files, which previously looked like a successful
+empty result. Servers with escaped framing but without control-frame markers
+remain supported.
+
 `dcat` and `dgrep` exit with one of these statuses, in server and in serverless mode alike:
 
 | Status | Meaning |
@@ -290,6 +298,12 @@ A few more one-liners:
 The patterns `.` (the default of `dtail` and `dgrep`), `.*` and the empty pattern select every line, empty lines included. With `--invert` they are matched like any other regex, as `grep -v` does: `--invert --grep '.*'` prints no line, and `--invert --grep .` (also `--invert` without `--grep` or `--regex`) prints only the empty lines. A line ending in `\r\n` is not empty.
 
 The empty pattern can only be given in some places: on the command line `--grep ''` is ignored, which leaves the default `.`, and `dgrep --regex ''` is rejected (`no regex specified`). `dtail --regex ''` and an interactive `:reload --regex ''` (or `:reload --regex=''`) do use it, and inverted it prints no line, like `.*`. `:reload --grep ''` is rejected with a hint to use `--regex ''` instead. A `:reload` keeps an earlier `--invert` (from the command line or a previous reload) unless it gives `--invert=false`, so after `--invert` a `:reload --regex ''` prints no line; `:show` prints the current `invert=` value.
+
+`dtail` can follow a gzip file (`.gz`, `.gzip`): it waits at the end of the file and prints the lines of the gzip members appended from then on (the writer must append whole members).
+
+An option given on the command line overrides the config file also when it names the default value (`--port 2222`, `--logLevel info`).
+
+A regex is matched against the line without its line terminator, for every kind of read (`dtail`, `dcat`, `dgrep`, `dmap`, journal targets): `--regex 'foo$'` selects the lines ending in `foo`, and `--regex '^$'` the empty lines of a `dgrep`.
 
 With `--query`, `dtail` reads the lines of the query's table (every line for `from .` or no table), whatever `--regex` or `--grep` say, and it ignores `--invert` with a warning: inverting the table filter would feed the other tables' lines, or only the empty lines, into the aggregation. In an interactive query session (`dmap`, or `dtail --query`, with `--interactive-query`) `:reload --invert` is rejected with the same reason on the terminal, and the current workload keeps running.
 

@@ -140,7 +140,7 @@ The example config above only sets a few keys. The most important ``Server`` set
 | ``AuthKeyTTLSeconds`` | ``86400`` | Auth-key cache entry TTL in seconds |
 | ``AuthKeyMaxPerUser`` | ``5`` | Max cached auth keys per user |
 | ``OutputBufferMaxBytes`` | ``2097152`` | Per-session payload backing memory cap; producers apply backpressure |
-| ``OutputFlushTimeoutMs`` | ``2000`` | Max wait for the session reader to drain output |
+| ``OutputFlushTimeoutMs`` | ``2000`` | Max time without progress of the session reader while output is drained (slow or paused clients are waited for) |
 | ``OutputReadRetryIntervalMs`` | ``1`` | Stale-generation fallback poll interval |
 | ``OutputEOFAckTimeoutMs`` | ``2000`` | Max wait for the output EOF acknowledgement |
 | ``MaxGlobTargets`` | ``1000`` | Max files one read command's glob may dispatch |

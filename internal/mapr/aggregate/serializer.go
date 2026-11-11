@@ -196,7 +196,7 @@ func (s *serializer) aggregateBatch(lines []*lineScratch) {
 // is only read here, and copied when it has to become a map key.
 func (s *serializer) aggregateLocked(fields map[string]string, groupKey []byte) {
 	var set *mapr.AggregateSet
-	var addedSample bool
+	var addedSample, created bool
 	for _, sc := range s.query.Select {
 		val, ok := fields[sc.Field]
 		if !ok {
@@ -212,6 +212,7 @@ func (s *serializer) aggregateLocked(fields map[string]string, groupKey []byte) 
 			if !ok {
 				set = mapr.NewAggregateSet()
 				s.groupSets[string(groupKey)] = set
+				created = true
 			}
 		}
 		if err := set.Aggregate(sc.FieldStorage, sc.Operation, val, false); err != nil {
@@ -231,6 +232,13 @@ func (s *serializer) aggregateLocked(fields map[string]string, groupKey []byte) 
 	// still sent for older clients, which divide avg() by it.
 	if addedSample {
 		set.Samples++
+		return
+	}
+	// Every value of the line failed to aggregate (e.g. sum() of a word): a
+	// set created for it holds nothing and would be sent as "key∥0∥", which
+	// the client rejects with an error per group and interval.
+	if created {
+		delete(s.groupSets, string(groupKey))
 	}
 }
 

@@ -119,6 +119,12 @@ func TestJoinAfterARotationStartsAtTheEndOfTheNewFile(t *testing.T) {
 			if made := late.recorder.processors(); made != 1 {
 				t.Errorf("late session made %d processors, want 1", made)
 			}
+			// The rotation predates the late session's join: the failed read
+			// of the old file is not its failure, as a private read opened
+			// at the join would never have seen it.
+			if failures := late.failures.Load(); failures != 0 {
+				t.Errorf("late session was told about %d failed reads that predate its join", failures)
+			}
 			lines := first.recorder.lines()
 			if want := append(append([]string{"old 1"}, pre...), "post 1"); !reflect.DeepEqual(lines[len(lines)-len(want):], want) {
 				t.Errorf("first session did not read the old line, the whole new file and the new line: %q", lines)

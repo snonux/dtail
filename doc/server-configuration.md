@@ -111,7 +111,7 @@ the time the server waits on a slow client:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `Server.OutputBufferMaxBytes` | `2097152` (2 MiB) | Maximum payload backing memory retained per SSH session while the output waits for the client. Producers apply backpressure when the cap is reached. Must be at least `MaxLineLength` + 131072 (two 64 KiB writer batches), otherwise dserver refuses to start. A session using escaped wire framing (current clients and servers) raises its own cap to at least 2 × `MaxLineLength` + 131072, as escaping can almost double a line frame, so the configured value does not need to cover that. |
-| `Server.OutputFlushTimeoutMs` | `2000` | Maximum time to wait for the session reader to drain output, in milliseconds. |
+| `Server.OutputFlushTimeoutMs` | `2000` | Maximum time the session reader may make no progress while output is drained, in milliseconds. A client that keeps reading, however slowly, or that paused reading while dserver is still writing to it (a pager, a stopped pipeline) is waited for; the idle session timeout bounds a client that never comes back. |
 | `Server.OutputReadRetryIntervalMs` | `1` | Compatibility fallback interval for detecting a stale output generation (for older writers that provide no cancellation signal). Values below the implementation's safety minimum are clamped. |
 | `Server.OutputEOFAckTimeoutMs` | `2000` | Maximum time to wait for the output EOF acknowledgement after signaling EOF, in milliseconds. |
 

@@ -35,12 +35,34 @@ const (
 // so the fields still change together for anyone who takes mu. update stores
 // the new generation before cancelling the previous command context, so a
 // goroutine that observes that cancellation also observes the new generation.
+//
+// generation is the server's own number of the running workload: it goes up
+// by one with every started workload of the connection and is never reused,
+// so that output still queued from any earlier workload is always stale
+// (outputCoordinator.shouldDropGeneration compares for equality). The number
+// the client knows a workload by (acked: 1 for a start, the client's own
+// number for an update) is only acknowledged. The two used to be one number,
+// and a client is free to number an update like the running workload (its
+// rollback after an acknowledgement timeout does, when the server did apply
+// the update) or like an earlier one, whose queued output was then delivered
+// as output of the new workload.
 type sessionCommandState struct {
 	mu         sync.Mutex
 	active     bool
 	generation atomic.Uint64
-	spec       session.Spec
-	cancel     context.CancelFunc
+	// workloads counts the workloads started on the connection; acked is
+	// the client's number of the running one. Both are guarded by mu.
+	workloads uint64
+	acked     uint64
+	spec      session.Spec
+	cancel    context.CancelFunc
+}
+
+// nextGeneration returns the server's number for the workload about to
+// start. The caller holds mu.
+func (s *sessionCommandState) nextGeneration() uint64 {
+	s.workloads++
+	return s.workloads
 }
 
 // handleSessionCommand handles SESSION START and SESSION UPDATE. An error
@@ -171,16 +193,16 @@ func (s *sessionCommandState) start(parentCtx context.Context, handler *ServerHa
 		return 0, fmt.Errorf("session already started")
 	}
 	ctx, cancel := context.WithCancel(ctx)
+	generation := s.nextGeneration()
 	s.active = true
-	s.generation.Store(1)
+	s.generation.Store(generation)
+	s.acked = 1
 	s.spec = spec
 	s.cancel = cancel
 	s.mu.Unlock()
-	ctx = withSessionGeneration(ctx, 1)
+	ctx = withSessionGeneration(ctx, generation)
 
-	// An earlier session, rejected after its map command failed, may have
-	// left a failure of generation 1, which this one reuses.
-	handler.mapQueryFailures.clear(1)
+	handler.mapQueryFailures.clear(generation)
 	handler.resetSessionAggregates()
 	if dispatchErr := handler.dispatchSessionCommands(ctx, commands); dispatchErr != nil {
 		cancel()
@@ -214,11 +236,16 @@ func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerH
 	}
 	oldCancel := s.cancel
 	ctx, cancel := context.WithCancel(ctx)
-	if generation == 0 {
-		generation = s.generation.Load() + 1
+	// acked is what the client knows the workload by: its own number, or
+	// else the next one. generation is the server's (see the type comment).
+	acked := generation
+	if acked == 0 {
+		acked = s.acked + 1
 	}
+	generation = s.nextGeneration()
 	s.active = true
 	s.generation.Store(generation)
+	s.acked = acked
 	s.spec = spec
 	s.cancel = cancel
 	s.mu.Unlock()
@@ -228,8 +255,6 @@ func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerH
 		oldCancel()
 	}
 
-	// A failure of this generation may be left from an earlier session or
-	// update that the client numbered alike.
 	handler.mapQueryFailures.clear(generation)
 	handler.resetSessionAggregates()
 	if dispatchErr := handler.dispatchSessionCommands(ctx, commands); dispatchErr != nil {
@@ -238,7 +263,7 @@ func (s *sessionCommandState) update(parentCtx context.Context, handler *ServerH
 		return 0, dispatchErr
 	}
 
-	return generation, nil
+	return acked, nil
 }
 
 func prepareSessionCommands(spec session.Spec) ([]string, error) {
@@ -297,6 +322,7 @@ func (s *sessionCommandState) reset() {
 
 	s.active = false
 	s.generation.Store(0)
+	s.acked = 0
 	s.spec = session.Spec{}
 	s.cancel = nil
 }

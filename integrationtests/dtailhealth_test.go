@@ -126,7 +126,7 @@ func testDTailHealth2Serverless(t *testing.T, logger *TestLogger) {
 		"../dtailhealth", "--server", "example:1")
 
 	if exitCode != 2 {
-		t.Error(fmt.Sprintf("Expected exit code '2' but got '%d': %v", exitCode, err))
+		t.Errorf("Expected exit code '2' but got '%d': %v", exitCode, err)
 		return
 	}
 
@@ -171,7 +171,7 @@ func testDTailHealth2WithServer(t *testing.T, logger *TestLogger) {
 		"../dtailhealth", "--server", "example:1")
 
 	if exitCode != 2 {
-		t.Error(fmt.Sprintf("Expected exit code '2' but got '%d': %v", exitCode, err))
+		t.Errorf("Expected exit code '2' but got '%d': %v", exitCode, err)
 		return
 	}
 

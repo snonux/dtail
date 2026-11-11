@@ -342,11 +342,22 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 	retryInterval := r.timings.globRetryInterval
 	glob = filepath.Clean(glob)
 
+	// waitForRetry sleeps the retry interval before the next attempt. After
+	// the last attempt there is nothing to wait for: sleeping there made a
+	// dcat or dgrep (one attempt) of a missing file take the whole interval
+	// (5 s by default) before it gave up.
+	waitForRetry := func(retryCount int) bool {
+		if retryCount == retries-1 {
+			return ctx.Err() == nil
+		}
+		return ctxutil.Sleep(ctx, retryInterval)
+	}
+
 	for retryCount := 0; retryCount < retries; retryCount++ {
 		paths, err := filepath.Glob(glob)
 		if err != nil {
 			r.logger.Warn(r.logContext, glob, err)
-			if !ctxutil.Sleep(ctx, retryInterval) {
+			if !waitForRetry(retryCount) {
 				return
 			}
 			continue
@@ -361,7 +372,7 @@ func (r *readCommand) readGlob(ctx context.Context, ltx lcontext.LContext,
 				return
 			default:
 			}
-			if !ctxutil.Sleep(ctx, retryInterval) {
+			if !waitForRetry(retryCount) {
 				return
 			}
 			continue

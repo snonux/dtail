@@ -107,7 +107,9 @@ func parseSelectCondition(token token) (selectCondition, error) {
 	agg := a[0] // Aggregation, e.g. 'sum'
 
 	b := strings.Split(a[1], ")")
-	if len(b) != 2 {
+	// Nothing may follow the closing parenthesis: "count(foo)bar" used to be
+	// accepted as count(foo) under the column name "count(foo)bar".
+	if len(b) != 2 || b[1] != "" {
 		return sc, errors.New(invalidQuery + "Can't parse 'select' field name " +
 			"from aggregation: " + token.str)
 	}

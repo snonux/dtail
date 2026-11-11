@@ -240,8 +240,8 @@ working with every other one:
 | client \ server                  | older dserver          | dserver with escaped framing only | current dserver |
 |----------------------------------|------------------------|-----------------------------------|-----------------|
 | older client (no request)        | raw                    | raw                               | raw             |
-| client with escaped framing only | raw (`.ack` ignored)   | escaped                           | escaped         |
-| current client (both requests)   | raw (`.ack`s ignored)  | escaped (2nd `.ack` ignored)      | escaped-control |
+| client with escaped framing only | unsafe (may close early) | escaped                           | escaped         |
+| current client (both requests)   | unsupported (status 1) | escaped (2nd `.ack` ignored)      | escaped-control |
 
 Only the escaped-control combination prints `--plain` log lines that read like
 control messages and never acts upon them; every other combination keeps the
@@ -251,20 +251,20 @@ escaped framing only, and the other way round). Output without `--plain` is
 unambiguous in every combination, since log lines are `REMOTE|...` frames
 there.
 
-Older dservers of this fork ignore the unknown `.ack framing escaped-v1` and
-`.ack framing control-v1` like every `.ack` they do not know (the same
-property `.ack input begin` relies on), and do not advertise the
-capabilities, so the client stays on raw (or plain escaped) framing.
-Older clients never send the requests. Both raw combinations keep the legacy
-behaviour, including the corruption of lines containing `0xAC`;
-`ProtocolCompat` stays `4.1`, so no combination is rejected.
+Current clients require `escaped-framing-v1` in the first server frame.
+Without it they report `unsupported DTail server: missing capability
+escaped-framing-v1; please update DTail server` and set status 1, even if the
+server sends a normal close handshake. Some older protocol-4.1 servers count
+unknown `.ack` commands as completed work and close before queued reads run;
+both framing requests and input-batch markers can trigger that. Treating
+these peers as unsupported prevents successful empty results. This is an
+explicit compatibility boundary despite the unchanged `ProtocolCompat` 4.1.
+Servers with escaped framing only remain supported, with content-based control
+routing. Older clients can still read current servers using raw framing.
 
-Released v4.3.x dservers, which predate this fork's command batches, end a
-session as soon as a command completes while no other one runs, so they
-already ended the session on a fork client's first `AUTHKEY` or
-`.ack input begin` before escaped framing existed (checked against v4.3.4
-with and without `--no-auth-key`). The framing requests add no new
-incompatibility with them.
+Released v4.3.x dservers also predate escaped framing and are unsupported
+by current clients. Version and protocol labels alone do not establish that
+a peer supports the session controls.
 
 The health check (`dtailhealth`) never requests escaped framing or control
 frames: the server's health handler ends the session after its first command

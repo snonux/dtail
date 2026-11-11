@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/omode"
 	"github.com/mimecast/dtail/internal/source"
 )
 
@@ -600,8 +601,22 @@ func TestDefaultAuthKeyPathWithHome(t *testing.T) {
 	}
 }
 
-func TestSetupAdditionalArgsUsesProvidedArguments(t *testing.T) {
+// dcat and dgrep (mode not set at setup time) take no positional query: a
+// path containing "select " is a file.
+func TestSetupAdditionalArgsKeepsSelectPathForReadClients(t *testing.T) {
 	args := &Args{}
+	setupAdditionalArgs(args, []string{"select me.log", "second.log"})
+
+	if got, want := args.What, "select me.log,second.log"; got != want {
+		t.Fatalf("What = %q, want %q", got, want)
+	}
+	if args.QueryStr != "" {
+		t.Fatalf("QueryStr = %q, want none", args.QueryStr)
+	}
+}
+
+func TestSetupAdditionalArgsUsesProvidedArguments(t *testing.T) {
+	args := &Args{Mode: omode.MapClient}
 	setupAdditionalArgs(args, []string{"first.log", "select count($time)", "second.log"})
 
 	if got, want := args.What, "first.log,second.log"; got != want {
@@ -720,5 +735,38 @@ func TestTransformSelectsServerlessModeIgnoringWhitespace(t *testing.T) {
 					name, tt.servers, tt.discovery, args.Serverless, tt.want)
 			}
 		}
+	}
+}
+
+// An explicitly given flag overrides the config file also when it names the
+// flag's default value.
+func TestSetupConfigExplicitDefaultFlagsOverrideConfig(t *testing.T) {
+	newInitializer := func() *initializer {
+		in := &initializer{Common: newDefaultCommonConfig(), Server: newDefaultServerConfig(),
+			Client: newDefaultClientConfig()}
+		in.Common.SSHPort = 3333
+		in.Common.LogLevel = "debug"
+		return in
+	}
+	noop := func(*initializer, *Args, []string) error { return nil }
+
+	in := newInitializer()
+	args := &Args{}
+	args.SSHPort, args.LogLevel = DefaultSSHPort, DefaultLogLevel
+	if err := in.setupConfig(noop, args, nil); err != nil {
+		t.Fatal(err)
+	}
+	if in.Common.SSHPort != 3333 || in.Common.LogLevel != "debug" {
+		t.Fatalf("unset flags changed the config: port %d, level %q", in.Common.SSHPort, in.Common.LogLevel)
+	}
+
+	in = newInitializer()
+	args.SSHPortSet, args.LogLevelSet = true, true
+	if err := in.setupConfig(noop, args, nil); err != nil {
+		t.Fatal(err)
+	}
+	if in.Common.SSHPort != DefaultSSHPort || in.Common.LogLevel != DefaultLogLevel {
+		t.Fatalf("explicit flags did not override the config: port %d, level %q",
+			in.Common.SSHPort, in.Common.LogLevel)
 	}
 }

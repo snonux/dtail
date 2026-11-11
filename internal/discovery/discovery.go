@@ -233,8 +233,11 @@ func (d *Discovery) serverListFromReflectedModule() ([]string, error) {
 // "servers.txt". The scheduler uses the same check to tell whether the server
 // list of a job can change between its waves.
 func IsServerListFile(server string) bool {
-	_, err := os.Stat(serverListFilePath(server))
-	return err == nil
+	// A directory is no server list: "--servers web1" run from a directory
+	// with a subdirectory web1 (or log) means the host of that name. Pipes
+	// and devices (e.g. a process substitution) remain readable lists.
+	info, err := os.Stat(serverListFilePath(server))
+	return err == nil && !info.IsDir()
 }
 
 // serverListFilePath returns the path of the server list file server names:

@@ -14,7 +14,10 @@ import (
 // AuthMethodConfig contains filesystem and agent settings used to initialize
 // client SSH authentication.
 type AuthMethodConfig struct {
-	TrustAllHosts             bool
+	TrustAllHosts bool
+	// TrustChangedHostKeys allows trusting a host whose key differs from the
+	// one in known_hosts; such a host is refused otherwise.
+	TrustChangedHostKeys      bool
 	KnownHostsPath            string
 	PrivateKeyPath            string
 	AdditionalPrivateKeyPaths []string
@@ -65,6 +68,9 @@ func initKnownHostsAuthMethods(settings AuthMethodConfig, logger,
 	knownHostsCallback, err := NewKnownHostsCallback(knownHostsFile, settings.TrustAllHosts, logger, promptLogger)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("initialize known-hosts callback from %q: %w", knownHostsFile, err)
+	}
+	if callback, ok := knownHostsCallback.(*KnownHostsCallback); ok {
+		callback.TrustChangedKeys(settings.TrustChangedHostKeys)
 	}
 	logger.Debug("initKnownHostsAuthMethods", "Added known hosts file path", knownHostsFile)
 

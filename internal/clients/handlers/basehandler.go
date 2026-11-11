@@ -220,8 +220,9 @@ func (h *baseHandler) SendMessage(command string) error {
 // protocol.ControlFramesCommand the first two frames Read sends, in one
 // piece, ahead of every command passed to SendMessage (e.g. AUTHKEY and the
 // read commands), whichever connector drives the handler. Servers that do not
-// advertise protocol.CapabilityEscapedFramingV1 ignore both, so the session
-// then keeps raw framing; servers that advertise escaped framing but not
+// advertise protocol.CapabilityEscapedFramingV1 may close on these unknown
+// commands before reading the workload; decideFraming reports them as unsupported.
+// The session then keeps raw framing; servers that advertise escaped framing but not
 // protocol.CapabilityControlFramesV1 ignore the second one, so the session is
 // escaped without marked control frames. It must be called before the
 // handler is used.
@@ -287,12 +288,17 @@ func (h *baseHandler) decideFraming(first []byte) {
 		return
 	}
 	capabilities, ok := bytes.CutPrefix(first, []byte(protocol.HiddenCapabilitiesPrefix))
-	if !ok {
+	fields := strings.Fields(string(capabilities))
+	if !ok || !slices.Contains(fields, protocol.CapabilityEscapedFramingV1) {
+		// Older protocol-4.1 servers account unknown .ack commands as work.
+		// Either a framing request or an input-batch marker can therefore
+		// finish the session before its reads, even with a normal close
+		// handshake. Never let that look like a successful empty query.
+		h.ReportServerError("unsupported DTail server: missing capability " +
+			protocol.CapabilityEscapedFramingV1 + "; please update DTail server")
 		return
 	}
-	fields := strings.Fields(string(capabilities))
 	switch {
-	case !slices.Contains(fields, protocol.CapabilityEscapedFramingV1):
 	case slices.Contains(fields, protocol.CapabilityControlFramesV1):
 		h.framingState.Store(uint32(protocol.EscapedControlFraming))
 	default:
@@ -342,7 +348,13 @@ func (h *baseHandler) scanFrames(p []byte, handle func(frame []byte)) {
 		} else {
 			h.receiveBuf.Write(p[:end])
 			handle(h.receiveBuf.Bytes())
-			h.receiveBuf.Reset()
+			// Like lineBuf and frameBuf, do not keep the backing array of
+			// an unusually large frame for the life of the connection.
+			if h.receiveBuf.Cap() > maxRetainedLineBufBytes {
+				h.receiveBuf = bytes.Buffer{}
+			} else {
+				h.receiveBuf.Reset()
+			}
 		}
 		p = p[end+1:]
 	}

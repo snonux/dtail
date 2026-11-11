@@ -63,7 +63,7 @@ func TestContinuousCancellationPublishesFinalInterval(t *testing.T) {
 				return continuousFinalClient{backgroundClient: client, started: started}, err
 			}
 			changed := make(chan struct{})
-			c.dayChangeWatcher = func(ctx context.Context) bool {
+			c.dayChangeWatcher = func(ctx context.Context, _ time.Time) bool {
 				select {
 				case <-changed:
 					return true

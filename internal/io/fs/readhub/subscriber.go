@@ -249,6 +249,13 @@ func (r *sessionRead) handle(ctx context.Context, it item) (goPrivate bool, err 
 		// One read of the shared reader failed and it reads the file again;
 		// the read command reports such a read to the client (see
 		// executeReadLoop), so every session of the shared reader does too.
+		// A session that joined after a rotation, while the reader was
+		// still in the old file, is the exception: that file's failed read
+		// (its "file got rotated") predates the join, and a private read
+		// opened at the join would never have seen it.
+		if r.skip.active && r.skip.oldFile != nil {
+			return false, nil
+		}
 		r.reportFailure(it.err)
 	}
 	return false, nil

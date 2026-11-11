@@ -67,6 +67,8 @@ type baseClient struct {
 		interactive bool) connectors.Connector
 	// Optional sleep override for retry tests.
 	sleepFn func(context.Context, time.Duration) bool
+	// nowFn replaces time.Now in tests of the reconnect backoff.
+	nowFn func() time.Time
 	// Regex is the regular expresion object for line filtering
 	Regex regex.Regex
 }
@@ -126,6 +128,7 @@ func (c *baseClient) init() error {
 	sshAuthMethods, hostKeyCallback, authCloser, err := client.InitSSHAuthMethods(
 		c.SSHAuthMethods, c.SSHHostKeyCallback, client.AuthMethodConfig{
 			TrustAllHosts:             c.TrustAllHosts,
+			TrustChangedHostKeys:      c.TrustChangedHostKeys,
 			KnownHostsPath:            c.KnownHostsPath,
 			PrivateKeyPath:            c.SSHPrivateKeyFilePath,
 			AdditionalPrivateKeyPaths: c.SSHPrivateKeyFallbackPaths,
@@ -286,7 +289,15 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 	retryRandom := newRetryRandom(i)
 
 	for {
+		sessionStart := c.now()
 		status = c.runSession(ctx, i, conn)
+		// A session that ran for a while was a healthy one: start the
+		// backoff over. Otherwise the delay only ever grew, so that after
+		// a handful of dserver restarts over the life of a long-running
+		// dtail every further reconnect waited about a minute.
+		if c.now().Sub(sessionStart) > maxRetryDelay {
+			retryDelay = initialRetryDelay
+		}
 
 		// Do we want to retry?
 		if !c.profile.retry {
@@ -361,6 +372,14 @@ func (c *baseClient) recordSessionEnd(i int, endedByClient bool) {
 	c.endedByClient[i] = endedByClient
 }
 
+// now returns the current time (see nowFn).
+func (c *baseClient) now() time.Time {
+	if c.nowFn != nil {
+		return c.nowFn()
+	}
+	return time.Now()
+}
+
 func nextRetryDelay(current time.Duration) time.Duration {
 	if current <= 0 {
 		return initialRetryDelay
@@ -429,10 +448,10 @@ func (c *baseClient) makeConnectionWithState(server string, sshAuthMethods []gos
 		return nil, fmt.Errorf("build commands for %q: %w", server, err)
 	}
 	if args.Serverless {
-		return connectors.NewServerless(c.UserName, c.profile.newHandler(server),
+		return connectors.NewServerless(args.UserName, c.profile.newHandler(server),
 			commands, sessionSpec, args.InteractiveQuery, c.runtime, c.clientLogger()), nil
 	}
-	return connectors.NewServerConnection(server, c.UserName, sshAuthMethods,
+	return connectors.NewServerConnection(server, args.UserName, sshAuthMethods,
 		hostKeyCallback, c.profile.newHandler(server), commands,
 		sessionSpec, args.InteractiveQuery, args.SSHPrivateKeyFilePath,
 		args.NoAuthKey, c.runtime, c.clientLogger())

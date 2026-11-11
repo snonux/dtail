@@ -107,12 +107,20 @@ func (f *ReadFile) newFilteringProcessor(ltx lcontext.LContext,
 
 // checkSnapshotTruncation handles the periodic signal outside the per-line
 // processing concern. The empty-channel path remains one non-blocking receive.
+//
+// Only a file truncated in place (or a failed check of the descriptor itself)
+// ends the read. A path that was rotated away or removed meanwhile (logrotate
+// during a dcat/dgrep/dmap that runs longer than the check interval) does
+// not: the open descriptor still holds the complete file the read started
+// with, so the snapshot is read to its end instead of dropping the rest.
 func (f *ReadFile) checkSnapshotTruncation(fd *os.File, truncate <-chan struct{}) error {
 	select {
 	case <-truncate:
-		if truncated, err := f.truncated(fd); truncated {
-			return err
+		truncated, err := f.truncated(fd)
+		if !truncated || errors.Is(err, errFileRotated) || errors.Is(err, os.ErrNotExist) {
+			return nil
 		}
+		return err
 	default:
 	}
 	return nil

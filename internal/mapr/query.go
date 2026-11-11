@@ -3,6 +3,7 @@ package mapr
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -256,6 +257,11 @@ func (q *Query) parseIntervalClause(tokens []token) ([]token, error) {
 	if err != nil {
 		return remaining, errors.New(invalidQuery + err.Error())
 	}
+	// A negative interval made dserver and client fall back to different
+	// defaults, and a huge one overflowed time.Duration into a garbage value.
+	if interval < 0 || int64(interval) > int64(math.MaxInt64/time.Second) {
+		return remaining, errors.New(invalidQuery + "interval out of range: " + found[0].str)
+	}
 	q.Interval = time.Second * time.Duration(interval)
 	return remaining, nil
 }
@@ -268,6 +274,11 @@ func (q *Query) parseLimitClause(tokens []token) ([]token, error) {
 	limit, err := strconv.Atoi(found[0].str)
 	if err != nil {
 		return remaining, errors.New(invalidQuery + err.Error())
+	}
+	// -1 is the internal "no limit clause" value: a negative limit would
+	// otherwise silently lift the default row cap of the terminal output.
+	if limit < 0 {
+		return remaining, errors.New(invalidQuery + "limit must not be negative: " + found[0].str)
 	}
 	q.Limit = limit
 	return remaining, nil
