@@ -12,7 +12,7 @@ import (
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
-// Result returns a nicely formated result of the query from the group set.
+// Result returns a nicely formatted result of the query from the group set.
 func (g *GroupSet) Result(query *Query, rowsLimit int, renderer ResultRenderer) (string, int, error) {
 	rows, columnWidths, err := g.result(query, true)
 	if err != nil {

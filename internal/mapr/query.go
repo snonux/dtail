@@ -100,7 +100,7 @@ func NewQuery(queryStr string, logger logging.Logger) (*Query, error) {
 	return &q, nil
 }
 
-// HasOutfile returns true if query result will be written to a CVS output file.
+// HasOutfile returns true if query result will be written to a CSV output file.
 func (q *Query) HasOutfile() bool {
 	return q.Outfile != nil
 }
