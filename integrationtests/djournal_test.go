@@ -344,16 +344,6 @@ func readJournalFollowLines(ctx context.Context, t *testing.T, stdoutCh, stderrC
 	return lines
 }
 
-func readTestFile(t *testing.T, path string) string {
-	t.Helper()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(data)
-}
-
 func assertJournalctlArgs(t *testing.T, path, want string) {
 	t.Helper()
 

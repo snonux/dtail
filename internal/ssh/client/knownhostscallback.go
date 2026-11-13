@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/mimecast/dtail/internal/io/fs"
@@ -649,6 +650,16 @@ func (c *KnownHostsCallback) mergeKnownHosts(root *os.Root, newFd io.Writer, hos
 	oldFd, oldOpenErr := root.OpenFile(c.knownHostsFile.Name(), os.O_RDONLY|os.O_CREATE, 0o600)
 	if oldOpenErr != nil {
 		return fmt.Errorf("open known hosts file %s: %w", c.knownHostsPath, oldOpenErr)
+	}
+	// Darwin's openat allows opening a directory with O_RDONLY|O_CREATE; Linux
+	// fails with EISDIR. Reject directories here so both platforms report the same
+	// open failure (and so we never try to scan a directory as known_hosts).
+	if info, statErr := oldFd.Stat(); statErr != nil {
+		return errors.Join(fmt.Errorf("open known hosts file %s: %w", c.knownHostsPath, statErr),
+			closeKnownHostsFile(oldFd, c.knownHostsPath))
+	} else if info.IsDir() {
+		return errors.Join(fmt.Errorf("open known hosts file %s: %w", c.knownHostsPath, syscall.EISDIR),
+			closeKnownHostsFile(oldFd, c.knownHostsPath))
 	}
 
 	scanner := bufio.NewScanner(oldFd)

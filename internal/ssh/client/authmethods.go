@@ -151,7 +151,16 @@ func collectKnownHostsSigners(privateKeyPath string, additionalPrivateKeyPaths [
 	// First, the explicit auth key path (or default ~/.ssh/id_rsa).
 	addPrivateKeySigner(privateKeyPath)
 
-	// Second, SSH agent (YubiKey-backed keys are typically exposed here).
+	// Second, configuration-selected fallback paths (for example, a test
+	// harness bootstrap key while exercising registration of another key).
+	// These must come before the SSH agent: a loaded agent can offer many
+	// keys and trip the server's "too many authentication failures" limit
+	// before a known-good fallback is ever tried.
+	for _, path := range additionalPrivateKeyPaths {
+		addPrivateKeySigner(path)
+	}
+
+	// Third, SSH agent (YubiKey-backed keys are typically exposed here).
 	// The agent signers sign lazily over the agent connection, so its
 	// io.Closer must live until the caller is done with the signers.
 	loadedAgentSigners, agentCloser, err := agentSigners(agentKeyIndex, logger)
@@ -163,12 +172,6 @@ func collectKnownHostsSigners(privateKeyPath string, additionalPrivateKeyPaths [
 	}
 	for i, signer := range loadedAgentSigners {
 		addSigner(fmt.Sprintf("agent:%d:%d", agentKeyIndex, i), signer)
-	}
-
-	// Third, configuration-selected fallback paths (for example, a test
-	// harness bootstrap key while exercising registration of another key).
-	for _, path := range additionalPrivateKeyPaths {
-		addPrivateKeySigner(path)
 	}
 
 	// Fourth, additional default private key paths.
