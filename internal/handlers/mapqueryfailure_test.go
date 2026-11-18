@@ -21,14 +21,14 @@ import (
 // duplicateSelectQuery is a query older clients send but dserver rejects.
 const duplicateSelectQuery = "from STATS select count($time),count($time) group by $time"
 
-// TestFailedMapCommandRejectsLaterReads sends the legacy command stream of
+// TestFailedMapCommandRejectsLaterReads sends the plain command stream of
 // an older client whose query dserver rejects: the read commands following
 // the failed map command must not stream the file as plain payload, each
 // reports the failure, and the session ends with its close handshake.
 func TestFailedMapCommandRejectsLaterReads(t *testing.T) {
 	for _, mode := range []omode.Mode{omode.MapClient, omode.TailClient} {
 		t.Run(mode.String(), func(t *testing.T) {
-			output := runLegacyCommandStream(t, session.Spec{
+			output := runSpecCommandStream(t, session.Spec{
 				Mode:  mode,
 				Files: []string{writeTestStatsFile(t, 25)},
 				Query: duplicateSelectQuery,
@@ -94,19 +94,19 @@ func TestRejectedReadPath(t *testing.T) {
 	}
 }
 
-// runLegacyCommandStream writes spec's commands in one input batch, as a
+// runSpecCommandStream writes spec's commands in one input batch, as a
 // client does, waits until the session ended and returns its output.
-func runLegacyCommandStream(t *testing.T, spec session.Spec) string {
+func runSpecCommandStream(t *testing.T, spec session.Spec) string {
 	t.Helper()
 	commands, err := spec.Commands()
 	if err != nil {
 		t.Fatalf("build commands: %v", err)
 	}
-	return runLegacyCommands(t, commands)
+	return runCommandStream(t, commands)
 }
 
-// runLegacyCommands is runLegacyCommandStream for the given commands.
-func runLegacyCommands(t *testing.T, commands []string) string {
+// runCommandStream is runSpecCommandStream for the given commands.
+func runCommandStream(t *testing.T, commands []string) string {
 	t.Helper()
 	handler := newMapTestHandler(t)
 	commandWg := wrapHandlerCommandsForJoin(handler)
@@ -142,7 +142,7 @@ func runLegacyCommands(t *testing.T, commands []string) string {
 }
 
 // TestMapQueryFailuresAreScopedToTheirGeneration checks that a failed map
-// command of one command stream (legacy generation 0 or a session
+// command of one command stream (plain stream generation 0 or a session
 // generation) does not reject the reads of another.
 func TestMapQueryFailuresAreScopedToTheirGeneration(t *testing.T) {
 	var failures mapQueryFailures
@@ -151,7 +151,7 @@ func TestMapQueryFailuresAreScopedToTheirGeneration(t *testing.T) {
 	}
 	failures.mark(0)
 	if !failures.failed(0) || failures.failed(1) {
-		t.Fatal("a failure of the legacy stream must reject only its reads")
+		t.Fatal("a failure of the plain stream must reject only its reads")
 	}
 	failures.mark(2)
 	if failures.failed(0) || failures.failed(1) || !failures.failed(2) {
@@ -292,7 +292,7 @@ func TestRejectedMapCommandRejectsLaterReads(t *testing.T) {
 	}
 	commands[0] = "map:bogus" + strings.TrimPrefix(commands[0], "map:")
 
-	output := runLegacyCommands(t, commands)
+	output := runCommandStream(t, commands)
 	if strings.Contains(output, "MAPREDUCE:STATS") {
 		t.Fatalf("read after a rejected map command streamed payload: %q", output)
 	}
@@ -404,25 +404,18 @@ func TestSessionClearsAStaleMapQueryFailure(t *testing.T) {
 	}
 }
 
-// TestMapCommandDiagnosticKeepsTheFraming checks that the error a failed map
-// command sends, which quotes the query, is sanitized for raw framing only:
-// EscapedFraming and EscapedControlFraming both escape every frame body.
-func TestMapCommandDiagnosticKeepsTheFraming(t *testing.T) {
+// TestMapCommandDiagnosticKeepsTheQuery checks that the error a failed map
+// command sends quotes the query unchanged, '€' (whose UTF-8 encoding ends
+// in the delimiter byte) included: escaping carries every byte of it.
+func TestMapCommandDiagnosticKeepsTheQuery(t *testing.T) {
 	args := strings.Split("map: from STATS select count(a€),count(a€) group by $time", " ")
-	framings := []protocol.Framing{protocol.RawFraming, protocol.EscapedFraming,
-		protocol.EscapedControlFraming}
-	for _, framing := range framings {
-		escaped := framing != protocol.RawFraming
-		handler := newSessionTestHandler("map-diagnostic-user")
-		readServerMessage(t, handler.serverMessages)
-		handler.framingState.Store(uint32(framing))
-		handler.handleMapCommand(context.Background(), lcontext.LContext{}, len(args), args, func() {})
+	handler := newSessionTestHandler("map-diagnostic-user")
+	readServerMessage(t, handler.serverMessages)
+	handler.handleMapCommand(context.Background(), lcontext.LContext{}, len(args), args, func() {})
 
-		message := readServerMessage(t, handler.serverMessages)
-		hasDelimiter := strings.IndexByte(message, protocol.MessageDelimiter) >= 0
-		if !strings.Contains(message, "more than once") || hasDelimiter == !escaped {
-			t.Fatalf("framing %v: unexpected map command diagnostic %q", framing, message)
-		}
+	message := readServerMessage(t, handler.serverMessages)
+	if !strings.Contains(message, "more than once") || !strings.Contains(message, "a€") {
+		t.Fatalf("unexpected map command diagnostic %q", message)
 	}
 }
 

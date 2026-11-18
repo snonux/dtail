@@ -29,6 +29,10 @@ func run() int {
 }
 
 type tailOptions struct {
+	// fs is the parsed flag set, read by InteractiveDefault.Resolve to tell an
+	// explicit --interactive-query from the default.
+	fs                    *flag.FlagSet
+	interactive           *cli.InteractiveDefault
 	checkHealth           bool
 	displayColorTable     bool
 	displayWideColorTable bool
@@ -37,7 +41,7 @@ type tailOptions struct {
 }
 
 func bindTailFlags(fs *flag.FlagSet, args *config.Args) *tailOptions {
-	options := &tailOptions{}
+	options := &tailOptions{fs: fs, interactive: cli.BindInteractiveDefault(fs)}
 	fs.BoolVar(&args.RegexInvert, "invert", false, "Invert regex")
 	fs.BoolVar(&options.checkHealth, "checkHealth", false, "Deprecated, flag will be removed soon")
 	fs.BoolVar(&options.displayColorTable, "colorTable", false, "Show color table")
@@ -58,6 +62,8 @@ func (o *tailOptions) configureRunner(runner *cli.ClientRunner) {
 		if o.grep != "" {
 			args.RegexStr = o.grep
 		}
+		// Interactive query control is dtail's default on a terminal.
+		o.interactive.Resolve(o.fs, args)
 	}).BeforeRuntime(func(args *config.Args) (bool, int) {
 		if args.Plain {
 			return false, 0

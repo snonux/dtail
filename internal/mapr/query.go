@@ -257,13 +257,19 @@ func (q *Query) parseIntervalClause(tokens []token) ([]token, error) {
 	if err != nil {
 		return remaining, errors.New(invalidQuery + err.Error())
 	}
-	// A negative interval made dserver and client fall back to different
-	// defaults, and a huge one overflowed time.Duration into a garbage value.
-	if interval < 0 || int64(interval) > int64(math.MaxInt64/time.Second) {
+	if !validInterval(interval) {
 		return remaining, errors.New(invalidQuery + "interval out of range: " + found[0].str)
 	}
 	q.Interval = time.Second * time.Duration(interval)
 	return remaining, nil
+}
+
+// validInterval tells whether an interval in seconds is accepted. A negative
+// interval made dserver and client fall back to different defaults, and a
+// huge one overflowed time.Duration into a garbage value. AnalyzePartial
+// uses the same rule.
+func validInterval(seconds int) bool {
+	return seconds >= 0 && int64(seconds) <= int64(math.MaxInt64/time.Second)
 }
 
 func (q *Query) parseLimitClause(tokens []token) ([]token, error) {

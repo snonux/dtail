@@ -9,6 +9,8 @@ For this to work, DTail needs to understand your log format. DTail already under
 
 DTail also ships with a generic log format, which only allows you to run very basic queries. Check out the [log format](./logformats.md) documentation for this. That page also documents how to implement your own log format parser.
 
+In an interactive session (`dtail` in a terminal, or `--interactive-query`), `:reload --query '...'` changes the query on the fly, and Tab inside the query completes the language (clause keywords, aggregations, operators, set functions) and the tables, fields, `$variables` and sample values a background probe of the servers found in the files being read; `:fields` lists them. With terminal colors, queries are shown highlighted by what the parser reads each word as. See [Interactive Query Reload](./interactive-query.md); log formats can describe their fields to the probe, see "Custom probes" in [log formats](./logformats.md).
+
 ## The language
 
 This are the fundamental types of the query language:
@@ -63,6 +65,16 @@ FUNCTION := md5sum|maskdigits
 
 *Notes:*
 
+* The clause keywords, operators, aggregations and functions listed above are
+  the parser's own tables (`Keywords`, `WhereOperators`, `AggregationNames` in
+  `internal/mapr`, `Names` in `internal/mapr/funcs`); a unit test fails when
+  this page and the tables differ. `AnalyzePartial` (`internal/mapr/complete.go`)
+  reads a query typed so far with the same tokenizer and clause rules, for
+  completion and highlighting of interactive queries; unit and fuzz tests
+  compare its tokens with the parser's.
+* Clause keywords and where operators are case insensitive (`SELECT`, `EQ`);
+  aggregation and function names are lower case only (`COUNT(foo)` is
+  rejected).
 * `rorder` stands for reverse order.
 * `lacks` is an alias for `ncontains` (not contains).
 * The float operators `=<` and `=>` are accepted aliases for `<=` and `>=`.
@@ -89,11 +101,8 @@ FUNCTION := md5sum|maskdigits
   into a single group.
 * Multiple group fields form a tuple: `("x,y", "z")` and `("x", "y,z")`
   are distinct groups. Compound keys escape commas and percent signs internally;
-  selected values are unchanged. Old clients can consume these opaque keys,
-  but queries grouping values containing commas or percent signs require all
-  participating dservers to have this fix. Older servers can merge distinct
-  tuples or emit different keys for the same tuple. Ordinary compound keys and
-  single-field keys retain their previous spelling. Result ordering remains
+  selected values are unchanged. Ordinary compound keys and single-field keys
+  retain their previous spelling. Result ordering remains
   deterministic; escaped compound keys can change the order of tied rows.
 * The field given to `order by`/`rorder by` must also appear in the `select`
   clause, otherwise the query fails to parse with an error.
@@ -111,40 +120,22 @@ FUNCTION := md5sum|maskdigits
   with that aggregation (`count($foo)`). Different aggregations of one field
   (`count($foo),sum($foo),avg($foo)`) are fine. Both the client (before it
   connects to any server) and dserver reject such a query:
-  * A current client rejects it whatever version the dservers have, so it
-    never sends the query; a scheduled or continuous job with such a query
-    logs the error instead of starting and writes no outfile.
-  * An older client does not reject it and sends it to the dservers. An
-    older dserver still aggregates the query with the wrong numbers
-    described above. A current dserver answers with the parse error and
-    sends no results and no log lines, so that server contributes no rows
-    instead of wrong numbers:
-    * With the plain command stream (`dmap`, `dtail --query`, continuous and
-      scheduled jobs), the dserver reports the failed map command (hidden
-      reason `map: invalid query`), rejects the session's read commands
-      (each with an error line and the same reason) and ends the session
-      with its normal close handshake. An older `dmap` writes an outfile
-      without rows from that server (header-only when every server is a
-      current dserver) and exits 0; an older `dtail --query` reconnects and
-      shows the error again on every reconnect, without any log lines.
-    * With `--interactive-query` (`SESSION START`), the dserver rejects the
+  * The client rejects it, so it never sends the query; a scheduled or
+    continuous job with such a query logs the error instead of starting and
+    writes no outfile. A `:reload` with such a query is rejected and the
+    running query keeps running.
+  * dserver rejects it as well, should a client send it anyway: it answers
+    with the parse error and sends no results and no log lines, so that
+    server contributes no rows instead of wrong numbers:
+    * With the plain command stream of non-interactive clients (`dmap`,
+      `dtail --query`, continuous and scheduled jobs), dserver reports the
+      failed map command (hidden reason `map: invalid query`), rejects the
+      session's read commands (each with an error line and the same reason)
+      and ends the session with its normal close handshake.
+    * With `--interactive-query` (`SESSION START`), dserver rejects the
       session with `.syn session err invalid session spec: <parse error>`,
       which the client shows as `session request rejected: invalid session
-      spec: ...` (older dservers sent no parse error after `invalid session
-      spec`). It does not fall back to the plain command stream and streams
-      nothing; `dtail` reconnects and shows the error again. A `:reload` with
-      such a query is rejected with the same error and the running query
-      keeps running.
-    * A scheduled job runs the client of the dserver scheduling it. If that
-      dserver is older but has capability `command-failure-v1`, the
-      `map: invalid query` failure is a transport failure (see "Failed
-      scheduled jobs" in `AGENTS.md`): the job writes no outfile, is backed
-      off, and its final runs after the TimeRange fail the same way, so the
-      scheduler gives up on the outfile 24 hours after the TimeRange ended,
-      for every date period. If the scheduling dserver predates
-      `command-failure-v1`, it only sees a completed session and writes an
-      outfile without rows from the current dservers (header-only when all
-      of them are current, else only the wrong rows of older dservers).
+      spec: ...`, and streams nothing.
 * If no `interval` clause is given, results are aggregated every 5 seconds.
 * An aggregation only sees the lines of a group that have its field (sparse
   `key=value` fields, a `where` clause not requiring it). The client merges
@@ -166,12 +157,6 @@ FUNCTION := md5sum|maskdigits
     (the global result was busy) joins the global result with that server's
     next message.
 
-  This holds fully only when every dserver is up to date. An older dserver
-  whose sending of results was interrupted (its session context cancelled
-  while a send was blocked) puts the unsent results back with the old merge
-  rules, so the results it sends after that can carry `0` for `min`/`max`
-  and zero-valued fields no line had.
-
   Per function:
   * `count`, `sum`, `min` and `max` only use the lines that have the field;
     a field no line of the group had shows as `0`.
@@ -185,12 +170,9 @@ FUNCTION := md5sum|maskdigits
     `select avg(bytes),count(status)` over the three lines
     `bytes=10|status=ok`, `status=ok` and `bytes=abc|status=ok` of a group
     gives `10`; a group without any numeric value of the field shows `0`.
-    A current dserver sends the number of values with its sum. An older
-    dserver sends none, and its results are then averaged as before:
-    divided by the number of lines of the group with at least one selected
-    field whose value could be aggregated (the example above gives
-    `3.333333` from such a server). An older client ignores the number and
-    also divides that way.
+    dserver sends the number of values with each sum, and the client adds
+    up both over all servers before dividing, so the average of several
+    servers weighs every value equally.
   * `percentage` adds nothing to the total for a group without the field,
     and that group shows `0`.
   * `percentile` ranks only the groups that have the field; a group without

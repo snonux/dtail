@@ -109,42 +109,47 @@ func TestHandlerConstructorsUseInjectedHostname(t *testing.T) {
 }
 
 func TestNewServerHandlerSendsAdvertisedServerCapabilities(t *testing.T) {
-
-	advertisedCapabilities := []string{
-		protocol.CapabilityQueryUpdateV1,
-		protocol.CapabilityJournalV1,
-	}
-
-	handler, err := NewServerHandler(context.Background(),
-		&userserver.User{Name: "session-capability-user"},
-		Dependencies{
-			CatLimiter:   make(chan struct{}, 1),
-			TailLimiter:  make(chan struct{}, 1),
-			ServerConfig: &config.ServerConfig{AuthKeyEnabled: true},
-			AuthKeyStore: authkey.New(time.Hour, 5),
-			Loggers:      HandlerLoggers{Diagnostics: handlerTestLogger, Reader: handlerTestLogger},
-			Capabilities: advertisedCapabilities,
-			Hostname:     "test-host",
+	tests := []struct {
+		name         string
+		capabilities []string
+		want         string
+	}{
+		{
+			name:         "journal",
+			capabilities: []string{protocol.CapabilityJournalV1},
+			want:         protocol.HiddenCapabilitiesPrefix + protocol.CapabilityJournalV1,
 		},
-	)
-	if err != nil {
-		t.Fatalf("NewServerHandler: %v", err)
+		{
+			// A host without journal support advertises nothing, but the
+			// session still starts with the capabilities frame, which
+			// protocol 5 clients require as the first frame.
+			name:         "none",
+			capabilities: []string{},
+			want:         protocol.HiddenCapabilitiesPrefix,
+		},
 	}
 
-	message := readServerMessage(t, handler.serverMessages)
-	if !strings.HasPrefix(message, protocol.HiddenCapabilitiesPrefix) {
-		t.Fatalf("unexpected capability advertisement: %q", message)
-	}
-	if want := protocol.HiddenCapabilitiesPrefix + strings.Join(advertisedCapabilities, " "); message != want {
-		t.Fatalf("capability advertisement = %q, want %q", message, want)
-	}
-
-	capabilities := strings.Fields(strings.TrimPrefix(message, protocol.HiddenCapabilitiesPrefix))
-	if !slices.Contains(capabilities, protocol.CapabilityQueryUpdateV1) {
-		t.Fatalf("expected %q capability in %q", protocol.CapabilityQueryUpdateV1, message)
-	}
-	if !slices.Contains(capabilities, protocol.CapabilityJournalV1) {
-		t.Fatalf("expected %q capability in %q", protocol.CapabilityJournalV1, message)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler, err := NewServerHandler(context.Background(),
+				&userserver.User{Name: "session-capability-user"},
+				Dependencies{
+					CatLimiter:   make(chan struct{}, 1),
+					TailLimiter:  make(chan struct{}, 1),
+					ServerConfig: &config.ServerConfig{AuthKeyEnabled: true},
+					AuthKeyStore: authkey.New(time.Hour, 5),
+					Loggers:      HandlerLoggers{Diagnostics: handlerTestLogger, Reader: handlerTestLogger},
+					Capabilities: tt.capabilities,
+					Hostname:     "test-host",
+				},
+			)
+			if err != nil {
+				t.Fatalf("NewServerHandler: %v", err)
+			}
+			if message := queuedFirstFrame(t, handler.baseHandler); message != tt.want {
+				t.Fatalf("capability advertisement = %q, want %q", message, tt.want)
+			}
+		})
 	}
 }
 
@@ -159,46 +164,18 @@ func TestServerCapabilitiesAdvertisesJournalOnlyOnLinuxWithJournalctl(t *testing
 			name:                "linux with journalctl",
 			goos:                "linux",
 			journalctlAvailable: true,
-			want: []string{
-				protocol.CapabilityQueryUpdateV1,
-				protocol.CapabilityCommandFailureV1,
-				protocol.CapabilityEscapedFramingV1,
-				protocol.CapabilityEncodedReadPathV1,
-				protocol.CapabilityControlFramesV1,
-				protocol.CapabilityJournalV1,
-			},
+			want:                []string{protocol.CapabilityJournalV1},
 		},
-		{
-			name:                "linux without journalctl",
-			goos:                "linux",
-			journalctlAvailable: false,
-			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
-				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1,
-				protocol.CapabilityControlFramesV1},
-		},
-		{
-			name:                "non linux with journalctl",
-			goos:                "freebsd",
-			journalctlAvailable: true,
-			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
-				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1,
-				protocol.CapabilityControlFramesV1},
-		},
-		{
-			name:                "non linux without journalctl",
-			goos:                "darwin",
-			journalctlAvailable: false,
-			want: []string{protocol.CapabilityQueryUpdateV1, protocol.CapabilityCommandFailureV1,
-				protocol.CapabilityEscapedFramingV1, protocol.CapabilityEncodedReadPathV1,
-				protocol.CapabilityControlFramesV1},
-		},
+		{name: "linux without journalctl", goos: "linux", want: []string{}},
+		{name: "non linux with journalctl", goos: "freebsd", journalctlAvailable: true, want: []string{}},
+		{name: "non linux without journalctl", goos: "darwin", want: []string{}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ServerCapabilities(tt.goos, tt.journalctlAvailable)
-			if !slices.Equal(got, tt.want) {
-				t.Fatalf("capabilities = %q, want %q", got, tt.want)
+			if got == nil || !slices.Equal(got, tt.want) {
+				t.Fatalf("capabilities = %#v, want %#v", got, tt.want)
 			}
 		})
 	}
@@ -512,7 +489,7 @@ func newSessionTestHandler(userName string) *ServerHandler {
 			command(ctx, ltx, argc, args, func() {})
 		}
 	}
-	handler.send(handler.serverMessages, protocol.HiddenCapabilitiesPrefix+protocol.CapabilityQueryUpdateV1)
+	handler.send(handler.serverMessages, protocol.HiddenCapabilitiesPrefix+protocol.CapabilityJournalV1)
 	return handler
 }
 
@@ -652,30 +629,5 @@ func waitForContextDone(ctx context.Context, t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(250 * time.Millisecond):
 		t.Fatal("timed out waiting for context cancellation")
-	}
-}
-
-// TestMessageTextKeepsTheRawFraming checks that text put into a server
-// message, such as a query error in a session error acknowledgement, can not
-// split or end the message of a raw-framing (e.g. older) client: the
-// delimiter byte appears in '¬' and as the last byte of '€'. Under escaped
-// framing, with or without control frames, the text is transported
-// unchanged.
-func TestMessageTextKeepsTheRawFraming(t *testing.T) {
-	text := "invalid query: 'a¬b€c\nd'"
-	handler := newSessionTestHandler("message-text-user")
-	got := handler.messageText(text)
-	if want := "invalid query: 'a b c d'"; got != want {
-		t.Fatalf("raw framing messageText = %q, want %q", got, want)
-	}
-	if strings.IndexByte(got, protocol.MessageDelimiter) >= 0 {
-		t.Fatalf("raw framing messageText = %q contains the message delimiter", got)
-	}
-
-	for _, framing := range []protocol.Framing{protocol.EscapedFraming, protocol.EscapedControlFraming} {
-		handler.framingState.Store(uint32(framing))
-		if got := handler.messageText(text); got != text {
-			t.Fatalf("%v framing messageText = %q, want %q", framing, got, text)
-		}
 	}
 }

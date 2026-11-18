@@ -237,7 +237,7 @@ func (a *Aggregate) aggregateFields(set *mapr.AggregateSet, samples int) {
 		}
 		var err error
 		if sc.Operation == mapr.Avg {
-			err = a.aggregateAvg(set, sc.FieldStorage, a.plan.avgCountKeys[i], val, samples)
+			err = a.aggregateAvg(set, sc.FieldStorage, a.plan.avgCountKeys[i], val)
 		} else {
 			err = set.Aggregate(sc.FieldStorage, sc.Operation, val, true)
 		}
@@ -253,22 +253,22 @@ func (a *Aggregate) aggregateFields(set *mapr.AggregateSet, samples int) {
 }
 
 // aggregateAvg adds a server's avg() sum of storage, and the number of values
-// it holds, to set. A current dserver sends that number under countKey
-// (mapr.AvgCountKey(storage)). An older one sends none: its sample count (the
-// lines of the group with any selected field) is then taken instead, so such a
-// server's average is what it always was. A count that is not a positive
-// integer rejects the field, sum included.
-func (a *Aggregate) aggregateAvg(set *mapr.AggregateSet, storage, countKey, sum string, samples int) error {
-	count := samples
-	if raw, ok := a.fieldValue(countKey); ok {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil {
-			return fmt.Errorf("unable to parse value count of '%s': %w", storage, err)
-		}
-		if parsed <= 0 {
-			return fmt.Errorf("invalid value count '%s' of '%s'", raw, storage)
-		}
-		count = parsed
+// it holds, to set. dserver sends that number with every avg() sum, under
+// countKey (mapr.AvgCountKey(storage)), as the sum alone cannot be averaged:
+// the message's samples count lines with any selected field, not values of
+// this one. A sum without its count, or with a count that is not a positive
+// integer, is a malformed message and rejects the field, sum included.
+func (a *Aggregate) aggregateAvg(set *mapr.AggregateSet, storage, countKey, sum string) error {
+	raw, ok := a.fieldValue(countKey)
+	if !ok {
+		return fmt.Errorf("avg() value of '%s' without its value count", storage)
+	}
+	count, err := strconv.Atoi(raw)
+	if err != nil {
+		return fmt.Errorf("unable to parse value count of '%s': %w", storage, err)
+	}
+	if count <= 0 {
+		return fmt.Errorf("invalid value count '%s' of '%s'", raw, storage)
 	}
 	return set.AggregateAvg(storage, sum, count)
 }

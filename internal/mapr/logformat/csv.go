@@ -44,6 +44,7 @@ var _ FieldsIntoParser = (*csvParser)(nil)
 var _ queryAwareParser = (*csvParser)(nil)
 var _ SourceReleaser = (*csvParser)(nil)
 var _ WhitespacePreservingParser = (*csvParser)(nil)
+var _ Prober = (*csvParser)(nil)
 
 func newCSVParser(hostname, timeZoneName string, timeZoneOffset int) (*csvParser, error) {
 	defaultParser, err := newDefaultParser(hostname, timeZoneName, timeZoneOffset)
@@ -174,4 +175,34 @@ func parseCSVRecord(maprLine string) ([]string, error) {
 		return nil, fmt.Errorf("invalid CSV record (multiline fields are unsupported): %w", err)
 	}
 	return fields, nil
+}
+
+// Probe is the csv format's own probe: the generic probe, plus the columns of
+// the header row (the first line) of every source of the sample, so a column
+// is listed even when no data row was sampled. The fields keep ProbeAnyTable,
+// as a csv query selects every line.
+func (p *csvParser) Probe(sample ProbeSample) (ProbeResult, error) {
+	result, err := ProbeWithParser(p, sample)
+	if err != nil {
+		return result, err
+	}
+	collector := probeCollector{result: result}
+	seen := make(map[string]struct{})
+	for _, line := range sample.Lines {
+		if _, ok := seen[line.SourceID]; ok {
+			continue
+		}
+		seen[line.SourceID] = struct{}{}
+		header, err := parseCSVRecord(line.Line)
+		if err != nil {
+			continue
+		}
+		for _, column := range header {
+			if column == "" {
+				continue
+			}
+			collector.ensureField(ProbeAnyTable, column)
+		}
+	}
+	return collector.result, nil
 }

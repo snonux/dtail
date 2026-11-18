@@ -67,7 +67,8 @@ func (s *sessionCommandState) nextGeneration() uint64 {
 
 // handleSessionCommand handles SESSION START and SESSION UPDATE. An error
 // acknowledgement may carry the reason a query was rejected, which contains
-// the client's query text, so it goes through messageText.
+// the client's query text; escaping (sessionFraming) carries every byte of
+// it, so it is sent as it is.
 func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lcontext.LContext, argc int, args []string, commandFinished func()) {
 	defer commandFinished()
 
@@ -101,11 +102,11 @@ func (h *ServerHandler) handleSessionCommand(parentCtx context.Context, _ lconte
 	}
 }
 
-// sendSessionError sends a session error acknowledgement. Clients, also
-// older ones, take the whole rest of the acknowledgement as the error and
-// show it, so it may say why a query was rejected.
+// sendSessionError sends a session error acknowledgement. Clients take the
+// whole rest of the acknowledgement as the error and show it, so it may say
+// why a query was rejected.
 func (h *ServerHandler) sendSessionError(reason string) {
-	h.send(h.serverMessages, sessionAckErrorPrefix+h.messageText(reason))
+	h.send(h.serverMessages, sessionAckErrorPrefix+reason)
 }
 
 func parseSessionCommand(args []string, argc int, logger logging.Logger) (action string, generation uint64, spec session.Spec, err error) {

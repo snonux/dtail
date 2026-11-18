@@ -266,7 +266,7 @@ func (c *outputCoordinator) waitForCloseAcknowledgement(ctx context.Context) {
 	}
 	h := c.handler
 	// The timeout is for a client that got the close frame and does not
-	// acknowledge it (older clients do not). While the reader is still
+	// acknowledge it (e.g. one that stopped reading). While the reader is still
 	// writing to a slow or paused client (clientSlow), the close frame may
 	// not even have reached it: closing then would cut the session short.
 	const timeout = 5 * time.Second

@@ -88,6 +88,13 @@ func NewMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 		session: maprclient.NewSessionState(query, loggers.Client),
 		mode:    maprClientMode,
 	}
+	// Only the command-line clients (DefaultMode) may run interactively.
+	// dserver's scheduled and continuous jobs (every other mode) have no
+	// terminal: an interactive session would never end by itself and the
+	// control loop would fail to open the control TTY.
+	if maprClientMode != DefaultMode {
+		args.InteractiveQuery = false
+	}
 
 	applyQueryRegex(&args, query)
 	base, initErr := newBaseClient(args, cfg, loggers, firstColorizer(colorizers), clientProfile{
@@ -238,10 +245,6 @@ func (c *MaprClient) scheduledQueryOutcome(ctxErr error, status int) scheduledOu
 			return scheduledOutcome{incomplete: incomplete}
 		}
 		outcome.fileFailures = append(outcome.fileFailures, fileFailures...)
-		if !conn.Handler().HasCapability(protocol.CapabilityCommandFailureV1) {
-			c.clientLogger().Debug(conn.Server(), "Server does not report failed commands, "+
-				"only an incomplete session fails the query", protocol.CapabilityCommandFailureV1)
-		}
 	}
 	return outcome
 }
@@ -252,8 +255,7 @@ func (c *MaprClient) scheduledQueryOutcome(ctxErr error, status int) scheduledOu
 // <reason>". The session completed when the server ended it with its close
 // handshake (so it was not cut short, e.g. by a killed or shut down server or
 // a lost connection) and reported no failed command other than file read
-// failures. A server not advertising protocol.CapabilityCommandFailureV1
-// reports no failed commands, so for it only the close handshake counts.
+// failures.
 func sessionOutcome(server string, handler handlers.Handler) (incomplete string, fileFailures []string) {
 	reporter, ok := handler.(sessionOutcomeReporter)
 	if !ok {

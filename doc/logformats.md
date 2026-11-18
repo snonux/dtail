@@ -227,3 +227,41 @@ func init() {
 ```
 
 Once done, recompile DTail. DTail now understands `... logformat foo` (see "Selecting a log format" above).
+
+## Custom probes
+
+DTail can probe a sample of log lines to find out which tables, fields and `$`-variables a log format extracts from them, e.g. to complete MapReduce queries. A format needs no probe of its own: `logformat.Probe(name, hostname, sample)` builds the format's parser with no query (so it fills all fields) and runs the generic probe `logformat.ProbeWithParser(parser, sample)`, which parses every sampled line with your `MakeFields`/`MakeFieldsInto`, skips lines it ignores (`ErrIgnoreFields`) or fails on, and collects the field names and a few sample values. A newly registered format is therefore discoverable at once. `logformat.Names()` lists every registered format and `logformat.KnownVariables(name)` the `$`-variables a built-in format can populate.
+
+The types involved (`internal/mapr/logformat/probe.go`):
+
+* `ProbeSample` holds the sampled lines (`ProbeLine`: `Line` and `SourceID`), the lines of each source in the order of the source. A stateful format reads it as its parser reads a file: the `csv` probe takes the first line of every source as its header row.
+* `ProbeResult` holds `Tables` (table name -> bareword field -> sample values), `Variables` (`$`-variable -> sample values) and an optional `Note` shown with the fields. Formats without tables put their fields under the table `logformat.ProbeAnyTable` (the empty name). `Probe` adds the format's `KnownVariables` the sample did not show, without values, to every non-empty result.
+* `Prober` is the optional interface `Probe(sample ProbeSample) (ProbeResult, error)`. When the parser your factory returns implements it, `Probe` calls it instead of the generic probe, like the aggregator uses `FieldsIntoParser` and `SourceReleaser` when a parser implements them. There is no second registry: the format's one registration covers its probe.
+
+A custom probe can call `ProbeWithParser(p, sample)` and adjust the result, or replace it, e.g. to name tables, to list a fixed schema without sampling, to hide fields, or to supply better sample values. The built-in `default` format's probe groups the fields by the `MAPREDUCE:<TABLE>` of each line (the table of `from TABLE`), and the `csv` probe adds the columns of the header rows, also when no data row was sampled. `internal/mapr/logformat/custom1.go` holds a commented example:
+
+```go
+var _ Prober = (*custom1Parser)(nil)
+
+func (p *custom1Parser) Probe(sample ProbeSample) (ProbeResult, error) {
+	result, err := ProbeWithParser(p, sample)
+	if err != nil {
+		return result, err
+	}
+	if fields, ok := result.Tables[ProbeAnyTable]; ok {
+		delete(fields, "secret")
+		delete(result.Tables, ProbeAnyTable)
+		result.Tables["ORDERS"] = fields
+		result.Note = "custom1: order log, one line per order"
+	}
+	return result, nil
+}
+```
+
+Rules every probe result follows:
+
+* A format whose parser cannot be built (the `custom1`/`custom2` templates, the `mimecast` stubs of the open source build, unknown names) or, with the generic probe, that parses no line of the sample yields an empty result and no error, so it is simply left out. A format's own probe decides itself: the `csv` probe lists the header columns also when no data line parses, and a result with only a `Note` is not empty.
+* `Probe` cuts every result, also one your `Prober` built, to the caps: 64 tables (`ProbeMaxTables`), 256 fields per table and 256 variables (`ProbeMaxFieldsPerTable`), 5 distinct sample values per field (`ProbeMaxValuesPerField`), 64 bytes per value at a UTF-8 character boundary (`ProbeMaxValueBytes`), 64 bytes per table, field and variable name, cut the same way (`ProbeMaxNameBytes`; names equal after the cut share one entry) and 256 bytes of note (`ProbeMaxNoteBytes`). The generic probe keeps the first tables, fields and values it sees; of a `Prober`'s result the first tables, fields and variables in sorted order are kept.
+* An error is returned only when a `Prober` returns one or the parser panics during the probe (the panic is recovered).
+* Your parser factory must return a new parser on every call, as the built-in ones do: `Probe` builds a parser for the probe alone and releases the sample's sources on it (`SourceReleaser`) afterwards, which would hit the sources of a parser shared with a running query.
+* Embedding another parser promotes its `Probe` (e.g. the default format's grouping by table) onto your type, the same hazard as for `MakeFieldsInto`: hold a reused parser in a named field.
