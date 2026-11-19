@@ -587,7 +587,8 @@ func interactiveHelpText(args config.Args) string {
 		"On a terminal typing pauses the output until the line is entered, Tab completes commands, " +
 		"flags, after a filter, query or files flag its current value, inside a query the query language " +
 		"and probed fields, inside --files remote paths; " +
-		"Up/Down recall earlier lines.\n" +
+		"Up/Down recall earlier lines; Alt-E (or Alt-V) edits the line in $VISUAL/$EDITOR; " +
+		"--edit-mode vi (or Client.EditMode) adds vi normal mode keys after Esc.\n" +
 		":fields lists the tables, fields and sample values the background probe of the servers found " +
 		"(Tab completes them in a query); :probe probes now.\n"
 	const tail = "Flags not given keep their value; :show prints the current ones. " +

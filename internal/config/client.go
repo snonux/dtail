@@ -164,7 +164,17 @@ type ClientConfig struct {
 	// to stdout/terminal regardless of this setting. Only affects the default
 	// "fout" logger (stdout+file); see docs for other loggers.
 	LogPayload bool `json:",omitempty"`
+	// EditMode is the key set of the interactive line editor:
+	// EditModeEmacs (the default; also when empty) or EditModeVi, a vi
+	// insert/normal mode on top. --edit-mode overrides it.
+	EditMode string `json:",omitempty"`
 }
+
+// The editing modes of the interactive line editor (ClientConfig.EditMode).
+const (
+	EditModeEmacs = "emacs"
+	EditModeVi    = "vi"
+)
 
 // DefaultTermColors returns the standard terminal palette.
 func DefaultTermColors() TermColors {
@@ -181,6 +191,7 @@ func newDefaultClientConfig() *ClientConfig {
 		// / Client.LogPayload to restore the legacy full-payload tee.
 		LogPayload: false,
 		TermColors: DefaultTermColors(),
+		EditMode:   EditModeEmacs,
 	}
 }
 

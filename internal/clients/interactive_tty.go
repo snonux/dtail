@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/io/signal"
 )
 
@@ -110,7 +111,31 @@ type interactiveEditor struct {
 	// forced exit.
 	setForceExitHook func(func())
 	once             sync.Once
+	// runEditor runs the external editor on a file (Alt-E/Alt-V,
+	// editExternally) with the TTY in the mode dtail found it in.
+	runEditor func(path string) error
+	// editMu guards editing and closed. While the external editor runs
+	// (editing), the terminal belongs to it: the SIGCONT watcher sets no
+	// mode, a resize redraws nothing, and a close (the session ending
+	// meanwhile) leaves mode and cursor shape alone, as the editor gives
+	// the terminal back in the mode it got it in; once closed, the end of
+	// the editor sets no mode either.
+	editMu  sync.Mutex
+	editing bool
+	closed  bool
+	// resize takes the window size over (SIGWINCH, and after the editor).
+	resize func()
+	// vi is the vi editing mode (Client.EditMode "vi"); nil edits with
+	// x/term's emacs-like keys only.
+	vi *viEditor
 }
+
+// viCursorShapes are the cursor shapes (DECSCUSR) of the vi modes, as vi
+// shells show them: a bar in insert mode, a block in normal mode.
+// viCursorDefault gives the terminal its default shape back.
+var viCursorShapes = map[viMode]string{viInsert: "\x1b[6 q", viNormal: "\x1b[2 q"}
+
+const viCursorDefault = "\x1b[0 q"
 
 func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 	prompting func() bool) *interactiveEditor {
@@ -130,11 +155,20 @@ func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 		c.clientLogger().Debug("Interactive line editing unavailable, reading plain lines", ctlErr, err)
 		return nil
 	}
-	editor := &interactiveEditor{terminal: term.NewTerminal(tty, ""), screen: newEditorScreen(tty),
+	vi := c.editMode() == config.EditModeVi
+	input := editorTTY{Reader: &editInput{r: tty, viEscape: vi}, Writer: tty}
+	editor := &interactiveEditor{terminal: term.NewTerminal(input, ""), screen: newEditorScreen(tty),
 		style: c.interactiveStyle(), pause: pause, mode: mode, setForceExitHook: c.setForceExitHook,
 		prompting: prompting}
 	if editor.setForceExitHook == nil {
 		editor.setForceExitHook = signal.SetBeforeForceExit
+	}
+	getenv := c.editorEnv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	editor.runEditor = func(path string) error {
+		return runEditorOnTTY(tty.Name(), externalEditorCommand(getenv), path)
 	}
 	// A forced exit (a second Ctrl-C while the shutdown hangs) calls
 	// os.Exit, which skips the deferred close: restore the mode there too,
@@ -145,28 +179,46 @@ func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 	// The answer to the host key question is no control line to recall.
 	editor.terminal.History = &controlHistory{onRecall: func() { editor.startTyping(pause) },
 		skip: editor.answering}
+	if vi {
+		history, _ := editor.terminal.History.(viHistory)
+		editor.vi = newViEditor(history, func(mode viMode) {
+			_, _ = io.WriteString(tty, viCursorShapes[mode])
+		})
+	}
 	editor.terminal.AutoCompleteCallback = func(line string, pos int, key rune) (string, int, bool) {
 		return c.editorKey(editor, pause, line, pos, key)
 	}
-	resize := func() {
+	editor.resize = func() {
 		// A terminal without a window size (a bare pseudo terminal) reports
 		// 0x0; keep the Terminal's 80x24 default then, as width 0 would wrap
-		// after every character.
+		// after every character. Not while the external editor runs:
+		// SetSize redraws the line, into the editor's screen.
+		if editor.inEditor() {
+			return
+		}
 		if width, height, err := term.GetSize(ttyFd); err == nil && width > 0 && height > 0 {
 			_ = editor.terminal.SetSize(width, height)
 			editor.screen.setWidth(width)
 		}
 	}
-	resize()
+	editor.resize()
 	// After Ctrl-Z and fg, bash and zsh leave the terminal cooked: set
-	// cbreak mode again. A resized window changes where lines wrap.
-	editor.stop = watchTTYSignals(func() { _ = mode.reapply() }, resize)
+	// cbreak mode again (not while the external editor owns the terminal).
+	// A resized window changes where lines wrap.
+	editor.stop = watchTTYSignals(func() {
+		editor.editMu.Lock()
+		defer editor.editMu.Unlock()
+		if !editor.editing && !editor.closed {
+			_ = mode.reapply()
+		}
+	}, editor.resize)
 	return editor
 }
 
 // editorKey is called by the Terminal for the keys it does not handle
-// itself: the ones it inserts into the line, Tab, and unbound control keys
-// and escape sequences. A key that inserts text (or Tab) pauses the output
+// itself: the ones it inserts into the line, Tab, Alt-E/Alt-V
+// (externalEditKey, editExternally), and unbound control keys and escape
+// sequences. A key that inserts text (or Tab) pauses the output
 // for typing; unbound keys (PageUp, F-keys, Ctrl-G) change nothing on the
 // line and must not freeze the output unnoticed. Tab completes
 // (completeEditorLine, which may wait briefly for a path listing) and is
@@ -176,6 +228,17 @@ func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 func (c *baseClient) editorKey(e *interactiveEditor, pause *interactivePause,
 	line string, pos int, key rune) (string, int, bool) {
 
+	if key == externalEditKey {
+		return c.editExternally(e, pause, line, pos)
+	}
+	if e.vi != nil {
+		if viLine, viPos, ok := e.vi.key(line, pos, key); ok {
+			// Every key of normal mode, and the Esc that enters it, is
+			// typing: it pauses the output like an inserted key.
+			e.startTyping(pause)
+			return viLine, viPos, true
+		}
+	}
 	if key != '\t' && !insertsText(key) {
 		return "", 0, false
 	}
@@ -250,6 +313,9 @@ var errControlLineTooLong = fmt.Errorf(
 // line the Terminal may have cut.
 func (e *interactiveEditor) ReadLine() (string, error) {
 	e.setPrompt()
+	if e.vi != nil {
+		e.vi.reset()
+	}
 	line, err := e.terminal.ReadLine()
 	if errors.Is(err, term.ErrPasteIndicator) {
 		// A pasted line (bracketed paste) is a line like any other.
@@ -271,7 +337,15 @@ func (e *interactiveEditor) Writer() io.Writer {
 func (e *interactiveEditor) close() {
 	e.once.Do(func() {
 		e.stop()
-		_ = e.mode.restore()
+		e.editMu.Lock()
+		e.closed = true
+		if !e.editing {
+			if e.vi != nil {
+				_, _ = e.screen.out.Write([]byte(viCursorDefault))
+			}
+			_ = e.mode.restore()
+		}
+		e.editMu.Unlock()
 		e.setForceExitHook(nil)
 	})
 }
@@ -287,6 +361,18 @@ func (e *interactiveEditor) close() {
 // this restore and os.Exit could set cbreak mode again.
 func (e *interactiveEditor) restoreForForcedExit() {
 	_ = e.mode.restore()
+	if e.vi != nil {
+		// The default cursor shape back, best effort: a write to stopped
+		// terminal output would block, and the exit must not wait for it.
+		go func() { _, _ = e.screen.out.Write([]byte(viCursorDefault)) }()
+	}
+}
+
+// inEditor reports whether the external editor runs.
+func (e *interactiveEditor) inEditor() bool {
+	e.editMu.Lock()
+	defer e.editMu.Unlock()
+	return e.editing
 }
 
 // controlHistory remembers the control lines for Up/Down, most recent first,
@@ -329,4 +415,13 @@ func trimEach(words []string) []string {
 		out[i] = strings.TrimSpace(w)
 	}
 	return out
+}
+
+// editMode returns the line editor's editing mode (Client.EditMode,
+// --edit-mode): config.EditModeVi or the default emacs-like keys.
+func (c *baseClient) editMode() string {
+	if c.runtime == nil || c.runtime.clientCfg == nil {
+		return config.EditModeEmacs
+	}
+	return c.runtime.clientCfg.EditMode
 }

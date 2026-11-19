@@ -414,6 +414,12 @@
           "type": "boolean",
           "description": "Tee the full retrieved payload into the daily client log file of the default fout logger (same as --log-payload). Default false: the file keeps diagnostics only; payload always goes to stdout.",
           "default": false
+        },
+        "EditMode": {
+          "type": "string",
+          "enum": ["emacs", "vi"],
+          "description": "Keys of the interactive line editor: emacs (default) or vi, a vi insert/normal mode (same as --edit-mode).",
+          "default": "emacs"
         }
       }
     },

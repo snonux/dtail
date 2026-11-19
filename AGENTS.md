@@ -351,7 +351,35 @@ else one single-color run so `grep` finds the query in piped output).
 `paint` paints a text of several lines line by line; the prompt is
 unpainted on a terminal narrower than the painted prompt has runes
 (`interactiveStyle.editorPrompt`: x/term cuts the prompt into rows by
-runes, escape sequences included, and miscounts the cursor). SIGCONT re-applies cbreak (bash/zsh leave the TTY
+runes, escape sequences included, and miscounts the cursor). Alt-E and Alt-V (fish's `edit_command_buffer` keys) open the line in
+`$VISUAL`/`$EDITOR`/`vi` (`editExternally`,
+`internal/clients/interactive_tty_external.go`): x/term reads ESC+letter as
+one anonymous key, so `editInput` in front of the Terminal translates the
+two sequences (outside bracketed paste) into `externalEditKey`
+(`utf8.MaxRune`), which `editorKey` consumes; the editor runs via
+`/bin/sh` on a temp file with a fresh descriptor of the TTY in the mode
+dtail found it in (cbreak and the window size again after it; while
+it runs, `editMu`/`editing`, the SIGCONT watcher sets no mode, a resize
+redraws nothing, and a `close` (session end) leaves mode and cursor shape
+to the editor, `endEditing` then setting nothing), output paused for
+typing; its text (line breaks and control characters as blanks,
+`editedLine`) replaces the line, which runs only on Enter; a
+failing editor keeps the line. Tests take the editor from
+`baseClient.editorEnv`. `Client.EditMode` (`--edit-mode`, `emacs` default
+or `vi`; checked by the clients only, `initializer.applyEditMode` in
+`transformClient`, so a typo in a shared config stops no dserver) adds a vi layer
+(`viEditor`, `internal/clients/interactive_vi.go`, motions in
+`interactive_vi_motion.go`): x/term has no vi mode, so every line starts in
+insert mode (x/term edits), `editInput` turns a lone ESC (ending the input read or
+followed by ESC) into `viEscapeKey` (x/term would keep it as a sequence
+start; reads are the Terminal's size, and a read that filled its buffer
+holds a trailing ESC or partial paste marker for the next, so a backlog
+cut by a read is not misread), and in normal mode `editorKey` hands every key but Tab to
+`viEditor.key`, which returns the changed line (motions with counts,
+d/c/y operators, x X D C s S Y, i a I A, r ~ p P, u/Ctrl-R per line, k/j
+history via `controlHistory`). Keys x/term handles itself (Enter,
+Backspace, arrows, Ctrl keys) never reach it. Mode changes set the cursor
+shape (DECSCUSR, `viCursorShapes`; default shape back on close). SIGCONT re-applies cbreak (bash/zsh leave the TTY
 cooked after `fg`), SIGWINCH resizes; termios is only set while dtail is the
 terminal's foreground process group (a background `tcsetattr` would stop it
 with SIGTTOU). Lines of 4096+ runes (x/term's silent cut) are rejected

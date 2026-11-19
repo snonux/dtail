@@ -264,6 +264,39 @@ editor (golang.org/x/term, no other dependency):
 * Ctrl-A/Ctrl-E, Ctrl-U, Ctrl-W, Ctrl-K, Left/Right and the other usual
   editing keys work; Ctrl-D on an empty line ends the input like closing
   the terminal.
+* **Alt-E** (or Alt-V, the keys of fish's `edit_command_buffer`) opens
+  the line in an external editor: `$VISUAL`, else `$EDITOR`, else `vi`
+  (run by `/bin/sh`, so `EDITOR="code -w"` works). Save and quit, and the
+  edited text replaces the line, so you can check it, complete with Tab
+  and run it with Enter; nothing runs on its own. Line breaks, tabs and
+  other control characters in the text become blanks, which suits a long `:query` written over several lines.
+  The output stays paused while the editor runs, and the editor gets the
+  terminal in its normal mode. An editor that is not found or exits
+  non-zero (vim's `:cq`) keeps the line as it was and says why. The
+  terminal must send Alt as an ESC prefix (the default of most terminals;
+  in macOS Terminal and iTerm2 set "Use Option as Meta key" / "Esc+").
+* **vi mode**: with `--edit-mode vi` (or `"EditMode": "vi"` in the
+  `Client` section of the config file; another value stops the client,
+  not `dserver`) the line editor has a vi normal mode. Every line starts in insert mode, where the keys above work; Esc
+  switches to normal mode (the cursor turns into a block, a bar again in
+  insert mode, where the terminal supports cursor shapes). Normal mode has:
+  * motions `h` `l` `w` `b` `e` `W` `B` `E` `0` `^` `$`, `f` `F` `t` `T`
+    with a character and `;` `,` to repeat them, all with a count (`3w`);
+  * the operators `d` `c` `y` with a motion (`dw`, `c2w`, `dt,`, `y$`) or
+    doubled for the whole line (`dd` `cc` `yy`), and `x` `X` `D` `C` `s`
+    `S` `Y`; `D` deletes from the cursor to the end of the line;
+  * `i` `a` `I` `A` to insert, `r` to replace, `~` to switch case, `p` `P`
+    to put what was deleted or yanked;
+  * `u` undo and Ctrl-R redo (per line), `k` `j` earlier and later lines
+    of the history.
+
+  Enter runs the line in either mode. Keys the editor itself handles work
+  in both modes as in insert mode: Backspace, the arrows, Home/End and the
+  Ctrl keys (so Backspace in normal mode deletes rather than moves). A
+  terminal sends Esc as a single byte; a key sequence split on a slow link
+  (ssh over a bad line) may be taken for Esc plus keys, and an Esc that
+  reaches `dtail` together with the next key (typed ahead while it was
+  busy) is read as Alt plus that key, so Esc `e` opens the external editor.
 * Tab always completes, so a literal tab cannot be typed into a value; use
   `\t` in a regex instead.
 * A line is limited to 4095 characters. A longer one is rejected with an
