@@ -74,8 +74,8 @@ query>
 * **`--interactive-query`** (given explicitly) keeps the session open after
   the query ran, as interactive `dmap` always did: `:query <query>` then
   replaces the query, `:reload` changes it or the files, `:quit` ends. Up
-  recalls the query you built (as `:query <query>`) and the builder's other
-  lines. It also opens the builder without a terminal on stdin and stdout.
+  recalls the query you built (as `:query <query>`) and the other lines the
+  builder took (not the ones it rejected). It also opens the builder without a terminal on stdin and stdout.
 * **Pasting** a query of several lines puts it on the line as one line
   (line breaks become blanks); it runs when you press Enter. On a terminal
   with bracketed paste, which nearly all have, the terminal marks the
@@ -98,6 +98,12 @@ query>
   queued when the builder ends is discarded.
 * `quit`, `exit` or `help` without the colon are answered with the command
   meant (`"quit" is no query: type :quit`).
+* **A query given as an argument must hold `select `** to be taken as the
+  query (`dmap 'from STATS select ...' FILE`); otherwise the argument is a
+  file name, and with no query `dmap` opens the builder. When the files
+  then look like a query (they start with `from`, `select`, `where`, ...),
+  the builder says so below its banner: type the query there and name the
+  files with `:reload --files PATH`.
 * **`--no-interactive`** never opens the builder (and wins over
   `--interactive-query`). Without a terminal (a pipe, a script, cron) and
   with `--interactive-query=false` a missing query stays the error it was,
@@ -113,7 +119,9 @@ stdout is the terminal you type on; with `--control-tty` naming another
 terminal than stdout's, log lines stay on stdout). The held
 sessions are kept alive with an SSH keepalive every minute, so the server's
 idle timeout (`IdleSessionTimeoutS`, 15 minutes by default) does not close
-them while you type. When you press Enter `dmap` closes them and runs the
+them while you type; a server configured with a timeout of 48 seconds or
+less may still close one, which is then replaced like any session that
+ended. When you press Enter `dmap` closes them and runs the
 query on new connections to every server, exactly as `dmap --query` would
 have. No dserver change is needed for the builder: every protocol 5 dserver
 supports it.

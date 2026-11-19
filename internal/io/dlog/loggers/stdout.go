@@ -2,6 +2,7 @@ package loggers
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -25,8 +26,11 @@ const (
 type stdout struct {
 	// sink is where the logger writes unless its output is redirected
 	// (RedirectOutput).
-	sink       io.Writer
-	writer     *bufio.Writer
+	sink   io.Writer
+	writer *bufio.Writer
+	// redirect is the writer the output is redirected through, nil while
+	// the logger writes to its own output.
+	redirect   *wholeLines
 	mutex      sync.Mutex
 	resumeCond *sync.Cond
 	pauseDepth int
@@ -186,15 +190,63 @@ func (s *stdout) Resume() {
 
 // RedirectOutput makes the logger write to w from now on, or to its own
 // output again for a nil w. What is buffered is flushed to the output it
-// was logged for first.
+// was logged for first. w gets whole lines only (wholeLines): the buffer
+// flushes itself when it is full, in the middle of a line, and w, the line
+// editor of an interactive client, draws its prompt again below every
+// write.
 func (s *stdout) RedirectOutput(w io.Writer) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	_ = s.writer.Flush()
-	if w == nil {
-		w = s.sink
+	if s.redirect != nil {
+		s.redirect.flushTail()
+		s.redirect = nil
 	}
-	s.writer.Reset(w)
+	if w == nil {
+		s.writer.Reset(s.sink)
+		return
+	}
+	s.redirect = &wholeLines{w: w}
+	s.writer.Reset(s.redirect)
+}
+
+// wholeLines passes what is written to it on to w in whole lines: the end
+// of a write behind its last line break is kept (tail) and written in
+// front of the next write. A flush of the logger's buffer when it is full
+// ends anywhere in a line; an idle flush ends with whatever was logged
+// last, which for a log line is its line break. Text without a line break
+// (payload written with Raw) is therefore held until its line ends or the
+// redirect does (flushTail), except once it is longer than the logger's
+// buffer: a line that long can not be kept whole.
+type wholeLines struct {
+	w    io.Writer
+	tail []byte
+}
+
+func (l *wholeLines) Write(p []byte) (int, error) {
+	end := bytes.LastIndexByte(p, '\n') + 1
+	if end == 0 {
+		if len(l.tail)+len(p) <= stdoutWriterBufSize {
+			l.tail = append(l.tail, p...)
+			return len(p), nil
+		}
+		end = len(p)
+	}
+	lines := p[:end]
+	if len(l.tail) > 0 {
+		lines = append(l.tail, lines...)
+	}
+	_, err := l.w.Write(lines)
+	l.tail = append([]byte(nil), p[end:]...)
+	return len(p), err
+}
+
+// flushTail writes the text kept behind the last line break.
+func (l *wholeLines) flushTail() {
+	if len(l.tail) > 0 {
+		_, _ = l.w.Write(l.tail)
+		l.tail = nil
+	}
 }
 
 func (s *stdout) Flush() {

@@ -275,3 +275,60 @@ func (*retryTestHandler) WaitForCapabilities(time.Duration) bool { return false 
 func (*retryTestHandler) WaitForSessionAck(time.Duration, time.Duration) (handlers.SessionAck, bool) {
 	return handlers.SessionAck{}, false
 }
+
+// TestRetryBackoff: the one reconnect policy doubles the delay from
+// initialRetryDelay up to maxRetryDelay, each within the jitter, and starts
+// over after a session that lasted longer than maxRetryDelay.
+func TestRetryBackoff(t *testing.T) {
+	within := func(got, base time.Duration) bool {
+		jitter := time.Duration(float64(base) * retryJitterFactor)
+		return got >= base-jitter && got <= base+jitter
+	}
+	backoff := newRetryBackoff(0)
+	for _, base := range []time.Duration{2, 4, 8, 16, 32, 60, 60} {
+		if got := backoff.next(time.Second); !within(got, base*time.Second) {
+			t.Fatalf("delay %v, want about %v", got, base*time.Second)
+		}
+	}
+	// Exactly maxRetryDelay is not yet a session that lasted.
+	if got := backoff.next(maxRetryDelay); !within(got, maxRetryDelay) {
+		t.Fatalf("delay after a session of %v = %v, want about %v", maxRetryDelay, got, maxRetryDelay)
+	}
+	if got := backoff.next(maxRetryDelay + time.Second); !within(got, initialRetryDelay) {
+		t.Fatalf("delay after a session that lasted = %v, want about %v", got, initialRetryDelay)
+	}
+	if got := backoff.next(time.Second); !within(got, 2*initialRetryDelay) {
+		t.Fatalf("second delay after the reset = %v, want about %v", got, 2*initialRetryDelay)
+	}
+}
+
+// TestAwaitReconnect: both users of the backoff wait through
+// awaitReconnect, which sleeps the backoff's next delay, and neither sleeps
+// nor advances the backoff once the context is done.
+func TestAwaitReconnect(t *testing.T) {
+	var slept []time.Duration
+	now := time.Unix(1000, 0)
+	c := &baseClient{mu: newBaseClientMu(), loggers: LoggerDependencies{}.normalized(),
+		nowFn: func() time.Time { return now },
+		sleepFn: func(_ context.Context, delay time.Duration) bool {
+			slept = append(slept, delay)
+			return true
+		}}
+	backoff := newRetryBackoff(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	for range 2 {
+		if !c.awaitReconnect(ctx, backoff, "srv1", now.Add(-time.Second)) {
+			t.Fatal("awaitReconnect reported the context done")
+		}
+	}
+	if len(slept) != 2 || slept[0] > 3*time.Second || slept[1] < 3*time.Second {
+		t.Fatalf("slept %v, want about 2s and then about 4s", slept)
+	}
+	cancel()
+	if c.awaitReconnect(ctx, backoff, "srv1", now) || len(slept) != 2 {
+		t.Fatalf("awaitReconnect after the context ended waited: slept %v", slept)
+	}
+	if backoff.delay != 8*time.Second {
+		t.Fatalf("backoff delay = %v after the context ended, want it unchanged at 8s", backoff.delay)
+	}
+}

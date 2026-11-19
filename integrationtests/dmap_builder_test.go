@@ -27,8 +27,19 @@ const (
 	// builderResultHeader starts the result table of builderQueryRest: its
 	// header and dashes, which neither the typed line nor the echo holds.
 	builderResultHeader = " count($line) \r\n---"
-	// builderQueryRest is typed after the "from STATS " Tab inserted.
+	// builderRejectedQuery is a query that does not parse and, unlike the
+	// query built, holds no "from STATS ".
+	builderRejectedQuery = "select count("
+	// builderTabInserted is what Tab on the empty line inserts: from and
+	// the log's one table.
+	builderTabInserted = "from STATS "
+	// builderQueryRest is typed after builderTabInserted.
 	builderQueryRest = "select count($line) group by $hostname"
+	// builderQueryEcho is the builder's echo of the query it runs: the
+	// Tab's insertion and the typed rest. It proves that the Tab inserted
+	// the table: without it the typed rest alone would be the query, which
+	// parses too (a query without a table) and prints the same table.
+	builderQueryEcho = "query: " + builderTabInserted + builderQueryRest
 	// missingQueryError is dmap's error for a missing query.
 	missingQueryError = "no mapreduce query specified"
 )
@@ -87,16 +98,24 @@ func testDMapQueryBuilder(t *testing.T, serverless bool) {
 	writeBuilderLog(t)
 	argv, serverLogs := builderArgv(ctx, t, serverless)
 
+	// builderTabStep is the Tab; DTAIL_TEST_BUILDER_NO_TAB replaces it with
+	// nothing, to show that the test fails when no Tab completes.
+	builderTabStep := "\t"
+	if os.Getenv("DTAIL_TEST_BUILDER_NO_TAB") != "" {
+		builderTabStep = ""
+	}
 	raw := func(waitFor, input string) interactiveStep {
 		return interactiveStep{WaitFor: waitFor, Input: input, Raw: true}
 	}
 	steps := []interactiveStep{
 		raw(builderBannerPrefix, ""),
-		// A query that does not parse keeps the builder open.
-		raw(probeStoredMessage, "from STATS select count(\r"),
+		// A query that does not parse keeps the builder open. It names no
+		// table, so that the output holds "from STATS " only once the Tab
+		// inserted it.
+		raw(probeStoredMessage, builderRejectedQuery+"\r"),
 		// The Tab starts the query with from and the log's one table.
-		raw(builderRejected, "\t"),
-		raw("from STATS ", builderQueryRest+"\r"),
+		raw(builderRejected, builderTabStep),
+		raw(builderTabInserted, builderQueryRest+"\r"),
 		// The run ends dmap: nothing is sent once it started.
 		raw(builderRunning, ""),
 	}
@@ -159,6 +178,9 @@ func checkBuilderRun(t *testing.T, output string) {
 	header := strings.Index(output, builderResultHeader)
 	if running < 0 || header < running {
 		t.Fatalf("no result table after %q:\n%s", builderRunning, output)
+	}
+	if !strings.Contains(output[running:header], builderQueryEcho) {
+		t.Fatalf("the query run is not %q:\n%s", builderQueryEcho, output)
 	}
 	table := output[header+len(builderResultHeader):]
 	if want := fmt.Sprintf(" %d \r\n", builderStatsLines); !strings.Contains(table, want) {

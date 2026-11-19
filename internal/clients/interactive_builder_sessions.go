@@ -11,8 +11,15 @@ import (
 
 // builderKeepAliveInterval is how often the query builder sends a
 // keepalive over each session it holds (keepSessionsAlive): well below
-// dserver's default IdleSessionTimeoutS of 900 s, and below what a server
-// configured with a shorter one would plausibly use.
+// dserver's default IdleSessionTimeoutS of 900 s. dserver closes a
+// connection at the deadline it set at its last refresh tick that saw
+// activity, timeout + 2 intervals after that tick (ticks every interval =
+// timeout/4, at least 1 s, at most 30 s; server.activityConn), so a
+// keepalive must be seen by a tick before that deadline: with one every
+// 60 s that always holds for a timeout above 48 s (60 s < timeout +
+// interval), never for one of 40 s or less (60 s >= timeout + 2 intervals),
+// and in between it depends on where the ticks fall. A session closed all
+// the same is replaced (holdSessions).
 const builderKeepAliveInterval = 60 * time.Second
 
 // keepAliver is implemented by a connection that can send a keepalive the
@@ -21,6 +28,11 @@ const builderKeepAliveInterval = 60 * time.Second
 type keepAliver interface {
 	KeepAlive() error
 }
+
+// The connection to a dserver must be one: keepSessionsAlive finds the
+// connections to keep alive by this interface, so a changed method would
+// otherwise silently end the keepalives.
+var _ keepAliver = (*connectors.ServerConnection)(nil)
 
 // The query builder of dmap holds sessions only for its prober, which asks
 // at most probeMaxConnections servers (the fields of a log are usually the
@@ -95,28 +107,26 @@ func (c *baseClient) holdBuilderSessions(ctx context.Context) int {
 
 // holdSessions holds one session at a time until ctx ends and returns the
 // status of the last one. When a session ends (the server is down, closed
-// the idle session or restarted), it waits like a reconnect does (the
-// backoff of startConnection: 2 s doubling up to 60 s with jitter, started
-// over after a session that lasted) and goes on with the next server of
-// the rotation; with no other server free that is the same one again.
+// the idle session or restarted), it waits like a reconnect does (the one
+// policy of the client, retryBackoff through awaitReconnect: 2 s doubling
+// up to 60 s with jitter, started over after a session that lasted) and
+// goes on with the next server of the rotation; with no other server free
+// that is the same one again. What differs from startConnection is what
+// follows the wait, on purpose: a connection that can not be created again
+// ends a reconnecting dtail's connection, while the builder, which has
+// other servers to hold a session on, counts it as a failed session and
+// goes on (holdSession).
 func (c *baseClient) holdSessions(ctx context.Context, rotation *serverRotation, worker int) (status int) {
-	retryDelay := initialRetryDelay
-	retryRandom := newRetryRandom(worker)
+	backoff := newRetryBackoff(worker)
 	for {
 		index, usedBefore := rotation.next()
+		server := c.snapshotConnections()[index].Server()
 		sessionStart := c.now()
 		status = c.holdSession(ctx, index, usedBefore)
 		rotation.release(index)
-		if ctx.Err() != nil {
+		if !c.awaitReconnect(ctx, backoff, server, sessionStart) {
 			return status
 		}
-		if c.now().Sub(sessionStart) > maxRetryDelay {
-			retryDelay = initialRetryDelay
-		}
-		if !c.sleepRetry(ctx, jitterRetryDelay(retryDelay, retryRandom)) {
-			return status
-		}
-		retryDelay = nextRetryDelay(retryDelay)
 	}
 }
 
@@ -185,14 +195,21 @@ func (c *baseClient) probeConnections() []connectors.Connector {
 // while the session has files and, periodically, only while no line is
 // being typed), and dserver would close them as idle after its
 // IdleSessionTimeoutS while the user still builds the query. A session
-// that ends all the same (a shorter timeout than the interval, a restart)
-// is replaced (holdSessions). Failures are only logged for debugging: the
-// connection reports its own end.
+// that ends all the same (a timeout too short for the interval, see
+// builderKeepAliveInterval, a restart) is replaced (holdSessions).
+// Failures are only logged for debugging: the connection reports its own
+// end. Each keepalive is sent by a goroutine of its own, as the request is
+// written to the connection and a server that stopped reading blocks that
+// write: sent in turn, the connections behind it got theirs late or never
+// and were closed as idle. A connection whose previous keepalive is still
+// being sent gets no other one (sending), so at most one goroutine per
+// connection waits; it ends with the connection.
 func (c *baseClient) keepSessionsAlive(ctx context.Context, interval time.Duration,
 	connections func() []connectors.Connector) {
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var sending sync.Map
 	for {
 		select {
 		case <-ctx.Done():
@@ -204,9 +221,15 @@ func (c *baseClient) keepSessionsAlive(ctx context.Context, interval time.Durati
 			if !ok {
 				continue
 			}
-			if err := alive.KeepAlive(); err != nil {
-				c.clientLogger().Debug(conn.Server(), "Keepalive failed", err)
+			if _, blocked := sending.LoadOrStore(conn, struct{}{}); blocked {
+				continue
 			}
+			go func() {
+				defer sending.Delete(conn)
+				if err := alive.KeepAlive(); err != nil {
+					c.clientLogger().Debug(conn.Server(), "Keepalive failed", err)
+				}
+			}()
 		}
 	}
 }

@@ -400,3 +400,32 @@ func TestBuilderBanner(t *testing.T) {
 		t.Errorf("banner outside the builder = %q", got)
 	}
 }
+
+// TestQueryAsFilesHint: the builder's files look like a query when the
+// first of several words is a clause keyword; a path, a single word, and
+// any files outside the builder do not.
+func TestQueryAsFilesHint(t *testing.T) {
+	for files, want := range map[string]bool{
+		"from STATS selct count($line)":          true,
+		"FROM stats where x > 1":                 true,
+		"select":                                 false,
+		"/var/log/app.log":                       false,
+		"/var/log/a.log,/var/log/b.log":          false,
+		"my file.log":                            false,
+		"":                                       false,
+		"where $hostname eq \"a\x1b[31m\" x.log": true,
+	} {
+		hint := queryAsFilesHint(builderTestArgs(files))
+		if (hint != "") != want {
+			t.Errorf("files %q: hint %q, want one: %v", files, hint, want)
+		}
+		if strings.ContainsRune(hint, 0x1b) {
+			t.Errorf("files %q: the hint holds a raw control character: %q", files, hint)
+		}
+	}
+	args := builderTestArgs("from STATS selct count($line)")
+	args.QueryBuilder = false
+	if hint := queryAsFilesHint(args); hint != "" {
+		t.Errorf("outside the builder: hint %q", hint)
+	}
+}

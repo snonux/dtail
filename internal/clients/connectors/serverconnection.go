@@ -94,9 +94,11 @@ type ServerConnection struct {
 	sshClient *ssh.Client
 }
 
-// keepAliveRequest is the SSH global request KeepAlive sends, the one
-// OpenSSH clients use (ServerAliveInterval).
-const keepAliveRequest = "keepalive@openssh.com"
+// KeepAliveRequest is the SSH global request KeepAlive sends, the one
+// OpenSSH clients use (ServerAliveInterval). It is exported for the
+// integration test of dserver's idle timeout, which sends the very request
+// the client does.
+const KeepAliveRequest = "keepalive@openssh.com"
 
 // KeepAlive sends an SSH keepalive request over the connection, if it is
 // up, without waiting for an answer. dserver counts every packet it reads
@@ -112,7 +114,7 @@ func (c *ServerConnection) KeepAlive() error {
 	if client == nil {
 		return nil
 	}
-	if _, _, err := client.SendRequest(keepAliveRequest, false, nil); err != nil {
+	if _, _, err := client.SendRequest(KeepAliveRequest, false, nil); err != nil {
 		return fmt.Errorf("send SSH keepalive to %s: %w", c.server, err)
 	}
 	return nil

@@ -133,16 +133,24 @@ func TestQueryBuilderClientStartRunsBuiltQuery(t *testing.T) {
 
 // TestRunHistory: the builder's lines become the history of the interactive
 // run, most recent first: commands as they are, a query as the :query
-// command that replaces the running query with it.
+// command that replaces the running query with it. Lines the builder
+// rejected are left out: a query that does not parse, a command word
+// without its colon ("quit", which would be recalled as ":query quit"), an
+// unknown command.
 func TestRunHistory(t *testing.T) {
-	got := runHistory([]string{"  from STATS select count($line) ", ":fields STATS",
-		":reload --files /var/log/b.log", "from STATS select count("})
+	args := builderTestArgs("/var/log/a.log")
+	parses := func(line string) bool {
+		_, err := parseBuilderCommand(args, line)
+		return err == nil
+	}
+	got := runHistory([]string{"  from STATS select count($line) ", "quit", ":fields STATS", ":nonsense",
+		":reload --files /var/log/b.log", "from STATS select count(", "exit", ":help"}, parses)
 	want := []string{":query from STATS select count($line)", ":fields STATS",
-		":reload --files /var/log/b.log", ":query from STATS select count("}
+		":reload --files /var/log/b.log", ":help"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("run history = %q, want %q", got, want)
 	}
-	if got := runHistory(nil); len(got) != 0 {
+	if got := runHistory(nil, parses); len(got) != 0 {
 		t.Fatalf("run history of no lines = %q", got)
 	}
 }

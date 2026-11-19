@@ -94,8 +94,8 @@ func requireNoRun(t *testing.T, ran <-chan builderRun, when string) {
 // starts the query with from (the completer of :query), a query that does
 // not parse is answered and keeps the builder open, and Enter on one that
 // parses ends the builder and starts the run with it, whose status is the
-// exit status. The run gets the builder's lines as its history, the query
-// as the :query command that would replace it.
+// exit status. The run gets the lines the builder took as its history, the
+// query as the :query command that would replace it.
 func TestQueryBuilderOnPTY(t *testing.T) {
 	t.Parallel()
 	master, ttyPath := openTestPTY(t)
@@ -128,7 +128,8 @@ func TestQueryBuilderOnPTY(t *testing.T) {
 		run.args.InteractiveQuery || run.args.QueryBuilder {
 		t.Fatalf("run arguments = %+v", run.args)
 	}
-	want := []string{":query from STATS select count($line)", ":query from STATS select count("}
+	// The rejected line is no line of the run's history.
+	want := []string{":query from STATS select count($line)"}
 	if strings.Join(run.history, "|") != strings.Join(want, "|") {
 		t.Fatalf("run history = %q, want %q", run.history, want)
 	}
@@ -383,11 +384,23 @@ func (l *redirectTestLogger) output() (io.Writer, int) {
 	return l.out, l.redirects
 }
 
+// logLine logs line as the stdout logger does: it waits while the logger
+// is paused (the line editor pauses it while a line is typed) and then
+// writes the line to the output the logger was redirected to, if any.
+func (l *redirectTestLogger) logLine(line string) {
+	l.log(line)
+	if out, _ := l.output(); out != nil {
+		_, _ = io.WriteString(out, line+"\n")
+	}
+}
+
 // TestQueryBuilderLogLinesRedrawPromptOnPTY: while the builder edits, the
-// client's log lines go through the line editor, so one arriving while the
-// prompt waits is printed above it and prompt and line are drawn again;
-// when the builder ends the logger has its own output back. Written
-// straight to the terminal, the line landed on the prompt's row.
+// client's log lines go through the line editor, so one logged while the
+// empty prompt waits is printed above it and the prompt is drawn again
+// (written straight to the terminal, the line landed on the prompt's row).
+// One logged while a line is typed waits, as typing pauses the logger, and
+// is printed once the line was entered. When the builder ends the logger
+// has its own output back, given back once.
 func TestQueryBuilderLogLinesRedrawPromptOnPTY(t *testing.T) {
 	t.Parallel()
 	master, ttyPath := openTestPTY(t)
@@ -410,24 +423,36 @@ func TestQueryBuilderLogLinesRedrawPromptOnPTY(t *testing.T) {
 		done <- 0
 	}()
 	waitForPTYOutput(t, master, builderPrompt, done)
-	out, _ := logger.output()
-	if out == nil {
+	if out, _ := logger.output(); out == nil {
 		t.Fatal("the logger's output was not passed through the editor")
 	}
 
+	// At the empty prompt: the log line, then the prompt again.
+	logger.logLine("SERVER|srv1|ERROR|failed to dial")
+	waitForPTYOutput(t, master, "failed to dial\r\r\n"+builderPrompt, done)
+
+	// While a line is typed the logger is paused: the line waits.
 	writePTY(t, master, "from ST")
 	waitForPTYOutput(t, master, "from ST", done)
-	if _, err := io.WriteString(out, "SERVER|srv1|ERROR|failed to dial\n"); err != nil {
-		t.Fatal(err)
+	logged := startWrite(func() { logger.logLine("SERVER|srv1|WARN|logged while typing") })
+	select {
+	case <-logged:
+		t.Fatal("a log line was written while a line was typed")
+	case <-time.After(150 * time.Millisecond):
 	}
-	// The log line, then the prompt and the line being edited again.
-	waitForPTYOutput(t, master, "failed to dial\r\r\n"+builderPrompt+"from ST", done)
+	// The entered line (rejected: no query) is answered, then the log line
+	// is printed and the prompt drawn again.
+	writePTY(t, master, "\n")
+	waitForPTYOutput(t, master, "logged while typing\r\r\n"+builderPrompt, done)
+	<-logged
 
-	writePTY(t, master, "\x15:quit\n")
+	writePTY(t, master, ":quit\n")
 	awaitBuilderEnd(t, done, 0)
-	// Redirected once, and given back by every close of the control lines.
-	if out, redirects := logger.output(); out != nil || redirects < 2 {
-		t.Fatalf("after the builder: logger output %v after %d redirects, want its own back", out, redirects)
+	// Redirected once and given back once: the control lines are closed by
+	// the control loop and at the cancellation, of which only one runs.
+	time.Sleep(50 * time.Millisecond)
+	if out, redirects := logger.output(); out != nil || redirects != 2 {
+		t.Fatalf("after the builder: logger output %v after %d redirects, want its own back after 2", out, redirects)
 	}
 }
 
@@ -594,5 +619,30 @@ func TestSameTerminal(t *testing.T) {
 		if got := sameTerminal(tt.a, tt.b); got != tt.want {
 			t.Errorf("%s: sameTerminal = %v, want %v", name, got, tt.want)
 		}
+	}
+}
+
+// TestQueryBuilderSaysWhenFilesLookLikeAQueryOnPTY: started with a "file"
+// that is a query dmap did not recognize (no "select "), the builder says
+// so below its banner; with a file name it does not.
+func TestQueryBuilderSaysWhenFilesLookLikeAQueryOnPTY(t *testing.T) {
+	t.Parallel()
+	hint := "look like a query"
+	for files, want := range map[string]bool{
+		"from STATS selct count($line)": true,
+		"/var/log/app.log":              false,
+	} {
+		t.Run(files, func(t *testing.T) {
+			master, ttyPath := openTestPTY(t)
+			c, _ := newBuilderPTYClient(ttyPath, files)
+			done := make(chan int, 1)
+			go func() { done <- c.Start(context.Background(), nil) }()
+			out := waitForPTYOutput(t, master, "\r\n"+builderPrompt, done)
+			if strings.Contains(out, hint) != want {
+				t.Fatalf("hint shown = %v, want %v: %q", !want, want, out)
+			}
+			writePTY(t, master, ":quit\n")
+			awaitBuilderEnd(t, done, 0)
+		})
 	}
 }

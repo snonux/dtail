@@ -37,7 +37,7 @@ func serveCountingKeepAlives(t *testing.T, keepAlives *atomic.Int32) func(net.Co
 			}
 		}()
 		for req := range reqs {
-			if req.Type == keepAliveRequest {
+			if req.Type == KeepAliveRequest {
 				keepAlives.Add(1)
 			}
 			if req.WantReply {

@@ -279,7 +279,11 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 // by the control loop after its last read, until the terminal was quiet
 // (drainTTYInput); the close at the cancellation of ctx, which may run
 // while the control loop still reads, only what is queued
-// (discardTTYInput).
+// (discardTTYInput). The close runs once, by whichever of the two comes
+// first, and the other waits for it (sync.Once): so all of it is done when
+// the control loop returns, and none of it (the logger given back, the
+// terminal's input discarded) happens later, when the run of the built
+// query has the logger and the terminal.
 func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *interactivePause,
 	answers *promptAnswers, deps editorDeps) (controlLines, func()) {
 
@@ -296,17 +300,20 @@ func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *
 	}
 	// The statistics and the log go to stdout again before the TTY is
 	// closed.
+	var once sync.Once
 	closeLines := func(discard func(*os.File)) {
-		if routeStats {
-			c.stats.setInterruptOutput(nil)
-		}
-		if routeLog {
-			clientlog.Redirect(c.clientLogger(), nil)
-		}
-		if isQueryBuilder(args) {
-			discard(tty)
-		}
-		lines.close()
+		once.Do(func() {
+			if routeStats {
+				c.stats.setInterruptOutput(nil)
+			}
+			if routeLog {
+				clientlog.Redirect(c.clientLogger(), nil)
+			}
+			if isQueryBuilder(args) {
+				discard(tty)
+			}
+			lines.close()
+		})
 	}
 	go func() {
 		<-ctx.Done()
@@ -343,12 +350,19 @@ func (c *baseClient) rejectControlLine(w io.Writer, reason error, pause *interac
 
 // writeControlBanner writes the banner (controlBanner) and, for a session
 // that reads no files, the hint how to give it some (noFilesHint), as
-// without files nothing is read and no field data can ever arrive.
+// without files nothing is read and no field data can ever arrive. The
+// query builder first says so when its files look like a query
+// (queryAsFilesHint).
 func (c *baseClient) writeControlBanner(lines controlLines) error {
 	w := lines.Writer()
 	args, _ := c.snapshotConnectionState()
 	if err := writeControlLine(w, styleOf(w).banner(controlBanner(lines, isQueryBuilder(args)))); err != nil {
 		return err
+	}
+	if hint := queryAsFilesHint(args); hint != "" {
+		if err := writeControlLine(w, styleOf(w).hint(hint)); err != nil {
+			return err
+		}
 	}
 	_, plain := lines.(*scannerLines)
 	if hint := c.prober.noFilesHint(!plain); hint != "" {

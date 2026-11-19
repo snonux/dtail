@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mimecast/dtail/internal/config"
+	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/omode"
 )
 
@@ -41,6 +43,11 @@ const (
 	builderNoQueryText = "no query yet: type one and press Enter to run it"
 	// builderErrorPrefix is in front of every rejected line of the builder.
 	builderErrorPrefix = "query builder: "
+	// builderQueryAsFilesHint follows the banner when the files look like
+	// a query (queryAsFilesHint); %s is the files value, quoted.
+	builderQueryAsFilesHint = "the files %s look like a query (dmap takes a query from the command line " +
+		"with --query, or as an argument that holds \"select \"): type the query here and name the files " +
+		"with :reload --files PATH"
 )
 
 // builderCommandWords are the words that, typed alone without their colon,
@@ -50,9 +57,24 @@ var builderCommandWords = map[string]string{
 	"fields": ":fields", "probe": ":probe", "reload": ":reload --files PATH", "query": "the query itself",
 }
 
-// errNoQueryBuilder guards the "build" command against a client that is in
-// the builder's state without being the builder (no profile hook).
-var errNoQueryBuilder = errors.New("this client can not run a built query")
+// queryAsFilesHint returns, for the query builder, the hint that its files
+// look like a query, "" when they do not: the first of several words is a
+// clause keyword of the query language (from, select, where, ...). dmap
+// takes a positional argument for the query only when it holds "select "
+// (config.setupAdditionalArgs); a query with that word mistyped, or one
+// that lacks it, is taken for a file, so no query is given, the builder
+// opens, and its probes of a file of that name find nothing. A file whose
+// name starts that way gets the hint too, which changes nothing else.
+func queryAsFilesHint(args config.Args) string {
+	if !isQueryBuilder(args) {
+		return ""
+	}
+	words := strings.Fields(args.What)
+	if len(words) < 2 || !slices.Contains(mapr.Keywords(), strings.ToLower(words[0])) {
+		return ""
+	}
+	return fmt.Sprintf(builderQueryAsFilesHint, strconv.Quote(args.What))
+}
 
 // isQueryBuilder reports whether args are those of dmap's query builder
 // (config.Args.QueryBuilder, set by NewQueryBuilderClient): the MapReduce
@@ -246,12 +268,12 @@ func parseBuilderFiles(current config.Args, line string) (interactiveCommand, er
 // reports quit, which ends the builder's sessions; the client then runs
 // the query as dmap --query does (QueryBuilderClient.Start). Without
 // files the query would read nothing, so it is not run and the builder
-// stays open with the hint how to name files.
+// stays open with the hint how to name files. Only a line of the builder
+// is parsed into this command (handleBuilderLine), and the builder's
+// arguments are set by NewQueryBuilderClient alone, which sets queryBuilt
+// with them.
 func (c *baseClient) runBuildCommand(tty io.Writer, query string) (bool, error) {
 	style := styleOf(tty)
-	if c.profile.queryBuilt == nil {
-		return false, writeControlLine(tty, style.failure(builderErrorPrefix+errNoQueryBuilder.Error()))
-	}
 	if hint := c.prober.noFilesHint(completesPaths(tty)); hint != "" {
 		return false, writeControlLine(tty, style.failure(builderErrorPrefix+"query not run, "+hint))
 	}

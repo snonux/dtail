@@ -124,7 +124,11 @@ func (c *QueryBuilderClient) Start(ctx context.Context, statsCh <-chan string) i
 	runArgs := c.runArgs
 	runArgs.What = built.files
 	runArgs.QueryStr = built.query
-	runner, err := c.newRunner(runArgs, runHistory(c.takeLineHistory()))
+	builderArgs, _ := c.snapshotConnectionState()
+	runner, err := c.newRunner(runArgs, runHistory(c.seedHistory(), func(line string) bool {
+		_, parseErr := parseBuilderCommand(builderArgs, line)
+		return parseErr == nil
+	}))
 	if err != nil {
 		c.clientLogger().Error("Unable to run the built query", err)
 		_, _ = fmt.Fprintf(os.Stderr, "unable to run the built query: %v\n", err)
@@ -138,10 +142,16 @@ func (c *QueryBuilderClient) Start(ctx context.Context, statsCh <-chan string) i
 // command is one there too, and a line that was a query, the last one
 // being the query that runs, is recalled as the ":query" command that
 // replaces the running query with it. So Up in the run brings back the
-// query built, ready to be changed and entered.
-func runHistory(builderLines []string) []string {
+// query built, ready to be changed and entered. Only the lines the builder
+// took (parses) are kept: a rejected one ("quit" without its colon, a
+// query with a typo) would be recalled as a ":query quit" that is no
+// query.
+func runHistory(builderLines []string, parses func(line string) bool) []string {
 	history := make([]string, 0, len(builderLines))
 	for _, line := range builderLines {
+		if !parses(line) {
+			continue
+		}
 		trimmed := strings.TrimSpace(line)
 		if !strings.HasPrefix(trimmed, ":") {
 			trimmed = queryCommand + " " + trimmed

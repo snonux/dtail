@@ -299,3 +299,50 @@ func TestKeepSessionsAlive(t *testing.T) {
 		t.Fatal("the keepalive loop did not end with its context")
 	}
 }
+
+// blockingKeepAliveConnector is a connection whose keepalive blocks, as
+// the write to a server that stopped reading does, until release is closed.
+type blockingKeepAliveConnector struct {
+	retryTestConnector
+	calls   atomic.Int32
+	release chan struct{}
+}
+
+func (c *blockingKeepAliveConnector) KeepAlive() error {
+	c.calls.Add(1)
+	<-c.release
+	return nil
+}
+
+// TestKeepSessionsAliveDoesNotWaitForABlockedConnection: a connection whose
+// keepalive blocks neither delays the keepalives of the connections behind
+// it nor gets another one while the first is still being sent; once it is
+// through, it gets them again.
+func TestKeepSessionsAliveDoesNotWaitForABlockedConnection(t *testing.T) {
+	c := &baseClient{mu: newBaseClientMu(), loggers: LoggerDependencies{}.normalized()}
+	blocked := &blockingKeepAliveConnector{retryTestConnector: retryTestConnector{server: "srv1"},
+		release: make(chan struct{})}
+	behind := &keepAliveTestConnector{retryTestConnector: retryTestConnector{server: "srv2"}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		c.keepSessionsAlive(ctx, 5*time.Millisecond, func() []connectors.Connector {
+			return []connectors.Connector{blocked, behind}
+		})
+	}()
+	eventually(t, "keepalives over the connection behind the blocked one",
+		func() bool { return behind.sent.Load() >= 5 })
+	if got := blocked.calls.Load(); got != 1 {
+		t.Fatalf("the blocked connection got %d keepalives, want the one still being sent", got)
+	}
+	close(blocked.release)
+	eventually(t, "keepalives over the connection once it is through",
+		func() bool { return blocked.calls.Load() >= 3 })
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the keepalive loop did not end with its context")
+	}
+}

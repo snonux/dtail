@@ -844,7 +844,13 @@ reload of a running workload; a server not connected is checked by the run).
 builder holds sessions only for its prober, so at most `probeMaxConnections`
 (3) at a time, whatever the number of servers (`holdBuilderSessions`,
 `serverRotation`): a session that ends (server down, idle close, restart) is
-replaced after the reconnect backoff (2 s doubling to 60 s) by one to the
+replaced after the reconnect backoff (2 s doubling to 60 s with jitter,
+started over after a session that lasted over 60 s: `retryBackoff` and
+`baseClient.awaitReconnect` in `baseclient.go`, the one policy that a
+reconnecting `dtail`, `startConnection`, and the builder, `holdSessions`,
+both wait by; they differ only in what follows: a connection that can not be
+created again ends `startConnection`, while the builder counts a failed
+session and goes on) by one to the
 next server not held, in the client's order and around, so a server that is
 down is tried once per round of the rotation; with one server that is a
 reconnect. The prober asks the held connections only
@@ -852,18 +858,36 @@ reconnect. The prober asks the held connections only
 builder's catalog is those servers' view, as in dtail it is the probed
 servers'. The run connects to every server. Every 60 s
 (`builderKeepAliveInterval`, `keepSessionsAlive`) an SSH `keepalive@openssh.com`
-request goes over each held connection (`connectors.ServerConnection.KeepAlive`,
-no reply awaited): dserver counts every packet read as activity and discards
+request (`connectors.KeepAliveRequest`) goes over each held connection
+(`connectors.ServerConnection.KeepAlive`, no reply awaited; each sent by a
+goroutine of its own, at most one per connection, so a connection whose
+write blocks does not delay the others,
+`TestKeepSessionsAliveDoesNotWaitForABlockedConnection`; a compile-time
+assertion keeps `ServerConnection` a `keepAliver`): dserver counts every packet read as activity and discards
 unknown requests (`gossh.DiscardRequests`), so `IdleSessionTimeoutS` does not
 close a held session while the query is built, also one without files or
 with a line left unentered, where no probe is sent; no dserver change
-(`TestIdleSessionKeptByKeepAlive`, a real dserver with a 4 s timeout). A
-server configured with a timeout below 60 s still closes it; it is replaced.
+(`TestIdleSessionKeptByKeepAlive`, a real dserver with a 4 s timeout, proves
+dserver's side: the request, sent every second, keeps a connection; that the
+builder sends it is covered by `TestKeepSessionsAlive` and
+`TestKeepAliveSendsARequestTheServerReads`). The 60 s interval does not
+cover every configured timeout: dserver closes a connection at the deadline
+its last refresh tick that saw activity set, `IdleSessionTimeoutS` + 2
+intervals after that tick (ticks every interval = timeout/4, clamped to
+1-30 s), so a keepalive must be seen by a tick before that deadline. With
+one every 60 s that always holds for a timeout above 48 s (60 s < timeout +
+interval), never for one of 40 s or less (60 s >= timeout + 2 intervals);
+in between it depends on where the ticks fall, so the session may be
+closed. A closed session is replaced.
 
 **Log lines** go through the line editor while the builder edits
 (`clientlog.Redirect` -> `loggers.OutputRedirector`, implemented by the
 `stdout` logger, delegated by `fout` and `DLog`; `openControlLines`, undone
-before the editor closes): one arriving at the prompt (a connection error, a
+before the editor closes; the redirect target gets whole lines only,
+`loggers.wholeLines`, as the logger's 64 KiB buffer flushes itself in the
+middle of a line when it is full and the editor draws the prompt below
+every write; text without a line break is held until its line or the
+redirect ends): one arriving at the prompt (a connection error, a
 server warning) is printed above it and prompt and line are drawn again. Only
 when stdout is the control TTY (`editorDeps.logOnTTY`, `sameTerminal` in
 `interactive_tty.go`: the same character device file, or both the
@@ -921,8 +945,26 @@ flushes once, as the control loop may still be reading.
 `TestQueryBuilderTypedEnterAfterQuietOnPTY`.
 
 **History:** with `--interactive-query` the run's line editor starts with
-the builder's lines (`baseClient.lineHistory`, `keepHistory`, `runHistory`),
-a query as `:query QUERY`, so Up recalls the query built.
+the lines the builder took (`baseClient.lineHistory`, `keepHistory`,
+`seedHistory`, `runHistory`), a query as `:query QUERY`, so Up recalls the
+query built. Lines the builder rejected (those `parseBuilderCommand` fails
+for: a query that does not parse, `quit` without its colon, an unknown
+command) are left out, as `:query quit` would be recalled for them.
+
+**Closing the control lines** (`openControlLines`): the close (statistics
+and logger given back, the terminal's input discarded, the terminal mode
+restored) runs once (`sync.Once`), by the control loop (before it cancels
+the session on `:quit` or a query to run, and deferred) or at the
+cancellation of the session, whichever comes first; the other waits for it,
+so none of it happens after the control loop returned, when the run has the
+logger and the terminal.
+
+**Files that look like a query:** a positional argument is the query only
+when it holds `select ` (`config.setupAdditionalArgs`), so a query with that
+word mistyped is taken for a file, no query is given and the builder opens.
+When the first of several words of the files value is a clause keyword
+(`mapr.Keywords`), the builder says so below its banner
+(`queryAsFilesHint`, `builderQueryAsFilesHint`).
 
 **Accepted limits:** the run needs the connection slots the builder just
 released; the builder closes its connections before the run connects, but a
@@ -938,9 +980,11 @@ Tests: `TestResolveQueryBuilder` (start-up decision),
 `interactive_builder_sessions_test.go` (held sessions, rotation, keepalive
 loop) and `querybuilderclient*_test.go` (lines, completion, help, the
 hand-over, the editor on a PTY: paste, pending input, log lines, history), and `integrationtests/dmap_builder_test.go` on a PTY
-against dserver and serverless: `TestDMapQueryBuilder` (banner, parse error,
-Tab inserts `from STATS `, result table, exit status 0, two server
-sessions), `TestDMapQueryBuilderQuit`, `TestDMapQueryBuilderStaysInteractive`
+against dserver and serverless: `TestDMapQueryBuilder` (banner, parse error
+of a query without `from STATS `, Tab inserts `from STATS `, the echo
+`query: from STATS select ...` of the query run, which only the Tab's
+insertion gives, result table, exit status 0, two server sessions; with
+`DTAIL_TEST_BUILDER_NO_TAB=1` the Tab is left out and the test must fail), `TestDMapQueryBuilderQuit`, `TestDMapQueryBuilderStaysInteractive`
 (`--interactive-query`), `TestDMapWithQueryOnTerminalRunsAtOnce` (`--query`
 and a positional query open no builder) and `TestDMapWithoutQueryNoTerminal`
 (a pipe and `--no-interactive` keep the error).

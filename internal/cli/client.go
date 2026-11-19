@@ -82,7 +82,9 @@ func BindCommonClientFlags(fs *flag.FlagSet, args *config.Args) *ClientRunner {
 	fs.BoolVar(&args.NoAuthKey, "no-auth-key", false, "Disable auth-key fast reconnect feature")
 	fs.BoolVar(&args.LogPayload, "log-payload", false, "Also tee retrieved payload into the client log file (default: file keeps diagnostics only)")
 	fs.BoolVar(&args.Quiet, "quiet", false, "Quiet output mode")
-	fs.BoolVar(&args.InteractiveQuery, "interactive-query", false, "Enable interactive in-flight query control over supported sessions")
+	fs.BoolVar(&args.InteractiveQuery, "interactive-query", false, "Enable interactive in-flight query control over supported sessions "+
+		"(dmap without --query: open the query builder also without a terminal on stdin and stdout, "+
+		"and keep the session open after the built query ran)")
 	fs.BoolVar(&args.Plain, "plain", false, "Plain output mode")
 	fs.BoolVar(&args.TrustAllHosts, "trustAllHosts", false, "Trust all unknown host keys")
 	fs.BoolVar(&args.TrustChangedHostKeys, "trustChangedHostKeys", false,

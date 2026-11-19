@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/mimecast/dtail/internal/clients/connectors"
 )
 
 // builderIdleConfig is the config of a dserver that closes idle sessions
@@ -16,8 +18,13 @@ import (
 const builderIdleConfig = "dmap_builder_idle.cfg.tmp"
 
 // builderKeepAliveRequest is the SSH request the query builder of dmap
-// sends over the sessions it holds (connectors.ServerConnection.KeepAlive).
-const builderKeepAliveRequest = "keepalive@openssh.com"
+// sends over the sessions it holds (connectors.ServerConnection.KeepAlive),
+// by the client's own name for it. That the builder sends it over its held
+// connections is covered by the client's tests (TestKeepSessionsAlive, the
+// keepAliver assertion on ServerConnection and
+// TestKeepAliveSendsARequestTheServerReads); this test covers that dserver
+// takes it as activity.
+const builderKeepAliveRequest = connectors.KeepAliveRequest
 
 // dialTestServer opens an authenticated SSH connection to the dserver on
 // port as the tests' user, with the suite's key, and closes it with the

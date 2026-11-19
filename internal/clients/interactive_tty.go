@@ -641,9 +641,10 @@ func (h *controlHistory) At(idx int) string {
 	return h.entries[idx]
 }
 
-// seedHistory returns the control lines a new line editor starts its
-// history with: those an earlier control loop of this process left
-// (lineHistory), none otherwise.
+// seedHistory returns the control lines an earlier control loop of this
+// process left (lineHistory, keepHistory), most recent first, none
+// otherwise: what a new line editor starts its history with, and what the
+// query builder hands to the run that follows it (runHistory).
 func (c *baseClient) seedHistory() []string {
 	mu := c.stateMu()
 	mu.RLock()
@@ -652,7 +653,7 @@ func (c *baseClient) seedHistory() []string {
 }
 
 // keepHistory keeps the history of the line editor lines (nothing for
-// plain lines) when the control loop ends, for takeLineHistory. It runs in
+// plain lines) when the control loop ends, for seedHistory. It runs in
 // the control loop's goroutine, the only one that adds to the history.
 func (c *baseClient) keepHistory(lines controlLines) {
 	editor, ok := lines.(*interactiveEditor)
@@ -663,12 +664,6 @@ func (c *baseClient) keepHistory(lines controlLines) {
 	mu.Lock()
 	defer mu.Unlock()
 	c.lineHistory = slices.Clone(editor.history.entries)
-}
-
-// takeLineHistory returns the control lines the control loop ended with,
-// most recent first.
-func (c *baseClient) takeLineHistory() []string {
-	return c.seedHistory()
 }
 
 func trimEach(words []string) []string {
