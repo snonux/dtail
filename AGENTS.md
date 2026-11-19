@@ -850,7 +850,8 @@ started over after a session that lasted over 60 s: `retryBackoff` and
 reconnecting `dtail`, `startConnection`, and the builder, `holdSessions`,
 both wait by; they differ only in what follows: a connection that can not be
 created again ends `startConnection`, while the builder counts a failed
-session and goes on) by one to the
+session and goes on, and logs `Reconnecting` with the server it goes on
+with, known after the wait) by one to the
 next server not held, in the client's order and around, so a server that is
 down is tried once per round of the rotation; with one server that is a
 reconnect. The prober asks the held connections only
@@ -905,43 +906,67 @@ Alt-E does) that stays on the edit line until Enter is typed. Entered line by
 line, as the editor does elsewhere, the first pasted line that parses alone
 ran as the query and ended dmap, and the lines behind it were left in the
 terminal's input queue for the shell. A paste without markers (a terminal
-without bracketed paste) is told from typing by its timing, in the builder
-only (`internal/clients/interactive_tty_burst.go`): a line break is the
-Enter key only when no input follows it, neither in the same read nor
-within 30 ms (`editInput.settle`, `enterQuietTime`, a read of the control
-TTY with a deadline); a line break with anything but line breaks behind it
-starts a burst, which `editInput` passes on to x/term as a bracketed paste
-of one line (start marker put in front, line breaks and control characters
-blanks, a paste marker in its text is text), ended once the terminal was
-quiet for 100 ms (`fillBurst`, `burstQuietTime`). So no pasted line is
-entered, whatever the paste's size: it stays on the line (x/term keeps the
-first 4095 characters; a longer line is rejected at Enter) until Enter is
-typed. Line breaks only followed by line breaks (a held Enter repeating
-faster than 30 ms) are entered as they are, after at most 8 waits
-(`enterRepeatMax`). The price: every Enter is taken 30 ms late, and keys
-typed ahead behind an Enter that reach dmap in one read with it, or within
-30 ms (only while dmap does not read: a `:probe`, `:fields TABLE` or Tab
-wait), are taken for a paste and stay on the line. When the builder ends
-(run or `:quit`) the control loop, after its last read and before the
-cancellation closes the TTY, discards the control TTY's input until it was
-quiet for 100 ms, at most 1 s (`drainTTYInput`: tcflush TCIFLUSH,
-`discardTTYInput`, `ttyflush_*.go`: Linux, AIX, Solaris and the BSDs/macOS,
-a no-op elsewhere, and a read with a deadline, repeated; one tcflush only
-discards the 4096 bytes the kernel has queued, the rest of a paste arrives
-after it), so what was typed or pasted after the entered line reaches
-neither the run nor the shell. Not guaranteed: input arriving more than
-100 ms after the last (a paste stalled that long by the link, keys typed
-later) is the run's or the shell's, as it would be typed at their prompt;
-a paste whose line break is followed by nothing for 30 ms (stalled right
-there) enters that line; and where reads of the control TTY take no
-deadline (`os.File.SetReadDeadline` fails: Go's runtime poller does not take
-every terminal device, e.g. kqueue refuses `/dev/tty` on macOS; verified on
-Linux only) only input in the same read tells a paste and the discard is
-one tcflush, as before. The close at the cancellation of the session (Ctrl-C, SIGTERM)
-flushes once, as the control loop may still be reading.
+without bracketed paste) is told from typing in the builder only
+(`internal/clients/interactive_tty_burst.go`), by what follows a line break
+in the same read or within 30 ms of it (`editInput.settle`,
+`enterQuietTime`, reads of the control TTY with a deadline): pasted text,
+i.e. at least 16 bytes (`burstMinBytes`) or text holding another line break
+(`pastedBehind`), starts a burst, which `editInput` passes on to x/term as a
+bracketed paste of one line (start marker put in front, line breaks and
+control characters blanks, a paste marker in its text is text), ended at
+the first gap of 100 ms (`fillBurst`, `burstQuietTime`; the start of a
+character cut by that gap is held for the next read). So the lines of such
+a paste are not entered: the text stays on the line (x/term keeps the first
+4095 characters; a longer line is rejected at Enter) until Enter is typed.
+Anything less behind a line break is typing: the line break is the Enter
+key and the one or two keys a person types within 30 ms (also Esc,
+Backspace, an arrow, a held key or Enter repeating) are those keys, in
+order; a real bracketed paste arriving in that window is left to its
+markers. The price: an Enter is taken up to 30 ms late, and keys typed
+ahead that reach dmap together with their Enter (typed while the control
+loop was busy with a command or a Tab wait and read in one piece, or typed
+within 30 ms) are taken for a paste when they are 16 bytes or more or hold
+a second Enter; they then stay on the line.
+
+When the builder ends, the control loop, after its last read and before
+the TTY is closed, discards the control TTY's input for as long as it keeps
+arriving: until it was quiet for 100 ms, at most 30 s (`drainTTYInput`,
+`discardQuietTime`, `discardMaxTime`: tcflush TCIFLUSH, `discardTTYInput`,
+`ttyflush_*.go`: Linux, AIX, Solaris and the BSDs/macOS, a no-op elsewhere,
+and a read with a deadline, repeated; one tcflush only discards the 4096
+bytes the kernel has queued, the rest of a paste arrives after it), so what
+was typed or pasted after the entered line reaches neither the run nor the
+shell. On `:quit` or a query to run, a cancellation of the session (Ctrl-C
+twice, SIGTERM) ends the discarding at once. A session cancelled while the
+builder is open is drained as well: the cancellation lets the control
+loop's read time out (`controlReading.interrupt`, repeated every 10 ms
+until the loop closes its lines), the control loop returns and drains in
+its close, there with only the quiet time and the cap to end it (and the
+forced exit of a further Ctrl-C), so a paste in flight at a Ctrl-C is
+discarded and a quiet terminal costs 100 ms. Only when the control loop
+does not return within 1 s (`controlReadInterruptWait`: it waits for a
+command, the external editor or a blocked terminal) the cancellation
+flushes once and closes the TTY, as before. A control TTY that is no
+terminal (a pipe or FIFO feeding control lines) is not drained: its unread
+lines stay (`TestDrainLeavesWhatIsNoTerminal`).
+
+Not guaranteed: a paste whose first line is a valid query followed by 30 ms
+of silence, or by less than 16 bytes without a line break in that time,
+enters that line, and the query runs (the rest is then discarded by the
+drain as long as it keeps arriving); input arriving after the drain ended
+(a gap of 100 ms or more in a paste, keys typed later, anything after
+30 s, or after a Ctrl-C ended the drain of a `:quit` or run) is the run's
+or the shell's, as it would be typed at their prompt; and where reads of
+the control TTY take no deadline (`os.File.SetReadDeadline` fails: Go's
+runtime poller does not take every terminal device, e.g. kqueue refuses
+`/dev/tty` on macOS; verified on Linux only) only input in the same read
+tells a paste and the discard is one tcflush, as before.
 `TestQueryBuilderPastedLinesAreOneLineOnPTY`, `TestEditInputBurstPaste`,
 `TestQueryBuilderUnbracketedPasteOnPTY` (3 to 64 KB),
-`TestQueryBuilderDiscardsInputInFlightOnPTY`,
+`TestQueryBuilderDiscardsInputInFlightOnPTY` (200 KB in 4 KB pieces),
+`TestQueryBuilderDiscardsPasteInFlightAtCancelOnPTY`,
+`TestQueryBuilderCancelDoesNotWaitOnAQuietTerminalOnPTY`,
+`TestQueryBuilderFastTypingAfterEnterOnPTY`,
 `TestQueryBuilderTypedEnterAfterQuietOnPTY`.
 
 **History:** with `--interactive-query` the run's line editor starts with
@@ -957,7 +982,9 @@ restored) runs once (`sync.Once`), by the control loop (before it cancels
 the session on `:quit` or a query to run, and deferred) or at the
 cancellation of the session, whichever comes first; the other waits for it,
 so none of it happens after the control loop returned, when the run has the
-logger and the terminal.
+logger and the terminal. In the builder the cancellation first makes the
+control loop return, so that it is the one to close (see "Paste and pending
+input").
 
 **Files that look like a query:** a positional argument is the query only
 when it holds `select ` (`config.setupAdditionalArgs`), so a query with that

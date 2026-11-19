@@ -2,8 +2,11 @@ package clients
 
 import (
 	"bytes"
+	"io"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/clients/handlers"
@@ -427,5 +430,34 @@ func TestQueryAsFilesHint(t *testing.T) {
 	args.QueryBuilder = false
 	if hint := queryAsFilesHint(args); hint != "" {
 		t.Errorf("outside the builder: hint %q", hint)
+	}
+}
+
+// TestDrainLeavesWhatIsNoTerminal: a control TTY that is no terminal (a
+// pipe or FIFO that feeds control lines) has no input queue to discard:
+// the lines it still holds when the builder ends are left in it, also
+// though its reads take a deadline.
+func TestDrainLeavesWhatIsNoTerminal(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reader.Close() }()
+	lines := strings.Repeat(":show\n", 5)
+	if _, err = writer.WriteString(lines); err != nil {
+		t.Fatal(err)
+	}
+	_ = writer.Close()
+	if discardTTYInput(reader) {
+		t.Fatal("a pipe was taken for a terminal")
+	}
+	start := time.Now()
+	drainTTYInput(reader, nil)
+	if took := time.Since(start); took > 50*time.Millisecond {
+		t.Fatalf("the drain of a pipe took %v, want it to return at once", took)
+	}
+	left, err := io.ReadAll(reader)
+	if err != nil || string(left) != lines {
+		t.Fatalf("left in the pipe: %q (%v), want all lines", left, err)
 	}
 }

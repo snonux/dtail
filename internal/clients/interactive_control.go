@@ -275,15 +275,21 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 // drawn again. With stdout on another terminal than the control TTY
 // (--control-tty) the log lines stay on stdout: redirected, they left the
 // terminal they were sent to and appeared on the control TTY. The builder also
-// discards the terminal's input when it closes: the returned close, called
-// by the control loop after its last read, until the terminal was quiet
-// (drainTTYInput); the close at the cancellation of ctx, which may run
-// while the control loop still reads, only what is queued
-// (discardTTYInput). The close runs once, by whichever of the two comes
-// first, and the other waits for it (sync.Once): so all of it is done when
-// the control loop returns, and none of it (the logger given back, the
-// terminal's input discarded) happens later, when the run of the built
-// query has the logger and the terminal.
+// discards the terminal's input when it closes, until the terminal was
+// quiet (drainTTYInput): the returned close, called by the control loop
+// after its last read. On :quit or a query to run, a cancellation of ctx
+// (Ctrl-C) ends the discarding; when the session is cancelled first, the
+// control loop is made to return (interruptControlRead) and discards in
+// its close as well, with only the quiet time and the cap to end it, so
+// that a paste in flight at a Ctrl-C does not reach the shell. Only when
+// the control loop does not return (it waits for a command, the external
+// editor or a blocked terminal) the close at the cancellation runs
+// instead, which discards what is queued (discardTTYInput) and closes
+// tty. The close runs once, by whichever of the two comes first, and the
+// other waits for it (sync.Once): so all of it is done when the control
+// loop returns, and none of it (the logger given back, the terminal's
+// input discarded) happens later, when the run of the built query has the
+// logger and the terminal.
 func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *interactivePause,
 	answers *promptAnswers, deps editorDeps) (controlLines, func()) {
 
@@ -301,8 +307,10 @@ func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *
 	// The statistics and the log go to stdout again before the TTY is
 	// closed.
 	var once sync.Once
+	reading := newControlReading()
 	closeLines := func(discard func(*os.File)) {
 		once.Do(func() {
+			reading.end()
 			if routeStats {
 				c.stats.setInterruptOutput(nil)
 			}
@@ -317,10 +325,83 @@ func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *
 	}
 	go func() {
 		<-ctx.Done()
-		closeLines(discardTTYInput)
+		if isQueryBuilder(args) {
+			reading.interrupt(tty)
+		}
+		closeLines(func(tty *os.File) { discardTTYInput(tty) })
 		_ = tty.Close()
 	}()
-	return lines, func() { closeLines(drainTTYInput) }
+	return lines, func() {
+		closeLines(func(tty *os.File) {
+			// A session already cancelled has nothing left to end the
+			// discarding but the quiet time and its cap.
+			var stop <-chan struct{}
+			if ctx.Err() == nil {
+				stop = ctx.Done()
+			}
+			drainTTYInput(tty, stop)
+		})
+	}
+}
+
+// controlReadInterruptWait is how long the cancellation of the builder's
+// session waits for the control loop to return before it closes the
+// control lines itself.
+const controlReadInterruptWait = time.Second
+
+// controlReading tells whether the control loop may still read the control
+// TTY: until the close of its control lines began (end). The cancellation
+// of the builder's session ends a pending read through it (interrupt), so
+// that the control loop returns and discards the terminal's input itself,
+// which only the goroutine that reads the TTY can do (drainTTYInput).
+type controlReading struct {
+	mu    sync.Mutex
+	ended chan struct{}
+}
+
+func newControlReading() *controlReading {
+	return &controlReading{ended: make(chan struct{})}
+}
+
+// end marks the control loop as done reading; no read deadline is set by
+// interrupt from then on, as the deadlines are the drain's.
+func (r *controlReading) end() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	close(r.ended)
+}
+
+// expire lets a read of tty that is pending or begins now time out, unless
+// the control loop is done reading or tty takes no deadline; it reports
+// whether it did.
+func (r *controlReading) expire(tty *os.File) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	select {
+	case <-r.ended:
+		return false
+	default:
+		return tty.SetReadDeadline(time.Now()) == nil
+	}
+}
+
+// interrupt makes the control loop's reads of tty time out, which the
+// control loop takes as its end once its context is done, until it is done
+// reading or controlReadInterruptWait passed. It is repeated, as the line
+// editor clears the deadline after its own timed reads (editInput.readBy).
+// Where reads take no deadline it returns at once; the caller then closes
+// tty, which ends a pending read as well.
+func (r *controlReading) interrupt(tty *os.File) {
+	giveUp := time.After(controlReadInterruptWait)
+	for r.expire(tty) {
+		select {
+		case <-r.ended:
+			return
+		case <-giveUp:
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 // dispatchControlLine passes a line typed while the host key question is

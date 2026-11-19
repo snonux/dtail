@@ -79,23 +79,32 @@ query>
 * **Pasting** a query of several lines puts it on the line as one line
   (line breaks become blanks); it runs when you press Enter. On a terminal
   with bracketed paste, which nearly all have, the terminal marks the
-  paste. On one without, the builder tells a paste by its timing: a line
-  break counts as the Enter key only when nothing follows it within 30 ms,
-  and with input behind it the text is taken as pasted, whatever its size
-  (the line keeps its first 4095 characters; a longer line is rejected when
-  you press Enter). So no pasted line runs by itself. Two consequences for
-  typing: Enter is taken 30 ms late, and keys typed ahead right behind an
-  Enter while `dmap` is busy (`:probe`, a Tab wait) can end up on the line
-  with it instead of entering it; press Enter again.
-  When the builder ends, input still arriving is discarded until the
-  terminal was quiet for 100 ms (at most one second), so the rest of a
-  paste reaches neither the query run nor your shell. What arrives later
-  than that (a paste stalled for more than 100 ms by a slow link, keys you
-  type afterwards) is read by whoever reads the terminal then. This is
-  verified on Linux. Where the control terminal cannot be read with a
-  timeout (e.g. `/dev/tty` on macOS), only input that arrives together with
-  the line break is recognized as pasted, and only what the terminal has
-  queued when the builder ends is discarded.
+  paste. On one without, the builder tells a paste from typing by what
+  follows a line break within 30 ms: 16 bytes or more, or text with another
+  line break, is pasted text, whatever its size (the line keeps its first
+  4095 characters; a longer line is rejected when you press Enter). Less
+  than that is typing: the line break is your Enter and the keys behind it
+  are keys.
+  This is a heuristic with limits. A pasted first line that is a valid
+  query runs by itself when the rest of the paste follows it only after
+  30 ms or more (a slow link), or is shorter than 16 bytes without a line
+  break. And keys typed ahead while `dmap` is busy (`:probe`, a Tab wait)
+  are taken for a paste when 16 bytes or a second Enter follow an Enter;
+  they then stay on the line: press Enter again. An Enter is taken up to
+  30 ms late.
+  When the builder ends (a query runs, `:quit`, or Ctrl-C), input still
+  arriving is discarded for as long as it keeps arriving: until the
+  terminal was quiet for 100 ms, at most 30 seconds, so the rest of a paste
+  reaches neither the query run nor your shell. Ctrl-C (twice) while a
+  query that was entered starts, or after `:quit`, stops the discarding at
+  once. What arrives after the discarding ended (a paste that stalled for
+  100 ms or more, keys you type afterwards) is read by whoever reads the
+  terminal then, as if typed at its prompt. This is verified on Linux.
+  Where the control terminal cannot be read with a timeout (e.g. `/dev/tty`
+  on macOS), only input that arrives together with the line break is
+  recognized as pasted, and only what the terminal has queued when the
+  builder ends is discarded. A control TTY that is no terminal (a pipe) is
+  never discarded from.
 * `quit`, `exit` or `help` without the colon are answered with the command
   meant (`"quit" is no query: type :quit`).
 * **A query given as an argument must hold `select `** to be taken as the

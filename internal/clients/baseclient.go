@@ -336,7 +336,10 @@ func (c *baseClient) startConnection(ctx context.Context, i int,
 		}
 		// Yes, unless the context is done: after the reconnect backoff.
 		server := conn.Server()
-		if !c.awaitReconnect(ctx, backoff, server, sessionStart) {
+		reconnecting := func(wait time.Duration) {
+			c.clientLogger().Debug(server, "Reconnecting", "backoff", wait)
+		}
+		if !c.awaitReconnect(ctx, backoff, sessionStart, reconnecting) {
 			return
 		}
 		var err error
@@ -462,17 +465,19 @@ func (b *retryBackoff) next(lasted time.Duration) time.Duration {
 	return wait
 }
 
-// awaitReconnect waits backoff's next delay after the session to server
-// that started at sessionStart ended. It reports false, without waiting on,
-// once ctx is done: no reconnect then.
-func (c *baseClient) awaitReconnect(ctx context.Context, backoff *retryBackoff, server string,
-	sessionStart time.Time) bool {
+// awaitReconnect waits backoff's next delay after the session that started
+// at sessionStart ended, and tells announce the delay before it waits (the
+// caller logs it with the server it connects to next, which only it
+// knows). It reports false, without waiting on, once ctx is done: no
+// reconnect then.
+func (c *baseClient) awaitReconnect(ctx context.Context, backoff *retryBackoff, sessionStart time.Time,
+	announce func(wait time.Duration)) bool {
 
 	if ctx.Err() != nil {
 		return false
 	}
 	wait := backoff.next(c.now().Sub(sessionStart))
-	c.clientLogger().Debug(server, "Reconnecting", "backoff", wait)
+	announce(wait)
 	return c.sleepRetry(ctx, wait)
 }
 

@@ -316,16 +316,21 @@ func TestAwaitReconnect(t *testing.T) {
 		}}
 	backoff := newRetryBackoff(1)
 	ctx, cancel := context.WithCancel(context.Background())
+	var announced []time.Duration
+	announce := func(wait time.Duration) { announced = append(announced, wait) }
 	for range 2 {
-		if !c.awaitReconnect(ctx, backoff, "srv1", now.Add(-time.Second)) {
+		if !c.awaitReconnect(ctx, backoff, now.Add(-time.Second), announce) {
 			t.Fatal("awaitReconnect reported the context done")
 		}
+	}
+	if len(announced) != 2 || announced[0] != slept[0] || announced[1] != slept[1] {
+		t.Fatalf("announced %v, slept %v, want each delay announced", announced, slept)
 	}
 	if len(slept) != 2 || slept[0] > 3*time.Second || slept[1] < 3*time.Second {
 		t.Fatalf("slept %v, want about 2s and then about 4s", slept)
 	}
 	cancel()
-	if c.awaitReconnect(ctx, backoff, "srv1", now) || len(slept) != 2 {
+	if c.awaitReconnect(ctx, backoff, now, announce) || len(slept) != 2 || len(announced) != 2 {
 		t.Fatalf("awaitReconnect after the context ended waited: slept %v", slept)
 	}
 	if backoff.delay != 8*time.Second {

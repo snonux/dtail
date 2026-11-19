@@ -115,16 +115,22 @@ func (c *baseClient) holdBuilderSessions(ctx context.Context) int {
 // follows the wait, on purpose: a connection that can not be created again
 // ends a reconnecting dtail's connection, while the builder, which has
 // other servers to hold a session on, counts it as a failed session and
-// goes on (holdSession).
+// goes on (holdSession). The server it goes on with is known only after the
+// wait (another worker may take one meanwhile), so the reconnect is logged
+// then, with that server and not the one whose session ended.
 func (c *baseClient) holdSessions(ctx context.Context, rotation *serverRotation, worker int) (status int) {
 	backoff := newRetryBackoff(worker)
-	for {
+	var waited time.Duration
+	for first := true; ; first = false {
 		index, usedBefore := rotation.next()
-		server := c.snapshotConnections()[index].Server()
+		if !first {
+			c.clientLogger().Debug(c.snapshotConnections()[index].Server(), "Reconnecting",
+				"after backoff", waited)
+		}
 		sessionStart := c.now()
 		status = c.holdSession(ctx, index, usedBefore)
 		rotation.release(index)
-		if !c.awaitReconnect(ctx, backoff, server, sessionStart) {
+		if !c.awaitReconnect(ctx, backoff, sessionStart, func(wait time.Duration) { waited = wait }) {
 			return status
 		}
 	}

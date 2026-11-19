@@ -12,6 +12,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"golang.org/x/term"
+
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/mapr"
 	"github.com/mimecast/dtail/internal/omode"
@@ -190,46 +192,63 @@ func bareCommandHint(trimmed string) error {
 }
 
 // discardQuietTime is how long the control TTY must have been quiet for
-// drainTTYInput to be done, discardMaxTime how long it discards at most.
+// drainTTYInput to be done, discardMaxTime how long it discards at most:
+// far more than any paste takes, so that in practice the quiet time ends
+// it, and still a bound for a terminal that never falls silent.
 const (
 	discardQuietTime = 100 * time.Millisecond
-	discardMaxTime   = time.Second
+	discardMaxTime   = 30 * time.Second
 )
 
-// discardTTYInput discards what the control TTY holds unread (tcflush).
-// Failures are ignored: a control TTY that is no terminal has no such
-// queue.
-func discardTTYInput(tty *os.File) {
+// discardTTYInput discards what the control TTY holds unread (tcflush) and
+// reports whether tty is a terminal. A control TTY that is none (a pipe, a
+// FIFO, a file) has no input queue: what it holds are lines still to be
+// read, and nothing of it is discarded.
+func discardTTYInput(tty *os.File) bool {
 	raw, err := tty.SyscallConn()
 	if err != nil {
-		return
+		return false
 	}
-	_ = raw.Control(func(fd uintptr) { _ = flushTTYInput(int(fd)) })
+	terminal := false
+	_ = raw.Control(func(fd uintptr) {
+		if terminal = term.IsTerminal(int(fd)); terminal {
+			_ = flushTTYInput(int(fd))
+		}
+	})
+	return terminal
 }
 
 // drainTTYInput discards the input of the control TTY when the builder
-// ends, until the terminal was quiet for discardQuietTime (at most
-// discardMaxTime): keys typed or text pasted after the line that ran the
-// query or left the builder. Read later they would be taken by the run (an
+// ends, for as long as input keeps arriving: until the terminal was quiet
+// for discardQuietTime, stop is closed (nil: never) or discardMaxTime
+// passed. It is for keys typed or text pasted after the line that ran the
+// query or left the builder, and for a paste still in flight when the
+// session is ended (Ctrl-C). Read later they would be taken by the run (an
 // interactive one takes them as control lines) or, after dmap exited, by
 // the shell, which would run pasted lines as commands. One tcflush is not
 // enough: it discards what the kernel has queued (4096 bytes on a Linux
 // pseudo terminal), while the rest of a paste in flight is written by the
 // terminal only as the queue empties, i.e. after the flush. So the queue
-// is flushed, and read, until nothing arrived for the quiet time. The
-// editor itself does not enter a line that input follows
-// (editInput.settle), so this is for input that came later than that. It
-// must run in the goroutine that reads the control lines, after its last
-// read: a read of another goroutine would take the input instead. Where
-// reads of the TTY take no deadline (no runtime poller for terminals) it
-// flushes once.
-func drainTTYInput(tty *os.File) {
+// is flushed, and read, until nothing arrived for the quiet time; a paste
+// of any size is discarded as long as its pieces come less than the quiet
+// time apart. The editor itself does not enter a line that pasted text
+// follows (editInput.settle), so this is for input that came later than
+// that. It must run in the goroutine that reads the control lines, after
+// its last read: a read of another goroutine would take the input
+// instead. Where reads of the TTY take no deadline (no runtime poller for
+// terminals) it flushes once; a control TTY that is no terminal is left
+// alone (discardTTYInput).
+func drainTTYInput(tty *os.File, stop <-chan struct{}) {
 	defer func() { _ = tty.SetReadDeadline(time.Time{}) }()
 	end := time.Now().Add(discardMaxTime)
 	buf := make([]byte, 4096)
-	for {
-		discardTTYInput(tty)
-		if !time.Now().Before(end) || tty.SetReadDeadline(time.Now().Add(discardQuietTime)) != nil {
+	for discardTTYInput(tty) && time.Now().Before(end) {
+		select {
+		case <-stop:
+			return
+		default:
+		}
+		if tty.SetReadDeadline(time.Now().Add(discardQuietTime)) != nil {
 			return
 		}
 		if n, _ := tty.Read(buf); n == 0 {

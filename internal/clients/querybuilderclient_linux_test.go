@@ -321,26 +321,145 @@ func TestQueryBuilderUnbracketedPasteOnPTY(t *testing.T) {
 	}
 }
 
+// readPTYUntil reads and drops the terminal's output until stop is
+// closed, so that the editor's echo of a large paste never blocks it.
+func readPTYUntil(master *os.File, stop <-chan struct{}) {
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-stop:
+			_ = master.SetReadDeadline(time.Time{})
+			return
+		default:
+		}
+		_ = master.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+		_, _ = master.Read(buf)
+	}
+}
+
+// writeInPieces writes size bytes of shell command lines to the terminal
+// in pieces of 4 KB, gap apart, as a paste still in flight arrives.
+func writeInPieces(master *os.File, first string, size int, gap time.Duration) {
+	text := first + strings.Repeat("touch /tmp/would-run\n", size/21)
+	for len(text) > 0 {
+		n := min(len(text), 4096)
+		// A terminal nobody reads any more takes no input: give up, so that
+		// the test fails on what was left instead of hanging.
+		_ = master.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		if _, err := master.WriteString(text[:n]); err != nil {
+			return
+		}
+		text = text[n:]
+		time.Sleep(gap)
+	}
+}
+
 // TestQueryBuilderDiscardsInputInFlightOnPTY: text that arrives while the
 // builder ends (typed or pasted after the Enter that ran the query, past
-// the quiet time that makes it an Enter) is discarded until the terminal
-// was quiet, also what arrives after the first flush of its input queue.
+// the window that makes it an Enter) is discarded for as long as it keeps
+// arriving, until the terminal was quiet: 200 KB in pieces of 4 KB, far
+// more than one flush of the terminal's input queue, or a second of
+// draining, discards.
 func TestQueryBuilderDiscardsInputInFlightOnPTY(t *testing.T) {
 	t.Parallel()
 	master, ttyPath, ran, done := startBuilderOnPTY(t)
 	reader := nextTTYReader(t, ttyPath)
 	writePTY(t, master, "from STATS select count($line)\n")
 	waitForPTYOutput(t, master, "running the query", done)
-	// Behind the Enter by more than the quiet time, in pieces 30 ms apart.
-	for i := 0; i < 5; i++ {
-		writePTY(t, master, "touch /tmp/would-run\n")
-		time.Sleep(30 * time.Millisecond)
-	}
+	// Behind the Enter by more than the window, in pieces 30 ms apart:
+	// about 1.5 s of input.
+	writeInPieces(master, "", 200<<10, 30*time.Millisecond)
 	awaitBuilderEnd(t, done, 3)
 	if run := <-ran; run.args.QueryStr != "from STATS select count($line)" {
 		t.Fatalf("query run = %q", run.args.QueryStr)
 	}
 	requireNoTTYInput(t, reader)
+}
+
+// TestQueryBuilderDiscardsPasteInFlightAtCancelOnPTY: a session cancelled
+// (Ctrl-C) while a paste is in flight ends only once the paste was
+// discarded: the control loop is made to return and drains the terminal
+// until it was quiet, so nothing of the paste reaches the shell. No line
+// of it ran.
+func TestQueryBuilderDiscardsPasteInFlightAtCancelOnPTY(t *testing.T) {
+	t.Parallel()
+	master, ttyPath := openTestPTY(t)
+	c, ran := newBuilderPTYClient(ttyPath, "/var/log/app.log")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan int, 1)
+	go func() { done <- c.Start(ctx, nil) }()
+	waitForPTYOutput(t, master, builderPrompt, done)
+	reader := nextTTYReader(t, ttyPath)
+
+	stopReading := make(chan struct{})
+	t.Cleanup(func() { close(stopReading) })
+	go readPTYUntil(master, stopReading)
+	pasted := startWrite(func() {
+		writeInPieces(master, "from STATS select count($line)\n", 200<<10, 20*time.Millisecond)
+	})
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the cancelled builder did not end")
+	}
+	select {
+	case <-pasted:
+	default:
+		t.Fatal("the builder ended while the paste was still arriving")
+	}
+	requireNoRun(t, ran, "after the cancellation")
+	requireNoTTYInput(t, reader)
+}
+
+// TestQueryBuilderCancelDoesNotWaitOnAQuietTerminalOnPTY: with nothing
+// arriving, the cancelled builder ends after the quiet time, not after the
+// cap of the drain.
+func TestQueryBuilderCancelDoesNotWaitOnAQuietTerminalOnPTY(t *testing.T) {
+	t.Parallel()
+	master, ttyPath := openTestPTY(t)
+	c, _ := newBuilderPTYClient(ttyPath, "/var/log/app.log")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := make(chan int, 1)
+	go func() { done <- c.Start(ctx, nil) }()
+	waitForPTYOutput(t, master, builderPrompt, done)
+	start := time.Now()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the cancelled builder did not end")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("the cancelled builder took %v to end on a quiet terminal", took)
+	}
+}
+
+// TestQueryBuilderFastTypingAfterEnterOnPTY: a key typed within the window
+// behind an Enter is no paste: the line is entered, and the keys after it,
+// Backspace and Enter among them, are keys. In the vi editing mode an Esc
+// right behind an Enter enters normal mode on the next line.
+func TestQueryBuilderFastTypingAfterEnterOnPTY(t *testing.T) {
+	t.Parallel()
+	master, _, ran, done := startBuilderOnPTY(t)
+	writePTY(t, master, ":show\r")
+	time.Sleep(10 * time.Millisecond)
+	writePTY(t, master, "f")
+	for _, key := range []string{"r", "x", "\x7f", "\x7f", "\r"} {
+		time.Sleep(80 * time.Millisecond)
+		writePTY(t, master, key)
+	}
+	// :show was entered, and then the line "f" (no query).
+	out := waitForPTYOutput(t, master, builderErrorPrefix, done)
+	if !strings.Contains(out, "workload=builder") {
+		t.Fatalf(":show was not entered: %q", out)
+	}
+	writePTY(t, master, ":quit\n")
+	awaitBuilderEnd(t, done, 0)
+	requireNoRun(t, ran, "after typing")
 }
 
 // TestQueryBuilderTypedEnterAfterQuietOnPTY: a line typed with its Enter in

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -344,5 +346,56 @@ func TestKeepSessionsAliveDoesNotWaitForABlockedConnection(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the keepalive loop did not end with its context")
+	}
+}
+
+// debugRecordingLogger records the debug lines logged.
+type debugRecordingLogger struct {
+	clientlog.NopLogger
+	mu    sync.Mutex
+	lines []string
+}
+
+func (l *debugRecordingLogger) Debug(args ...any) string {
+	line := fmt.Sprint(args...)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lines = append(l.lines, line)
+	return line
+}
+
+func (l *debugRecordingLogger) reconnects() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var servers []string
+	for _, line := range l.lines {
+		if server, _, found := strings.Cut(line, "Reconnecting"); found {
+			servers = append(servers, server)
+		}
+	}
+	return servers
+}
+
+// TestBuilderLogsTheServerItReconnectsTo: the reconnect after an ended
+// session is logged with the server the next session goes to, not with
+// the one whose session ended.
+func TestBuilderLogsTheServerItReconnectsTo(t *testing.T) {
+	c, h := newHeldSessionsTestClient(4)
+	logger := &debugRecordingLogger{}
+	c.loggers.Client = logger
+	stop := holdInBackground(t, c)
+	eventually(t, "the first held sessions", func() bool {
+		return slices.Equal(h.connected(), []string{"srv1", "srv2", "srv3"})
+	})
+	if got := logger.reconnects(); len(got) != 0 {
+		t.Fatalf("reconnects logged for the first sessions: %q", got)
+	}
+	h.endSession("srv2")
+	eventually(t, "the replacement", func() bool {
+		return slices.Equal(h.connected(), []string{"srv1", "srv3", "srv4"})
+	})
+	stop()
+	if got := logger.reconnects(); !slices.Equal(got, []string{"srv4"}) {
+		t.Fatalf("reconnects logged for %q, want the server connected to, srv4", got)
 	}
 }

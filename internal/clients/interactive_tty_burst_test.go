@@ -63,14 +63,15 @@ func readAllInput(in *editInput) string {
 	}
 }
 
-// TestEditInputBurstPaste: in the query builder (joinPaste) a line break is
-// the Enter key only when no input follows it, in the same read or within
-// the quiet time; with input behind it, it is pasted text without paste
-// markers, which is passed on as a bracketed paste of one line, ended once
-// the terminal was quiet. Typed keys are untouched.
+// TestEditInputBurstPaste: in the query builder (joinPaste) a line break
+// with pasted text behind it (16 bytes, or another line, in the same read
+// or within the window) is no Enter key: the text is passed on as a
+// bracketed paste of one line, ended once the terminal was quiet. A burst
+// means a paste, not fast typing: the keys a person types behind an Enter
+// within the window are the Enter and those keys, in order.
 func TestEditInputBurstPaste(t *testing.T) {
 	const start, end = "\x1b[200~", "\x1b[201~"
-	heldEnter := slices.Repeat([]string{"\r"}, enterRepeatMax+3)
+	heldEnter := slices.Repeat([]string{"\r"}, 12)
 	tests := []struct {
 		name   string
 		script []string
@@ -79,30 +80,53 @@ func TestEditInputBurstPaste(t *testing.T) {
 	}{
 		{name: "typed line and Enter", script: []string{"a", "b", "\r", quietGap}, want: "a|b|\r"},
 		{name: "typed ahead line with its Enter", script: []string{"abc\r", quietGap, "d"}, want: "abc\r|d"},
-		{name: "Enter, then typing after the quiet time", script: []string{"\r", quietGap, "x", "\r", quietGap},
+		{name: "Enter, then typing after the window", script: []string{"\r", quietGap, "x", "\r", quietGap},
 			want: "\r|x|\r"},
-		{name: "held Enter repeating within the quiet time", script: []string{"\r", "\r", "\r", quietGap},
-			want: "\r|\r|\r"},
-		{name: "held Enter repeating without a pause is passed on", script: append(heldEnter, quietGap),
+		{name: "a key within the window of an Enter, then typing with Backspace and Enter",
+			script: []string{":show\r", "f", quietGap, "r", quietGap, "x", quietGap, "\x7f", quietGap, "\x7f",
+				quietGap, "\r", quietGap},
+			want: ":show\r|f|r|x|\x7f|\x7f|\r"},
+		{name: "keys behind an Enter in one read", script: []string{"abc\rde", quietGap}, want: "abc\r|de"},
+		{name: "an arrow key behind an Enter", script: []string{"a\r", "\x1b[A", quietGap}, want: "a\r|\x1b[A"},
+		{name: "Enter twice fast", script: []string{"\r", "\r", quietGap}, want: "\r|\r"},
+		{name: "held Enter repeating within the window", script: append(heldEnter, quietGap),
 			want: strings.Join(heldEnter, "|")},
+		{name: "a held key repeating behind an Enter",
+			script: []string{"\r", "x", quietGap, "x", quietGap, "x", quietGap}, want: "\r|x|x|x"},
 		{name: "CR LF is one line end", script: []string{"a\r\n", quietGap}, want: "a\r\n"},
+		{name: "16 bytes behind a line break are pasted", script: []string{"a\r0123456789abcdef", quietGap},
+			want: start + "a 0123456789abcdef|" + end},
+		{name: "15 bytes behind a line break are typed", script: []string{"a\r0123456789abcde", quietGap},
+			want: "a\r|0123456789abcde"},
 		{name: "lines in one read", script: []string{"from A\nselect b\necho c\n", quietGap, "\r", quietGap},
 			want: start + "from A select b echo c |" + end + "|\r"},
-		{name: "rest arrives within the quiet time", script: []string{"from A\n", "echo b\n", "echo c\n", quietGap},
+		{name: "rest arrives within the window", script: []string{"from A\n", "echo b\n", "echo c\n", quietGap},
 			want: start + "from A echo b |echo c |" + end},
-		{name: "blank lines then text", script: []string{"a\n\n", "\n", "b\n", quietGap},
+		{name: "blank lines then a line", script: []string{"a\n\n", "\n", "b\n", quietGap},
 			want: start + "a   b |" + end},
 		{name: "control characters are blanks", script: []string{"a\n\tb\x1b[201~c\x03\n", quietGap},
 			want: start + "a  b [201~c  |" + end},
 		{name: "a character cut by a read", script: []string{"a\n\xc3", "\xa4\n", quietGap},
-			want: start + "a |ä |" + end},
-		{name: "typing goes on after the paste", script: []string{"a\nb", quietGap, "c", "\r", quietGap},
-			want: start + "a b|" + end + "|c|\r"},
+			want: start + "a ä |" + end},
+		{name: "a character cut by the gap that ends the burst",
+			script: []string{"a\nb\nc\xe2\x82", quietGap, "\xac", quietGap},
+			want:   start + "a b c|" + end + "|€"},
+		{name: "typing goes on after the paste", script: []string{"a\nb\nc", quietGap, "d", "\r", quietGap},
+			want: start + "a b c|" + end + "|d|\r"},
 		{name: "vi: Esc and Enter typed", vi: true, script: []string{"\x1b", "dd", "\r", quietGap},
 			want: string(viEscapeKey) + "|dd|\r"},
+		{name: "vi: Esc within the window of an Enter, then a normal mode key", vi: true,
+			script: []string{":fields\r", "\x1b", quietGap, "k", quietGap},
+			want:   ":fields\r|" + string(viEscapeKey) + "|k"},
 		{name: "vi: pasted lines", vi: true, script: []string{"a\nb\n", quietGap}, want: start + "a b |" + end},
 		{name: "bracketed paste is left to its markers", script: []string{start + "a\nb" + end, "\r", quietGap},
 			want: start + "a b" + end + "|\r"},
+		{name: "a bracketed paste within the window of an Enter",
+			script: []string{":show\r", start + "hello\nworld" + end, quietGap, "\r", quietGap},
+			want:   ":show\r|" + start + "hello world" + end + "|\r"},
+		{name: "a bracketed paste cut by reads within the window of an Enter",
+			script: []string{":show\r", "\x1b[20", "0~hello\nworld" + end, quietGap},
+			want:   ":show\r|" + start + "hello world" + end},
 		{name: "Alt-E", script: []string{"ab\x1be"}, want: "ab" + string(externalEditKey)},
 	}
 	for _, tt := range tests {
