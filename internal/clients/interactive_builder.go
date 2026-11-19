@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -166,21 +167,53 @@ func bareCommandHint(trimmed string) error {
 	return fmt.Errorf("%q is no query: type %s", trimmed, command)
 }
 
-// discardTTYInput discards what the control TTY holds unread when the
-// builder ends (tcflush): keys typed or text pasted ahead of the line that
-// ran the query or left the builder. Left in the terminal's input queue
-// they would be read by the run (an interactive one takes them as control
-// lines) or, after dmap exited, by the shell, which would run pasted lines
-// as commands. A terminal with bracketed paste delivers a paste as one line
-// (editInput.joinPaste), so this is for terminals without it and for keys
-// typed ahead. Failures are ignored: a control TTY that is no terminal has
-// no such queue.
+// discardQuietTime is how long the control TTY must have been quiet for
+// drainTTYInput to be done, discardMaxTime how long it discards at most.
+const (
+	discardQuietTime = 100 * time.Millisecond
+	discardMaxTime   = time.Second
+)
+
+// discardTTYInput discards what the control TTY holds unread (tcflush).
+// Failures are ignored: a control TTY that is no terminal has no such
+// queue.
 func discardTTYInput(tty *os.File) {
 	raw, err := tty.SyscallConn()
 	if err != nil {
 		return
 	}
 	_ = raw.Control(func(fd uintptr) { _ = flushTTYInput(int(fd)) })
+}
+
+// drainTTYInput discards the input of the control TTY when the builder
+// ends, until the terminal was quiet for discardQuietTime (at most
+// discardMaxTime): keys typed or text pasted after the line that ran the
+// query or left the builder. Read later they would be taken by the run (an
+// interactive one takes them as control lines) or, after dmap exited, by
+// the shell, which would run pasted lines as commands. One tcflush is not
+// enough: it discards what the kernel has queued (4096 bytes on a Linux
+// pseudo terminal), while the rest of a paste in flight is written by the
+// terminal only as the queue empties, i.e. after the flush. So the queue
+// is flushed, and read, until nothing arrived for the quiet time. The
+// editor itself does not enter a line that input follows
+// (editInput.settle), so this is for input that came later than that. It
+// must run in the goroutine that reads the control lines, after its last
+// read: a read of another goroutine would take the input instead. Where
+// reads of the TTY take no deadline (no runtime poller for terminals) it
+// flushes once.
+func drainTTYInput(tty *os.File) {
+	defer func() { _ = tty.SetReadDeadline(time.Time{}) }()
+	end := time.Now().Add(discardMaxTime)
+	buf := make([]byte, 4096)
+	for {
+		discardTTYInput(tty)
+		if !time.Now().Before(end) || tty.SetReadDeadline(time.Now().Add(discardQuietTime)) != nil {
+			return
+		}
+		if n, _ := tty.Read(buf); n == 0 {
+			return
+		}
+	}
 }
 
 // parseBuiltQuery checks the query entered in the builder as the run will

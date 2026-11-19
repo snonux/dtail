@@ -250,6 +250,9 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 			return err
 		}
 		if quit {
+			// Closed before the cancellation, which closes the TTY: the
+			// builder discards the terminal's input first (drainTTYInput).
+			closeLines()
 			cancel()
 			return nil
 		}
@@ -269,7 +272,11 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 // logOnTerminal): the builder always shows a prompt, and a log line
 // written straight to stdout (a connection error, a server's warning)
 // landed on the prompt's row, which was not drawn again. The builder also
-// discards the terminal's unread input when it closes (discardTTYInput).
+// discards the terminal's input when it closes: the returned close, called
+// by the control loop after its last read, until the terminal was quiet
+// (drainTTYInput); the close at the cancellation of ctx, which may run
+// while the control loop still reads, only what is queued
+// (discardTTYInput).
 func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *interactivePause,
 	answers *promptAnswers, deps editorDeps) (controlLines, func()) {
 
@@ -286,7 +293,7 @@ func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *
 	}
 	// The statistics and the log go to stdout again before the TTY is
 	// closed.
-	closeLines := func() {
+	closeLines := func(discard func(*os.File)) {
 		if routeStats {
 			c.stats.setInterruptOutput(nil)
 		}
@@ -294,16 +301,16 @@ func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *
 			clientlog.Redirect(c.clientLogger(), nil)
 		}
 		if isQueryBuilder(args) {
-			discardTTYInput(tty)
+			discard(tty)
 		}
 		lines.close()
 	}
 	go func() {
 		<-ctx.Done()
-		closeLines()
+		closeLines(discardTTYInput)
 		_ = tty.Close()
 	}()
-	return lines, closeLines
+	return lines, func() { closeLines(drainTTYInput) }
 }
 
 // dispatchControlLine passes a line typed while the host key question is

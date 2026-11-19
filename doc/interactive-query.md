@@ -77,11 +77,25 @@ query>
   recalls the query you built (as `:query <query>`) and the builder's other
   lines. It also opens the builder without a terminal on stdin and stdout.
 * **Pasting** a query of several lines puts it on the line as one line
-  (line breaks become blanks); it runs when you press Enter. This needs a
-  terminal with bracketed paste, which nearly all have; on one without,
-  pasted lines are entered one by one and the first that parses runs.
-  Whatever is still typed or pasted ahead when the builder ends is
-  discarded, so it reaches neither the query run nor your shell.
+  (line breaks become blanks); it runs when you press Enter. On a terminal
+  with bracketed paste, which nearly all have, the terminal marks the
+  paste. On one without, the builder tells a paste by its timing: a line
+  break counts as the Enter key only when nothing follows it within 30 ms,
+  and with input behind it the text is taken as pasted, whatever its size
+  (the line keeps its first 4095 characters; a longer line is rejected when
+  you press Enter). So no pasted line runs by itself. Two consequences for
+  typing: Enter is taken 30 ms late, and keys typed ahead right behind an
+  Enter while `dmap` is busy (`:probe`, a Tab wait) can end up on the line
+  with it instead of entering it; press Enter again.
+  When the builder ends, input still arriving is discarded until the
+  terminal was quiet for 100 ms (at most one second), so the rest of a
+  paste reaches neither the query run nor your shell. What arrives later
+  than that (a paste stalled for more than 100 ms by a slow link, keys you
+  type afterwards) is read by whoever reads the terminal then. This is
+  verified on Linux. Where the control terminal cannot be read with a
+  timeout (e.g. `/dev/tty` on macOS), only input that arrives together with
+  the line break is recognized as pasted, and only what the terminal has
+  queued when the builder ends is discarded.
 * `quit`, `exit` or `help` without the colon are answered with the command
   meant (`"quit" is no query: type :quit`).
 * **`--no-interactive`** never opens the builder (and wins over

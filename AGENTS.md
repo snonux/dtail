@@ -874,14 +874,45 @@ lines is one line (`editInput.joinPaste`: its line breaks become blanks, as
 Alt-E does) that stays on the edit line until Enter is typed. Entered line by
 line, as the editor does elsewhere, the first pasted line that parses alone
 ran as the query and ended dmap, and the lines behind it were left in the
-terminal's input queue for the shell. When the builder ends (run or `:quit`)
-it discards the control TTY's unread input (`discardTTYInput`, tcflush
-TCIFLUSH; `ttyflush_*.go`: Linux, AIX, Solaris and the BSDs/macOS, a no-op
-elsewhere), so keys typed ahead, or the lines of a paste on a terminal without
-bracketed paste, reach neither the run nor the shell
-(`TestQueryBuilderPastedLinesAreOneLineOnPTY`,
-`TestQueryBuilderDiscardsPendingInputOnPTY`). On such a terminal the first
-pasted line that parses still runs.
+terminal's input queue for the shell. A paste without markers (a terminal
+without bracketed paste) is told from typing by its timing, in the builder
+only (`internal/clients/interactive_tty_burst.go`): a line break is the
+Enter key only when no input follows it, neither in the same read nor
+within 30 ms (`editInput.settle`, `enterQuietTime`, a read of the control
+TTY with a deadline); a line break with anything but line breaks behind it
+starts a burst, which `editInput` passes on to x/term as a bracketed paste
+of one line (start marker put in front, line breaks and control characters
+blanks, a paste marker in its text is text), ended once the terminal was
+quiet for 100 ms (`fillBurst`, `burstQuietTime`). So no pasted line is
+entered, whatever the paste's size: it stays on the line (x/term keeps the
+first 4095 characters; a longer line is rejected at Enter) until Enter is
+typed. Line breaks only followed by line breaks (a held Enter repeating
+faster than 30 ms) are entered as they are, after at most 8 waits
+(`enterRepeatMax`). The price: every Enter is taken 30 ms late, and keys
+typed ahead behind an Enter that reach dmap in one read with it, or within
+30 ms (only while dmap does not read: a `:probe`, `:fields TABLE` or Tab
+wait), are taken for a paste and stay on the line. When the builder ends
+(run or `:quit`) the control loop, after its last read and before the
+cancellation closes the TTY, discards the control TTY's input until it was
+quiet for 100 ms, at most 1 s (`drainTTYInput`: tcflush TCIFLUSH,
+`discardTTYInput`, `ttyflush_*.go`: Linux, AIX, Solaris and the BSDs/macOS,
+a no-op elsewhere, and a read with a deadline, repeated; one tcflush only
+discards the 4096 bytes the kernel has queued, the rest of a paste arrives
+after it), so what was typed or pasted after the entered line reaches
+neither the run nor the shell. Not guaranteed: input arriving more than
+100 ms after the last (a paste stalled that long by the link, keys typed
+later) is the run's or the shell's, as it would be typed at their prompt;
+a paste whose line break is followed by nothing for 30 ms (stalled right
+there) enters that line; and where reads of the control TTY take no
+deadline (`os.File.SetReadDeadline` fails: Go's runtime poller does not take
+every terminal device, e.g. kqueue refuses `/dev/tty` on macOS; verified on
+Linux only) only input in the same read tells a paste and the discard is
+one tcflush, as before. The close at the cancellation of the session (Ctrl-C, SIGTERM)
+flushes once, as the control loop may still be reading.
+`TestQueryBuilderPastedLinesAreOneLineOnPTY`, `TestEditInputBurstPaste`,
+`TestQueryBuilderUnbracketedPasteOnPTY` (3 to 64 KB),
+`TestQueryBuilderDiscardsInputInFlightOnPTY`,
+`TestQueryBuilderTypedEnterAfterQuietOnPTY`.
 
 **History:** with `--interactive-query` the run's line editor starts with
 the builder's lines (`baseClient.lineHistory`, `keepHistory`, `runHistory`),

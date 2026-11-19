@@ -5,6 +5,7 @@ package clients
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -50,12 +51,12 @@ func newBuilderPTYClient(ttyPath, files string) (*QueryBuilderClient, chan build
 	return c, ran
 }
 
-// startBuilderOnPTY starts a query builder client reading files on a new
+// startBuilderOnPTY starts a query builder client reading a log file on a new
 // pseudo terminal and waits for its first prompt.
-func startBuilderOnPTY(t *testing.T, files string) (master *os.File, ttyPath string, ran chan builderRun, done chan int) {
+func startBuilderOnPTY(t *testing.T) (master *os.File, ttyPath string, ran chan builderRun, done chan int) {
 	t.Helper()
 	master, ttyPath = openTestPTY(t)
-	c, ran := newBuilderPTYClient(ttyPath, files)
+	c, ran := newBuilderPTYClient(ttyPath, "/var/log/app.log")
 	done = make(chan int, 1)
 	go func() { done <- c.Start(context.Background(), nil) }()
 	waitForPTYOutput(t, master, builderPrompt, done)
@@ -140,7 +141,7 @@ func TestQueryBuilderQuitOnPTY(t *testing.T) {
 		"closed terminal": func(_ *testing.T, master *os.File) { _ = master.Close() },
 	} {
 		t.Run(name, func(t *testing.T) {
-			master, _, ran, done := startBuilderOnPTY(t, "/var/log/app.log")
+			master, _, ran, done := startBuilderOnPTY(t)
 			leave(t, master)
 			awaitBuilderEnd(t, done, 0)
 			requireNoRun(t, ran, "after leaving the builder")
@@ -179,7 +180,7 @@ func TestQueryBuilderNoFilesOnPTY(t *testing.T) {
 // dmap with a result for another query than the one pasted.
 func TestQueryBuilderPastedLinesAreOneLineOnPTY(t *testing.T) {
 	t.Parallel()
-	master, _, ran, done := startBuilderOnPTY(t, "/var/log/app.log")
+	master, _, ran, done := startBuilderOnPTY(t)
 
 	writePTY(t, master, "\x1b[200~from STATS\nselect count($line)\r\ngroup by $hostname\n\x1b[201~")
 	out := waitForPTYOutput(t, master, "group by $hostname", done)
@@ -203,33 +204,158 @@ func TestQueryBuilderPastedLinesAreOneLineOnPTY(t *testing.T) {
 	}
 }
 
-// TestQueryBuilderDiscardsPendingInputOnPTY types (no bracketed paste, as on
-// a terminal without it) a query followed by many more lines at once: the
-// first line runs and ends the builder, and the lines behind it, still in
-// the terminal's input queue, are discarded. Left there, the shell that
-// started dmap would read and run them once dmap exited.
-func TestQueryBuilderDiscardsPendingInputOnPTY(t *testing.T) {
-	t.Parallel()
-	master, ttyPath, ran, done := startBuilderOnPTY(t, "/var/log/app.log")
+// nextTTYReader opens the terminal at ttyPath as whoever reads it after
+// dmap (the shell) would.
+func nextTTYReader(t *testing.T, ttyPath string) *os.File {
+	t.Helper()
 	reader, err := os.OpenFile(ttyPath, os.O_RDWR|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		t.Fatalf("open the terminal as its next reader: %v", err)
 	}
 	t.Cleanup(func() { _ = reader.Close() })
+	return reader
+}
 
-	// More than the editor reads at once, so most of it stays queued.
-	typed := "from STATS select count($line)\n" + strings.Repeat("touch /tmp/would-run\n", 150)
-	writePTY(t, master, typed)
-	awaitBuilderEnd(t, done, 3)
-	if run := <-ran; run.args.QueryStr != "from STATS select count($line)" {
-		t.Fatalf("query run = %q", run.args.QueryStr)
-	}
-	// The terminal is in its line mode again: queued lines would be read.
+// requireNoTTYInput fails if the terminal holds input for its next reader.
+func requireNoTTYInput(t *testing.T, reader *os.File) {
+	t.Helper()
 	buf := make([]byte, 4096)
 	_ = reader.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 	n, err := reader.Read(buf)
 	if n != 0 || (!errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, syscall.EAGAIN)) {
-		t.Fatalf("input left for the next reader of the terminal: %q (err %v)", buf[:n], err)
+		t.Fatalf("input left for the next reader of the terminal: %d bytes %q (err %v)", n, buf[:min(n, 80)], err)
+	}
+}
+
+// pasteUnbracketed writes text to the terminal from a goroutine, as a
+// terminal without bracketed paste delivers a paste (the write blocks while
+// the terminal's input queue is full), reads the terminal's output
+// meanwhile and returns it once all of text was written and taken.
+func pasteUnbracketed(t *testing.T, master *os.File, text string) string {
+	t.Helper()
+	written := make(chan error, 1)
+	go func() {
+		_, err := master.WriteString(text)
+		written <- err
+	}()
+	defer func() { _ = master.SetReadDeadline(time.Time{}) }()
+	var output strings.Builder
+	buf := make([]byte, 4096)
+	deadline := time.Now().Add(20 * time.Second)
+	for quiet := 0; quiet < 4; {
+		if time.Now().After(deadline) {
+			t.Fatalf("the paste of %d bytes was not taken within 20s", len(text))
+		}
+		select {
+		case err := <-written:
+			if err != nil {
+				t.Fatalf("paste: %v", err)
+			}
+			written = nil
+		default:
+		}
+		_ = master.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, _ := master.Read(buf)
+		output.Write(buf[:n])
+		// Done once the write returned and the terminal printed nothing
+		// for 400 ms: the editor then ended the paste.
+		if quiet++; n > 0 || written != nil {
+			quiet = 0
+		}
+	}
+	return output.String()
+}
+
+// unbracketedPaste returns a valid query line followed by shell command
+// lines, size bytes in all.
+func unbracketedPaste(size int) string {
+	var paste strings.Builder
+	paste.WriteString("from STATS select count($line)\n")
+	for i := 0; paste.Len() < size; i++ {
+		fmt.Fprintf(&paste, "echo LEAKED_%05d\n", i)
+	}
+	return paste.String()
+}
+
+// TestQueryBuilderUnbracketedPasteOnPTY pastes, without paste markers (a
+// terminal without bracketed paste), a valid query line followed by shell
+// command lines: 3 KB, which the terminal's input queue holds at once, and
+// 16 to 64 KB, which arrive in pieces while the editor reads. No line of
+// it is entered: nothing runs, the text stays on the line as one line,
+// and after :quit, or after a typed Enter (the line is then too long or
+// no query) and :quit, nothing of it is left for the next reader of the
+// terminal. Entered line by line, the query line ran and ended dmap, and
+// the shell read and ran the lines behind it.
+func TestQueryBuilderUnbracketedPasteOnPTY(t *testing.T) {
+	t.Parallel()
+	for _, size := range []int{3 << 10, 16 << 10, 28 << 10, 64 << 10} {
+		for _, enter := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%d bytes, typed Enter %v", size, enter), func(t *testing.T) {
+				t.Parallel()
+				master, ttyPath, ran, done := startBuilderOnPTY(t)
+				reader := nextTTYReader(t, ttyPath)
+				out := pasteUnbracketed(t, master, unbracketedPaste(size))
+				requireNoRun(t, ran, "after the paste")
+				if strings.Contains(out, builderErrorPrefix) || strings.Contains(out, "running the query") {
+					t.Fatalf("a pasted line was entered: %q", out[:min(len(out), 400)])
+				}
+				if enter {
+					writePTY(t, master, "\n")
+					waitForPTYOutput(t, master, "\r\n"+builderPrompt, done)
+					requireNoRun(t, ran, "after Enter on the pasted text")
+				} else {
+					writePTY(t, master, "\x15")
+				}
+				// Read on: erasing a line of 4095 characters writes more
+				// than the terminal's output queue holds.
+				writePTY(t, master, ":quit\n")
+				waitForPTYOutput(t, master, "quitting interactive session", done)
+				awaitBuilderEnd(t, done, 0)
+				requireNoRun(t, ran, "after :quit")
+				requireNoTTYInput(t, reader)
+			})
+		}
+	}
+}
+
+// TestQueryBuilderDiscardsInputInFlightOnPTY: text that arrives while the
+// builder ends (typed or pasted after the Enter that ran the query, past
+// the quiet time that makes it an Enter) is discarded until the terminal
+// was quiet, also what arrives after the first flush of its input queue.
+func TestQueryBuilderDiscardsInputInFlightOnPTY(t *testing.T) {
+	t.Parallel()
+	master, ttyPath, ran, done := startBuilderOnPTY(t)
+	reader := nextTTYReader(t, ttyPath)
+	writePTY(t, master, "from STATS select count($line)\n")
+	waitForPTYOutput(t, master, "running the query", done)
+	// Behind the Enter by more than the quiet time, in pieces 30 ms apart.
+	for i := 0; i < 5; i++ {
+		writePTY(t, master, "touch /tmp/would-run\n")
+		time.Sleep(30 * time.Millisecond)
+	}
+	awaitBuilderEnd(t, done, 3)
+	if run := <-ran; run.args.QueryStr != "from STATS select count($line)" {
+		t.Fatalf("query run = %q", run.args.QueryStr)
+	}
+	requireNoTTYInput(t, reader)
+}
+
+// TestQueryBuilderTypedEnterAfterQuietOnPTY: a line typed with its Enter in
+// one go (typed ahead) is entered, and what is typed after the quiet time
+// is the next line.
+func TestQueryBuilderTypedEnterAfterQuietOnPTY(t *testing.T) {
+	t.Parallel()
+	master, _, ran, done := startBuilderOnPTY(t)
+	writePTY(t, master, "nonsense\n")
+	time.Sleep(100 * time.Millisecond)
+	writePTY(t, master, "from STATS select count($line)\n")
+	out := waitForPTYOutput(t, master, "running the query", done)
+	if !strings.Contains(out, builderErrorPrefix) {
+		t.Fatalf("the first line was not entered on its own: %q", out)
+	}
+	awaitBuilderEnd(t, done, 3)
+	if run := <-ran; run.args.QueryStr != "from STATS select count($line)" {
+		t.Fatalf("query run = %q", run.args.QueryStr)
 	}
 }
 
