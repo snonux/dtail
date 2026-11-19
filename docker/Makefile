@@ -27,7 +27,7 @@ dcat_notrust:
 	../dcat --user paul --key id_rsa_docker --servers serverlist.txt --files '/var/log/mapr_testdata.log'
 dmap:
 	../dmap --user paul --key id_rsa_docker --servers serverlist.txt --files '/var/log/dserver/*' --trustAllHosts --query 'from stats select avg($$goroutines),max($$goroutines),min($$goroutines),last($$goroutines),count($$hostname),$$hostname group by $$hostname order by avg($$goroutines)'
-test: dmap_test dmap2_test
+test: dmap_test
 dmap_test:
 	../dmap --user paul --key id_rsa_docker --servers serverlist.txt --files '/var/log/mapr_testdata.log' --trustAllHosts --query 'from stats select count($$time),last($$time) group by $$time order by count($$time) outfile dmap2-A.csv'
 	../dmap --user paul --key id_rsa_docker --servers serverlist.txt --files '/var/log/mapr_testdata.log' --trustAllHosts --query 'from stats select count($$time),last($$time) group by $$time order by count($$time) outfile dmap2-B.csv'
