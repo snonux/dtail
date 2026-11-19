@@ -36,7 +36,7 @@ These flags apply to `dcat`, `dgrep`, `dtail`, and `dmap`:
 | `--logger`, `--logDir`, `--logLevel`, `--log-payload` | Select output sink, log directory/level, and whether payload is also written to the daily client log file. See [results and limits](results-and-limits.md). |
 | `--interactive-query`, `--control-tty` | Enable live control (`:reload`, `:query`/`:tail`, `:fields`, Tab completion) and select its TTY device (default `/dev/tty`). `dtail` enables it by default when stdin and stdout are a terminal and the TTY opens. |
 | `--edit-mode emacs\|vi` | Keys of the interactive line editor: `emacs` (default) or `vi` (insert/normal mode, Esc switches); also `Client.EditMode` in the config file. Alt-E/Alt-V open the line in `$VISUAL`/`$EDITOR` in both. Only matters on a terminal. |
-| `--no-interactive` (`dtail` only) | Disable `dtail`'s interactive default; it wins over `--interactive-query`. Without a terminal (pipes, scripts, agents) `dtail` is not interactive anyway. |
+| `--no-interactive` (`dtail`, `dmap`) | Disable `dtail`'s interactive default and `dmap`'s query builder (opened for a missing `--query` on a terminal); it wins over `--interactive-query`. Without a terminal (pipes, scripts, agents) `dtail` is not interactive and `dmap` without a query fails with status 1 anyway. |
 | `--cpc`, `--hostname-override` | Set concurrent connection attempts per CPU and the hostname displayed in logs/output. |
 | `--version`, `--pprof`, `--cpuprofile`, `--memprofile`, `--profile`, `--profiledir` | Show version or collect diagnostics and profiles. `--profile` enables both CPU and memory profiling; profile directory defaults to `profiles`. |
 

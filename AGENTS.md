@@ -227,7 +227,8 @@ terminal and the control TTY opens (`cli.InteractiveDefault` in
 `internal/cli/interactive_default.go`; `--no-interactive` disables it and wins,
 an explicit `--interactive-query[=false]` is kept). The logic lives in
 `internal/cli` because the build compiles each command from its single
-`main.go`. Scheduled and continuous jobs are never interactive: `NewMaprClient`
+`main.go`. `dmap` without a query opens its query builder on a terminal (see
+"dmap Query Builder"). Scheduled and continuous jobs are never interactive: `NewMaprClient`
 forces it off for every mode but `DefaultMode`. `:help` prints per-mode
 `:reload`, `:query` and `:tail` examples (grep filter, MapReduce query,
 switching between them, files), each checked against
@@ -761,6 +762,91 @@ values and lines that are not valid UTF-8 are rejected. Full rules:
   after releasing its lock, `withLock`), and trace diagnostics. The reload
   code outside the MapReduce client (`internal/clients/interactive_*.go`)
   answers on the control TTY, not through the client logger.
+
+### dmap Query Builder
+`dmap` started without a query opens a query builder instead of failing with
+`no mapreduce query specified`, when stdin and stdout are a terminal and the
+control TTY opens (`cli.InteractiveDefault.ResolveQueryBuilder`, bound with
+`BindQueryBuilderDefault`, the same terminal rule as dtail's interactive
+default). `--no-interactive` (new for `dmap`) never opens it and wins over
+`--interactive-query`; `--interactive-query=false` does not open it either;
+an explicit `--interactive-query` opens it also without a terminal. With a
+query (`--query` or positional) nothing changes, and without a terminal (pipe,
+script, cron, the jobs) a missing query stays the error, exit status 1.
+`cmd/dmap/main.go` decides in the runner's `BeforeRuntime` hook, i.e. after
+`config.SetupRuntime` took a positional query.
+
+**Design: two phases, no dserver change** (`clients.QueryBuilderClient`,
+`internal/clients/querybuilderclient.go`; the builder's part of the control
+loop is `internal/clients/interactive_builder.go`):
+1. *Builder.* One interactive session per server that holds no workload:
+   `SESSION START` with `builderHoldSpec`, tail mode without files, which
+   yields no command. That is what an interactive `dtail` without `--files`
+   sends, so every protocol 5 dserver and the serverless runtime keep such a
+   session (`sessionCommandState.keepAlive`,
+   `TestSessionStartWithoutFilesHoldsTheSession`); map mode can not hold one,
+   as dserver rejects a map spec without query (`missing session query`).
+   The `--files` are not in the held spec (a tail spec with files would
+   follow them): they stay in the client's args and the prober reads them
+   from there (`baseClient.sessionFiles`). So the same `interactiveProber` /
+   `fieldCatalog` probes them as in interactive `dtail` (field probe at
+   start, table probes on Tab after a typed `from` table and for `:fields
+   TABLE`, path listings), and the same `interactiveEditor` edits the line.
+   The builder's connections retry like dtail's (`profile.retry`), so a
+   session ended by `IdleSessionTimeoutS` or a dserver restart while the user
+   types only reconnects; a server that is down logs its connection errors
+   and the builder stays usable.
+2. *Run.* Enter on a query that parses hands query and files to the client
+   (`clientProfile.queryBuilt`, `runBuildCommand`) and ends the builder's
+   sessions like `:quit`; `QueryBuilderClient.Start` then starts
+   `NewMaprClient` with them on new connections: the plain command stream,
+   the server's close handshake, the result table or outfile and the exit
+   status of `dmap --query`, unchanged. With an explicit
+   `--interactive-query` that client is interactive `dmap` (its own
+   `SESSION START` with the query; the session stays, `:query` replaces it).
+
+Why the query does not run on the held session: a session started with
+`SESSION START` never ends by itself, so the client could not tell when the
+result is complete without a new signal from dserver, which would mean
+redeploying every host. The run costs one more connection per server instead
+(cheap with the auth-key fast reconnect), and `dmap --query` stays byte for
+byte what it was. `TestDMapQueryBuilder` expects exactly two sessions on the
+server, the map command only on the second.
+
+**In the builder** (`config.Args.QueryBuilder`, set only by
+`NewQueryBuilderClient`; `isQueryBuilder`): the line typed is the query, no
+`:query ` needed (`:query QUERY` works too); a line starting with `:` is a
+control command (`parseBuilderCommand`): `:fields [table]`, `:probe`, `:show`
+(`workload=builder`, the files), `:help` (`builderHelpText`), `:quit` (leaves,
+nothing runs, exit status 0 unless a connection failed), `:reload --files
+PATH` (`--files` is the only flag of its flag set; it only changes the
+client's files and asks the prober for a round, no `SESSION UPDATE`); `:tail`
+is rejected. Tab on a line that is no control command completes it as a
+query with the completer of `:query` (`completeBuilderQuery` ->
+`completeQueryText`), so Tab on the empty line starts with `from`. A query
+that does not parse is answered `query builder: invalid query: ...` and the
+builder stays open; so is a query while the builder has no files (`query not
+run, the session reads no files: ...`). The banner is `builderBanner` (one
+line; the no-files hint follows it as in every session), every line has the
+prompt `query> ` (`builderPrompt`, `interactiveEditor.builder`), typing shows
+no pause hint, and an empty line pauses nothing (it is answered with what to
+type): there is no output to pause, only the client's own log lines, which
+the typing pause still holds back while a line is edited and which every
+entered line releases (`handleBuilderLine`). A log line that arrives while
+the prompt waits without a key typed (a connection error, a server warning)
+is printed after the prompt; the next line gets a new one. The builder runs
+with `Quiet`, so no periodic connection STATS are printed over the line.
+
+Tests: `TestResolveQueryBuilder` (start-up decision),
+`internal/clients/interactive_builder_test.go` and
+`querybuilderclient*_test.go` (lines, completion, help, the hand-over, the
+editor on a PTY), and `integrationtests/dmap_builder_test.go` on a PTY
+against dserver and serverless: `TestDMapQueryBuilder` (banner, parse error,
+Tab inserts `from STATS `, result table, exit status 0, two server
+sessions), `TestDMapQueryBuilderQuit`, `TestDMapQueryBuilderStaysInteractive`
+(`--interactive-query`), `TestDMapWithQueryOnTerminalRunsAtOnce` (`--query`
+and a positional query open no builder) and `TestDMapWithoutQueryNoTerminal`
+(a pipe and `--no-interactive` keep the error).
 
 ### Auth-Key Fast Reconnect
 Auth-key fast reconnect is enabled by default. The client can register a public key with `dserver` over an already-authenticated session, and subsequent connections can use this in-memory key before falling back to normal SSH auth.

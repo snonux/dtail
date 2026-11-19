@@ -311,7 +311,8 @@ func (c *baseClient) rejectControlLine(w io.Writer, reason error, pause *interac
 // without files nothing is read and no field data can ever arrive.
 func (c *baseClient) writeControlBanner(lines controlLines) error {
 	w := lines.Writer()
-	if err := writeControlLine(w, styleOf(w).banner(controlBanner(lines))); err != nil {
+	args, _ := c.snapshotConnectionState()
+	if err := writeControlLine(w, styleOf(w).banner(controlBanner(lines, isQueryBuilder(args)))); err != nil {
 		return err
 	}
 	_, plain := lines.(*scannerLines)
@@ -322,9 +323,16 @@ func (c *baseClient) writeControlBanner(lines controlLines) error {
 }
 
 // controlBanner is the banner for lines: it mentions Tab only where the line
-// editor completes.
-func controlBanner(lines controlLines) string {
-	if _, plain := lines.(*scannerLines); plain {
+// editor completes. The query builder of dmap (builder) has banners of its
+// own, which say what to do there.
+func controlBanner(lines controlLines, builder bool) string {
+	_, plain := lines.(*scannerLines)
+	switch {
+	case builder && plain:
+		return builderPlainBanner
+	case builder:
+		return builderBanner
+	case plain:
 		return interactivePlainBanner
 	}
 	return interactiveBanner
@@ -333,7 +341,9 @@ func controlBanner(lines controlLines) string {
 // runInteractiveCommand runs one parsed control command and writes its
 // answer to the TTY. It reports quit for :quit, after which the caller
 // cancels the interactive session. A failed reload is answered on the TTY and
-// is no error: only a failed TTY write ends the control loop.
+// is no error: only a failed TTY write ends the control loop. In the query
+// builder of dmap it also reports quit for a query to run ("build", see
+// runBuildCommand), and "files" sets the files that query will read.
 func (c *baseClient) runInteractiveCommand(tty io.Writer, command interactiveCommand) (quit bool, err error) {
 	style := styleOf(tty)
 	switch command.kind {
@@ -360,6 +370,10 @@ func (c *baseClient) runInteractiveCommand(tty io.Writer, command interactiveCom
 		return false, c.writeQueryState(tty)
 	case "tail":
 		return false, c.runTailCommand(tty, command.value)
+	case "build":
+		return c.runBuildCommand(tty, command.value)
+	case "files":
+		return false, c.setBuilderFiles(tty, command.next)
 	default:
 		return false, writeControlLine(tty, style.failure("unsupported command"))
 	}
@@ -637,8 +651,12 @@ func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
 // spaces (see doc/interactive-query.md for how to quote such a path). The
 // commands line names :query and :tail only in the modes that have them,
 // and the examples show switching between following lines and a query in
-// dtail (helpSwitchExamples).
+// dtail (helpSwitchExamples). The query builder of dmap has a help of its
+// own (builderHelpText).
 func interactiveHelpText(args config.Args) string {
+	if isQueryBuilder(args) {
+		return builderHelpText()
+	}
 	head := helpCommandsLine(args) + " An empty line pauses or resumes the output.\n" +
 		"On a terminal typing pauses the output until the line is entered, Tab completes commands, " +
 		"flags, after a filter, query or files flag its current value, inside a query the query language " +
@@ -732,9 +750,13 @@ func helpExamples(examples ...[2]string) string {
 // invert as well as regex, because --invert carries over between reloads and
 // decides what the empty regex matches (every line, or none). With colors
 // the query is highlighted (interactiveStyle.quotedQuery), which leaves the
-// text as it is.
+// text as it is. The query builder of dmap, which has no workload yet,
+// answers with writeBuilderState.
 func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 	args, spec, connections := c.snapshotMutableState()
+	if isQueryBuilder(args) {
+		return c.writeBuilderState(writer)
+	}
 	active, _ := partitionReloadConnections(connections)
 	style := styleOf(writer)
 	pairs := []keyValue{
@@ -808,19 +830,7 @@ func isCommandLine(trimmed, command string) bool {
 // the JSON encoding of the spec, and encoding/json would silently replace
 // each invalid byte with U+FFFD, so e.g. a file path would change.
 func parseInteractiveReload(current config.Args, line string) (interactiveCommand, error) {
-	if !utf8.ValidString(line) {
-		return interactiveCommand{}, errors.New("reload line is not valid UTF-8")
-	}
-	remainder := strings.TrimPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), ":reload")
-	remainder = strings.TrimRight(remainder, "\r\n")
-	if strings.TrimSpace(remainder) == "" {
-		return interactiveCommand{}, errors.New("reload requires flags to change")
-	}
-	tokens, err := splitInteractiveArgs(remainder)
-	if err != nil {
-		return interactiveCommand{}, err
-	}
-	nextArgs, err := parseInteractiveReloadArgs(current, tokens)
+	nextArgs, err := parseReloadLine(current, line)
 	if err != nil {
 		return interactiveCommand{}, err
 	}
@@ -833,6 +843,25 @@ func parseInteractiveReload(current config.Args, line string) (interactiveComman
 		next: nextArgs,
 		spec: nextSpec,
 	}, nil
+}
+
+// parseReloadLine tokenizes the flags of a :reload line and applies them to
+// a copy of the current arguments (see parseInteractiveReload for what is
+// trimmed and why invalid UTF-8 is rejected).
+func parseReloadLine(current config.Args, line string) (config.Args, error) {
+	if !utf8.ValidString(line) {
+		return current, errors.New("reload line is not valid UTF-8")
+	}
+	remainder := strings.TrimPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), ":reload")
+	remainder = strings.TrimRight(remainder, "\r\n")
+	if strings.TrimSpace(remainder) == "" {
+		return current, errors.New("reload requires flags to change")
+	}
+	tokens, err := splitInteractiveArgs(remainder)
+	if err != nil {
+		return current, err
+	}
+	return parseInteractiveReloadArgs(current, tokens)
 }
 
 // parseInteractiveReloadArgs applies the flags of a `:reload` line to a copy
@@ -870,10 +899,17 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 // current, its flags bound to next (initialised from current). It is the one
 // definition of which flags a mode accepts, used by the parser and by the
 // Tab completion (interactiveReloadFlags). grep is the --grep alias value of
-// the grep-driven modes, nil otherwise.
+// the grep-driven modes, nil otherwise. The query builder of dmap takes
+// --files only.
 func newInteractiveReloadFlagSet(current config.Args, next *config.Args) (fs *flag.FlagSet, grep *string, err error) {
 	fs = flag.NewFlagSet("reload", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	if isQueryBuilder(current) {
+		// The builder has no workload to change, only the files its
+		// query will read (parseBuilderFiles).
+		fs.StringVar(&next.What, "files", current.What, "File(s) to read")
+		return fs, nil, nil
+	}
 	bindInteractiveSharedFlags(fs, next, current)
 
 	switch {

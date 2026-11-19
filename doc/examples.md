@@ -148,6 +148,16 @@ To run a map-reduce aggregation over logs written in the past, the `dmap` comman
     --query 'from STATS select $hostname,max($goroutines),max($cgocalls),$loadavg,lifetimeConnections group by $hostname order by max($cgocalls)'
 ```
 
+If you leave the query out on a terminal, `dmap` opens a query builder instead of failing: it probes the files for their tables and fields, Tab guides you through the query (`from`, the table, `select`, ...), `:fields` lists what was found, and Enter runs the query exactly as `--query` would have, after which `dmap` exits (`:quit` leaves without running anything). In a pipe, a script or cron, and with `--no-interactive`, a missing query is still an error.
+
+```shell
+% dmap --servers serverlist.txt --files '/var/log/dserver/*.log'
+No query given: build one and press Enter to run it. Tab guides through the query, :fields lists the tables and fields found, :help helps, :quit leaves without running.
+query> from STATS select $hostname,max($goroutines) group by $hostname
+```
+
+See [interactive-query.md](interactive-query.md), "The `dmap` query builder".
+
 Remember: For that to work, you have to make sure that DTail supports your log format. You can either use the ones already defined in `internal/mapr/logformat` or add an extension to support a custom log format. The example here works out of the box though, as DTail understands its own log format already. 
 
 ![dmap](dmap.gif "DMap example")

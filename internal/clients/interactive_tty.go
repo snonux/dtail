@@ -185,6 +185,9 @@ type interactiveEditor struct {
 	// resizePending is a window size change that arrived while hidden;
 	// showLine takes it over once the line is drawn again.
 	resizePending bool
+	// builder is set in the query builder of dmap (isQueryBuilder): every
+	// line has builderPrompt and typing shows no hint.
+	builder bool
 	// itemBlank is the blank the last Tab inserted after a finished query
 	// item, which a comma typed right after it replaces
 	// (commaAfterItemBlank); only the key callback, in the goroutine
@@ -214,11 +217,12 @@ func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 		return nil
 	}
 	vi := c.editMode() == config.EditModeVi
+	args, _ := c.snapshotConnectionState()
 	keys := &editInput{r: tty, viEscape: vi}
 	input := editorTTY{Reader: keys, Writer: tty}
 	editor := &interactiveEditor{terminal: term.NewTerminal(input, ""), screen: newEditorScreen(tty),
 		style: c.interactiveStyle(), pause: pause, mode: mode, setForceExitHook: deps.setForceExitHook,
-		prompting: prompting}
+		prompting: prompting, builder: isQueryBuilder(args)}
 	editor.runEditor = func(path string) error {
 		return runEditorOnTTY(tty.Name(), externalEditorCommand(deps.getenv), path)
 	}
@@ -376,9 +380,11 @@ func (c *baseClient) editorKey(e *interactiveEditor, pause *interactivePause,
 // the line, prints the hint and draws the line again (with the prompt the
 // pause set). While the host key question is asked it only pauses: the
 // hint would be written right behind the question (which the Terminal does
-// not know of) and push the answer being typed to a later row.
+// not know of) and push the answer being typed to a later row. Nor in the
+// query builder of dmap: its banner said what to type, and there is no
+// output whose pause would need explaining.
 func (e *interactiveEditor) startTyping(pause *interactivePause) {
-	if pause.pauseTyping() && !e.answering() {
+	if pause.pauseTyping() && !e.answering() && !e.builder {
 		_, _ = e.terminal.Write([]byte(e.style.hint(interactiveTypingHint) + "\n"))
 	}
 }
@@ -398,9 +404,13 @@ func (e *interactiveEditor) answering() bool {
 // it is set only between lines: a pause for typing starts with the first
 // key of a line, which keeps the prompt it started with, and so does a
 // line during which the window is resized. It runs in the control loop
-// goroutine, which owns the pause state.
+// goroutine, which owns the pause state. The query builder of dmap always
+// shows builderPrompt: nothing streams there.
 func (e *interactiveEditor) setPrompt() {
 	prompt := e.style.editorPrompt(e.pause != nil && e.pause.paused, e.screen.columns())
+	if e.builder {
+		prompt = e.style.fittingPrompt(builderPrompt, e.screen.columns())
+	}
 	e.terminal.SetPrompt(prompt)
 	e.screen.setPromptWidth(utf8.RuneCountInString(stripANSI(prompt)))
 }

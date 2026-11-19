@@ -24,7 +24,9 @@ without a TTY and scripts.
 
 `dcat`, `dgrep` and `dmap` stay one-shot: interactive control would keep
 their session open after the workload finished, so they would no longer exit
-by themselves. They still accept `--interactive-query` explicitly.
+by themselves. They still accept `--interactive-query` explicitly. `dmap`
+started without a query is the exception: on a terminal it opens the query
+builder, see "The `dmap` query builder" below.
 dserver's scheduled and continuous MapReduce jobs never run interactively,
 whatever their arguments say (`NewMaprClient` forces it off for every job
 mode).
@@ -32,6 +34,60 @@ mode).
 On start the client prints `Interactive query control enabled. Press Enter to
 pause the output. Type :help for examples of changing the filter or query on
 the fly (Tab completes), :quit to end.`
+
+## The `dmap` query builder
+
+`dmap` started without a query (`dmap --servers app01 --files
+/var/log/app.log`) used to fail with `no mapreduce query specified`. When
+stdin and stdout are a terminal and the control TTY can be opened (the same
+rule as for `dtail` above), it now opens a query builder instead:
+
+```
+No query given: build one and press Enter to run it. Tab guides through the
+query, :fields lists the tables and fields found, :help helps, :quit leaves
+without running.
+query>
+```
+
+* **The line you type is the query.** No `:query ` in front and no shell
+  quoting (`:query <query>` works too). Tab guides through it exactly as
+  after `:query ` in `dtail`: `from`, the table, `select`, its items,
+  `where`, `group by`, `order by`, `limit`, with the tables, fields,
+  `$variables` and sample values found in the files (see "Line editing and
+  completion"). Up/Down recall earlier lines, Alt-E opens the line in
+  `$EDITOR`, `--edit-mode vi` adds the vi keys.
+* **The files are probed as in an interactive `dtail`**: once at the start,
+  on Tab after a typed `from TABLE` and for `:fields TABLE` with a table
+  probe, and for path completion. Nothing is read or printed before the
+  query runs.
+* **Enter runs the query** as `dmap --query` does: the servers read the
+  files, the result table is printed (or the outfile written), and `dmap`
+  exits with its usual exit status. A query that does not parse is answered
+  with the parse error (`query builder: invalid query: ...`) and the builder
+  stays open.
+* **Lines starting with `:` are commands**: `:fields [table]`, `:probe`,
+  `:show` (the files, `workload=builder`), `:help`, `:reload --files PATH`
+  to name or change the files (Tab lists paths; `--files` is the only flag
+  here), and `:quit` to leave without running anything. Without `--files`
+  the builder says `the session reads no files: :reload --files PATH`, and
+  a query is not run until files are named.
+* **`--interactive-query`** (given explicitly) keeps the session open after
+  the query ran, as interactive `dmap` always did: `:query <query>` then
+  replaces the query, `:reload` changes it or the files, `:quit` ends.
+  It also opens the builder without a terminal on stdin and stdout.
+* **`--no-interactive`** never opens the builder (and wins over
+  `--interactive-query`). Without a terminal (a pipe, a script, cron) and
+  with `--interactive-query=false` a missing query stays the error it was,
+  with exit status 1. With a query, `dmap` runs as before.
+
+The builder and the run use separate connections: while you build the query,
+`dmap` holds one idle session per server (for the probes); when you press
+Enter it closes them and runs the query on new connections, exactly as `dmap
+--query` would have. A server that closes the idle session meanwhile (its
+idle timeout, a restart) is reconnected; a server that is down shows its
+connection error, and the query can still be built and run against the
+others. No dserver change is needed for the builder: every protocol 5
+dserver supports it.
 
 ## Control commands
 
@@ -620,6 +676,16 @@ dtail --servers app01 --files /var/log/app.log --grep ERROR
 :query from STATS select count($line) group by $hostname
 :tail
 :tail WARN
+```
+
+Build a `dmap` query from scratch (no `--query`): the builder opens, Tab
+guides, Enter runs the query and `dmap` exits with the result:
+
+```bash
+dmap --servers app01 --files /var/log/app.log
+# then press Tab (inserts "from STATS " when the log has one table), type or
+# Tab the rest and press Enter:
+from STATS select count($line) group by $hostname
 ```
 
 Build a query with Tab in a running `dtail` whose log has two tables,

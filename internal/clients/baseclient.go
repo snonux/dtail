@@ -99,7 +99,7 @@ func newBaseClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDep
 		colorizer:   colorizer,
 		loggers:     loggers.normalized(),
 		throttleCh:  make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
-		sessionSpec: NewSessionSpec(args),
+		sessionSpec: startSessionSpec(args),
 		profile:     profile,
 	}
 	if err := c.initialize(); err != nil {

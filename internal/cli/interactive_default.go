@@ -3,6 +3,7 @@ package cli
 import (
 	"flag"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 
@@ -15,7 +16,9 @@ const interactiveQueryFlag = "interactive-query"
 
 // InteractiveDefault makes interactive query control the default of a client
 // (dtail) when it runs in a terminal, and binds --no-interactive to turn it
-// off. It lives here rather than in cmd/dtail because the build tooling
+// off. For dmap it decides the same way whether the query builder opens for
+// a missing query (BindQueryBuilderDefault, ResolveQueryBuilder). It lives
+// here rather than in cmd/dtail because the build tooling
 // compiles each command from its single main.go file.
 type InteractiveDefault struct {
 	// disabled is --no-interactive. It wins over --interactive-query.
@@ -57,6 +60,49 @@ func (d *InteractiveDefault) Resolve(fs *flag.FlagSet, args *config.Args) {
 		return
 	}
 	args.InteractiveQuery = d.onTerminal() && d.controlTTYUsable(args.ControlTTYPath)
+}
+
+// BindQueryBuilderDefault registers --no-interactive on fs for dmap, whose
+// terminal default is not interactive query control but the query builder
+// for a missing --query (ResolveQueryBuilder).
+func BindQueryBuilderDefault(fs *flag.FlagSet) *InteractiveDefault {
+	d := &InteractiveDefault{onTerminal: stdioIsTerminal, controlTTYUsable: canOpenControlTTY}
+	fs.BoolVar(&d.disabled, "no-interactive", false,
+		"Never open the query builder or interactive query control "+
+			"(without --query the builder opens when stdin and stdout are a terminal)")
+	return d
+}
+
+// ResolveQueryBuilder reports whether dmap opens its query builder
+// (clients.NewQueryBuilderClient) instead of failing for the missing query.
+// It is called after fs was parsed and after the client setup
+// (config.SetupRuntime), which takes a positional argument for the query, so
+// that args.QueryStr is the query however it was given. It leaves
+// args.InteractiveQuery as given, except that --no-interactive clears it:
+// for the builder it then says whether the session stays open after the
+// built query ran (an explicit --interactive-query) or dmap runs it and
+// exits (the default). The rules:
+//
+//   - --no-interactive never opens it (and disables --interactive-query).
+//   - With a --query that is not blank dmap runs as before.
+//   - Without one, an explicit --interactive-query opens it and
+//     --interactive-query=false does not.
+//   - Otherwise it opens only when stdin and stdout are both a terminal and
+//     the control TTY can be opened (as dtail's interactive default,
+//     Resolve), so that a pipe, a script, cron and CI keep the error for the
+//     missing query.
+func (d *InteractiveDefault) ResolveQueryBuilder(fs *flag.FlagSet, args *config.Args) bool {
+	if d.disabled {
+		args.InteractiveQuery = false
+		return false
+	}
+	if strings.TrimSpace(args.QueryStr) != "" {
+		return false
+	}
+	if flagWasSet(fs, interactiveQueryFlag) {
+		return args.InteractiveQuery
+	}
+	return d.onTerminal() && d.controlTTYUsable(args.ControlTTYPath)
 }
 
 // flagWasSet reports whether name was given on the command line.

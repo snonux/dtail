@@ -128,9 +128,16 @@ func (s *interactiveStyle) editorPrompt(paused bool, width int) string {
 	if !paused {
 		return ""
 	}
-	prompt := s.prompt()
+	return s.fittingPrompt(interactivePrompt, width)
+}
+
+// fittingPrompt returns the painted prompt text, or text unpainted where
+// the terminal is narrower than the painted prompt has runes (see
+// editorPrompt).
+func (s *interactiveStyle) fittingPrompt(text string, width int) string {
+	prompt := s.paint(s.themeOf().Prompt, text)
 	if utf8.RuneCountInString(prompt) > width {
-		return interactivePrompt
+		return text
 	}
 	return prompt
 }
@@ -144,7 +151,8 @@ const interactivePrompt = "dtail> "
 // naming the commands and the lines introducing examples as headings, each
 // example's command as a command and its explanation as an example. It
 // tells the lines apart by their text ("Commands:", a line ending in
-// "e.g.:", an example's two leading blanks before its colon). Unlike the
+// "e.g.:", an example's two leading blanks: a control command or, in the
+// help of dmap's query builder, a query). Unlike the
 // :fields answer, which is painted from its structure (fields), every line
 // of the help is a constant of dtail (interactiveHelpText, helpExamples):
 // no server, file or user text is in it, so no line can be taken for
@@ -159,7 +167,7 @@ func (s *interactiveStyle) help(text string) string {
 		switch {
 		case strings.HasPrefix(line, "Commands:") || strings.HasSuffix(line, "e.g.:"):
 			lines[i] = s.paint(s.theme.Heading, line)
-		case strings.HasPrefix(line, "  :"):
+		case strings.HasPrefix(line, "  "):
 			lines[i] = s.helpExample(line)
 		}
 	}
