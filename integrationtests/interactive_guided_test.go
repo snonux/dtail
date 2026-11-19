@@ -41,11 +41,11 @@ var sgrSequence = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 // TestInteractiveGuidedQuerySession runs the target session of the guided
 // query builder against dserver and serverless: an interactive dtail with
 // --noColor follows the PLAIN lines of a growing log of two tables, and
-// :query is typed with Tab alone choosing every word (from, the table,
-// select, the aggregation, its field, group by and its field), listing the
-// tables, the select items and fields of the chosen table only, and after a
-// finished item only the clauses that continue the query, with the comma
-// hint. The applied query prints a correct result table and no followed
+// :query is typed with Tab alone choosing every word (from, listed with
+// the tables in the same Tab, the table, select, the aggregation, its
+// field, group by and its field), listing the tables, the select items and
+// fields of the chosen table only, and after a finished item only the
+// clauses that continue the query, with the comma hint. The applied query prints a correct result table and no followed
 // line, :tail goes back to following lines, and :query switches to another
 // query, all on one session. The output carries no SGR sequence.
 func TestInteractiveGuidedQuerySession(t *testing.T) {
@@ -111,8 +111,8 @@ func guidedSessionSteps() []interactiveStep {
 		// Typing starts once the probe answered and lines were followed
 		// (the empty raw input sends nothing).
 		tab(probeStoredMessage, ""),
+		// The first Tab starts the query with from and lists the tables.
 		tab("PLAIN line 3", ":query \t"),
-		tab(":query from ", "\t"),
 		tab("table: ORDERS  STATS", "OR\t"),
 		tab(":query from ORDERS ", "\t"),
 		tab(":query from ORDERS select ", "\t"),

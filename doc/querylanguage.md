@@ -195,7 +195,20 @@ FUNCTION := md5sum|maskdigits
   * The client merges what it received and reports the result (prints it,
     or writes the `outfile`) first half an interval after the query started
     (also after an interactive `:reload` or `:query`), then once per
-    interval, and once more when the query ends. A printed table that has
+    interval, and once more when the query ends. As the servers send their
+    first aggregates only one interval after the start (or once a `dmap`
+    read ended), the first aggregates of a query move the next report: it
+    waits until every server still connected sent its first aggregates and
+    comes one second after the last of them, but at most half an interval
+    after the first server's (a server with nothing to send, or trailing
+    by more, is in the next table; a connected server that sends nothing,
+    e.g. no matching lines, so delays the first table to half an interval
+    after the first server's), and both at most half an interval (so `interval 1` reports half a second after the sends, between
+    them). The first table thus shows shortly after the data arrived instead
+    of 1.5 intervals after the start; a server whose first aggregates trail
+    by more is in the next table. The later reports follow once per
+    interval from then on. Continuous jobs keep reporting
+    every interval after the first half interval. A printed table that has
     no rows or did not change since the last print is not printed again.
     Scheduled jobs report no interim results: they write their outfile once,
     when the query completed.

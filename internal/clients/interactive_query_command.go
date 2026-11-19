@@ -216,6 +216,7 @@ func completeQueryCommand(unchanged completion, before, after string, args confi
 		result.line = before[:len(before)-len(query.word)] + replacement + after
 		result.pos = len(result.line) - len(after)
 		result.changed = result.line != unchanged.line
+		result.itemBlank = query.itemBlankSize(replacement)
 	}
 	return result, true
 }

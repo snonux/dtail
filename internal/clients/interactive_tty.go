@@ -128,6 +128,11 @@ type interactiveEditor struct {
 	// vi is the vi editing mode (Client.EditMode "vi"); nil edits with
 	// x/term's emacs-like keys only.
 	vi *viEditor
+	// itemBlank is the blank the last Tab inserted after a finished query
+	// item, which a comma typed right after it replaces
+	// (commaAfterItemBlank); only the key callback, in the goroutine
+	// reading the line, uses it.
+	itemBlank itemBlank
 }
 
 // viCursorShapes are the cursor shapes (DECSCUSR) of the vi modes, as vi
@@ -222,12 +227,15 @@ func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 // for typing; unbound keys (PageUp, F-keys, Ctrl-G) change nothing on the
 // line and must not freeze the output unnoticed. Tab completes
 // (completeEditorLine, which may wait briefly for a path listing) and is
-// consumed; all other keys are left to the Terminal. While the host key
-// question is asked, Tab is consumed without completing: the line is its
-// answer, not a command.
+// consumed; a comma typed right after the blank Tab inserted after a
+// finished query item replaces that blank (commaAfterItemBlank, not in vi
+// normal mode, where the comma is a motion); all other keys are left to
+// the Terminal. While the host key question is asked, Tab is consumed
+// without completing: the line is its answer, not a command.
 func (c *baseClient) editorKey(e *interactiveEditor, pause *interactivePause,
 	line string, pos int, key rune) (string, int, bool) {
 
+	blank := e.takeItemBlank()
 	if key == externalEditKey {
 		return c.editExternally(e, pause, line, pos)
 	}
@@ -244,12 +252,13 @@ func (c *baseClient) editorKey(e *interactiveEditor, pause *interactivePause,
 	}
 	e.startTyping(pause)
 	if key != '\t' {
-		return "", 0, false
+		return blank.commaAfterItemBlank(line, pos, key)
 	}
 	if e.answering() {
 		return line, pos, true
 	}
 	result := c.completeEditorLine(e, pause, line, pos)
+	e.rememberItemBlank(result)
 	// x/term releases its lock around this callback, so writing here is
 	// safe: Write clears the line, prints the listing (header, heading,
 	// candidate groups wrapped to the terminal width, hint) and redraws it.
@@ -313,6 +322,7 @@ var errControlLineTooLong = fmt.Errorf(
 // line the Terminal may have cut.
 func (e *interactiveEditor) ReadLine() (string, error) {
 	e.setPrompt()
+	e.itemBlank = itemBlank{}
 	if e.vi != nil {
 		e.vi.reset()
 	}

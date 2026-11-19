@@ -176,36 +176,3 @@ func parseCSVRecord(maprLine string) ([]string, error) {
 	}
 	return fields, nil
 }
-
-// Probe is the csv format's own probe: the generic probe, plus the columns of
-// the header row (the first line) of every source of the sample, so a column
-// is listed even when no data row was sampled. The fields keep ProbeAnyTable,
-// as a csv query selects every line.
-func (p *csvParser) Probe(sample ProbeSample) (ProbeResult, error) {
-	result, err := ProbeWithParser(p, sample)
-	if err != nil {
-		return result, err
-	}
-	collector := probeCollector{result: result}
-	seen := make(map[string]struct{})
-	for _, line := range sample.Lines {
-		if _, ok := seen[line.SourceID]; ok {
-			continue
-		}
-		seen[line.SourceID] = struct{}{}
-		header, err := parseCSVRecord(line.Line)
-		if err != nil {
-			continue
-		}
-		for _, column := range header {
-			if column == "" {
-				continue
-			}
-			collector.ensureField(ProbeAnyTable, column)
-		}
-	}
-	// Per-table data also when only header rows were sampled: no data line
-	// filled a variable then (not the format's KnownVariables).
-	collector.ensureTableVariables(ProbeAnyTable)
-	return collector.result, nil
-}

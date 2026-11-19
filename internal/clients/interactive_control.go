@@ -215,7 +215,7 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 	defer closeLines()
 	// Written once the terminal mode is set, so that the user's first keys
 	// already reach the line editor.
-	if err := writeControlLine(lines.Writer(), styleOf(lines.Writer()).banner(controlBanner(lines))); err != nil {
+	if err := c.writeControlBanner(lines); err != nil {
 		return err
 	}
 
@@ -302,6 +302,21 @@ func (c *baseClient) rejectControlLine(w io.Writer, reason error, pause *interac
 		pause.resume()
 	}
 	return writeControlLine(w, styleOf(w).failure("interactive query error: "+reason.Error()))
+}
+
+// writeControlBanner writes the banner (controlBanner) and, for a session
+// that reads no files, the hint how to give it some (noFilesHint), as
+// without files nothing is read and no field data can ever arrive.
+func (c *baseClient) writeControlBanner(lines controlLines) error {
+	w := lines.Writer()
+	if err := writeControlLine(w, styleOf(w).banner(controlBanner(lines))); err != nil {
+		return err
+	}
+	_, plain := lines.(*scannerLines)
+	if hint := c.prober.noFilesHint(!plain); hint != "" {
+		return writeControlLine(w, styleOf(w).hint(hint))
+	}
+	return nil
 }
 
 // controlBanner is the banner for lines: it mentions Tab only where the line

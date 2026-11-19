@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/mimecast/dtail/internal/logging"
@@ -62,7 +63,14 @@ type Aggregate struct {
 	// The server we aggregate the data for (logging and debugging purposes only)
 	server string
 	logger logging.Logger
+	// retrying is set while a retry of a merge that missed the global
+	// group set's lock is scheduled (retryMerge).
+	retrying bool
 }
+
+// mergeRetryDelay is how long after a merge that missed the global group
+// set's lock the queued messages are tried again.
+const mergeRetryDelay = 10 * time.Millisecond
 
 // pendingMessage is a queued aggregate message: its group key is
 // pending[start:keyEnd] and its fields are pending[keyEnd:end].
@@ -139,9 +147,10 @@ func (a *Aggregate) Add(message []byte) error {
 }
 
 // Merge aggregates the queued messages into the shared global group set
-// when its lock is free right away, and otherwise keeps them queued for the
-// next Merge or Flush, so a connection never waits for another one. Only
-// once maxPendingBytes are queued does it wait for the lock.
+// when its lock is free right away, and otherwise keeps them queued, so a
+// connection never waits for another one, and tries again shortly
+// (retryMerge) and at the next Merge or Flush. Only once maxPendingBytes
+// are queued does it wait for the lock.
 func (a *Aggregate) Merge() error {
 	return a.merge(false)
 }
@@ -180,13 +189,38 @@ func (a *Aggregate) merge(block bool) error {
 		return nil
 	}
 
-	apply := func(group *mapr.GroupSet) { a.aggregatePending(snapshot.Query, group) }
+	// The first merge of the generation from this server tells the reporter
+	// that its data arrived (SessionSnapshot.AggregatesArrived); a missed
+	// UpdateNoblock merges nothing yet and so signals nothing either.
+	apply := func(group *mapr.GroupSet) {
+		a.aggregatePending(snapshot.Query, group)
+		snapshot.arrival.mark(a.server)
+	}
 	if block || len(a.pending) >= maxPendingBytes {
 		snapshot.GlobalGroup.Update(apply)
 		return nil
 	}
-	snapshot.GlobalGroup.UpdateNoblock(apply)
+	if !snapshot.GlobalGroup.UpdateNoblock(apply) && !a.retrying {
+		a.retrying = true
+		go a.retryMerge()
+	}
 	return nil
+}
+
+// retryMerge merges the messages a Merge left queued because another
+// connection (or the result rendering) held the global group set's lock.
+// Without it they waited for the connection's next aggregate messages: the
+// servers send their results at the same moment, once per interval, so a
+// connection that lost the lock had its rows reported one interval late
+// (seen live as a server missing from a query's first table). It never
+// waits for the lock either: a merge that misses again schedules the next
+// retry. Messages of a replaced generation are dropped by merge.
+func (a *Aggregate) retryMerge() {
+	time.Sleep(mergeRetryDelay)
+	a.mu.Lock()
+	a.retrying = false
+	a.mu.Unlock()
+	_ = a.merge(false)
 }
 
 // aggregatePending aggregates every queued message, in order, into group and

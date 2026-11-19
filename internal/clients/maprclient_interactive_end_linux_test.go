@@ -511,6 +511,9 @@ func TestInteractiveEditorCompletesQueryOnPTY(t *testing.T) {
 	c.ControlTTYPath = ttyPath
 	c.Mode = omode.MapClient
 	c.What = "/var/log/app.log"
+	// The session reads the file (a session without files gets the
+	// no-files hint instead, TestInteractiveEditorNoFilesOnPTY).
+	c.sessionSpec.Files = []string{c.What}
 	c.QueryStr = "from STATS select count($line) group by $hostname"
 
 	done := make(chan int, 1)
@@ -527,6 +530,50 @@ func TestInteractiveEditorCompletesQueryOnPTY(t *testing.T) {
 	write("\t")
 	waitForPTYOutput(t, master, queryCatalogHint, done)
 	write("\x15:quit\n")
+	awaitPTYClientEnd(t, done)
+}
+
+// TestInteractiveEditorNoFilesOnPTY starts a session that reads no files on
+// a real pseudo terminal: the banner is followed by the hint how to give it
+// files, and :fields and :probe answer with it instead of waiting for field
+// data that can never arrive.
+func TestInteractiveEditorNoFilesOnPTY(t *testing.T) {
+	t.Parallel()
+	master, ttyPath := openTestPTY(t)
+	untilEnd := func(ctx context.Context) { <-ctx.Done() }
+	c, _ := newSessionEndTestClient(t, untilEnd)
+	c.loggers.Client = newPausingTestLogger()
+	c.InteractiveQuery = true
+	c.ControlTTYPath = ttyPath
+	c.Mode = omode.MapClient
+	c.What = ""
+	c.sessionSpec.Files = nil
+
+	done := make(chan int, 1)
+	go func() { done <- c.Start(context.Background(), nil) }()
+	hint := sessionNoFilesText + sessionNoFilesRemoteTab
+	// One wait for both: the helper drops what it read past a match.
+	waitForPTYOutput(t, master, hint, done)
+	if _, err := master.WriteString(":fields\n"); err != nil {
+		t.Fatal(err)
+	}
+	// Only the answer of :fields is followed by the pause message: typing
+	// paused the output, and :fields keeps it paused.
+	waitForPTYOutput(t, master, hint+"\r\r\n"+interactivePausedMessage, done)
+	if _, err := master.WriteString(":probe\n"); err != nil {
+		t.Fatal(err)
+	}
+	waitForPTYOutput(t, master, "nothing to probe: "+hint, done)
+	if _, err := master.WriteString(":quit\n"); err != nil {
+		t.Fatal(err)
+	}
+	awaitPTYClientEnd(t, done)
+}
+
+// awaitPTYClientEnd waits for the interactive client of a PTY test to end
+// with status 0.
+func awaitPTYClientEnd(t *testing.T, done <-chan int) {
+	t.Helper()
 	select {
 	case status := <-done:
 		if status != 0 {

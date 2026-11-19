@@ -57,6 +57,10 @@ type MaprClient struct {
 	// dtail switched its session to the active query, which are not the
 	// query's (see incompleteResultReasons).
 	queryMarks queryFailureMarks
+	// liveServers returns the servers the first report of a query waits
+	// for (firstReportWindow); nil means the connections whose handler is
+	// not done. Tests replace it.
+	liveServers func() []string
 }
 
 type outfileReportState struct {
@@ -406,18 +410,10 @@ func incompleteQueryReason(ctxErr error, status int) string {
 }
 
 // periodicReportResults reports the interim results (prints them or writes
-// the outfile) until ctx is done: after reportDelay, recalculated whenever
-// the query generation changes. It does not run in the scheduled modes.
+// the outfile) until ctx is done, one query generation at a time
+// (reportGeneration). It does not run in the scheduled modes.
 func (c *MaprClient) periodicReportResults(ctx context.Context) {
-	var (
-		lastGeneration uint64
-		seenGeneration bool
-	)
-
-	for {
-		if ctx.Err() != nil {
-			return
-		}
+	for ctx.Err() == nil {
 		snapshot := c.session.Snapshot()
 		if snapshot.Query == nil {
 			// Interactive dtail follows lines: nothing to report (and to
@@ -427,36 +423,55 @@ func (c *MaprClient) periodicReportResults(ctx context.Context) {
 			}
 			continue
 		}
-		rampUp := !seenGeneration || snapshot.Generation != lastGeneration
-		lastGeneration = snapshot.Generation
-		seenGeneration = true
+		if !c.reportGeneration(ctx, snapshot) {
+			return
+		}
+	}
+}
 
-		delay := c.reportDelay(snapshot.Query, rampUp)
-		c.clientLogger().Debug("Sleeping before processing mapreduce results", "generation", snapshot.Generation, "delay", delay)
+// reportGeneration reports the interim results of snapshot's query
+// generation until the session state changes (true) or ctx is done (false).
+//
+// The first report comes half an interval after the generation started.
+// Each dserver sends its first aggregates only one interval after it started
+// the query, though, so that report has nothing to show (an empty table is
+// not printed) and, on a fixed cadence, the first table would follow only
+// 1.5 intervals after the start. So, except for continuous jobs
+// (earlyFirstReport), the servers' first aggregates merged for the
+// generation (SessionSnapshot.AggregatesArrived) move the next report to
+// shortly after them (firstReportWindow: firstReportSettle after the last
+// live server's, or, while one is missing, half an interval after the first
+// server's). Every report
+// after it follows one interval after the previous one, which keeps the
+// reports between the servers' sends, at most half an interval behind them,
+// so each table holds one send of every server.
+func (c *MaprClient) reportGeneration(ctx context.Context, snapshot maprclient.SessionSnapshot) bool {
+	interval := c.reportDelay(snapshot.Query, false)
+	window := c.newFirstReportWindow(snapshot, interval)
+	delay := c.reportDelay(snapshot.Query, true)
+	c.clientLogger().Debug("Sleeping before processing mapreduce results", "generation", snapshot.Generation, "delay", delay)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
 
-		timer := time.NewTimer(delay)
+	for {
 		select {
+		case <-window.arrived:
+			all := c.allLiveArrived(snapshot)
+			timer.Reset(window.settle(time.Now(), all))
+			c.clientLogger().Debug("Mapreduce aggregates of a server arrived", "generation", snapshot.Generation,
+				"allLiveServers", all)
 		case <-timer.C:
+			window.reporting()
 			c.clientLogger().Debug("Gathering interim mapreduce result")
 			if err := c.reportResults(false); err != nil {
 				c.clientLogger().Error("Unable to gather mapreduce result", err)
 			}
+			timer.Reset(interval)
 		case <-c.session.Changes():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			c.clientLogger().Debug("Mapreduce query generation changed, recalculating report interval")
+			return true
 		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return
+			return false
 		}
 	}
 }
@@ -744,8 +759,10 @@ func warnUnknownQueryVariables(w io.Writer, query *mapr.Query, logger logging.Lo
 // reportDelay is the time until the next interim report: the query's
 // interval (mapr.NewQuery defaults it to 5 s), which also paces each
 // dserver's periodic serialization (aggregate.Start), or half of it for the
-// first report of a query generation. The 1 s fallback only applies to
-// "interval 0" (and a missing query), matching the server's fallback.
+// first report of a query generation (rampUp; reportGeneration moves that
+// report to shortly after the generation's first aggregates). The 1 s
+// fallback only applies to "interval 0" (and a missing query), matching the
+// server's fallback.
 func (c *MaprClient) reportDelay(query *mapr.Query, rampUp bool) time.Duration {
 	interval := time.Second
 	if query != nil && query.Interval > 0 {

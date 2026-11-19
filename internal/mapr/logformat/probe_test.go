@@ -472,15 +472,11 @@ func TestProbeCapsNames(t *testing.T) {
 		}
 	})
 	t.Run("csv probe of a line that is no csv", func(t *testing.T) {
+		// No field named after the whole line, not even a cut one: the csv
+		// probe takes no line without a plausible header for csv at all.
 		result := mustProbe(t, "csv", probeSampleOf("a", strings.Repeat("x", 5000)))
-		fields := result.Tables[ProbeAnyTable]
-		if len(fields) != 1 {
-			t.Fatalf("fields = %v, want the one header column", fields)
-		}
-		for field := range fields {
-			if len(field) != ProbeMaxNameBytes {
-				t.Errorf("field name of %d bytes, want %d", len(field), ProbeMaxNameBytes)
-			}
+		if !result.Empty() {
+			t.Fatalf("result = %+v, want empty", result)
 		}
 	})
 	t.Run("prober result names", func(t *testing.T) {

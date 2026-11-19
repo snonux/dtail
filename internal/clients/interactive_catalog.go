@@ -76,6 +76,11 @@ type catalogSnapshot struct {
 	// probe, interactiveProber.requestTable) to the lines of that table its
 	// servers sampled; a table probed but not found has 0.
 	TableProbes map[string]int
+	// NoFilesHint is set when the session reads no files at all, so the
+	// catalog stays empty whatever the servers do: the hint how to give
+	// the session files, which the completion hints then show
+	// (catalogEmptyHint).
+	NoFilesHint string
 }
 
 // catalogFormat is what the servers found for one log format: tables

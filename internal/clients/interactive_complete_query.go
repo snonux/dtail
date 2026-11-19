@@ -15,7 +15,8 @@ import (
 )
 
 // queryCatalogHint is listed with the candidates of a query word that would
-// be completed from the field catalog while that holds nothing yet.
+// be completed from the field catalog while that holds nothing yet (a
+// session without files gets the no-files hint instead, catalogEmptyHint).
 const queryCatalogHint = "(no field data from the servers yet: only the query language completes)"
 
 // queryCompletion is what completing a word of a --query value found: the
@@ -40,24 +41,38 @@ type queryCompletion struct {
 	// ending in ")" (count(x), md5sum($y)) and the candidates are those of
 	// the position after the blank that follows it (completeAfterItem):
 	// they are listed, never inserted, not even a single one, as a comma
-	// may follow instead. blankFirst tells that Tab inserts that blank
-	// (the item ends the query); with text after the cursor it inserts
-	// nothing, so it neither doubles a blank nor splits a token.
-	afterItem, blankFirst bool
+	// may follow instead.
+	afterItem bool
+	// lead is what Tab inserts in place of the word before the position
+	// the candidates are of, which it lists in the same Tab, never
+	// inserting one: the blank after a finished item when the item ends
+	// the query (afterItem; with text after the cursor it inserts nothing,
+	// so it neither doubles a blank nor splits a token), and "from " that
+	// starts a query while the catalog knows several tables
+	// (completeFromFirst).
+	lead string
 }
 
 // insertion returns what Tab inserts in place of the word, "" for
 // nothing, and the candidates to list, nil when the insertion completes
-// the word (decodedReplacement). After a finished item (afterItem) it
-// inserts at most the blank and lists every candidate, both in one Tab.
+// the word (decodedReplacement). After a finished item (afterItem) or
+// with a lead it inserts at most the lead and lists every candidate, both
+// in one Tab.
 func (q queryCompletion) insertion() (string, []string) {
-	if q.afterItem {
-		if q.blankFirst {
-			return " ", q.candidates
-		}
-		return "", q.candidates
+	if q.afterItem || q.lead != "" {
+		return q.lead, q.candidates
 	}
 	return decodedReplacement(q.word, q.candidates)
+}
+
+// itemBlankSize returns the length of inserted, the replacement as put on
+// the line, when it is the blank after a finished item (afterItem with
+// lead), else 0 (completion.itemBlank).
+func (q queryCompletion) itemBlankSize(inserted string) int {
+	if !q.afterItem || q.lead == "" {
+		return 0
+	}
+	return len(inserted)
 }
 
 // listInto sets the listing of q in result: its candidates (listed, from
@@ -88,15 +103,42 @@ type candidateGroup struct {
 // $variables and values only of the query's table once it names one, on
 // either side of the cursor (queryOutline). Right after a finished item
 // ending in ")" it lists what follows the blank after it, which Tab
-// inserts too at the end of the query (completeAfterItem). It returns no candidates where nothing
-// can be offered (a number, an outfile path).
+// inserts too at the end of the query (completeAfterItem); where it
+// inserts from alone, it lists the tables after it (completeFromFirst). It
+// returns no candidates where nothing can be offered (a number, an outfile
+// path).
 func completeQueryWord(query, tail string, catalog catalogSnapshot) queryCompletion {
 	partial := mapr.AnalyzePartial(query)
 	result := completeQueryPartial(partial, tail, catalog)
 	if next, ok := completeAfterItem(partial, result, tail, catalog); ok {
 		return next
 	}
+	if next, ok := completeFromFirst(partial, result, tail, catalog); ok {
+		return next
+	}
 	return result
+}
+
+// completeFromFirst completes a Tab that would insert from alone with an
+// empty word (a query begun with Tab while the catalog knows several tables
+// of its format, nextClauses) as that Tab and the next one: it inserts
+// "from " (lead) and lists the tables that may follow it, under their
+// heading, so that one Tab starts the query and shows its tables. It
+// reports false elsewhere, also when no table may follow (none known: the
+// Tab inserts from with tableNameHint).
+func completeFromFirst(partial mapr.Partial, own queryCompletion, tail string,
+	catalog catalogSnapshot) (queryCompletion, bool) {
+
+	const from = "from "
+	if partial.Word != "" || !slices.Equal(own.candidates, []string{from}) {
+		return queryCompletion{}, false
+	}
+	next := completeQueryPartial(mapr.AnalyzePartial(partial.Query+from), tail, catalog)
+	if len(next.candidates) == 0 {
+		return queryCompletion{}, false
+	}
+	next.word, next.lead = partial.Word, from
+	return next, true
 }
 
 // completeAfterItem completes Tab right after a finished item ending in
@@ -135,7 +177,10 @@ func completeAfterItem(partial mapr.Partial, own queryCompletion, tail string,
 	if len(next.candidates) == 0 && tail == "" {
 		return queryCompletion{}, false
 	}
-	next.afterItem, next.blankFirst = true, tail == ""
+	next.afterItem = true
+	if tail == "" {
+		next.lead = " "
+	}
 	return next, true
 }
 
@@ -152,17 +197,17 @@ func completeQueryPartial(partial mapr.Partial, tail string, catalog catalogSnap
 		// Before the first clause nothing is "next" to anything yet.
 		result.groups = relabel(result.groups, "next", queryClauseLabel)
 	}
-	result.hint = joinLines(guide.hint, source.tableHint(result.groups))
+	result.hint = joinLines(guide.hint, source.tableHint(result.groups), source.tableNameHint(guide.expect))
 	if catalog.empty() && (guide.expect.Has(catalogExpectations) || source.atFirstClause(guide.expect)) {
-		result.hint = joinLines(result.hint, queryCatalogHint)
+		result.hint = joinLines(result.hint, catalogEmptyHint(catalog, queryCatalogHint))
 	}
 	return result
 }
 
 // atFirstClause reports whether the word is where the first clause of the
 // query starts (a clause keyword expected, no word typed, neither from nor
-// select in the query): with an empty catalog the table step is skipped
-// there, as no table is known yet, which queryCatalogHint explains.
+// select in the query): with an empty catalog Tab inserts from there with
+// tableNameHint, and queryCatalogHint explains why no table follows.
 func (s queryCandidateSource) atFirstClause(expect mapr.Expect) bool {
 	return expect.Has(mapr.ExpectClauseKeyword) && s.partial.Word == "" &&
 		!s.outline.isUsed("from") && !s.outline.isUsed("select")
@@ -318,6 +363,23 @@ func (s queryCandidateSource) tableHint(groups []candidateGroup) string {
 	return ""
 }
 
+// tableNameHint returns tableNameHint where Tab starts the query with
+// from (atFirstClause) or a table is expected after from while no server
+// has answered yet: neither a table of the format is known nor did the
+// servers answer without one (tableless, where the query starts at
+// select). Not for a session that reads no files: no server can ever
+// answer, and the no-files hint (catalogEmptyHint) says what to do.
+func (s queryCandidateSource) tableNameHint(expect mapr.Expect) string {
+	if s.catalog.NoFilesHint != "" {
+		return ""
+	}
+	atTable := expect.Has(mapr.ExpectTable) && s.partial.Clause == "from"
+	if (atTable || s.atFirstClause(expect)) && !s.tablesKnown() && !s.tableless() {
+		return tableNameHint
+	}
+	return ""
+}
+
 // tablesKnown reports whether the catalog knows a table of the format
 // tables are offered of.
 func (s queryCandidateSource) tablesKnown() bool {
@@ -327,6 +389,17 @@ func (s queryCandidateSource) tablesKnown() bool {
 		}
 	}
 	return false
+}
+
+// tableless reports whether the servers answered (the catalog is not
+// empty) without a table of the format tables are offered of: its lines
+// only have fields of the empty table (logformat.ProbeAnyTable), as for
+// csv and every built-in format but the default one, or the format found
+// nothing at all, as the default format in plain logs, whose lines only
+// generic parses. A from clause would select nothing there. Only an empty
+// catalog means that no table is known yet (tableNameHint).
+func (s queryCandidateSource) tableless() bool {
+	return !s.catalog.empty() && !s.tablesKnown()
 }
 
 // closing returns what ends a word of the source: the closing double quote
@@ -352,7 +425,8 @@ func (s queryCandidateSource) quote() string {
 // queryKeywordCandidates lists the clauses that may start at the word, as
 // the guided order allows (queryOutline.nextClauses).
 func queryKeywordCandidates(s queryCandidateSource) []string {
-	return s.outline.nextClauses(s.partial.Word, s.tablesKnown())
+	tables := slices.DeleteFunc(queryTableCandidates(s), hasHiddenRune)
+	return s.outline.nextClauses(s.partial.Word, tables, s.tableless())
 }
 
 func queryAggregationCandidates(queryCandidateSource) []string {
@@ -667,9 +741,11 @@ func completeQueryValue(line string, pos int, args config.Args, catalog func() c
 	replacement, listed := query.insertion()
 	result := query.listInto(unchanged, listed)
 	if replacement != "" {
-		result.line = before[:rawStart] + escapeForQuote(replacement, parsed.quote) + after
+		escaped := escapeForQuote(replacement, parsed.quote)
+		result.line = before[:rawStart] + escaped + after
 		result.pos = len(result.line) - len(after)
 		result.changed = result.line != line
+		result.itemBlank = query.itemBlankSize(escaped)
 	}
 	return result, true
 }

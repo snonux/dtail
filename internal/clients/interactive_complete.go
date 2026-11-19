@@ -70,6 +70,11 @@ type completion struct {
 	// of it in the background (interactiveProber.requestTable), so that the
 	// catalog gets that table's fields and $variables from a larger window.
 	probeTable string
+	// itemBlank is the length in bytes of the blank (escaped for an open
+	// shell quote) that Tab inserted right before pos after a finished
+	// query item (queryCompletion.afterItem with its lead), 0 when it inserted none: the
+	// line editor lets a comma typed next replace it (commaAfterItemBlank).
+	itemBlank int
 }
 
 // completeInteractive completes the word that ends at byte offset pos of a

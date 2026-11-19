@@ -65,8 +65,13 @@ type interactiveProber struct {
 	// files (the client's state, which reconnects and :reload change).
 	connections func() []connectors.Connector
 	files       func() []string
-	logger      clientlog.Logger
-	now         func() time.Time
+	// serverless is set for a serverless session (paths are local, "-"
+	// may read stdin); stdinPiped tells whether stdin is no terminal
+	// (stdinIsPipe, replaced by tests). Both decide readsNoFiles.
+	serverless bool
+	stdinPiped func() bool
+	logger     clientlog.Logger
+	now        func() time.Time
 
 	interval     time.Duration
 	roundTimeout time.Duration
@@ -99,6 +104,8 @@ func (c *baseClient) newInteractiveProber() *interactiveProber {
 			_, spec := c.snapshotConnectionState()
 			return spec.Files
 		},
+		serverless:   c.Serverless,
+		stdinPiped:   stdinIsPipe,
 		logger:       c.clientLogger(),
 		now:          time.Now,
 		interval:     probeInterval,
@@ -131,12 +138,15 @@ func (p *interactiveProber) wait() {
 // catalogSnapshot returns the field catalog merged over the servers'
 // answers about the session's current files (not those read before a
 // :reload), which Tab completion of a --query value and :fields read;
-// empty for a nil prober (no interactive session).
+// empty for a nil prober (no interactive session). NoFilesHint is set for
+// a session that reads no files (readsNoFiles).
 func (p *interactiveProber) catalogSnapshot() catalogSnapshot {
 	if p == nil {
 		return catalogSnapshot{}
 	}
-	return p.catalog.snapshot(probeFiles(p.files()))
+	snap := p.catalog.snapshot(probeFiles(p.files()))
+	snap.NoFilesHint = p.noFilesHint(true)
+	return snap
 }
 
 // request asks for a probe round as soon as possible; it never blocks. A

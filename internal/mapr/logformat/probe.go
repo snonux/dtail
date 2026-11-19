@@ -25,8 +25,9 @@ const (
 	// character boundary. Values are compared after the cut.
 	ProbeMaxValueBytes = 64
 	// ProbeMaxNameBytes is the length table, field and variable names are
-	// cut to, at a UTF-8 character boundary, so e.g. a csv probe of a file
-	// that is no csv does not return the whole first line as a field name.
+	// cut to, at a UTF-8 character boundary, so a custom probe can not return
+	// e.g. a whole log line as a field name. (The csv probe takes no header
+	// with a longer column at all, csvProbeHeader.)
 	ProbeMaxNameBytes = 64
 	// ProbeMaxNoteBytes is the length ProbeResult.Note is cut to.
 	ProbeMaxNoteBytes = 256

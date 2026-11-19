@@ -15,6 +15,71 @@ type SessionSnapshot struct {
 	Query       *mapr.Query
 	GlobalGroup *mapr.GlobalGroupSet
 	LastResult  string
+	// AggregatesArrived is signaled (buffered, so several signals coalesce)
+	// whenever a server's first aggregate messages of this generation were
+	// merged into GlobalGroup (Aggregate.Merge or Flush), so the reporter
+	// can show a query's first result right after its data arrived instead
+	// of waiting for its next report tick. It is nil without a query, so a
+	// receive from it then blocks.
+	AggregatesArrived <-chan struct{}
+	// arrival signals AggregatesArrived and counts the servers behind it
+	// (ArrivedFrom); nil without a query.
+	arrival *aggregateArrival
+}
+
+// aggregateArrival signals, per query generation, each server whose first
+// aggregate messages were merged.
+type aggregateArrival struct {
+	mu      sync.Mutex
+	servers map[string]struct{}
+	ch      chan struct{}
+}
+
+func newAggregateArrival() *aggregateArrival {
+	return &aggregateArrival{servers: make(map[string]struct{}), ch: make(chan struct{}, 1)}
+}
+
+// mark signals the arrival's channel the first time it is called for
+// server; a nil arrival (no query) is ignored. It never blocks: a signal
+// the reporter has not taken yet stands for this one too.
+func (a *aggregateArrival) mark(server string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	_, seen := a.servers[server]
+	if !seen {
+		a.servers[server] = struct{}{}
+	}
+	a.mu.Unlock()
+	if seen {
+		return
+	}
+	select {
+	case a.ch <- struct{}{}:
+	default:
+	}
+}
+
+// has reports whether server's aggregates arrived; false for a nil
+// arrival.
+func (a *aggregateArrival) has(server string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, ok := a.servers[server]
+	return ok
+}
+
+// channel returns the channel mark signals, nil for a nil arrival.
+
+func (a *aggregateArrival) channel() <-chan struct{} {
+	if a == nil {
+		return nil
+	}
+	return a.ch
 }
 
 // SessionState keeps the mutable mapreduce query state shared by the client
@@ -27,8 +92,12 @@ type SessionState struct {
 	query      *mapr.Query
 	global     *mapr.GlobalGroupSet
 	lastResult string
-	changedCh  chan struct{}
-	logger     logging.Logger
+	// arrival signals each server's first merged aggregates of the
+	// generation (see SessionSnapshot.AggregatesArrived); replaced with the
+	// query.
+	arrival   *aggregateArrival
+	changedCh chan struct{}
+	logger    logging.Logger
 	// aggregatesExpected tells the handlers whether the servers may send
 	// aggregate frames (AggregatesExpected); read without mu, once per
 	// frame.
@@ -47,6 +116,7 @@ func NewSessionState(query *mapr.Query, logger logging.Logger) *SessionState {
 	}
 	if query != nil {
 		state.global = mapr.NewGlobalGroupSet(logger)
+		state.arrival = newAggregateArrival()
 		state.aggregatesExpected.Store(true)
 	}
 	return state
@@ -81,10 +151,12 @@ func (s *SessionState) Snapshot() SessionSnapshot {
 	defer s.mu.RUnlock()
 
 	return SessionSnapshot{
-		Generation:  s.generation.Load(),
-		Query:       s.query,
-		GlobalGroup: s.global,
-		LastResult:  s.lastResult,
+		Generation:        s.generation.Load(),
+		Query:             s.query,
+		GlobalGroup:       s.global,
+		LastResult:        s.lastResult,
+		AggregatesArrived: s.arrival.channel(),
+		arrival:           s.arrival,
 	}
 }
 
@@ -126,6 +198,7 @@ func (s *SessionState) CommitQuery(rawQuery string, generation uint64) (*mapr.Qu
 	s.query = query
 	s.global = mapr.NewGlobalGroupSet(s.logger)
 	s.lastResult = ""
+	s.arrival = newAggregateArrival()
 	s.aggregatesExpected.Store(true)
 	s.mu.Unlock()
 
@@ -147,6 +220,7 @@ func (s *SessionState) ClearQuery(generation uint64) {
 	s.query = nil
 	s.global = nil
 	s.lastResult = ""
+	s.arrival = nil
 	s.aggregatesExpected.Store(false)
 	s.mu.Unlock()
 
@@ -174,4 +248,11 @@ func (s *SessionState) notifyChange() {
 	case s.changedCh <- struct{}{}:
 	default:
 	}
+}
+
+// ArrivedFrom reports whether server's aggregates of the snapshot's
+// generation have arrived (server as its MaprHandler names it, the
+// connection's Server()).
+func (s SessionSnapshot) ArrivedFrom(server string) bool {
+	return s.arrival.has(server)
 }

@@ -291,6 +291,25 @@ reload the query in-flight (see the [Interactive Query Reload documentation](int
 :reload --grep WARN
 ```
 
+An interactive `dtail` also switches between following lines and a
+MapReduce query on the same session, with Tab guiding the query from the
+tables and fields found in the logs being read:
+
+```shell
+% dtail --servers serverlist.txt --files '/var/log/dserver/*.log'
+:query <Tab>                       # inserts "from STATS " (the table found)
+:query from STATS select <Tab>     # lists the aggregations, fields, $variables
+:query from STATS select $hostname,count($line) group by $hostname interval 10
+:tail                              # back to following lines
+:fields                            # the tables and fields the servers' logs carry
+```
+
+The first result table shows about a second after every server's first
+results arrived (one `interval` after the query started). Alt-E opens the
+line in `$EDITOR`, and `--edit-mode vi` adds vi keys to the line editor. A
+`dtail` started without `--files` reads nothing and says so; `:reload --files
+PATH` (Tab lists the remote paths) gives it files.
+
 A few more one-liners:
 
 ```shell

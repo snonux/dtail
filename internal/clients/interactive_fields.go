@@ -33,15 +33,23 @@ const fieldsMaxNameWidth = 24
 // background prober now and reports what came of it, or that its answers
 // are stored once they arrive. The caller resumed the output before (see
 // handleInteractiveLine), as a server's answer can only be read while the
-// output runs.
+// output runs. A session without files has nothing to probe and is told
+// how to give it files instead.
 func (c *baseClient) runProbeCommand(tty io.Writer) error {
+	if hint := c.prober.noFilesHint(completesPaths(tty)); hint != "" {
+		return writeControlLine(tty, styleOf(tty).hint("nothing to probe: "+hint))
+	}
 	result, status := c.prober.probeNow()
 	return writeControlLine(tty, styleOf(tty).hint(probeResultMessage(result, status)))
 }
 
 // writeFieldsCommand answers :fields [table] with the field catalog as of
-// now (fieldsText).
+// now (fieldsText), or, for a session without files, whose catalog stays
+// empty, with how to give it files.
 func (c *baseClient) writeFieldsCommand(tty io.Writer, table string) error {
+	if hint := c.prober.noFilesHint(completesPaths(tty)); hint != "" {
+		return writeControlLine(tty, styleOf(tty).hint(hint))
+	}
 	now := time.Now
 	if c.prober != nil {
 		now = c.prober.now
@@ -252,7 +260,8 @@ func writeFieldsSamples(sb *strings.Builder, samples map[string][]string) {
 // field catalog's table names (ignoring case, as :fields matches them). It
 // reports false for any other line, which completeInteractive then handles.
 // Names :fields would show escaped or that contain a blank are not offered.
-// An empty catalog lists nothing but fieldsTableHint.
+// An empty catalog lists nothing but fieldsTableHint, or the no-files hint
+// for a session without files (catalogEmptyHint).
 func completeFieldsTable(line string, pos int, catalog func() catalogSnapshot) (completion, bool) {
 	before, after := line[:pos], line[pos:]
 	start := strings.LastIndexAny(before, " \t") + 1
@@ -264,7 +273,7 @@ func completeFieldsTable(line string, pos int, catalog func() catalogSnapshot) (
 	unchanged := completion{line: line, pos: pos}
 	snap := catalog()
 	if snap.empty() {
-		unchanged.hint = fieldsTableHint
+		unchanged.hint = catalogEmptyHint(snap, fieldsTableHint)
 		return unchanged, true
 	}
 	var candidates []string

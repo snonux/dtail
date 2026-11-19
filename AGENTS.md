@@ -252,11 +252,29 @@ test; names are written as the tokenizer and parser need them,
 `interactive_complete_query_words.go`: a keyword or `by` in backticks,
 `order by` items with a blank in double quotes, and inside an open double
 quote only the kinds `mapr.AnalyzePartial` expects there (`quotedExpect`),
-closed by the quote; an empty catalog adds `queryCatalogHint`). The query
+closed by the quote; an empty catalog adds `queryCatalogHint`, or for a
+session without files (`catalogSnapshot.NoFilesHint`) the no-files hint,
+`catalogEmptyHint`). A session that reads no files at all
+(`interactiveProber.readsNoFiles`, `internal/clients/interactive_nofiles.go`:
+no file, and the `-` a serverless session without files gets counts as
+reading only in serverless mode with stdin not a terminal, as
+`readCommand.isInputFromPipe` reads it only then, while interactive `dtail`
+is the default on a terminal) says `the session reads no files: :reload
+--files PATH (Tab lists remote paths)` (`local paths` in serverless mode;
+Tab note only with the line editor) after the banner (`writeControlBanner`),
+on `:fields`, `:probe` and Tab after `:fields `, instead of waiting for
+field data; no default files are made up. The query
 completion is guided (`interactive_complete_query_guide.go`): one step per
 Tab in the order from -> table -> select -> items -> where -> group by ->
-order by -> limit (`queryOutline.nextClauses`; select first when the
-catalog knows no table of the format), a single next step inserted at once;
+order by -> limit (`queryOutline.nextClauses`; a query begun with Tab
+always starts with from: `from TABLE ` in one Tab when the catalog knows
+one table of the format, `from ` with the tables listed in the same Tab
+when it knows several, `completeFromFirst`, `queryCompletion.lead`, and
+`from ` with `tableNameHint` while the catalog is empty; select first
+when the servers answered without a table of the format, `tableless`,
+e.g. csv or plain logs only generic parses; from as the only clause left
+later is inserted with its one table too), a single next step inserted at
+once;
 clauses present on either side of the cursor are not offered again
 (`newQueryOutline` runs `mapr.AnalyzeQuery` over the whole query: a word
 left of the cursor plus the value's rest, `queryValueTail` for `--query`,
@@ -265,7 +283,10 @@ plus `commaItemHint`/`commaConditionHint` (also right after the `)` of a
 finished item, `count(x)|`, or a where value ending in `)`: Tab lists
 that, even one clause, and inserts the blank only at the query's end, never
 before a blank, comma or word, `completeAfterItem`,
-`queryCompletion.afterItem`/`blankFirst`), after a comma
+`queryCompletion.afterItem`/`lead`; a comma typed as the very next
+key with the cursor right after that blank replaces it, `completion.itemBlank`,
+`interactiveEditor.itemBlank`, `commaAfterItemBlank`, not in vi normal
+mode), after a comma
 (`mapr.Partial.AfterComma`) the items again; value positions offer no
 fields; rare clauses (set, interval, outfile, logformat, rorder) only for a
 typed prefix; fields, `$variables` (`catalogFormat.variablesOf`) and values
@@ -572,6 +593,28 @@ values and lines that are not valid UTF-8 are rejected. Full rules:
   commit appends nothing). Continuous jobs (`NonCumulativeMode`) append each
   interval's swapped-out rows once; scheduled jobs have no interim reports.
   Semantics per mode: `doc/querylanguage.md`.
+- **Interim report timing** (`MaprClient.reportGeneration`): a query
+  generation's first report is due half an interval after it started, but
+  each server's first aggregates merged for it
+  (`SessionSnapshot.AggregatesArrived`, signaled by `Aggregate.merge` once
+  per server and generation) move it: once every live server
+  (`MaprClient.allLiveArrived`: the `Server()` of each connection whose
+  handler is not done, matched by name with
+  `SessionSnapshot.ArrivedFrom`, so one that sent and left does not count
+  for a missing one; liveness sampled at each arrival) sent its first
+  aggregates, to
+  `firstReportSettle` (1 s) after the last of them; while some are
+  missing it waits for them, at most half an interval after the first
+  server's (servers trailing by seconds, e.g. slower hosts or sequential
+  session updates, were seen live; a server with no rows to send only
+  costs that wait), and every wait capped at half the interval (`firstReportWindow`,
+  `maprclient_report.go`; at `interval 1` a 1 s wait would land on the
+  next sends and mix two intervals in one table). A report that runs with
+  an arrival signaled but not yet taken ends the window, so no second
+  table follows it. The later reports follow once per interval from
+  there; dservers send their first aggregates one interval after the
+  start, so the first table used to appear only after 1.5 intervals. Continuous jobs (`NonCumulativeMode`) keep the fixed
+  cadence; scheduled jobs have no interim reports.
 
 ### Auth-Key Fast Reconnect
 Auth-key fast reconnect is enabled by default. The client can register a public key with `dserver` over an already-authenticated session, and subsequent connections can use this in-memory key before falling back to normal SSH auth.
@@ -718,6 +761,13 @@ full description: `docs/dev/probe.md`.
   fields, with an empty `tableVariables` entry, where none of its lines was
   kept). A panicking `ProbeTabler` is recovered and reported as `probe: log
   format probe failed` for its format.
+- The `csv` format answers only for sources that look like csv files
+  (`csvProbeSources`, `internal/mapr/logformat/csv_probe.go`: a first line of
+  at least two non-empty columns of at most 64 bytes, only those listed, and
+  at least half of the sampled rows of 2 up to the header's columns), so
+  other logs get no bogus csv field named after their first line. Heuristic:
+  single-column csv files are never probed; a free-text log whose lines hold
+  a comma still is.
 - Table-targeted probe (`{id, files, table}`, `internal/handlers/probe_table.go`):
   same checks, file cap, timeout, one-probe-per-session and no limiter slot
   as above, but it scans 4 MiB of each file (`probeTableScanBytes`;
@@ -1127,8 +1177,12 @@ validation flags them as stale, while the runtime still ignores them.
   and at the end of every `Write` call the queue is aggregated, in arrival
   order and each message on its own, straight into the global group set under
   one non-blocking lock attempt (`GlobalGroupSet.UpdateNoblock`); a missed
-  attempt keeps the queue for the next call (waiting for the lock only once
-  4 MiB are queued) and `Flush` on shutdown waits. The result therefore does
+  attempt keeps the queue, retries 10 ms later in the background
+  (`Aggregate.retryMerge`, again without waiting for the lock; without it
+  the rows waited for the connection's next aggregate messages, one
+  interval later, as the servers send at the same moment) and at the next
+  call (waiting for the lock only once 4 MiB are queued), and `Flush` on
+  shutdown waits. The result therefore does
   not depend on how messages were batched or on lock contention.
 
 **Server-Side MapReduce (dserver):**

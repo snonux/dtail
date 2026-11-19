@@ -83,14 +83,20 @@ in `dtail` and `dmap`, `:tail` only in `dtail`):
   after a minute); a line `table ORDERS probed on its own: 3 lines of it
   sampled` tells what it found. Names and values a server sent are printed in Go
   quoting where they are not plain printable text. Until a probe answered,
-  `:fields` says so. The output stays paused after `:fields`, as after
-  `:help`.
+  `:fields` says so. A session that reads no files (started without
+  `--files` or a path; serverless with stdin a terminal reads nothing
+  either) can never get field data: there `:fields` answers `the session
+  reads no files: :reload --files PATH (Tab lists remote paths)` (local
+  paths in serverless mode), and the same line follows the banner at the
+  start. The output
+  stays paused after `:fields`, as after `:help`.
 * `:probe` probe the servers now instead of waiting for the next round, and
   report which servers answered (`probe answered by srv1, srv2; :fields
   shows what was found`), answered busy or did not answer. It waits up to 5
   seconds; a probe still running after that is reported as such and its
   answers are stored once they arrive. A session reading only stdin has
-  nothing to probe.
+  nothing to probe; one reading no files at all answers `nothing to probe:
+  the session reads no files: :reload --files PATH`.
 * `:quit` stop the interactive session
 
 ## Line editing and completion
@@ -125,11 +131,17 @@ editor (golang.org/x/term, no other dependency):
     (`"web1"` after a string operator, bare numbers after a numeric one).
     The completion is **guided**: Tab offers one step at a time, in the
     order `from` -> table -> `select` -> items -> `where` -> `group by` ->
-    `order by` -> `limit`, and a single next step is inserted right away:
+    `order by` -> `limit`, and a single next step is inserted right away.
+    A query begun with Tab (`:query <Tab>`, an empty `--query` value)
+    always starts with `from`: with the table too when the servers
+    reported only one table of the log format, else `from` with the tables
+    listed in the same Tab, or, while no server has answered the field
+    probe yet, `from` with a hint that a table name follows:
 
     ```
-    :query <Tab>                         -> :query from
-    :query from <Tab>                    -> :query from STATS   (or the tables)
+    :query <Tab>                         -> :query from STATS
+    :query <Tab>                         -> :query from   (several tables)
+      table: ORDERS  STATS
     :query from STATS <Tab>              -> :query from STATS select
     :query from STATS select <Tab>
       select item
@@ -150,9 +162,11 @@ editor (golang.org/x/term, no other dependency):
     Tab right after the `)` of such a finished item (also of a set
     function, `md5sum($x)`, an order by item or a where value ending in
     `)`) lists the next step with the comma hint, as above, even a single
-    next clause, and inserts the blank when the item ends the query; with
-    text after the cursor (a blank, a comma, more of a word) it inserts
-    nothing and only lists. Tab after a typed blank inserts a single next
+    next clause, and inserts the blank when the item ends the query; a
+    comma typed right after that blank (the cursor not moved, no other key
+    typed in between) replaces it, so `count(x)` Tab `,` gives
+    `count(x),`. With text after the cursor (a blank, a comma, more of a
+    word) it inserts nothing and only lists. Tab after a typed blank inserts a single next
     clause directly. A whole session built this way is under "Examples".
 
     A listing starts with a heading saying what is expected at the cursor
@@ -174,9 +188,13 @@ editor (golang.org/x/term, no other dependency):
 
     The table comes first because it narrows the fields, `$variables` and
     sample values to the lines of that table (`$variables` as the probe saw
-    them in that table's lines); a log format without tables (e.g. `csv`,
-    `generic`) starts at `select`. A clause already in the query, before or
-    after the cursor, is not offered again (`order` and `rorder` count as
+    them in that table's lines); where the servers answered without a
+    table of the log format (e.g. `csv`, or plain logs that only `generic`
+    parses) the query starts at `select`, as a `from` clause would select
+    nothing there; `from` with the hint is only for when no server has
+    answered yet. Where `from` is the only clause left later in the query,
+    Tab inserts it with the one known table too. A clause already in the
+    query, before or after the cursor, is not offered again (`order` and `rorder` count as
     one). After a finished select item, where condition or `group by` field
     Tab offers only what continues the query (the next clauses, and `and`
     after a condition) with a hint that a comma adds another item; after a
@@ -217,7 +235,9 @@ editor (golang.org/x/term, no other dependency):
     format names, `order by` items, and fields in `select` and `group by`;
     elsewhere (a where operand or operator, a `set` condition) nothing is
     offered, as a quoted word would be a string. Until a probe answered, the query language
-    still completes and a hint line says that no field data arrived yet.
+    still completes and a hint line says that no field data arrived yet
+    (for a session that reads no files: how to give it files, as for
+    `:fields`).
     Once a `from` table is typed, Tab also has the servers probe that
     table on its own (as `:fields TABLE` does) and waits up to a second for
     it with the output running, so the fields of a table that logs rarely
@@ -562,7 +582,6 @@ indented); only the letters before a `<Tab>` are typed:
 
 ```
 :query <Tab>                          -> :query from
-:query from <Tab>
   table: ORDERS  STATS
 :query from OR<Tab>                   -> :query from ORDERS
 :query from ORDERS <Tab>              -> :query from ORDERS select
@@ -585,9 +604,10 @@ indented); only the letters before a `<Tab>` are typed:
 Only the fields and `$variables` of `ORDERS` lines are offered (no
 `currentConnections`, and no `$date`, which only the `STATS` lines'
 timestamps fill). Enter runs the query on the session: `query applied`,
-and a result table with `max(price)` `3.000000` and `5.000000` after
-2.5 seconds, then every 5 seconds (the default `interval`) whenever it
-changed, while no followed line is printed. `:tail` goes back to
+and a result table with `max(price)` `3.000000` and `5.000000` about
+a second after the last server's first aggregates (they send them 5 seconds,
+the default `interval`, after the query started), then every 5 seconds
+whenever it changed, while no followed line is printed. `:tail` goes back to
 following lines (`following lines`, `regex: "..."`), and the next
 `:query` starts another query, all on the same session. This session is
 `TestInteractiveGuidedQuerySession` in `integrationtests/`.

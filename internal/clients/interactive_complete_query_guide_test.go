@@ -43,6 +43,13 @@ var (
 		}}}
 )
 
+// genericOnlyCatalog is what a probe of a plain log finds: the default
+// format skips every line, only generic, which has no tables, has fields.
+var genericOnlyCatalog = catalogSnapshot{DefaultLogFormat: "default", Servers: []string{"srv1"},
+	Formats: map[string]catalogFormat{"generic": {
+		Tables: map[string]map[string][]string{"": {"$line": {"hello"}}},
+	}}}
+
 // guideStep is one Tab press of a guided session: the line typed (the
 // cursor at its end, or at the "|" in it), and either the line Tab makes
 // of it or the exact candidates it lists, with the hint it shows.
@@ -78,11 +85,11 @@ func checkGuideSteps(t *testing.T, args config.Args, catalog catalogSnapshot, st
 }
 
 // TestGuidedQueryTargetSession is the target session of the guided query
-// builder: one step per Tab, table first, everything after it scoped to
-// the table.
+// builder: one step per Tab, table first (from and the only table in one
+// Tab), everything after it scoped to the table.
 func TestGuidedQueryTargetSession(t *testing.T) {
 	checkGuideSteps(t, guideArgs, statsOnlyCatalog, []guideStep{
-		{line: ":query ", want: ":query from "},
+		{line: ":query ", want: ":query from STATS "},
 		{line: ":query from ", want: ":query from STATS "},
 		{line: ":query from STATS ", want: ":query from STATS select "},
 		{line: ":query from STATS select ", candidates: append(aggregationWords(),
@@ -278,9 +285,62 @@ func TestGuidedQueryWithoutTables(t *testing.T) {
 		{line: ":query select name ", candidates: []string{"where ", "group by ", "order by ", "limit "},
 			hint: commaItemHint},
 	})
-	// An empty catalog: no tables known, the builder starts at select.
-	checkGuideSteps(t, guideArgs, catalogSnapshot{}, []guideStep{{line: ":query ", want: ":query select ",
-		hint: queryCatalogHint}})
+}
+
+// TestGuidedQueryStartsWithFrom checks that a query begun with Tab starts
+// with from: from and the table in one Tab when the catalog knows one
+// table of the format, from and the tables listed when it knows several,
+// and from with tableNameHint when it knows none (an empty catalog), in a
+// :query line and in an empty --query value. A word typed first still
+// completes to any clause.
+func TestGuidedQueryStartsWithFrom(t *testing.T) {
+	empty := catalogSnapshot{}
+	for _, tt := range []struct {
+		name    string
+		args    config.Args
+		catalog catalogSnapshot
+		steps   []guideStep
+	}{
+		{name: "one table", args: guideArgs, catalog: statsOnlyCatalog, steps: []guideStep{
+			{line: ":query ", want: ":query from STATS "},
+			{line: ":query  ", want: ":query  from STATS "},
+		}},
+		{name: "several tables", args: guideArgs, catalog: guideCatalog, steps: []guideStep{
+			{line: ":query ", want: ":query from ", candidates: []string{"OTHER ", "STATS "}},
+			{line: ":query from ", candidates: []string{"OTHER ", "STATS "}},
+		}},
+		{name: "no table known", args: guideArgs, catalog: empty, steps: []guideStep{
+			{line: ":query ", want: ":query from ", hint: joinLines(tableNameHint, queryCatalogHint)},
+			{line: ":query from ", hint: joinLines(tableNameHint, queryCatalogHint)},
+			{line: ":query from X ", want: ":query from X select "},
+		}},
+		{name: "--query value", args: queryArgs, catalog: statsOnlyCatalog, steps: []guideStep{
+			{line: ":reload --query '", want: ":reload --query 'from STATS "},
+			{line: ":reload --query '|'", want: ":reload --query 'from STATS '"},
+			{line: `:reload --query "`, want: `:reload --query "from STATS `},
+		}},
+		{name: "--query value several tables", args: queryArgs, catalog: guideCatalog, steps: []guideStep{
+			{line: ":reload --query '", want: ":reload --query 'from ", candidates: []string{"OTHER ", "STATS "}},
+		}},
+		// Plain logs: the servers answered, but only formats without tables
+		// (generic) found fields, the default format none at all.
+		{name: "answered without tables", args: guideArgs, catalog: genericOnlyCatalog, steps: []guideStep{
+			{line: ":query ", want: ":query select "},
+		}},
+		// From as the only clause left later in a query: with its one table.
+		{name: "from left last", args: guideArgs, catalog: statsOnlyCatalog, steps: []guideStep{
+			{line: ":query select count(lifetimeConnections) where a == 1 group by $time limit 3 ",
+				candidates: []string{"from ", "order by "}},
+			{line: ":query select count(lifetimeConnections) where a == 1 group by $time order by $time limit 3 ",
+				want: ":query select count(lifetimeConnections) where a == 1 group by $time order by $time limit 3 from STATS "},
+		}},
+		{name: "typed word", args: guideArgs, catalog: statsOnlyCatalog, steps: []guideStep{
+			{line: ":query sel", want: ":query select "},
+			{line: ":query f", want: ":query from "},
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) { checkGuideSteps(t, tt.args, tt.catalog, tt.steps) })
+	}
 }
 
 // TestGuidedQueryReloadValue checks the same guidance inside a quoted
@@ -302,8 +362,8 @@ func TestGuidedQueryReloadValue(t *testing.T) {
 // it builds parses.
 func TestGuidedQueryCompletesToValidQueries(t *testing.T) {
 	for _, typed := range [][]string{
-		{"", "", "", "count(", "currentConnections", " ", "gro", "$hostname ", "", "", "10"},
-		{"", "", "", "max(", "lifetimeConnections", " ", "w", "currentConnections", " ", ">", " ", "0", " ", "and ",
+		{"", "", "count(", "currentConnections", " ", "gro", "$hostname ", "", "", "10"},
+		{"", "", "max(", "lifetimeConnections", " ", "w", "currentConnections", " ", ">", " ", "0", " ", "and ",
 			"$hostname", " eq ", "", "o", "", " ", "l", "5"},
 	} {
 		line := ":query "
@@ -373,7 +433,7 @@ func TestGuidedQuerySkipsSelectedItems(t *testing.T) {
 
 // TestGuidedQueryHints checks when the table and catalog hints are shown:
 // the table hint only with fields or $variables offered, the catalog hint
-// also at the first step of an empty catalog.
+// (after the table name hint) also at the first step of an empty catalog.
 func TestGuidedQueryHints(t *testing.T) {
 	checkGuideSteps(t, guideArgs, guideCatalog, []guideStep{
 		{line: ":query select count(bytes) f", want: ":query select count(bytes) from "},
@@ -382,7 +442,7 @@ func TestGuidedQueryHints(t *testing.T) {
 		{line: ":query select count(by", want: ":query select count(bytes)", hint: tableFirstHint},
 	})
 	checkGuideSteps(t, guideArgs, catalogSnapshot{}, []guideStep{
-		{line: ":query ", want: ":query select ", hint: queryCatalogHint},
+		{line: ":query ", want: ":query from ", hint: joinLines(tableNameHint, queryCatalogHint)},
 	})
 }
 

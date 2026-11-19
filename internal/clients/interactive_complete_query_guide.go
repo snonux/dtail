@@ -11,8 +11,11 @@ import (
 // This file holds the guided part of the query completion: Tab offers one
 // step at a time in a fixed order, from -> table -> select -> items ->
 // where -> group by -> order by -> limit. The table comes first because it
-// scopes the fields, $variables and sample values offered after it; a log
-// format without tables in the catalog starts at select. Clauses already in
+// scopes the fields, $variables and sample values offered after it: a
+// query begun with Tab starts with from, and with its table too when the
+// catalog knows only one (completeFromFirst lists several in the same
+// Tab). A log format the servers answered for without tables (csv, or
+// plain logs only generic parses) starts at select. Clauses already in
 // the query are not offered again, rare clauses only once their first
 // letters are typed, and any clause order the parser accepts still
 // completes when typed by hand.
@@ -28,6 +31,10 @@ const (
 	// tableFirstHint is shown where fields are offered while the query
 	// names no table but the catalog knows tables of its log format.
 	tableFirstHint = "(choose a table first, from <table>: it narrows the fields and $variables to that table)"
+	// tableNameHint is shown where a query starts with from, or a table
+	// is expected after it, while no server has answered the field probe
+	// yet (an empty catalog): the table's name is typed by hand.
+	tableNameHint = "(a table name follows from: the servers reported none yet, type it)"
 )
 
 // queryClause is a clause keyword and what Tab inserts for it: group,
@@ -179,11 +186,15 @@ func guideQuery(p mapr.Partial) queryGuide {
 // nextClauses returns what Tab inserts for the clauses that may start at
 // a word: with a typed word every clause not used yet (rare ones too),
 // matched later; with an empty word only the next step of the guided
-// order. That is from while neither from nor select is used and the
-// catalog knows tables (tablesKnown), else select while it is missing (a
-// query needs it), else the guided clauses not used yet (from only with
-// tables).
-func (o queryOutline) nextClauses(word string, tablesKnown bool) []string {
+// order. tables are the table candidates of the query's log format and
+// tableless tells that the catalog knows that format to have none. The
+// step is from while neither from nor select is used, unless the format is
+// tableless: with its table when tables holds just one ("from STATS "),
+// so that one Tab starts the query with both. Else it is select while it
+// is missing (a query needs it), else the guided clauses not used yet
+// (from only with tables, and with its one table when it is the only one
+// left).
+func (o queryOutline) nextClauses(word string, tables []string, tableless bool) []string {
 	var next []string
 	if word != "" {
 		for _, clause := range slices.Concat(guidedQueryClauses, rareQueryClauses) {
@@ -194,15 +205,21 @@ func (o queryOutline) nextClauses(word string, tablesKnown bool) []string {
 		return next
 	}
 	switch {
-	case !o.isUsed("select") && !o.isUsed("from") && tablesKnown:
+	case !o.isUsed("select") && !o.isUsed("from") && len(tables) == 1:
+		return []string{"from " + tables[0]}
+	case !o.isUsed("select") && !o.isUsed("from") && !tableless:
 		return []string{"from "}
 	case !o.isUsed("select"):
 		return []string{"select "}
 	}
 	for _, clause := range guidedQueryClauses {
-		if !o.isUsed(clause.keyword) && (clause.keyword != "from" || tablesKnown) {
+		if !o.isUsed(clause.keyword) && (clause.keyword != "from" || len(tables) > 0) {
 			next = append(next, o.withLead(clause))
 		}
+	}
+	if slices.Equal(next, []string{"from "}) && len(tables) == 1 {
+		// From is the only step left: with its one table, as at the start.
+		return []string{"from " + tables[0]}
 	}
 	return next
 }
