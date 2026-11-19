@@ -290,9 +290,12 @@ func TestBuilderLineResumesTypingPause(t *testing.T) {
 		if _, err := c.handleBuilderLine(&out, line, pause); err != nil {
 			t.Fatalf("line %q: %v", line, err)
 		}
-		waitForPauseDepth(t, logger, 0)
-		if pause.paused {
-			t.Fatalf("line %q left the output paused (answer %q)", line, out.String())
+		// handleBuilderLine is synchronous: the logger is resumed by the
+		// time it returned, so nothing is waited for (and no helper of the
+		// Linux-only PTY tests is needed; this test builds everywhere).
+		if depth := logger.pauseDepth(); depth != 0 || pause.paused {
+			t.Fatalf("line %q left the output paused: depth %d paused %v (answer %q)",
+				line, depth, pause.paused, out.String())
 		}
 		if strings.Contains(out.String(), interactivePausedMessage) {
 			t.Fatalf("line %q announced a pause: %q", line, out.String())
