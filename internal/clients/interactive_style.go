@@ -2,7 +2,6 @@ package clients
 
 import (
 	"io"
-	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -258,46 +257,6 @@ func (s *interactiveStyle) kindStyle(kind candidateKind) config.TermStyle {
 		candidatePath:      theme.CandidatePath,
 		candidateDirectory: theme.CandidateDirectory,
 	}[kind]
-}
-
-// candidates returns the candidate listing of a completion: the candidates
-// without their trailing blanks, two blanks apart. With a style they are
-// grouped by kind (stable within a kind) and painted; without one they are
-// listed in the order found.
-func (s *interactiveStyle) candidates(result completion) string {
-	words := trimEach(result.candidates)
-	if s == nil || len(words) == 0 {
-		return strings.Join(words, "  ")
-	}
-	kinds := make([]candidateKind, len(words))
-	order := make([]int, len(words))
-	for i := range words {
-		kinds[i] = result.kindOf(result.candidates[i])
-		order[i] = i
-	}
-	slices.SortStableFunc(order, func(a, b int) int { return int(kinds[a]) - int(kinds[b]) })
-	painted := make([]string, len(order))
-	for i, idx := range order {
-		painted[i] = s.paint(s.kindStyle(kinds[idx]), words[idx])
-	}
-	return strings.Join(painted, "  ")
-}
-
-// kindOf returns the kind of candidate: the one recorded for it, else the
-// completion's kind, where a path ending in a slash is a directory and a
-// field starting with $ a variable.
-func (c completion) kindOf(candidate string) candidateKind {
-	kind, ok := c.kinds[candidate]
-	if !ok {
-		kind = c.kind
-	}
-	switch {
-	case kind == candidatePath && strings.HasSuffix(strings.TrimSpace(candidate), "/"):
-		return candidateDirectory
-	case kind == candidateField && strings.HasPrefix(strings.TrimLeft(candidate, "`"), "$"):
-		return candidateVariable
-	}
-	return kind
 }
 
 // stripANSI removes the SGR sequences (ESC [ ... m) paint adds, e.g. to

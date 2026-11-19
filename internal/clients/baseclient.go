@@ -63,6 +63,10 @@ type baseClient struct {
 	throttleCh chan struct{}
 	// The current connection-wide session specification.
 	sessionSpec SessionSpec
+	// tailFilter is the line filter of the tail workload that a switch of
+	// interactive dtail to a MapReduce query set aside (see switchToQuery
+	// and switchToTail), guarded by mu.
+	tailFilter tailFilter
 	// reloadMu is held by an interactive :reload for its whole run and by
 	// a reconnect while it creates and installs its new connection (see
 	// reloadLock and recreateConnection).

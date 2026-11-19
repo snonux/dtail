@@ -204,5 +204,8 @@ func (p *csvParser) Probe(sample ProbeSample) (ProbeResult, error) {
 			collector.ensureField(ProbeAnyTable, column)
 		}
 	}
+	// Per-table data also when only header rows were sampled: no data line
+	// filled a variable then (not the format's KnownVariables).
+	collector.ensureTableVariables(ProbeAnyTable)
 	return collector.result, nil
 }

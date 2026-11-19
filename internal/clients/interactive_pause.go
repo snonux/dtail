@@ -180,30 +180,21 @@ func (p *interactivePause) runOutput(fn func()) {
 // handleInteractiveLine handles one control line other than a host key
 // answer. An empty (or blank) line toggles the pause: it pauses the output
 // and prints the help, or resumes it. Commands run while explicitly paused
-// leave the output paused, also rejected ones, except a :reload or :probe
-// that parsed, which resumes it before it runs (resumesBeforeRun). Output
+// leave the output paused, also rejected ones, except a :reload, :probe,
+// :query or :tail that parsed, which resumes it before it runs
+// (resumesBeforeRun). Output
 // paused only for typing (pauseTyping) is resumed silently once the line
 // was handled, except after :help and :fields, which
 // keep it paused until the next empty line (keepPausedAfter), so that their
-// answer does not scroll away. :quit ends the loop, whose caller resumes the
-// output for the shutdown.
+// answer does not scroll away. :fields TABLE first lets the output run
+// while it waits briefly for a table probe of TABLE (awaitTableProbe).
+// :quit ends the loop, whose caller resumes the output for the shutdown.
 func (c *baseClient) handleInteractiveLine(tty io.Writer, line string,
 	pause *interactivePause) (bool, error) {
 
 	typing := pause.paused && pause.typing
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" {
-		if pause.resume() {
-			if typing {
-				return false, nil
-			}
-			return false, writeControlLine(tty, styleOf(tty).paused(interactiveResumedMessage))
-		}
-		pause.pause()
-		if writeErr := writeControlLine(tty, styleOf(tty).paused(interactivePausedMessage)); writeErr != nil {
-			return false, writeErr
-		}
-		return false, c.writeInteractiveHelp(tty)
+	if strings.TrimSpace(line) == "" {
+		return false, c.togglePause(tty, pause, typing)
 	}
 	// A typed line's answer is printed while still paused, then output goes
 	// on, except after :help and :fields (see keepPausedAfter).
@@ -226,6 +217,12 @@ func (c *baseClient) handleInteractiveLine(tty io.Writer, line string,
 			return false, writeErr
 		}
 	}
+	if command.kind == "fields" && command.table != "" {
+		// :fields TABLE shows what a table probe of TABLE found: one is
+		// asked for and waited for briefly with the output running, as its
+		// answer is only read then (awaitTableProbe).
+		c.awaitTableProbe(pause, command.table)
+	}
 	if keepsPause(command.kind) && (typing || !pause.paused) {
 		resumeAfter = false
 		return false, c.keepPausedAfter(tty, pause, command)
@@ -233,8 +230,25 @@ func (c *baseClient) handleInteractiveLine(tty io.Writer, line string,
 	return c.runInteractiveCommand(tty, command)
 }
 
+// togglePause handles an empty line: it resumes paused output (silently
+// after a pause for typing) or pauses the output and prints the help.
+func (c *baseClient) togglePause(tty io.Writer, pause *interactivePause, typing bool) error {
+	if pause.resume() {
+		if typing {
+			return nil
+		}
+		return writeControlLine(tty, styleOf(tty).paused(interactiveResumedMessage))
+	}
+	pause.pause()
+	if err := writeControlLine(tty, styleOf(tty).paused(interactivePausedMessage)); err != nil {
+		return err
+	}
+	return c.writeInteractiveHelp(tty)
+}
+
 // resumesBeforeRun reports whether a parsed command of kind needs the output
-// running: the servers' acknowledgement of a :reload and their answer to a
+// running: the servers' acknowledgement of a :reload (and of the switches
+// :query and :tail, which update the session the same way) and their answer to a
 // :probe are read by the same connection handlers that write the output, so
 // with the output blocked a reload would time out and a probe would get no
 // answer. It is asked only once the line parsed, so a rejected :reload or
@@ -242,7 +256,7 @@ func (c *baseClient) handleInteractiveLine(tty io.Writer, line string,
 // a server lacking journal-v1, no server with an active session) has resumed
 // the output already.
 func resumesBeforeRun(kind string) bool {
-	return kind == "reload" || kind == "probe"
+	return kind == "reload" || kind == "probe" || kind == "query" || kind == "tail"
 }
 
 // keepsPause reports whether a command of kind answers with the output

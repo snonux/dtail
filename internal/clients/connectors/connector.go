@@ -32,8 +32,15 @@ type Connector interface {
 	// still connecting) and reports true then; false once it began, after
 	// which only a committed session can be updated. An interactive :reload
 	// calls it for every connection without an active session, so one that
-	// comes up later does not start the replaced workload.
-	ReplaceStartSessionSpec(spec sessionspec.Spec) bool
+	// comes up later does not start the replaced workload. A SESSION START
+	// in flight is waited for, but for at most sessionUpdateAckMaxWait; it
+	// returns ErrSessionStartPending then.
+	ReplaceStartSessionSpec(spec sessionspec.Spec) (bool, error)
+	// RestoreStartSessionSpec is ReplaceStartSessionSpec for the rollback
+	// of a failed :reload. A SESSION START in flight that is not
+	// acknowledged within sessionUpdateAckMaxWait updates its session to
+	// spec right after it is: it returns ErrSessionRollbackDeferred then.
+	RestoreStartSessionSpec(spec sessionspec.Spec) (bool, error)
 	// RestoreCommittedSession resets the local committed session snapshot without
 	// advancing the generation.
 	RestoreCommittedSession(spec sessionspec.Spec, generation uint64, committed bool)

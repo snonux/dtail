@@ -26,13 +26,20 @@ const catalogMaxSamples = 5
 // files, they count again. It is safe for concurrent use: the prober
 // stores, the control loop reads.
 //
-// It also caches the path listings of the --files completion per request
-// (storeListing, findListing in interactive_catalog_paths.go), which are
-// one server's view and not merged.
+// It also keeps the answers of table-targeted probes per server and table
+// (storeTable in interactive_catalog_tables.go), merged into the snapshot
+// of the same files, and caches the path listings of the --files
+// completion per request (storeListing, findListing in
+// interactive_catalog_paths.go), which are one server's view and not
+// merged.
 type fieldCatalog struct {
-	mu       sync.Mutex
-	answers  map[string]catalogAnswer
-	listings map[string]pathListing
+	mu           sync.Mutex
+	answers      map[string]catalogAnswer
+	tableAnswers map[catalogTableKey]catalogAnswer
+	// tableFailures are the table probes no server answered, by table
+	// (markTableProbeFailed, interactive_catalog_tables.go).
+	tableFailures map[string]tableProbeFailure
+	listings      map[string]pathListing
 }
 
 // catalogAnswer is the latest probe answer of one server, the files it
@@ -62,18 +69,25 @@ type catalogSnapshot struct {
 	Updated time.Time
 	// Truncated is set when any server cut its answer to the size limit.
 	Truncated bool
-	// Errors are the errors of the servers' answers.
+	// Errors are the errors of the servers' answers (of the plain probes:
+	// a table probe of the same files would only repeat them).
 	Errors []catalogError
+	// TableProbes maps every table probed on its own (a table-targeted
+	// probe, interactiveProber.requestTable) to the lines of that table its
+	// servers sampled; a table probed but not found has 0.
+	TableProbes map[string]int
 }
 
 // catalogFormat is what the servers found for one log format: tables
 // (MAPREDUCE:<TABLE> of the default format, "" for formats without tables)
-// mapping fields to sample values, $variables with sample values, and the
-// distinct notes of custom probes.
+// mapping fields to sample values, per table the $variables its lines
+// filled (TableVariables, see variablesOf), the format-wide $variables with
+// sample values, and the distinct notes of custom probes.
 type catalogFormat struct {
-	Tables    map[string]map[string][]string
-	Variables map[string][]string
-	Notes     []string
+	Tables         map[string]map[string][]string
+	TableVariables map[string]map[string][]string
+	Variables      map[string][]string
+	Notes          []string
 }
 
 // catalogError is an error entry of a server's probe answer.
@@ -84,7 +98,9 @@ type catalogError struct {
 }
 
 func newFieldCatalog() *fieldCatalog {
-	return &fieldCatalog{answers: make(map[string]catalogAnswer), listings: make(map[string]pathListing)}
+	return &fieldCatalog{answers: make(map[string]catalogAnswer),
+		tableAnswers: make(map[catalogTableKey]catalogAnswer), tableFailures: make(map[string]tableProbeFailure),
+		listings: make(map[string]pathListing)}
 }
 
 // store records answer as server's latest one, to a probe of files (the
@@ -103,8 +119,9 @@ func (c *fieldCatalog) store(server string, files []string, answer protocol.Prob
 }
 
 // snapshot returns the catalog merged over the servers whose latest answer
-// is about files (probe request entries, in any order). It shares no map or
-// slice with the catalog, so the caller may keep and change it.
+// is about files (probe request entries, in any order), and over the table
+// probes of the same files (mergeTableAnswers). It shares no map or slice
+// with the catalog, so the caller may keep and change it.
 func (c *fieldCatalog) snapshot(files []string) catalogSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -119,24 +136,49 @@ func (c *fieldCatalog) snapshot(files []string) catalogSnapshot {
 	defaults := make(map[string]int)
 	for _, server := range snap.Servers {
 		entry := c.answers[server]
-		if entry.received.After(snap.Updated) {
-			snap.Updated = entry.received
-		}
-		snap.Truncated = snap.Truncated || entry.answer.Truncated
+		snap.addAnswer(entry)
 		if format := entry.answer.DefaultLogFormat; format != "" {
 			defaults[format]++
 			if defaults[format] > defaults[snap.DefaultLogFormat] {
 				snap.DefaultLogFormat = format
 			}
 		}
-		for name, format := range entry.answer.Formats {
-			snap.Formats[name] = mergeCatalogFormat(snap.Formats[name], format)
-		}
 		for _, probeErr := range entry.answer.Errors {
 			snap.Errors = append(snap.Errors, catalogError{Server: server, File: probeErr.File, Error: probeErr.Error})
 		}
 	}
+	c.mergeTableAnswers(&snap, wanted)
 	return snap
+}
+
+// addAnswer merges the formats of entry into the snapshot and takes over
+// its time and truncation.
+func (s *catalogSnapshot) addAnswer(entry catalogAnswer) {
+	if entry.received.After(s.Updated) {
+		s.Updated = entry.received
+	}
+	s.Truncated = s.Truncated || entry.answer.Truncated
+	for name, format := range entry.answer.Formats {
+		s.Formats[name] = mergeCatalogFormat(s.Formats[name], format)
+	}
+}
+
+// variablesOf returns the $variables the lines of table filled, with their
+// sample values: its TableVariables, empty (not nil) when no answer gave
+// any for that table, never the format's known variables a server lists
+// without values. Only a format without any per-table data (TableVariables
+// nil: no table in the catalog) falls back to the format-wide Variables.
+// Answers without per-table data contribute their format-wide variables to
+// each of their tables when merged (answerTableVariables). The map is
+// shared with the format.
+func (f catalogFormat) variablesOf(table string) map[string][]string {
+	if f.TableVariables == nil {
+		return f.Variables
+	}
+	if variables, ok := f.TableVariables[table]; ok {
+		return variables
+	}
+	return map[string][]string{}
 }
 
 // isBusyProbeAnswer reports whether answer only says that another probe of
@@ -154,13 +196,21 @@ func isBusyProbeAnswer(answer protocol.ProbeAnswer) bool {
 }
 
 // mergeCatalogFormat returns merged with what format adds; merged may be the
-// zero value.
+// zero value. The per-table $variables are merged per table
+// (answerTableVariables).
 func mergeCatalogFormat(merged catalogFormat, format protocol.ProbeFormat) catalogFormat {
 	if merged.Tables == nil && len(format.Tables) > 0 {
 		merged.Tables = make(map[string]map[string][]string)
 	}
 	for table, fields := range format.Tables {
 		merged.Tables[table] = mergeCatalogSamples(merged.Tables[table], fields)
+	}
+	tableVariables := answerTableVariables(format)
+	if merged.TableVariables == nil && tableVariables != nil {
+		merged.TableVariables = make(map[string]map[string][]string)
+	}
+	for table, variables := range tableVariables {
+		merged.TableVariables[table] = mergeCatalogSamples(merged.TableVariables[table], variables)
 	}
 	if len(format.Variables) > 0 {
 		merged.Variables = mergeCatalogSamples(merged.Variables, format.Variables)
@@ -169,6 +219,23 @@ func mergeCatalogFormat(merged catalogFormat, format protocol.ProbeFormat) catal
 		merged.Notes = append(merged.Notes, format.Note)
 	}
 	return merged
+}
+
+// answerTableVariables returns the per-table $variables of a format of an
+// answer: its TableVariables (every table of a protocol 5 dserver's answer
+// has an entry, empty if its lines filled none). Only a format without
+// per-table data (a dserver before per-table variables, or a custom probe
+// that sets none) falls back, explicitly, to its format-wide Variables as
+// the variables of each of its tables; nil for a format without tables.
+func answerTableVariables(format protocol.ProbeFormat) map[string]map[string][]string {
+	if format.TableVariables != nil || len(format.Tables) == 0 {
+		return format.TableVariables
+	}
+	fallback := make(map[string]map[string][]string, len(format.Tables))
+	for table := range format.Tables {
+		fallback[table] = format.Variables
+	}
+	return fallback
 }
 
 // mergeCatalogSamples adds the names of from with their sample values to

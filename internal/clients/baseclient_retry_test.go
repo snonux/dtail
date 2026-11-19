@@ -241,7 +241,8 @@ func (*retryTestConnector) CommittedSession() (SessionSpec, uint64, bool) {
 	return SessionSpec{}, 0, false
 }
 
-func (*retryTestConnector) ReplaceStartSessionSpec(SessionSpec) bool { return false }
+func (*retryTestConnector) ReplaceStartSessionSpec(SessionSpec) (bool, error) { return false, nil }
+func (*retryTestConnector) RestoreStartSessionSpec(SessionSpec) (bool, error) { return false, nil }
 
 func (*retryTestConnector) RestoreCommittedSession(SessionSpec, uint64, bool) {}
 
@@ -273,6 +274,6 @@ func (*retryTestHandler) Done() <-chan struct{} {
 
 func (*retryTestHandler) WaitForCapabilities(time.Duration) bool { return false }
 
-func (*retryTestHandler) WaitForSessionAck(time.Duration) (handlers.SessionAck, bool) {
+func (*retryTestHandler) WaitForSessionAck(time.Duration, time.Duration) (handlers.SessionAck, bool) {
 	return handlers.SessionAck{}, false
 }

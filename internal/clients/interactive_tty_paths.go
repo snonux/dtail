@@ -17,10 +17,16 @@ const editorDefaultWidth = 80
 // listing: the request goes on, and a later Tab uses its answer.
 const pathListingMissingHint = "(no listing of %s from the server within %s: press Tab again to use it once it arrives)"
 
+// tableProbeMissingHint is shown when a Tab completed a query from the
+// cache while the table probe of its from table had not answered yet.
+const tableProbeMissingHint = "(the servers have not answered the probe of table %s yet: " +
+	"press Tab again to use it once it arrives)"
+
 // completeEditorLine completes the line being edited at a Tab press: a
 // --files value from the path listings (completeFilesValue, waiting for a
 // listing that is not cached, awaitPathListing), anything else with
-// completeInteractive.
+// completeInteractive and, for a query naming a from table,
+// completeWithTableProbe.
 func (c *baseClient) completeEditorLine(e *interactiveEditor, pause *interactivePause,
 	line string, pos int) completion {
 
@@ -28,12 +34,39 @@ func (c *baseClient) completeEditorLine(e *interactiveEditor, pause *interactive
 	result, ok := completeFilesValue(line, pos, args, c.prober.pathListingSource())
 	if !ok {
 		// A method value on a nil prober is fine: catalogSnapshot accepts nil.
-		return completeInteractive(line, pos, args, c.prober.catalogSnapshot)
+		result = completeInteractive(line, pos, args, c.prober.catalogSnapshot)
+		if result.probeTable != "" {
+			result = c.completeWithTableProbe(e, pause, line, pos, result)
+		}
+		return result
 	}
 	if result.fetch == "" {
 		return result
 	}
 	return c.awaitPathListing(e, pause, line, pos, result)
+}
+
+// completeWithTableProbe has the prober ask for a table probe of the from
+// table of a query completion (requestTable; nothing is sent while a fresh
+// answer is cached or a failed probe of it is recent) and, only for the
+// Tab that sent the request, waits for it like a path listing, at most the
+// prober's listWait with the output running (waitForListing), then
+// completes the line again. A later Tab while the probe is still on its way
+// does not wait again: it completes from the cache as result does, with
+// tableProbeMissingHint, as does the Tab whose wait ran out.
+func (c *baseClient) completeWithTableProbe(e *interactiveEditor, pause *interactivePause,
+	line string, pos int, result completion) completion {
+
+	done, started := c.prober.requestTable(result.probeTable)
+	if done == nil {
+		return result
+	}
+	if started && c.waitForListing(e, pause, line, pos, done, c.prober.listWait) {
+		args, _ := c.snapshotConnectionState()
+		return completeInteractive(line, pos, args, c.prober.catalogSnapshot)
+	}
+	result.hint = joinLines(result.hint, fmt.Sprintf(tableProbeMissingHint, displayText(result.probeTable)))
+	return result
 }
 
 // awaitPathListing sends the listing request result asks for
@@ -75,7 +108,8 @@ func (c *baseClient) awaitPathListing(e *interactiveEditor, pause *interactivePa
 	return result
 }
 
-// waitForListing waits until done is closed or timeout passed and reports
+// waitForListing waits until done (a path listing or table probe request,
+// listPaths or requestTable) is closed or timeout passed and reports
 // whether it was closed. A paused output runs meanwhile
 // (interactivePause.runOutput): with a remote server the connection handler
 // reads the answer only while it can write the output, and in serverless

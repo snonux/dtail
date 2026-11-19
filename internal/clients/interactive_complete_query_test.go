@@ -108,11 +108,10 @@ func TestCompleteQueryValue(t *testing.T) {
 		{name: "variable", line: `:reload --query 'select $host`, want: `:reload --query 'select $hostname `},
 		{name: "operator list", line: `:reload --query 'select a from STATS where goroutines `,
 			want: `:reload --query 'select a from STATS where goroutines `, wantCandidates: []string{"== ", "eq "}},
-		// After an operator a field or a value may follow: both are listed,
-		// values as bare numbers after a numeric operator.
+		// After an operator only values are offered (no fields), as bare
+		// numbers after a numeric operator: here their common prefix.
 		{name: "numeric values", line: `:reload --query 'select a from STATS where goroutines == `,
-			want:           `:reload --query 'select a from STATS where goroutines == `,
-			wantCandidates: []string{"12 ", "15 ", "goroutines "}},
+			want: `:reload --query 'select a from STATS where goroutines == 1`},
 		{name: "numeric value prefix", line: `:reload --query 'select a from STATS where goroutines == 1`,
 			want:           `:reload --query 'select a from STATS where goroutines == 1`,
 			wantCandidates: []string{"12 ", "15 "}},
@@ -143,7 +142,8 @@ func TestCompleteQueryValue(t *testing.T) {
 					t.Fatalf("candidates %q lack %q", got.candidates, c)
 				}
 			}
-			if got.hint != "" {
+			// Without a from table the guide hints at choosing one.
+			if got.hint != "" && (got.hint != tableFirstHint || strings.Contains(tt.line, "from ")) {
 				t.Fatalf("hint %q with a filled catalog", got.hint)
 			}
 		})
@@ -304,21 +304,15 @@ func TestQueryValueCandidatesFilter(t *testing.T) {
 		"n": {"12", "NaN", "inf", "0x1p3", "-1.5e3"},
 		"s": {long, "a\nb", "ok"},
 	}})
-	for line, want := range map[string][]string{
-		`:reload --query 'from T select n where n > `:        {"12 ", "-1.5e3 "},
-		`:reload --query 'from T select s where s eq `:       {`"ok" `},
-		`:reload --query 'from T select s where s contains `: {`"` + long + `" `, `"ok" `},
+	for query, want := range map[string][]string{
+		`from T select n where n > `:        {"12 ", "-1.5e3 "},
+		`from T select s where s eq `:       {`"ok" `},
+		`from T select s where s contains `: {`"` + long + `" `, `"ok" `},
 	} {
-		got := completeInteractive(line, len(line), queryArgs, catalog)
-		var values []string
-		for _, c := range got.candidates {
-			// Fields (n, s) and $variables are listed too; keep the values.
-			if c != "n " && c != "s " && !strings.HasPrefix(c, "$") {
-				values = append(values, c)
-			}
-		}
-		if !slices.Equal(values, want) {
-			t.Fatalf("%q: values %q, want %q (all %q)", line, values, want, got.candidates)
+		// A value position offers values only, no fields or $variables.
+		got := completeQueryWord(query, "", catalog())
+		if !slices.Equal(got.candidates, want) {
+			t.Fatalf("%q: values %q, want %q", query, got.candidates, want)
 		}
 	}
 }

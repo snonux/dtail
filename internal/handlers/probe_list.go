@@ -125,7 +125,7 @@ func (p *prober) runList(ctx context.Context, request protocol.ProbeRequest) pro
 	answer := protocol.ProbeAnswer{ID: request.ID}
 	r := &listRun{prober: p, answer: &answer, rules: p.pathRules()}
 	switch {
-	case len(request.Files) > 0 || !validListPrefix(request.List):
+	case len(request.Files) > 0 || request.Table != "" || !validListPrefix(request.List):
 		r.addError(protocol.ProbeErrorInvalidRequest)
 	case p.listDisabled:
 		r.addError(protocol.ProbeErrorListDisabled)

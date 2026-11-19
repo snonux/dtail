@@ -27,10 +27,16 @@ import (
 // flowing (plan constraint 1, recorded in the interactiveProber comment and
 // AGENTS.md). It runs a real interactive serverless session (in-process
 // dserver handler, real client handler) that cats a large file, pauses the
-// output right after the first payload was written (from inside that write,
-// so payload is still pending for sure), sends a probe and checks whether
-// its answer arrives within two seconds; then it resumes and requires the
-// answer.
+// output right after the first payload was written once the session start
+// was acknowledged (from inside that write, so payload is still pending for
+// sure), sends a probe and checks whether its answer arrives within
+// pausedWait; then it resumes and requires the answer.
+//
+// pausedWait only bounds how long the test waits for an answer while
+// paused. A case expecting none waits 2 s: under load that can only make a
+// late answer look absent, never fail the case. The case expecting an
+// answer while paused waits much longer, so that a slow host does not make
+// the answer look absent.
 //
 //   - framed: the payload is framed through the client handler, as from a
 //     remote dserver over SSH. The paused writer blocks the handler's Write,
@@ -59,7 +65,11 @@ func TestProbeAnswerWhileOutputPaused(t *testing.T) {
 		{name: "direct, quiet server", direct: true, quietServer: true, wantWhilePaused: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			arrivedWhilePaused, answer := runPausedProbeSession(t, tt.direct, tt.quietServer)
+			pausedWait := 2 * time.Second
+			if tt.wantWhilePaused {
+				pausedWait = 20 * time.Second
+			}
+			arrivedWhilePaused, answer := runPausedProbeSession(t, tt.direct, tt.quietServer, pausedWait)
 			if arrivedWhilePaused != tt.wantWhilePaused {
 				t.Fatalf("probe answer arrived while paused = %v, want %v", arrivedWhilePaused, tt.wantWhilePaused)
 			}
@@ -78,11 +88,28 @@ type pausedProbeSession struct {
 	connector *connectors.Serverless
 	paused    chan struct{}
 	pauseOnce sync.Once
+	// pauseBeforeAck makes pause pause on the first payload write, also
+	// before the session start was acknowledged
+	// (TestSessionStartWhileOutputPaused).
+	pauseBeforeAck bool
 }
 
 // pause pauses the logger and the serverless output gate, once, as
-// interactivePause.pause does, and signals it.
+// interactivePause.pause does, and signals it. It does nothing until the
+// connection committed its SESSION START, i.e. the client handler read the
+// server's acknowledgement: the server may queue that acknowledgement
+// behind the first payload frames (its session output reads payload before
+// server messages), and a paused handler does not read it. The start no
+// longer fails for that (the paused time does not count against
+// defaultSessionAckTimeout, see TestSessionStartWhileOutputPaused), but it
+// is still waiting while paused, and the probe of this test is about a
+// started session. A later payload write pauses instead; the file is large
+// enough for payload to be pending still. With pauseBeforeAck the first
+// payload write pauses.
 func (s *pausedProbeSession) pause() {
+	if _, _, committed := s.connector.CommittedSession(); !committed && !s.pauseBeforeAck {
+		return
+	}
 	s.pauseOnce.Do(func() {
 		s.logger.Pause()
 		s.runtime.outputGate.Pause()
@@ -97,8 +124,9 @@ func (s *pausedProbeSession) resume() {
 
 // runPausedProbeSession runs the session of TestProbeAnswerWhileOutputPaused
 // and returns whether the probe answer arrived while the output was paused,
-// and the answer.
-func runPausedProbeSession(t *testing.T, direct, quietServer bool) (bool, protocol.ProbeAnswer) {
+// and the answer. It waits at most pausedWait for an answer while paused.
+func runPausedProbeSession(t *testing.T, direct, quietServer bool,
+	pausedWait time.Duration) (bool, protocol.ProbeAnswer) {
 	t.Helper()
 	file := writeProbeTestLog(t, 20000)
 	session := newPausedProbeSession(t, file, direct, quietServer)
@@ -114,7 +142,7 @@ func runPausedProbeSession(t *testing.T, direct, quietServer bool) (bool, protoc
 	select {
 	case <-session.paused:
 	case <-time.After(10 * time.Second):
-		t.Fatal("no payload arrived")
+		t.Fatal("no payload arrived after the session start was acknowledged")
 	}
 	type result struct {
 		answer protocol.ProbeAnswer
@@ -133,7 +161,7 @@ func runPausedProbeSession(t *testing.T, direct, quietServer bool) (bool, protoc
 	select {
 	case got = <-results:
 		arrivedWhilePaused = true
-	case <-time.After(2 * time.Second):
+	case <-time.After(pausedWait):
 		session.resume()
 		got = <-results
 	}
@@ -161,8 +189,9 @@ func newPausedProbeSession(t *testing.T, file string, direct, quietServer bool) 
 	}
 	session.runtime = newClientRuntimeBoundary(cfg, NewLoggerDependencies(clientlog.NopLogger{},
 		serverLogger, logging.NopLogger{}))
-	// The first payload write pauses the output from inside the write, so
-	// the rest of the file is still pending when the probe is sent.
+	// The first payload write after the session start was acknowledged
+	// pauses the output from inside the write (pause), so the rest of the
+	// file is still pending when the probe is sent.
 	session.runtime.stdout = func() io.Writer { return firstWritePauses{session: session} }
 	session.logger.onRaw = session.pause
 	session.handler = handlers.NewClientHandler("local(serverless)", session.logger)
@@ -195,7 +224,8 @@ func (l pausedServerLogger) Warn(args ...any) string  { return l.output.log(fmt.
 func (l pausedServerLogger) Error(args ...any) string { return l.output.log(fmt.Sprint(args...)) }
 
 // firstWritePauses is the serverless direct output of
-// runPausedProbeSession: it pauses the session on its first write.
+// runPausedProbeSession: it pauses the session on its first write after
+// the session start was acknowledged (pause).
 type firstWritePauses struct {
 	session *pausedProbeSession
 }

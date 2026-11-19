@@ -42,6 +42,10 @@ func NewHealthHandler(server string, logger clientlog.Logger) *HealthHandler {
 // frames, such as the close handshake, are handled as hidden messages; every
 // other frame is checked for the health status (handleMessage).
 func (h *HealthHandler) Write(p []byte) (n int, err error) {
+	// Measured as busy time for WaitForSessionAck (busyClock), the
+	// whole call.
+	h.busy.begin()
+	defer h.busy.end()
 	h.scanFrames(p, h.handleHealthFrame)
 	return len(p), nil
 }

@@ -96,8 +96,14 @@ func (s *Serverless) CommittedSession() (sessionspec.Spec, uint64, bool) {
 
 // ReplaceStartSessionSpec makes spec the workload of the initial SESSION
 // START if that has not begun yet (see Connector).
-func (s *Serverless) ReplaceStartSessionSpec(spec sessionspec.Spec) bool {
+func (s *Serverless) ReplaceStartSessionSpec(spec sessionspec.Spec) (bool, error) {
 	return s.sessionState.replaceStartSpec(spec)
+}
+
+// RestoreStartSessionSpec rolls the start spec back after a failed reload
+// (see Connector).
+func (s *Serverless) RestoreStartSessionSpec(spec sessionspec.Spec) (bool, error) {
+	return s.sessionState.restoreStartSpec(spec)
 }
 
 // RestoreCommittedSession resets the local session snapshot without advancing

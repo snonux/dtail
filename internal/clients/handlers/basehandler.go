@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"sort"
 	"strconv"
@@ -90,6 +91,10 @@ type baseHandler struct {
 	capabilitiesOk sync.Once
 
 	sessionAcks chan SessionAck
+	// busy measures the time Write spends handling received frames, during
+	// which no further frame, e.g. a session acknowledgement, is read (see
+	// WaitForSessionAck).
+	busy busyClock
 	// probeAnswers queues the probe answers the server sent (see
 	// handleProbeMessage and Probe); nil for handlers that never probe
 	// (health checks). probeSlot (capacity 1) lets one Probe call send
@@ -320,6 +325,10 @@ func (h *baseHandler) checkFirstFrame(first []byte, kind frameKind) frameKind {
 // everything below it must not retain the slice (io.Writer forbids retaining
 // p).
 func (h *baseHandler) Write(p []byte) (n int, err error) {
+	// Measured as busy time for WaitForSessionAck (busyClock), a payload
+	// write blocked by the paused output included.
+	h.busy.begin()
+	defer h.busy.end()
 	h.scanFrames(p, h.handleFrame)
 	return len(p), nil
 }
@@ -601,13 +610,29 @@ func (h *baseHandler) WaitForCapabilities(timeout time.Duration) bool {
 	}
 }
 
-// WaitForSessionAck returns the next session acknowledgement, waiting up to
-// timeout for one. Like WaitForCapabilities, an acknowledgement that is
-// already queued wins without any wait: the non-blocking receive comes first
-// because a select with several ready cases picks one at random, so a queued
-// acknowledgement could otherwise lose against an expired timer or an already
-// finished session.
-func (h *baseHandler) WaitForSessionAck(timeout time.Duration) (SessionAck, bool) {
+// WaitForSessionAck returns the next session acknowledgement, waiting for
+// one until the handler was idle for timeout, but never longer than
+// maxWait (wall clock; 0 for no cap). Like WaitForCapabilities, an
+// acknowledgement that is already queued wins without any wait: the
+// non-blocking receive comes first because a select with several ready
+// cases picks one at random, so a queued acknowledgement could otherwise
+// lose against an expired timer or an already finished session.
+//
+// Only the time the handler was free to read frames counts against timeout:
+// the time Write was busy (busyClock) does not, so a busy handler stretches
+// the wait. dserver sends the acknowledgement ahead of the payload it has
+// queued and of all output of the workload it acknowledges
+// (handlers.sessionAckGate), but payload frames already on their way can
+// come before it, and while the interactive output is paused, the handler's
+// payload write blocks and the acknowledgement is not read. So pausing the
+// output right after a SESSION START, for longer than the timeout, does not
+// fail the session start: its wait (maxWait 0) goes on until the output
+// resumes. A server that never answers times out after timeout of idle
+// handler time; the session's end ends the wait. A SESSION UPDATE runs on the interactive control loop,
+// which must not wait without bound (e.g. for a host key prompt that only
+// the control loop answers while it pauses the output), so it passes a
+// maxWait (connectors.sessionUpdateAckMaxWait).
+func (h *baseHandler) WaitForSessionAck(timeout, maxWait time.Duration) (SessionAck, bool) {
 	if h.sessionAcks == nil {
 		return SessionAck{}, false
 	}
@@ -620,18 +645,51 @@ func (h *baseHandler) WaitForSessionAck(timeout time.Duration) (SessionAck, bool
 	if timeout <= 0 {
 		return SessionAck{}, false
 	}
+	return h.waitForSessionAckIdle(timeout, maxWait)
+}
 
-	timer := time.NewTimer(timeout)
+// minAckRecheck is the shortest time the acknowledgement wait's timer is
+// armed again for, so that a little idle time still missing does not make
+// it spin.
+const minAckRecheck = 10 * time.Millisecond
+
+// waitForSessionAckIdle waits for a session acknowledgement until the
+// handler was idle (not busy in Write) for timeout since the call, or
+// maxWait (if above 0) passed. When the timer fires early because of busy
+// time, it is armed again for the idle time still missing (at least
+// minAckRecheck), but not past maxWait.
+func (h *baseHandler) waitForSessionAckIdle(timeout, maxWait time.Duration) (SessionAck, bool) {
+	start := time.Now()
+	busyAtStart := h.busy.busy(start)
+	timer := time.NewTimer(min(timeout, remainingWait(maxWait, 0)))
 	defer timer.Stop()
 
-	select {
-	case ack := <-h.sessionAcks:
-		return ack, true
-	case <-h.Done():
-		return SessionAck{}, false
-	case <-timer.C:
-		return SessionAck{}, false
+	for {
+		select {
+		case ack := <-h.sessionAcks:
+			return ack, true
+		case <-h.Done():
+			return SessionAck{}, false
+		case <-timer.C:
+			now := time.Now()
+			elapsed := now.Sub(start)
+			idle := elapsed - (h.busy.busy(now) - busyAtStart)
+			if idle >= timeout || (maxWait > 0 && elapsed >= maxWait) {
+				// An acknowledgement queued meanwhile still wins.
+				return h.WaitForSessionAck(0, 0)
+			}
+			timer.Reset(min(max(timeout-idle, minAckRecheck), remainingWait(maxWait, elapsed)))
+		}
 	}
+}
+
+// remainingWait returns how much of maxWait is left after elapsed, or the
+// largest duration for no cap (maxWait 0).
+func remainingWait(maxWait, elapsed time.Duration) time.Duration {
+	if maxWait <= 0 {
+		return time.Duration(math.MaxInt64)
+	}
+	return maxWait - elapsed
 }
 
 func (h *baseHandler) Shutdown() {

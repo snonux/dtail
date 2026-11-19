@@ -33,9 +33,12 @@ func TestCompleteInteractive(t *testing.T) {
 		wantCandidates []string
 	}{
 		{name: "command", args: completeGrepArgs, line: ":re", pos: -1, wantLine: ":reload "},
-		{name: "command quit", args: completeGrepArgs, line: ":q", pos: -1, wantLine: ":quit"},
-		{name: "command list on bare colon", args: completeGrepArgs, line: ":", pos: -1, wantLine: ":",
+		{name: "command quit", args: completeCatArgs, line: ":q", pos: -1, wantLine: ":quit"},
+		{name: "command query or quit", args: completeGrepArgs, line: ":q", pos: -1, wantLine: ":qu"},
+		{name: "command list on bare colon", args: completeCatArgs, line: ":", pos: -1, wantLine: ":",
 			wantCandidates: []string{":reload ", ":show", ":fields ", ":probe", ":help", ":quit"}},
+		{name: "dtail command list on bare colon", args: completeGrepArgs, line: ":", pos: -1, wantLine: ":",
+			wantCandidates: []string{":reload ", ":show", ":fields ", ":probe", ":help", ":quit", ":query ", ":tail "}},
 		{name: "unknown command prefix", args: completeGrepArgs, line: ":x", pos: -1, wantLine: ":x"},
 		{name: "grep flag", args: completeGrepArgs, line: ":reload --gr", pos: -1, wantLine: ":reload --grep "},
 		{name: "single dash", args: completeGrepArgs, line: ":reload -bef", pos: -1, wantLine: ":reload --before "},

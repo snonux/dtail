@@ -214,13 +214,30 @@ server` before the mismatch error; released 4.x clients (e.g. v4.3.4) have
 no such check.
 
 Handling a command may wait for output: a `SESSION START` acks its spec only
-once the server message channel has room, which its reads can fill (e.g.
-with one `Unable to read file(s)` message per missing file); the session
-reader drains the channel meanwhile. An unknown command or failed map query
-that is the session's only command does not block the command input
-goroutine: it starts the session's shutdown, whose flush waits for the
-output, on a goroutine of its own (`ServerHandler.finishUserCommand`), so the
-client's close acknowledgement is handled at once instead of after the 5 s
+once the acknowledgement queue has room; the session reader drains it
+meanwhile. The session reader sends payload before server messages, but a
+`SESSION START`/`UPDATE` acknowledgement, ok or error, goes ahead of queued
+payload as soon as that splits no frame (`tryReadSessionAckFirst`,
+`outputManager.atRecordBoundary`), and an ok acknowledgement ahead of every
+output of the workload it acknowledges (`sessionAckGate` in
+`internal/handlers/session_ack_gate.go`): before the workload's commands are
+dispatched its generation is held, its payload stays queued
+(`outputManager.tryRead` stops at its first entry) and its server and
+MapReduce messages (e.g. one `Unable to read file(s)` message per missing
+file, failure reports) are deferred in order, until the reader took the
+acknowledgement from its own queue (`sessionAcks`), which ends the hold. So
+no acknowledgement waits behind the session output buffer on a slow link
+(the client waits 2 s for it), also not the error acknowledgement of a
+rejected update while the running workload fills the buffer, and an ok one
+means the workload is active. A frame already begun is finished first; the
+rest of a replaced generation is stale and dropped. A workload that fails
+to start releases its hold on the input goroutine and gets an error
+acknowledgement. The deferred messages are transient, about three per read
+command of the spec. An unknown command or failed map query that is the
+session's only command does not block the command input goroutine: it
+starts the session's shutdown, whose flush waits for the output, on a
+goroutine of its own (`ServerHandler.finishUserCommand`), so the client's
+close acknowledgement is handled at once instead of after the 5 s
 acknowledgement timeout. A command frame the server rejects before any
 handler ran (a frame that does not decode, an invalid `timeout N` prefix or
 options that do not parse) admits no command, so none finishes; when it

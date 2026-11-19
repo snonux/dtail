@@ -99,6 +99,12 @@ func NewAggregate(server string, session *SessionState, logger logging.Logger) *
 	}
 }
 
+// Expected reports whether the session expects aggregate frames (see
+// SessionState.AggregatesExpected); false without a session.
+func (a *Aggregate) Expected() bool {
+	return a.session != nil && a.session.AggregatesExpected()
+}
+
 // Add validates one aggregate message (the content of an aggregate frame)
 // and queues it for the next Merge or Flush. message is copied, so the caller
 // may reuse it right away. A message of another generation than the queued
@@ -159,11 +165,14 @@ func (a *Aggregate) merge(block bool) error {
 	}
 	snapshot := a.session.Snapshot()
 	if snapshot.Query == nil || snapshot.GlobalGroup == nil {
+		// No query is active: interactive dtail switched its session to a
+		// plain read (SessionState.ClearQuery), or not yet to the query
+		// whose first aggregates these are (the servers start the new
+		// workload before the client commits it). Neither has a result to
+		// add them to, so they are dropped, as aggregates of a replaced
+		// generation are.
 		a.reset()
-		if block {
-			return nil
-		}
-		return fmt.Errorf("missing client mapreduce query state")
+		return nil
 	}
 	if snapshot.Generation != a.generation {
 		a.reset()

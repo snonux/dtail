@@ -202,7 +202,7 @@ func TestHandleSessionAckMessage(t *testing.T) {
 
 	handler.handleHiddenMessage(".syn session update ok 4")
 
-	ack, ok := handler.WaitForSessionAck(10 * time.Millisecond)
+	ack, ok := handler.WaitForSessionAck(10*time.Millisecond, 0)
 	if !ok {
 		t.Fatalf("expected session ack")
 	}
@@ -227,7 +227,7 @@ func TestWaitForSessionAckPrefersQueuedAck(t *testing.T) {
 	handler.done.Shutdown()
 
 	for i := 0; i < attempts; i++ {
-		ack, ok := handler.WaitForSessionAck(time.Nanosecond)
+		ack, ok := handler.WaitForSessionAck(time.Nanosecond, 0)
 		if !ok {
 			t.Fatalf("attempt %d: expected the queued session ack to win", i)
 		}

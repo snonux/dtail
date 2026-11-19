@@ -9,9 +9,25 @@ import (
 )
 
 // interactiveCommands are the control commands Tab completes on the first
-// word. :reload takes flags and :fields an optional table, so they complete
-// with a trailing blank.
+// word in every mode. :reload takes flags and :fields an optional table, so
+// they complete with a trailing blank; interactiveCommandsFor adds :query
+// and :tail where the mode has them.
 var interactiveCommands = []string{":reload ", ":show", ":fields ", ":probe", ":help", ":quit"}
+
+// interactiveCommandsFor returns the control commands of the mode of args:
+// interactiveCommands, with :query in dtail and dmap and :tail in dtail
+// (hasQueryCommand, hasTailCommand). Both complete with a trailing blank,
+// as the argument usually follows.
+func interactiveCommandsFor(args config.Args) []string {
+	commands := slices.Clone(interactiveCommands)
+	if hasQueryCommand(args) {
+		commands = append(commands, queryCommand+" ")
+	}
+	if hasTailCommand(args) {
+		commands = append(commands, tailCommand+" ")
+	}
+	return commands
+}
 
 // interactiveValueFlags maps the :reload flags whose current value Tab
 // inserts (after the flag and a blank) to that value.
@@ -35,22 +51,32 @@ type completion struct {
 	// header is a line to show above the candidates, e.g. which server a
 	// path listing came from.
 	header string
-	// kind is the kind of the candidates (candidateCommand by default),
-	// kinds the kind of single candidates where they differ (the words of a
-	// query); both only decide the style of the listing.
-	kind  candidateKind
-	kinds map[string]candidateKind
+	// kind is the kind of the candidates (candidateCommand by default); it
+	// only decides the style of the listing.
+	kind candidateKind
+	// heading says what is expected at the cursor (e.g. "field to count")
+	// and groups are the candidates of a query by what they are, labelled
+	// (queryCompletion.groups): with groups the listing shows them under
+	// their labels as bare names (interactiveStyle.listing), else the
+	// candidates on one line.
+	heading string
+	groups  []candidateGroup
 	// fetch is set by the --files completion (completeFilesValue) when the
 	// path listing it needs is not cached: the listing request to send
 	// before completing again.
 	fetch string
+	// probeTable is set by the --query completion (completeQueryValue) to
+	// the from table typed in the query: the editor asks for a table probe
+	// of it in the background (interactiveProber.requestTable), so that the
+	// catalog gets that table's fields and $variables from a larger window.
+	probeTable string
 }
 
 // completeInteractive completes the word that ends at byte offset pos of a
 // control line for the client arguments args:
 //
 //   - the first word: the control commands (:reload, :show, :fields,
-//     :probe, :help, :quit);
+//     :probe, :help, :quit, and :query and :tail where the mode has them);
 //   - the word after ":fields": the tables of the field catalog
 //     (completeFieldsTable);
 //   - a word starting with "-" after :reload: the flags :reload accepts in
@@ -60,7 +86,9 @@ type completion struct {
 //     is edited rather than typed again; any other empty word after :reload:
 //     the flags;
 //   - a word inside a --query value (quoted, escaped, or --query=...): the
-//     query language and the field catalog (completeQueryValue).
+//     query language and the field catalog (completeQueryValue);
+//   - a word of the query after ":query ": the same, inserted without
+//     shell quoting (completeQueryCommand).
 //
 // A single candidate replaces the word, several extend it by their common
 // prefix; when that adds nothing, they are returned to be listed. Outside a
@@ -76,6 +104,9 @@ func completeInteractive(line string, pos int, args config.Args, catalog func() 
 		return unchanged
 	}
 	if result, ok := completeQueryValue(line, pos, args, catalog); ok {
+		return result
+	}
+	if result, ok := completeQueryCommand(unchanged, line[:pos], line[pos:], args, catalog); ok {
 		return result
 	}
 	if result, ok := completeFieldsTable(line, pos, catalog); ok {
@@ -96,7 +127,7 @@ func completePlainWord(unchanged completion, before, after string, args config.A
 		return unchanged
 	}
 	if strings.TrimSpace(prefix) == "" {
-		return applyCompletion(unchanged, prefix, word, after, matching(interactiveCommands, word))
+		return applyCompletion(unchanged, prefix, word, after, matching(interactiveCommandsFor(args), word))
 	}
 	candidates, ok := reloadWordCandidates(prefix, word, args)
 	if !ok {

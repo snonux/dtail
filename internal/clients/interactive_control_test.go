@@ -342,7 +342,7 @@ func TestInteractiveHelpTextMatchesMode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			help := interactiveHelpText(tt.args)
-			for _, want := range []string{":reload <flags>, :show, :fields [table], :probe, :help, :quit",
+			for _, want := range []string{"Commands: :reload <flags>, ", ":show, :fields [table], :probe, :help, :quit.",
 				"An empty line pauses or resumes the output",
 				":reload --files /var/log/a.log,/var/log/b.log", ":show prints the current ones"} {
 				if !strings.Contains(help, want) {
@@ -381,7 +381,8 @@ func TestInteractiveHelpExamplesParse(t *testing.T) {
 		examples := 0
 		for _, line := range strings.Split(interactiveHelpText(args), "\n") {
 			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, ":reload ") {
+			if !strings.HasPrefix(line, ":reload ") && !strings.HasPrefix(line, ":query") &&
+				!strings.HasPrefix(line, ":tail") {
 				continue
 			}
 			// Drop the explanation column (two or more blanks after the
@@ -391,7 +392,7 @@ func TestInteractiveHelpExamplesParse(t *testing.T) {
 			}
 			examples++
 			command, err := parseInteractiveCommand(args, line)
-			if err != nil || command.kind != "reload" {
+			if err != nil || ":"+command.kind != strings.Fields(line)[0] {
 				t.Fatalf("mode %s: help example %q: kind %q, err %v", args.Mode, line, command.kind, err)
 			}
 		}
@@ -408,14 +409,15 @@ func requireHelpCommandsParse(t *testing.T, args config.Args) {
 	t.Helper()
 	first, _, _ := strings.Cut(interactiveHelpText(args), ".")
 	commands := strings.Split(strings.TrimPrefix(first, "Commands: "), ", ")
-	if len(commands) < 6 {
+	if len(commands) < 6 || !strings.HasSuffix(first, ":quit") {
 		t.Fatalf("help names %d commands: %q", len(commands), first)
 	}
 	for _, command := range commands {
 		if strings.HasPrefix(command, ":reload") {
 			continue
 		}
-		line := strings.ReplaceAll(command, "[table]", "STATS")
+		line := strings.NewReplacer("[table]", "STATS", "[query]", "from STATS select count($line)",
+			"[regex]", "ERROR").Replace(command)
 		parsed, err := parseInteractiveCommand(args, line)
 		if err != nil || ":"+parsed.kind != strings.Fields(line)[0] {
 			t.Fatalf("help command %q: kind %q, err %v", line, parsed.kind, err)
@@ -862,9 +864,16 @@ type interactiveReloadConnector struct {
 	// beganWith, with startBegun, is the spec of the begun start, committed
 	// at generation 1 when ReplaceStartSessionSpec is called.
 	beganWith *sessionspec.Spec
-	// startSpecs records the specs ReplaceStartSessionSpec replaced the
-	// start spec with.
+	// startSpecs records the specs ReplaceStartSessionSpec and
+	// RestoreStartSessionSpec replaced the start spec with.
 	startSpecs []sessionspec.Spec
+	// replaceErr and restoreErr, if set, are returned by
+	// ReplaceStartSessionSpec and RestoreStartSessionSpec instead, as for
+	// a SESSION START in flight past the control loop's cap.
+	replaceErr error
+	restoreErr error
+	// restoreCalls counts the RestoreStartSessionSpec calls.
+	restoreCalls int
 }
 
 type interactiveReloadSessionHandler struct {
@@ -921,7 +930,7 @@ func (h *interactiveReloadSessionHandler) WaitForCapabilities(time.Duration) boo
 	return h.waitForCapabilities
 }
 
-func (h *interactiveReloadSessionHandler) WaitForSessionAck(timeout time.Duration) (handlers.SessionAck, bool) {
+func (h *interactiveReloadSessionHandler) WaitForSessionAck(timeout, _ time.Duration) (handlers.SessionAck, bool) {
 	if timeout <= 0 {
 		return handlers.SessionAck{}, false
 	}
@@ -1017,17 +1026,33 @@ func (c *interactiveReloadConnector) CommittedSession() (sessionspec.Spec, uint6
 	return c.committedSpec, c.generation, true
 }
 
-func (c *interactiveReloadConnector) ReplaceStartSessionSpec(spec sessionspec.Spec) bool {
+func (c *interactiveReloadConnector) ReplaceStartSessionSpec(spec sessionspec.Spec) (bool, error) {
+	if c.replaceErr != nil {
+		return false, c.replaceErr
+	}
+	return c.replaceStartSpec(spec)
+}
+
+func (c *interactiveReloadConnector) RestoreStartSessionSpec(spec sessionspec.Spec) (bool, error) {
+	c.restoreCalls++
+	if c.restoreErr != nil {
+		return false, c.restoreErr
+	}
+	return c.replaceStartSpec(spec)
+}
+
+// replaceStartSpec replaces the start spec unless startBegun is set.
+func (c *interactiveReloadConnector) replaceStartSpec(spec sessionspec.Spec) (bool, error) {
 	if c.startBegun {
 		if c.beganWith != nil && c.generation == 0 {
 			// The start that began commits now, as a SESSION START in
 			// flight does before the replacement gets applyMu.
 			c.committedSpec, c.liveSpec, c.generation = *c.beganWith, *c.beganWith, 1
 		}
-		return false
+		return false, nil
 	}
 	c.startSpecs = append(c.startSpecs, spec)
-	return true
+	return true, nil
 }
 
 func (c *interactiveReloadConnector) RestoreCommittedSession(spec sessionspec.Spec, generation uint64, committed bool) {

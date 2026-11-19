@@ -24,21 +24,51 @@ var (
 	// ErrJournalUnsupported indicates that the remote side did not advertise
 	// journal support (protocol.CapabilityJournalV1).
 	ErrJournalUnsupported = errors.New(journalUnsupportedMessage)
+	// ErrSessionStartPending indicates that the connection's initial
+	// SESSION START, or the rollback a failed reload deferred to right
+	// after it (restoreStartSpec), still waited for its acknowledgement
+	// after sessionUpdateAckMaxWait, so its session could not be changed.
+	ErrSessionStartPending = errors.New("session start (or its deferred rollback) still waiting for its acknowledgement")
+	// ErrSessionRollbackDeferred indicates that a rollback of the start
+	// spec found the connection's initial SESSION START still waiting for
+	// its acknowledgement (as ErrSessionStartPending): the start updates
+	// its session to the rolled back spec right after it is acknowledged
+	// (see committedSessionState.restoreStartSpec).
+	ErrSessionRollbackDeferred = errors.New("session start still waiting for its acknowledgement, " +
+		"rolled back once it is acknowledged")
 )
 
 // journalUnsupportedMessage is what the user is told when a spec reads a
 // journal target from a server without journal support.
 const journalUnsupportedMessage = "journal file targets require server capability " + protocol.CapabilityJournalV1
 
+// defaultSessionAckTimeout is how long a SESSION acknowledgement is waited
+// for, counting only the time the client handler was idle (see
+// handlers.Handler.WaitForSessionAck): a busy handler, e.g. one whose
+// payload write the paused output blocks, stretches it.
 const defaultSessionAckTimeout = 2 * time.Second
+
+// sessionUpdateAckMaxWait caps, in wall-clock time, how long the
+// interactive control loop waits for a session transition: a SESSION
+// UPDATE's acknowledgement (:reload, :query, :tail and their rollbacks)
+// and the session lock a SESSION START in flight holds (replaceStartSpec).
+// The control loop must not wait without bound: it alone answers a host
+// key prompt, whose pause of the output can keep the client handler from
+// reading the acknowledgement, and a flood of client-bound output keeps the
+// handler busy, stretching the idle-time timeout. The initial SESSION
+// START, waited for on the connection's own goroutine, has no such cap, so
+// a long pause right after it only delays it.
+// It is a variable only so that tests can shorten it.
+var sessionUpdateAckMaxWait = 10 * time.Second
 
 // committedSessionState is the session state of one connection: the spec
 // and generation the server acknowledged last, and what its initial SESSION
 // START sends. applyMu serializes the session transitions (the initial
 // start, reloads, rollbacks and replacing the start spec); mu guards the
-// committed fields for readers.
+// committed fields for readers and the start's follow-up (see
+// restoreStartSpec).
 type committedSessionState struct {
-	applyMu    sync.Mutex
+	applyMu    applyLock
 	mu         sync.RWMutex
 	committed  bool
 	generation uint64
@@ -51,23 +81,94 @@ type committedSessionState struct {
 	// spec in the initial SESSION START (see replaceStartSpec).
 	startSpec    sessionspec.Spec
 	hasStartSpec bool
+	// startDone is set, under mu, once the initial SESSION START finished
+	// (finishStart, which also returns followUp).
+	startDone bool
+	// followUp, when hasFollowUp is set (both under mu), is the spec the
+	// initial SESSION START in flight updates its session to once it was
+	// acknowledged (see restoreStartSpec). hasFollowUp stays set until that
+	// update finished (endFollowUp), and the session counts as not
+	// committed meanwhile (snapshot).
+	followUp    sessionspec.Spec
+	hasFollowUp bool
 }
 
 // replaceStartSpec makes spec the workload of the initial SESSION START if
 // that has not begun yet, and reports true then. It reports false once it
 // began, whether it succeeded or not: the caller then has to update a
 // committed session, as a :reload does. A SESSION START in flight holds
-// applyMu, so this waits for its outcome instead of racing with it.
-func (s *committedSessionState) replaceStartSpec(spec sessionspec.Spec) bool {
-	s.applyMu.Lock()
+// applyMu, so this waits for its outcome instead of racing with it, but
+// for at most sessionUpdateAckMaxWait: it returns ErrSessionStartPending
+// then, as the start's own wait has no wall-clock limit.
+func (s *committedSessionState) replaceStartSpec(spec sessionspec.Spec) (bool, error) {
+	if !s.applyMu.lockWithin(sessionUpdateAckMaxWait) {
+		return false, ErrSessionStartPending
+	}
 	defer s.applyMu.Unlock()
 
 	if s.started {
-		return false
+		return false, nil
 	}
 	s.startSpec = spec
 	s.hasStartSpec = true
+	return true, nil
+}
+
+// restoreStartSpec is replaceStartSpec for the rollback of a failed
+// :reload, which gives a connecting connection the previous spec back. If
+// the start already began with the reloaded spec and still waits for its
+// acknowledgement after sessionUpdateAckMaxWait, the rollback can not wait
+// for it; left alone, the connection would commit the reloaded spec while
+// the client and the other connections are on the previous one (dmap would
+// merge the reloaded query's results into the previous aggregation). So
+// the start is told to update its session to spec right after its
+// acknowledgement (finishStart), and ErrSessionRollbackDeferred is
+// returned. Should the start have finished in the meantime, the lock is
+// taken again: replaceStartSpec then reports false, and the caller updates
+// the committed session as for any start that began.
+func (s *committedSessionState) restoreStartSpec(spec sessionspec.Spec) (bool, error) {
+	restored, err := s.replaceStartSpec(spec)
+	if !errors.Is(err, ErrSessionStartPending) {
+		return restored, err
+	}
+	if s.deferStartFollowUp(spec) {
+		return false, ErrSessionRollbackDeferred
+	}
+	return s.replaceStartSpec(spec)
+}
+
+// deferStartFollowUp makes spec the follow-up of the initial SESSION START
+// and reports true, unless the start finished already.
+func (s *committedSessionState) deferStartFollowUp(spec sessionspec.Spec) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.startDone {
+		return false
+	}
+	s.followUp = spec
+	s.hasFollowUp = true
 	return true
+}
+
+// finishStart marks the initial SESSION START as finished and returns its
+// follow-up spec, if a rollback deferred one (deferStartFollowUp). The
+// caller holds applyMu and calls endFollowUp once the follow-up finished.
+func (s *committedSessionState) finishStart() (sessionspec.Spec, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.startDone = true
+	return s.followUp, s.hasFollowUp
+}
+
+// endFollowUp marks the start's follow-up as finished, whether it
+// succeeded or not, so the session counts as committed again if it is.
+func (s *committedSessionState) endFollowUp() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.followUp, s.hasFollowUp = sessionspec.Spec{}, false
 }
 
 func (s *committedSessionState) commit(spec sessionspec.Spec, generation uint64) {
@@ -104,11 +205,21 @@ func (s *committedSessionState) clear() {
 	s.spec = sessionspec.Spec{}
 }
 
+// snapshot returns the committed spec and generation and whether a session
+// is committed. A session whose start committed a reloaded spec that a
+// failed reload deferred a rollback for (hasFollowUp) is reported as not
+// committed until that rollback finished: committed, a reload arriving
+// meanwhile would take it for an active session at the failed reload's
+// spec and record that spec for its own rollback, outside applyMu, which
+// the follow-up holds. Not committed, the reload takes the path of a
+// connection still connecting (ReplaceStartSessionSpec), which waits for
+// applyMu and then finds the rolled back spec committed. The generation is
+// returned either way.
 func (s *committedSessionState) snapshot() (sessionspec.Spec, uint64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.spec, s.generation, s.committed
+	return s.spec, s.generation, s.committed && !s.hasFollowUp
 }
 
 // dispatchInitialCommands starts the session's workload: the plain command
@@ -139,7 +250,10 @@ func dispatchInitialCommands(server string, handler handlers.Handler, commands [
 // connection was created with. The start is marked as begun and its spec
 // read under applyMu, which it keeps holding, so a concurrent reload either
 // replaces the spec before the start or finds the start begun and updates
-// the session after it.
+// the session after it. A failed reload whose rollback could not wait for
+// the start (restoreStartSpec) left a follow-up spec: the session is
+// updated to it right after the start was acknowledged, still under
+// applyMu, so no later transition sees the reloaded spec in between.
 func startInitialSession(server string, handler handlers.Handler, state *committedSessionState,
 	initialSpec sessionspec.Spec, logger logging.Logger) error {
 	state.applyMu.Lock()
@@ -150,7 +264,42 @@ func startInitialSession(server string, handler handlers.Handler, state *committ
 	if state.hasStartSpec {
 		spec = state.startSpec
 	}
-	return applySessionSpecLocked(server, handler, state, spec, 0, defaultSessionAckTimeout, logger)
+	// No wall-clock cap (maxWait 0): this runs on the connection's own
+	// goroutine, and a paused output only delays the acknowledgement.
+	err := applySessionSpecLocked(server, handler, state, spec, 0, defaultSessionAckTimeout, 0, logger)
+	followUp, hasFollowUp := state.finishStart()
+	if !hasFollowUp {
+		return err
+	}
+	defer state.endFollowUp()
+	if err != nil {
+		return err
+	}
+	return applyStartFollowUp(server, handler, state, followUp, logger)
+}
+
+// applyStartFollowUp updates the session the initial SESSION START just
+// committed to followUp, the spec a failed reload rolled it back to. Until
+// the update is acknowledged the server runs the reloaded spec, and all it
+// sends meanwhile reaches the client, which filters no output by
+// generation: lines of the reloaded workload are printed, and with dmap
+// its aggregates are merged into the client's aggregation (with dtail
+// switched from following lines to a query, they can print as
+// AGGREGATE|... lines). Only what dserver still queued when the update
+// arrived is dropped. A failed update fails the start and so ends the
+// connection (a retrying client reconnects with the client's current
+// spec), rather than leaving it on the reloaded spec. The caller holds
+// applyMu.
+func applyStartFollowUp(server string, handler handlers.Handler, state *committedSessionState,
+	followUp sessionspec.Spec, logger logging.Logger) error {
+	_, generation, _ := state.snapshot()
+	logging.OrNop(logger).Debug(server, "Rolling the session start back to the spec of before a failed reload",
+		"generation", generation)
+	if err := applySessionSpecLocked(server, handler, state, followUp, generation,
+		defaultSessionAckTimeout, 0, logger); err != nil {
+		return fmt.Errorf("roll back the reloaded spec of the session start: %w", err)
+	}
+	return nil
 }
 
 func applySessionSpec(server string, handler handlers.Handler,
@@ -163,22 +312,28 @@ func applySessionSpecWithGeneration(server string, handler handlers.Handler,
 	state *committedSessionState, spec sessionspec.Spec, generation uint64, useCurrentGeneration bool,
 	timeout time.Duration, logger logging.Logger) error {
 	// Serialize session transitions so an interactive reload cannot race the
-	// initial SESSION START bootstrap on the same connection.
-	state.applyMu.Lock()
+	// initial SESSION START bootstrap on the same connection. The interactive
+	// control loop calls this, so neither the lock nor the acknowledgement
+	// is waited for longer than sessionUpdateAckMaxWait.
+	if !state.applyMu.lockWithin(sessionUpdateAckMaxWait) {
+		return fmt.Errorf("%w: %s", ErrSessionStartPending, server)
+	}
 	defer state.applyMu.Unlock()
 
 	if useCurrentGeneration {
 		_, generation, _ = state.snapshot()
 	}
-	return applySessionSpecLocked(server, handler, state, spec, generation, timeout, logger)
+	return applySessionSpecLocked(server, handler, state, spec, generation, timeout,
+		sessionUpdateAckMaxWait, logger)
 }
 
 // applySessionSpecLocked sends SESSION START (generation 0) or SESSION
 // UPDATE generation+1 for spec, and commits spec once the server
-// acknowledged it. The caller holds state.applyMu.
+// acknowledged it, waiting for that as handlers.Handler.WaitForSessionAck
+// with timeout and maxWait. The caller holds state.applyMu.
 func applySessionSpecLocked(server string, handler handlers.Handler,
 	state *committedSessionState, spec sessionspec.Spec, generation uint64,
-	timeout time.Duration, logger logging.Logger) error {
+	timeout, maxWait time.Duration, logger logging.Logger) error {
 	logger = logging.OrNop(logger)
 
 	// Only a failed SESSION START (generation 0) is reported to the user and
@@ -209,7 +364,7 @@ func applySessionSpecLocked(server string, handler handlers.Handler,
 		return sendErr
 	}
 
-	ack, ok := handler.WaitForSessionAck(resolveSessionAckTimeout(timeout))
+	ack, ok := handler.WaitForSessionAck(resolveSessionAckTimeout(timeout), maxWait)
 	if !ok {
 		return ErrSessionAckTimeout
 	}
@@ -337,7 +492,7 @@ func containsReadCommand(commands []string) bool {
 
 func drainSessionAcks(handler handlers.Handler) {
 	for {
-		if _, ok := handler.WaitForSessionAck(0); !ok {
+		if _, ok := handler.WaitForSessionAck(0, 0); !ok {
 			return
 		}
 	}

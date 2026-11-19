@@ -89,8 +89,15 @@ func (o *tailOptions) configureRunner(runner *cli.ClientRunner) {
 	})
 }
 
+// buildTailClient builds the client of dtail. An interactive dtail gets the
+// client that can switch its running session between following lines and a
+// MapReduce query (NewInteractiveTailClient), with or without --query; a
+// non-interactive one the tail client, or the MapReduce client with --query.
 func buildTailClient(args config.Args, cfg config.RuntimeConfig, loggers clients.LoggerDependencies,
 	colorizer *brush.Brush) (clients.Client, error) {
+	if args.InteractiveQuery {
+		return clients.NewInteractiveTailClient(args, cfg, loggers, colorizer)
+	}
 	if args.QueryStr == "" {
 		return clients.NewTailClient(args, cfg, loggers, colorizer)
 	}

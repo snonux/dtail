@@ -142,7 +142,8 @@ func (w *partialWalker) add(start, end int, kind TokenKind) {
 }
 
 // stepSingle steps a clause of one value (from, logformat, interval,
-// limit): the parser uses the first token and rejects or ignores more.
+// limit): the parser uses the first token and rejects more
+// (strayWordError).
 func (w *partialWalker) stepSingle(st scannedToken, valid bool, kind TokenKind) {
 	if !valid {
 		kind = TokenUnknown
@@ -158,9 +159,14 @@ func (w *partialWalker) expectSingle(value Expect) Expect {
 	return ExpectClauseKeyword
 }
 
-// stepSelect steps a select item (parseSelectCondition).
+// stepSelect steps a select item (parseSelectCondition). A bare by is
+// rejected by the parser (rejectStrayBy) and no select item.
 func (w *partialWalker) stepSelect(st scannedToken, t token) {
 	w.n++
+	if isBareWord(t, "by") {
+		w.add(st.start, st.end, TokenUnknown)
+		return
+	}
 	if sc, err := parseSelectCondition(t); err == nil {
 		w.selectItems = append(w.selectItems, sc.FieldStorage)
 	}
@@ -206,10 +212,18 @@ func (w *partialWalker) stepLeadClause(st scannedToken, t token) {
 		w.lead = true
 		w.add(st.start, st.end, TokenKeyword)
 		return
+	case w.clause == "group" && isBareWord(t, "by"):
+		// A bare by after the lead word or a field (rejectStrayBy).
+		w.add(st.start, st.end, TokenUnknown)
 	case w.clause == "group":
 		w.add(st.start, st.end, nameKind(t.str))
+	case (w.clause == "order" || w.clause == "rorder") && w.n == 1 &&
+		isBareWord(t, orderDirection(w.clause == "rorder")):
+		// The direction word parseOrderClause allows right after the field
+		// of order (desc) and rorder (asc); a word after it is unknown.
+		w.add(st.start, st.end, TokenKeyword)
 	case w.n > 0:
-		// The parser ignores (order) or rejects (outfile) more tokens.
+		// The parser rejects more tokens (strayWordError, orderWordError).
 		w.add(st.start, st.end, TokenUnknown)
 	case w.clause == "outfile":
 		w.add(st.start, st.end, stringKind(t.str))

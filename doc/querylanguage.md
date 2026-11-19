@@ -9,7 +9,7 @@ For this to work, DTail needs to understand your log format. DTail already under
 
 DTail also ships with a generic log format, which only allows you to run very basic queries. Check out the [log format](./logformats.md) documentation for this. That page also documents how to implement your own log format parser.
 
-In an interactive session (`dtail` in a terminal, or `--interactive-query`), `:reload --query '...'` changes the query on the fly, and Tab inside the query completes the language (clause keywords, aggregations, operators, set functions) and the tables, fields, `$variables` and sample values a background probe of the servers found in the files being read; `:fields` lists them. With terminal colors, queries are shown highlighted by what the parser reads each word as. See [Interactive Query Reload](./interactive-query.md); log formats can describe their fields to the probe, see "Custom probes" in [log formats](./logformats.md).
+In an interactive session (`dtail` in a terminal, or `--interactive-query`), `:query <query>` runs a query on the running session, typed as is without shell quoting (in `dtail` it switches from following lines to the query, and `:tail` switches back), and `:reload --query '...'` changes the query on the fly. Tab inside the query completes the language (clause keywords, aggregations, operators, set functions) and the tables, fields, `$variables` and sample values a background probe of the servers found in the files being read, guided one step at a time (`from` and the table first, as the table narrows the fields, `$variables` and values to its lines); `:fields` lists them. With terminal colors, queries are shown highlighted by what the parser reads each word as. See [Interactive Query Reload](./interactive-query.md); log formats can describe their fields to the probe, see "Custom probes" in [log formats](./logformats.md).
 
 ## The language
 
@@ -28,7 +28,10 @@ $VARIABLE := Like a bareword, but with a $ prefix, e.g. $foo. This usually conta
 
 A query is a sequence of clauses. Each clause starts with one of the clause
 keywords below and extends up to the next clause keyword, so the clauses can be
-written in **any order**. All of them are optional except `select`:
+written in **any order**. All of them are optional except `select`. A clause
+keyword is a bare word: a quoted (`"select"`) or backticked (`` `select` ``)
+keyword starts no clause, so a query starting with one is rejected
+(`unexpected word "select"`):
 
 ```shell
 QUERY := CLAUSE1 [CLAUSE2 ...]
@@ -36,8 +39,8 @@ CLAUSE := select SELECT1[,SELECT2...]
           | from TABLE
           | where CONDITION1[,CONDITION2...]
           | group [by] FIELD1[,FIELD2...]
-          | order [by] ORDERFIELD
-          | rorder [by] ORDERFIELD
+          | order [by] ORDERFIELD [desc]
+          | rorder [by] ORDERFIELD [asc]
           | set SET1[,SET2...]
           | interval NUMBER
           | limit NUMBER
@@ -75,7 +78,13 @@ FUNCTION := md5sum|maskdigits
 * Clause keywords and where operators are case insensitive (`SELECT`, `EQ`);
   aggregation and function names are lower case only (`COUNT(foo)` is
   rejected).
-* `rorder` stands for reverse order.
+* `order` sorts the results by the order field in descending order, `rorder`
+  (reverse order) in ascending order. The SQL direction word that matches
+  is accepted right after the field and changes nothing: `order by FIELD
+  desc` means `order by FIELD`, `rorder by FIELD asc` means `rorder by
+  FIELD`. The other one is rejected (`order by FIELD asc` used to sort
+  descending silently): use `rorder` for ascending order. Only one order
+  field is allowed (`order by a,b` is rejected).
 * `lacks` is an alias for `ncontains` (not contains).
 * The float operators `=<` and `=>` are accepted aliases for `<=` and `>=`.
 * The `by` in `group by`, `order by` and `rorder by` is optional: `group $foo`
@@ -88,8 +97,48 @@ FUNCTION := md5sum|maskdigits
   that is named like a number is given in backticks (`` `1` ``); any other
   bareword is a field name and a quoted argument is a string.
 * `limit` must not be negative, `interval` must be a non-negative number of
-  seconds, and nothing may follow the closing parenthesis of an aggregation
-  (`count(foo)bar` is rejected).
+  seconds (`interval` without a number is rejected), and nothing may follow
+  the closing parenthesis of an aggregation (`count(foo)bar` is rejected).
+* The clauses `from`, `order`, `rorder`, `interval`, `limit`, `logformat` and
+  `outfile` take one value (`outfile` an optional `append` before it,
+  `order` and `rorder` an optional direction word after it); a further word
+  up to the next clause keyword is rejected with an error naming it, e.g.
+  `unexpected word "gro" after the value of the 'limit' clause` for `limit
+  10 gro` or `order by x desc gro` (a half-typed or misspelled clause
+  keyword used to be ignored there). See the upgrade note in
+  [installation](./installation.md) for scheduled and continuous jobs.
+* `outfile append PATH` appends the result to `PATH` (a CSV header only
+  when the file is empty or new) instead of replacing it, and replaces
+  `PATH.query` with the query. A path starting with `append:` is rejected
+  (`outfile append:result.csv` read like an append but wrote a new file
+  named `append:result.csv`); a file really named so is written as
+  `outfile ./append:result.csv`.
+  What is appended depends on how the query is run:
+  * `dmap`, and `dtail --query` with an outfile, aggregate cumulatively:
+    every interim report holds the whole result so far. With `append` the
+    interim reports therefore append no rows (and write no `PATH.query`);
+    they only check that `PATH` can be opened for appending (creating it
+    empty if it is missing) and log an error every interval if it can not.
+    The final result is appended exactly once when the query ends: the
+    client exits, or an interactive `:reload`, `:query` or `:tail` replaces
+    the query, then with what it received so far. This also holds for a
+    `:reload` that keeps the query text (e.g. `:reload --files ...`): the
+    query starts over, so its result so far is appended and the reloaded
+    query appends its own result at its end. Until then the result lives
+    only in memory: a SIGKILL, a crash, the forced exit or a failed final
+    write loses all of it, where a non-append outfile loses at most the last
+    interval. Without `append` every interim report replaces `PATH`, so it
+    shows the result so far.
+  * Scheduled jobs write only their final result, appended once per run.
+  * Continuous jobs are not cumulative: every interval appends the rows of
+    that interval only, once.
+* The fields of `select` and `group by` may also be separated by blanks
+  (`select a b` is `select a,b`), so there every word is a field: in
+  `select count(x) gro` the word `gro` selects the field `gro`. Only a bare
+  `by` is rejected there (`select count(x) gropu by x`, `group by x gropu by
+  y`), as it is almost certainly a misspelled `group by` or `order by`; a
+  field named `by` is written `` `by` ``. Where and set conditions may be
+  separated by blanks as well; a condition missing a part is rejected.
 * Values that are not finite numbers (`NaN`, `Inf`) are not aggregated by
   `sum`, `avg`, `min`, `max`, `percentage` and `percentile`; they are logged
   as aggregation errors like any other non-number.
@@ -136,7 +185,23 @@ FUNCTION := md5sum|maskdigits
       session with `.syn session err invalid session spec: <parse error>`,
       which the client shows as `session request rejected: invalid session
       spec: ...`, and streams nothing.
-* If no `interval` clause is given, results are aggregated every 5 seconds.
+* `interval N` sets how often results are reported, in seconds; without an
+  `interval` clause it is 5 seconds, and `interval 0` means 1 second. It
+  governs both sides:
+  * Every dserver sends what it aggregated since its last send once per
+    interval, and the rest once its input ends (a `dmap` read reached the
+    end of its files). A query stopped before that (its session torn
+    down, or the query replaced by a `:reload`) does not send that rest.
+  * The client merges what it received and reports the result (prints it,
+    or writes the `outfile`) first half an interval after the query started
+    (also after an interactive `:reload` or `:query`), then once per
+    interval, and once more when the query ends. A printed table that has
+    no rows or did not change since the last print is not printed again.
+    Scheduled jobs report no interim results: they write their outfile once,
+    when the query completed.
+
+  The two run on their own clocks, so a reported result can lack up to
+  about one interval of the servers' latest lines.
 * An aggregation only sees the lines of a group that have its field (sparse
   `key=value` fields, a `where` clause not requiring it). The client merges
   the results it receives field by field, and results whose lines of the

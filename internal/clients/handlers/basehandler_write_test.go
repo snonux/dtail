@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"github.com/mimecast/dtail/internal/clients/clientlog"
+	"github.com/mimecast/dtail/internal/logging"
+	"github.com/mimecast/dtail/internal/mapr"
+	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
@@ -113,7 +116,7 @@ type receiveObservation struct {
 func observe(handler *baseHandler, recorder *payloadRecorder) receiveObservation {
 	var acks []SessionAck
 	for {
-		ack, ok := handler.WaitForSessionAck(0)
+		ack, ok := handler.WaitForSessionAck(0, 0)
 		if !ok {
 			break
 		}
@@ -397,16 +400,36 @@ func TestBaseHandlerWriteReleasesLargeLineBuffer(t *testing.T) {
 }
 
 // TestMaprHandlerWritePrintsNonAggregatePayload locks in the mapr handler's
-// newline handling after it switched to the byte-slice message path.
+// newline handling after it switched to the byte-slice message path: while
+// its session expects aggregates (a query runs) every newline of a frame is
+// dropped before the frame is classified; without a query (interactive dtail
+// following lines, or no session) frames are handled as by a ClientHandler.
 func TestMaprHandlerWritePrintsNonAggregatePayload(t *testing.T) {
-	recorder := &payloadRecorder{}
-	handler := NewMaprHandler("srv1", nil, recorder)
-
-	if _, err := handler.Write(frame("SERVER|srv1|hello\n", "plain", "a\nb", marked("AUTHKEY OK"))); err != nil {
-		t.Fatalf("Write() error = %v", err)
+	query, err := mapr.NewQuery("select count(status) from stats", logging.NopLogger{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got, want := recorder.payload.String(), "SERVER|srv1|hello\nplain\nab\n"; got != want {
-		t.Fatalf("payload = %q, want %q", got, want)
+	for _, test := range []struct {
+		name    string
+		session *maprclient.SessionState
+		want    string
+	}{
+		{name: "query", session: maprclient.NewSessionState(query, logging.NopLogger{}),
+			want: "SERVER|srv1|hello\nplain\nab\n"},
+		{name: "no query", session: maprclient.NewSessionState(nil, logging.NopLogger{}),
+			want: "SERVER|srv1|hello\nplain\na\nb\n"},
+		{name: "no session", want: "SERVER|srv1|hello\nplain\na\nb\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &payloadRecorder{}
+			handler := NewMaprHandler("srv1", test.session, recorder)
+			if _, err := handler.Write(frame("SERVER|srv1|hello\n", "plain", "a\nb", marked("AUTHKEY OK"))); err != nil {
+				t.Fatalf("Write() error = %v", err)
+			}
+			if got := recorder.payload.String(); got != test.want {
+				t.Fatalf("payload = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

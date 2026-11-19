@@ -188,10 +188,9 @@ func (c *baseClient) editorKey(e *interactiveEditor, pause *interactivePause,
 	}
 	result := c.completeEditorLine(e, pause, line, pos)
 	// x/term releases its lock around this callback, so writing here is
-	// safe: Write clears the line, prints the header, the list and the hint
-	// and redraws it.
-	listing := joinLines(e.style.hint(result.header), e.style.candidates(result),
-		e.style.hint(result.hint))
+	// safe: Write clears the line, prints the listing (header, heading,
+	// candidate groups wrapped to the terminal width, hint) and redraws it.
+	listing := e.style.listing(result, e.screen.columns())
 	if listing != "" {
 		_, _ = e.terminal.Write([]byte(listing + "\n"))
 	}

@@ -203,7 +203,7 @@ func TestHandleSessionCommandStartStoresSpec(t *testing.T) {
 	if !handler.sessionState.activeSession() {
 		t.Fatalf("expected session state to become active")
 	}
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+	if message := readSessionAck(t, handler); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected session start message: %q", message)
 	}
 }
@@ -230,7 +230,7 @@ func TestHandleSessionCommandUpdateCancelsPreviousGenerationImmediately(t *testi
 	})
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "START", startPayload}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+	if message := readSessionAck(t, handler); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected session start ack: %q", message)
 	}
 
@@ -240,7 +240,7 @@ func TestHandleSessionCommandUpdateCancelsPreviousGenerationImmediately(t *testi
 	}
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "UPDATE", updatePayload}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckUpdateOKPrefix+" 2" {
+	if message := readSessionAck(t, handler); message != sessionAckUpdateOKPrefix+" 2" {
 		t.Fatalf("unexpected session update ack: %q", message)
 	}
 
@@ -270,7 +270,7 @@ func TestHandleSessionCommandUpdateRequiresActiveSession(t *testing.T) {
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "UPDATE", payload}, func() {})
 
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckErrorPrefix+"session not started" {
+	if message := readSessionAck(t, handler); message != sessionAckErrorPrefix+"session not started" {
 		t.Fatalf("unexpected session update error: %q", message)
 	}
 }
@@ -281,7 +281,7 @@ func TestHandleSessionCommandRejectsInvalidPayload(t *testing.T) {
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "START", "not-base64"}, func() {})
 
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckErrorPrefix+"invalid session payload" {
+	if message := readSessionAck(t, handler); message != sessionAckErrorPrefix+"invalid session payload" {
 		t.Fatalf("unexpected invalid payload message: %q", message)
 	}
 }
@@ -299,7 +299,7 @@ func TestHandleSessionCommandStartDispatchesQueryWorkload(t *testing.T) {
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "START", payload}, func() {})
 
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+	if message := readSessionAck(t, handler); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected query-session ack: %q", message)
 	}
 
@@ -333,7 +333,7 @@ func TestHandleSessionCommandRejectsInvalidSerializedOptions(t *testing.T) {
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "START", payload}, func() {})
 
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckErrorPrefix+"invalid session spec" {
+	if message := readSessionAck(t, handler); message != sessionAckErrorPrefix+"invalid session spec" {
 		t.Fatalf("unexpected invalid options error: %q", message)
 	}
 }
@@ -352,7 +352,7 @@ func TestHandleSessionCommandRejectsInvalidQuerySession(t *testing.T) {
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "START", payload}, func() {})
 
 	// The acknowledgement says why the query was rejected.
-	message := readServerMessage(t, handler.serverMessages)
+	message := readSessionAck(t, handler)
 	if !strings.HasPrefix(message, sessionAckErrorPrefix+"invalid session spec: ") ||
 		!strings.Contains(message, "invalid query") {
 		t.Fatalf("unexpected invalid query-session error: %q", message)
@@ -441,7 +441,7 @@ func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testi
 	})
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "START", startPayload}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+	if message := readSessionAck(t, handler); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected session start ack: %q", message)
 	}
 	// Use the atomic getter; direct field access would race with concurrent
@@ -451,7 +451,7 @@ func TestHandleSessionCommandUpdateClearsAggregateStateBeforeDirectRead(t *testi
 	}
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "UPDATE", updatePayload}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckUpdateOKPrefix+" 2" {
+	if message := readSessionAck(t, handler); message != sessionAckUpdateOKPrefix+" 2" {
 		t.Fatalf("unexpected session update ack: %q", message)
 	}
 
@@ -612,12 +612,12 @@ func TestSessionStateStoreUpdateAutoIncrementsGeneration(t *testing.T) {
 	updatePayload := mustSessionPayload(t, session.Spec{Mode: omode.TailClient, Regex: "WARN"})
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "START", startPayload}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+	if message := readSessionAck(t, handler); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected session start ack: %q", message)
 	}
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3, []string{"SESSION", "UPDATE", updatePayload}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckUpdateOKPrefix+" 2" {
+	if message := readSessionAck(t, handler); message != sessionAckUpdateOKPrefix+" 2" {
 		t.Fatalf("unexpected session update ack: %q", message)
 	}
 }

@@ -28,7 +28,7 @@ var quoteCatalog = catalogSnapshot{
 // one.
 func completeOnly(t *testing.T, prefix string) string {
 	t.Helper()
-	got := completeQueryWord(prefix, quoteCatalog)
+	got := completeQueryWord(prefix, "", quoteCatalog)
 	if len(got.candidates) != 1 {
 		t.Fatalf("completeQueryWord(%q): candidates %q, want exactly one", prefix, got.candidates)
 	}
@@ -95,7 +95,7 @@ func TestCompleteQueryNothingUnwritableInQuote(t *testing.T) {
 		"select x from STATS outfile \"",
 		"select \"cou",
 	} {
-		if got := completeQueryWord(prefix, quoteCatalog); len(got.candidates) != 0 {
+		if got := completeQueryWord(prefix, "", quoteCatalog); len(got.candidates) != 0 {
 			t.Errorf("completeQueryWord(%q): candidates %q, want none", prefix, got.candidates)
 		}
 	}
@@ -134,7 +134,7 @@ func TestQueryFieldWordsBy(t *testing.T) {
 		Formats: map[string]catalogFormat{"default": {Tables: map[string]map[string][]string{
 			"STATS": {"by": nil}}}}}
 	prefix := "from STATS select x group b"
-	got := completeQueryWord(prefix, catalog)
+	got := completeQueryWord(prefix, "", catalog)
 	if !slices.Equal(got.candidates, []string{"`by` ", "by "}) {
 		t.Fatalf("candidates %q", got.candidates)
 	}
@@ -166,7 +166,7 @@ func TestCompleteQueryBackticksAndNBSP(t *testing.T) {
 		{"from STATS select v where v eq \"`", hasStringValue("`w`")},
 	}
 	for _, tc := range tests {
-		got := completeQueryWord(tc.prefix, catalog)
+		got := completeQueryWord(tc.prefix, "", catalog)
 		if len(got.candidates) != 1 {
 			t.Fatalf("%q: candidates %q, want one", tc.prefix, got.candidates)
 		}
@@ -179,10 +179,10 @@ func TestCompleteQueryBackticksAndNBSP(t *testing.T) {
 			t.Fatalf("%q completed to %q, want the value \"``w``\"", tc.prefix, query)
 		}
 	}
-	if got := completeQueryWord("from STATS select nb", catalog); len(got.candidates) != 0 {
+	if got := completeQueryWord("from STATS select nb", "", catalog); len(got.candidates) != 0 {
 		t.Fatalf("field with a non-breaking space offered bare: %q", got.candidates)
 	}
-	if got := completeQueryWord("from STATS select \"nb", catalog); !slices.Equal(got.candidates, []string{"nb sp\" "}) {
+	if got := completeQueryWord("from STATS select \"nb", "", catalog); !slices.Equal(got.candidates, []string{"nb sp\" "}) {
 		t.Fatalf("quoted field with a non-breaking space: %q", got.candidates)
 	}
 }

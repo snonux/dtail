@@ -221,10 +221,16 @@ func (h *ServerHandler) probeAnswerMessage(answer protocol.ProbeAnswer) (string,
 // logProbeAnswered logs the summary line of an answer (bytes: the size of
 // its encoded message) that is sent; a busy or invalid answer dropped as the
 // server messages are full logs its own line instead (trySendProbeAnswer).
+// The table of a table-targeted probe is logged too (cut like an error's
+// entry; a valid table is at most protocol.ProbeMaxTableBytes anyway).
 func (h *ServerHandler) logProbeAnswered(answer protocol.ProbeAnswer, bytes int) {
-	h.Logger().Info(h.user, "Probe answered", "id", answer.ID, "files", answer.FilesSampled,
+	args := []any{"Probe answered", "id", answer.ID, "files", answer.FilesSampled,
 		"lines", answer.LinesSampled, "formats", len(answer.Formats), "entries", len(answer.Entries),
-		"errors", len(answer.Errors), "bytes", bytes)
+		"errors", len(answer.Errors), "bytes", bytes}
+	if answer.Table != "" {
+		args = append(args, "table", cappedProbeEntry(answer.Table))
+	}
+	h.Logger().Info(append([]any{h.user}, args...)...)
 }
 
 // probeErrorAnswer is the answer of a probe that failed with reason.

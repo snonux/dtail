@@ -68,6 +68,11 @@ func (h *probeTestHandler) Probe(ctx context.Context, request protocol.ProbeRequ
 	if request.List != "" {
 		return h.answerListing(ctx, request)
 	}
+	if request.Table != "" {
+		answer := tableTestAnswer(request.Table, "field", "caller.go:1", 1)
+		answer.ID = request.ID
+		return answer, nil
+	}
 	return protocol.ProbeAnswer{ID: request.ID, DefaultLogFormat: "default", FilesSampled: len(request.Files),
 		Formats: map[string]protocol.ProbeFormat{"default": {Tables: map[string]map[string][]string{
 			"STATS": {"files": request.Files}}}}}, nil

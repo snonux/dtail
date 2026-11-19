@@ -1001,7 +1001,7 @@ func TestSessionUpdatePublishesGenerationBeforeCancellingPrevious(t *testing.T) 
 	payload := mustSessionPayload(t, session.Spec{Mode: omode.TailClient, Files: []string{"/var/log/a.log"}})
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", "START", payload}, func() {})
-	readServerMessage(t, handler.serverMessages)
+	readSessionAck(t, handler)
 	first := recorder.waitForStart(t)
 
 	// Read without taking mu: update may still hold it when it cancels.
@@ -1016,7 +1016,7 @@ func TestSessionUpdatePublishesGenerationBeforeCancellingPrevious(t *testing.T) 
 
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", "UPDATE", payload}, func() {})
-	readServerMessage(t, handler.serverMessages)
+	readSessionAck(t, handler)
 	recorder.waitForStart(t)
 
 	// update has returned, so the wrapper ran on this goroutine if at all.

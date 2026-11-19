@@ -205,7 +205,7 @@ func TestSessionUpdateRejectsDuplicateSelect(t *testing.T) {
 	}
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", "START", mustSessionPayload(t, spec)}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+	if message := readSessionAck(t, handler); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected session start ack: %q", message)
 	}
 	started := []recordedCommand{recorder.waitForStart(t), recorder.waitForStart(t)}
@@ -246,18 +246,37 @@ func TestSessionRejectsAFailedMapCommand(t *testing.T) {
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", "START", payload}, func() {})
 
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckErrorPrefix+"invalid session query" {
+	if message := readSessionAck(t, handler); message != sessionAckErrorPrefix+"invalid session query" {
 		t.Fatalf("unexpected session start ack: %q", message)
 	}
 	if handler.sessionState.activeSession() {
 		t.Fatal("a session whose map command failed must not stay started")
 	}
 	assertNoDispatchedCommand(t, recorder)
+	assertSessionOutputNotHeld(t, handler)
+}
+
+// assertSessionOutputNotHeld fails when a workload that failed to start
+// left its output held (sessionCommandState.dispatch releases it, as no ok
+// acknowledgement follows): the session output would then never be called
+// flushed, and the close handshake never sent.
+func assertSessionOutputNotHeld(t *testing.T, handler *ServerHandler) {
+	t.Helper()
+	c := handler.outputCoordinator
+	c.ensureFlushChannels()
+	flushAck := make(chan struct{})
+	c.pendingFlushAcks = append(c.pendingFlushAcks, flushAck)
+	drainQueuedMessages(c)
+	select {
+	case <-flushAck:
+	default:
+		t.Fatal("flush not acknowledged: the failed workload's output is still held")
+	}
 }
 
 func assertDuplicateSelectRejected(t *testing.T, handler *ServerHandler) {
 	t.Helper()
-	message := readServerMessage(t, handler.serverMessages)
+	message := readSessionAck(t, handler)
 	if !strings.HasPrefix(message, sessionAckErrorPrefix+"invalid session spec: ") ||
 		!strings.Contains(message, "'select' clause has 'count($time)' more than once") {
 		t.Fatalf("unexpected session error: %q", message)
@@ -341,7 +360,7 @@ func TestSessionUpdateRejectsAMapCommandThatCanNotBeBuilt(t *testing.T) {
 	spec := querySessionSpec()
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", "START", mustSessionPayload(t, spec)}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+	if message := readSessionAck(t, handler); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected session start ack: %q", message)
 	}
 	started := []recordedCommand{recorder.waitForStart(t), recorder.waitForStart(t)}
@@ -364,7 +383,7 @@ func TestSessionUpdateRejectsAMapCommandThatCanNotBeBuilt(t *testing.T) {
 	handler.mapParserFactory = nil
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", "UPDATE", mustSessionPayload(t, spec)}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckUpdateOKPrefix+" 2" {
+	if message := readSessionAck(t, handler); message != sessionAckUpdateOKPrefix+" 2" {
 		t.Fatalf("unexpected session update ack after a rejected update: %q", message)
 	}
 }
@@ -386,7 +405,7 @@ func TestSessionClearsAStaleMapQueryFailure(t *testing.T) {
 	handler.mapQueryFailures.mark(1)
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", "START", mustSessionPayload(t, spec)}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckStartOKPrefix+" 1" {
+	if message := readSessionAck(t, handler); message != sessionAckStartOKPrefix+" 1" {
 		t.Fatalf("unexpected session start ack: %q", message)
 	}
 	if <-rejected {
@@ -396,7 +415,7 @@ func TestSessionClearsAStaleMapQueryFailure(t *testing.T) {
 	handler.mapQueryFailures.mark(5)
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 4,
 		[]string{"SESSION", "UPDATE", "5", mustSessionPayload(t, spec)}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); message != sessionAckUpdateOKPrefix+" 5" {
+	if message := readSessionAck(t, handler); message != sessionAckUpdateOKPrefix+" 5" {
 		t.Fatalf("unexpected session update ack: %q", message)
 	}
 	if <-rejected {
@@ -430,7 +449,7 @@ func querySessionSpec() session.Spec {
 
 func assertUnbuildableMapRejected(t *testing.T, handler *ServerHandler) {
 	t.Helper()
-	message := readServerMessage(t, handler.serverMessages)
+	message := readSessionAck(t, handler)
 	if !strings.HasPrefix(message, sessionAckErrorPrefix+"invalid session query: ") ||
 		!strings.Contains(message, "forced parser failure") {
 		t.Fatalf("unexpected session error: %q", message)

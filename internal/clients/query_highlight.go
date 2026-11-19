@@ -12,7 +12,7 @@ import (
 // queryTokenStyle returns the theme style of a MapReduce query token kind
 // (mapr.AnalyzePartial), the styles of the matching Tab candidate kinds,
 // so a word looks the same in a candidate list and in a query. Unknown
-// tokens (words the parser rejects or ignores) stay unpainted.
+// tokens (words the parser rejects) stay unpainted.
 func queryTokenStyle(theme config.InteractiveTermColors, kind mapr.TokenKind) config.TermStyle {
 	switch kind {
 	case mapr.TokenKeyword, mapr.TokenLogFormat:

@@ -38,6 +38,9 @@ type interactiveCommand struct {
 	next config.Args
 	// table is the optional table name of :fields.
 	table string
+	// value is the argument of :query (the query) and :tail (the regex,
+	// empty for the one followed before), as typed.
+	value string
 }
 
 type interactiveReloadState struct {
@@ -334,6 +337,12 @@ func (c *baseClient) runInteractiveCommand(tty io.Writer, command interactiveCom
 		}
 		return false, writeControlLine(tty, reloadAppliedMessage(style, command.spec.Query)+
 			outcome.message(style, c.profile.retry))
+	case "query":
+		return false, c.runQueryCommand(tty, command.value)
+	case "showquery":
+		return false, c.writeQueryState(tty)
+	case "tail":
+		return false, c.runTailCommand(tty, command.value)
 	default:
 		return false, writeControlLine(tty, style.failure("unsupported command"))
 	}
@@ -369,6 +378,16 @@ func reloadAppliedMessage(style *interactiveStyle, query string) string {
 // connection before or after it (see recreateConnection). A reload that was
 // applied asks the background prober for a new round
 // (interactiveProber.request).
+//
+// The connections are updated, and rolled back, one after the other, each
+// wait capped at connectors' sessionUpdateAckMaxWait (10 s): a reload that
+// fails at its last connection and whose servers all stall can take about
+// 20 s per connection (update plus rollback), during which the control
+// loop answers nothing. They are not changed concurrently, as the
+// all-or-nothing rule needs to know which connections were changed when
+// one fails, and a total budget would leave connections half updated with
+// nothing to roll them back; the bound is only reached with servers that
+// all stall, as one that answers does so in a round trip.
 func (c *baseClient) applyInteractiveReload(nextArgs config.Args, nextSpec SessionSpec) (reloadOutcome, error) {
 	reloadMu := c.reloadLock()
 	reloadMu.Lock()
@@ -559,10 +578,12 @@ func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
 // The examples match the flags parseInteractiveReloadArgs accepts in that
 // mode, so that e.g. dmap or dcat do not suggest a --regex they would reject,
 // and the query examples are valid queries. The --files examples contain no
-// spaces (see doc/interactive-query.md for how to quote such a path).
+// spaces (see doc/interactive-query.md for how to quote such a path). The
+// commands line names :query and :tail only in the modes that have them,
+// and the examples show switching between following lines and a query in
+// dtail (helpSwitchExamples).
 func interactiveHelpText(args config.Args) string {
-	const head = "Commands: :reload <flags>, :show, :fields [table], :probe, :help, :quit. " +
-		"An empty line pauses or resumes the output.\n" +
+	head := helpCommandsLine(args) + " An empty line pauses or resumes the output.\n" +
 		"On a terminal typing pauses the output until the line is entered, Tab completes commands, " +
 		"flags, after a filter, query or files flag its current value, inside a query the query language " +
 		"and probed fields, inside --files remote paths; " +
@@ -570,27 +591,66 @@ func interactiveHelpText(args config.Args) string {
 		":fields lists the tables, fields and sample values the background probe of the servers found " +
 		"(Tab completes them in a query); :probe probes now.\n"
 	const tail = "Flags not given keep their value; :show prints the current ones. " +
-		"Quote values as in a shell (see doc/interactive-query.md)."
+		"Quote :reload values as in a shell; the query of :query and the regex of :tail are " +
+		"the rest of the line, unquoted (see doc/interactive-query.md)."
 	files := [2]string{":reload --files /var/log/a.log,/var/log/b.log", "other files (comma-separated)"}
 	switch {
 	case isInteractiveQueryMode(args):
-		return head + "Change the MapReduce query on the fly, e.g.:\n" + helpExamples(
-			[2]string{":reload --query 'from STATS select count($line) group by $hostname'", ""},
-			[2]string{":reload --query 'from STATS select $hostname,max($goroutines) " +
-				"group by $hostname order by max($goroutines)'", ""},
+		return head + "Change the MapReduce query on the fly, e.g.:\n" + helpExamples(append(
+			helpSwitchExamples(args),
 			[2]string{":reload --query 'from STATS select count($line) group by $hostname interval 10'", ""},
-			files) + tail
+			files)...) + tail
 	case args.Mode == omode.GrepClient || args.Mode == omode.TailClient:
-		return head + "Change the grep filter on the fly, e.g.:\n" + helpExamples(
+		return head + "Change the grep filter on the fly, e.g.:\n" + helpExamples(append(
+			helpSwitchExamples(args),
 			[2]string{":reload --grep ERROR", "only lines matching ERROR"},
 			[2]string{":reload --grep 'WARN|ERROR' --before 2 --after 2", "a regex, with context lines"},
 			[2]string{`:reload --regex '\d+ ms'`, "single quotes keep backslashes"},
 			[2]string{":reload --grep DEBUG --invert", "every line but DEBUG (--invert=false undoes it)"},
 			[2]string{":reload --regex ''", "every line again (none with --invert)"},
-			files) + tail
+			files)...) + tail
 	default:
 		return head + "Change what is read on the fly, e.g.:\n" + helpExamples(files) + tail
 	}
+}
+
+// helpCommandsLine returns the first line of :help, naming the commands of
+// the mode of args.
+func helpCommandsLine(args config.Args) string {
+	commands := []string{":reload <flags>"}
+	if hasQueryCommand(args) {
+		commands = append(commands, ":query [query]")
+	}
+	if hasTailCommand(args) {
+		commands = append(commands, ":tail [regex]")
+	}
+	commands = append(commands, ":show", ":fields [table]", ":probe", ":help", ":quit")
+	return "Commands: " + strings.Join(commands, ", ") + "."
+}
+
+// helpSwitchExamples returns the :query and :tail examples of the mode of
+// args: in dtail following lines the switch to a query, in dtail running a
+// query other queries and the way back to following lines, in dmap other
+// queries; none in dgrep and dcat.
+func helpSwitchExamples(args config.Args) [][2]string {
+	// Short enough for the explanation column of helpExamples.
+	const query = ":query from STATS select count($line)"
+	switch {
+	case !hasQueryCommand(args):
+		return nil
+	case !isInteractiveQueryMode(args):
+		return [][2]string{{query, "switch to a MapReduce query (Tab completes it)"}}
+	}
+	examples := [][2]string{
+		{query, "another query (:query alone shows the current one)"},
+		{":query from STATS select $hostname,max($goroutines) group by $hostname order by max($goroutines)", ""},
+	}
+	if hasTailCommand(args) {
+		examples = append(examples,
+			[2]string{":tail", "follow lines again, with the regex followed before"},
+			[2]string{":tail ERROR", "follow lines matching ERROR"})
+	}
+	return examples
 }
 
 // helpExamples formats :help example lines, each a command and an optional
@@ -607,7 +667,8 @@ func helpExamples(examples ...[2]string) string {
 	return sb.String()
 }
 
-// writeInteractiveState answers :show with the current session spec, the
+// writeInteractiveState answers :show with the workload (workload=: query
+// while a MapReduce query runs, else the mode), the current session spec, the
 // number of servers (servers=) and the number of them whose session is up
 // (sessions=, see partitionReloadConnections), which a :reload updates; the
 // others start with the reloaded spec if they still connect. It shows
@@ -621,6 +682,7 @@ func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 	style := styleOf(writer)
 	pairs := []keyValue{
 		{key: "mode", value: args.Mode.String()},
+		{key: "workload", value: workloadName(args)},
 		{key: "files", value: strings.Join(spec.Files, ",")},
 		{key: "query", value: style.quotedQuery(spec.Query), painted: style != nil},
 		{key: "regex", value: strconv.Quote(spec.Regex)},
@@ -635,7 +697,8 @@ func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 
 // parseInteractiveCommand parses one control line. The line is trimmed only
 // to recognise the command; the flags of a :reload line are tokenized as
-// typed, see parseInteractiveReload.
+// typed, see parseInteractiveReload, and the argument of :query and :tail is
+// the rest of the line (parseQueryCommand, parseTailCommand).
 func parseInteractiveCommand(current config.Args, line string) (interactiveCommand, error) {
 	trimmed := strings.TrimSpace(line)
 
@@ -652,6 +715,10 @@ func parseInteractiveCommand(current config.Args, line string) (interactiveComma
 		return interactiveCommand{}, errors.New(":probe takes no arguments")
 	case isCommandLine(trimmed, ":fields"):
 		return parseFieldsCommand(trimmed)
+	case isCommandLine(trimmed, queryCommand):
+		return parseQueryCommand(current, line)
+	case isCommandLine(trimmed, tailCommand):
+		return parseTailCommand(current, line)
 	case isInteractiveReloadLine(trimmed):
 		return parseInteractiveReload(current, line)
 	default:

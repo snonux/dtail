@@ -33,21 +33,24 @@ var _ line.Processor = collectorProcessor{}
 //
 //   - A file target is sampled with fs.SampleFile: an uncompressed file at its
 //     end (lines starting within the last options.WindowBytes, 256 KiB by
-//     default, the partial first line dropped), a gzip or zstd file (chosen by
+//     default, or options.ScanBytes, the partial first line dropped), a
+//     gzip or zstd file (chosen by
 //     the suffix of path, as for a read command) at its beginning. A tail
 //     sample also returns the file's first line (fs.Sample.FirstLine) when
 //     its lines do not start with it, which the caller puts in front of the
 //     lines (the probe command does so for every format), as the csv parser
 //     and probe take a source's first line as its header.
 //   - A journal target ("journal:unit") is sampled with journalctl -n
-//     MaxLines through the journal reader; on systems without journalctl (or
-//     not Linux) its error is returned.
+//     MaxLines (or ScanLines) through the journal reader; on systems without
+//     journalctl (or not Linux) its error is returned.
 //
 // The lines of every sample are at most options.MaxLines (500 by default)
 // and at most options.WindowBytes of line data (256 KiB), lines longer than
 // options.MaxLineLength being cut into pieces as every read cuts them; a
 // line (or piece) larger than WindowBytes on its own is skipped. A tail
-// sample's FirstLine comes on top of these limits.
+// sample's FirstLine comes on top of these limits. With options.Keep only
+// the lines it accepts are kept (a table probe); options.Observe sees every
+// scanned line.
 //
 // Sample does no permission check: the caller resolves path to target with
 // the session user's read permissions (sessionuser.User.ResolveReadTarget)
@@ -78,14 +81,20 @@ func (p collectorProcessor) Flush() error { return nil }
 func (p collectorProcessor) Close() error { return nil }
 
 // sampleJournal samples the journal target spec with a one-shot journalctl
-// run asking for its last MaxLines entries. Entries are cut at MaxLineLength
-// by the reader, so they can make more pieces than MaxLines: the collector
-// keeps the most recent ones. Long-line warnings and journalctl's stderr go
-// nowhere (no server messages), as a sample has no client output.
+// run asking for its last MaxLines entries (ScanLines if set, so that Keep
+// can pick from more entries than are kept). Entries are cut at
+// MaxLineLength by the reader, so they can make more pieces than MaxLines:
+// the collector keeps the most recent ones. Long-line warnings and
+// journalctl's stderr go nowhere (no server messages), as a sample has no
+// client output.
 func sampleJournal(ctx context.Context, spec string, options fs.SampleOptions) (fs.Sample, error) {
 	options = options.WithDefaults()
+	entries := options.MaxLines
+	if options.ScanLines > 0 {
+		entries = options.ScanLines
+	}
 	reader, err := journal.NewReader(journal.ReaderOptions{
-		Args:          append(journal.UnitArgs(spec), "-n", strconv.Itoa(options.MaxLines)),
+		Args:          append(journal.UnitArgs(spec), "-n", strconv.Itoa(entries)),
 		SourceID:      spec,
 		MaxLineLength: options.MaxLineLength,
 	})

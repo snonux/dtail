@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // The probe command asks a server which MapReduce tables, fields and
@@ -47,6 +49,9 @@ const (
 	ProbeListMaxEntries = 500
 	// ProbeListMaxPrefixBytes is the length of ProbeRequest.List at most.
 	ProbeListMaxPrefixBytes = 4096
+	// ProbeMaxTableBytes is the length of ProbeRequest.Table at most, the
+	// length a probe cuts table names to (logformat.ProbeMaxNameBytes).
+	ProbeMaxTableBytes = 64
 )
 
 // Fixed reasons of a ProbeError. A reason names no server-side path or
@@ -55,8 +60,9 @@ const (
 const (
 	// ProbeErrorInvalidRequest: the request did not decode, its id is
 	// invalid, it names no file, it is both a field probe and a path
-	// listing (Files and List), or its List prefix is invalid (too long, or
-	// a NUL byte).
+	// listing (Files and List), its List prefix is invalid (too long, or
+	// a NUL byte), it is a path listing with a Table, or its Table is
+	// invalid (ValidProbeTable).
 	ProbeErrorInvalidRequest = "probe: invalid request"
 	// ProbeErrorBusy: another probe of the session is still running.
 	ProbeErrorBusy = "probe: another probe is running"
@@ -109,6 +115,18 @@ type ProbeRequest struct {
 	// entry, of at most ProbeListMaxPrefixBytes. To list the working
 	// directory, send "./".
 	List string `json:"list,omitempty"`
+	// Table, when not empty, makes a field probe table-targeted: the server
+	// samples, from a larger window of each file than a plain probe reads,
+	// only the lines of the table (those a log format's ProbeTabler assigns
+	// to it, or that name it as a word of their own) and answers
+	// only that table of every log format (ProbeAnswer.Table set): its
+	// fields and the $variables its lines filled (TableVariables), without
+	// the format-wide Variables. So a table that logs rarely, and is thin or
+	// missing in a plain probe, gets fields and samples. It is compared
+	// exactly, as a query's from clause names it (upper case), and must be
+	// valid (ValidProbeTable). Servers before this field ignore it and
+	// answer a plain probe, which has no ProbeAnswer.Table.
+	Table string `json:"table,omitempty"`
 }
 
 // ProbeAnswer is the JSON of a probe answer frame.
@@ -118,6 +136,9 @@ type ProbeAnswer struct {
 	// DefaultLogFormat is the server's MapreduceLogFormat, the log format of
 	// a query without a logformat clause.
 	DefaultLogFormat string `json:"defaultLogFormat,omitempty"`
+	// Table echoes ProbeRequest.Table of a table-targeted probe: Formats
+	// then hold that table only (and no format-wide Variables).
+	Table string `json:"table,omitempty"`
 	// Formats maps every log format that found fields in the sample to them.
 	Formats map[string]ProbeFormat `json:"formats,omitempty"`
 	// FilesSampled and LinesSampled count the files sampled and their
@@ -145,12 +166,19 @@ type ProbeAnswer struct {
 
 // ProbeFormat is what a log format found in the sample: tables (the
 // MAPREDUCE:<TABLE> of the default format, "" for formats without tables)
-// mapping bareword fields to sample values, $variables with sample values,
-// and an optional note of a custom probe. It mirrors logformat.ProbeResult.
+// mapping bareword fields to sample values, per table the $variables its
+// lines filled (TableVariables: with an entry for every table of Tables,
+// empty for a table none of whose sampled lines filled one, e.g. a table
+// only found by scanning the window; never the format's known variables
+// without values; nil only for a format whose custom probe gives no
+// per-table data, whose tables then have the format-wide Variables), the
+// format-wide $variables with sample values, and an optional note of a
+// custom probe. It mirrors logformat.ProbeResult.
 type ProbeFormat struct {
-	Tables    map[string]map[string][]string `json:"tables,omitempty"`
-	Variables map[string][]string            `json:"variables,omitempty"`
-	Note      string                         `json:"note,omitempty"`
+	Tables         map[string]map[string][]string `json:"tables,omitempty"`
+	TableVariables map[string]map[string][]string `json:"tableVariables,omitempty"`
+	Variables      map[string][]string            `json:"variables,omitempty"`
+	Note           string                         `json:"note,omitempty"`
 }
 
 // ProbeEntry is one entry of a path listing: a file (or journal unit) the
@@ -235,6 +263,29 @@ func ValidProbeID(id string) bool {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
 			c == '.', c == '_', c == '-':
 		default:
+			return false
+		}
+	}
+	return true
+}
+
+// probeTableSeparators are characters no table name holds: the field
+// separator of DTail log lines ('|', which ends the MAPREDUCE:<TABLE>
+// token), the comma a query treats as a blank, and the quotes and
+// backtick a query quotes words with.
+const probeTableSeparators = "|,\"'`"
+
+// ValidProbeTable reports whether table may be the Table of a probe request:
+// 1 to ProbeMaxTableBytes bytes of valid UTF-8 without blanks, control or
+// format characters and without probeTableSeparators (a table name is one
+// word of a query and one field of a log line).
+func ValidProbeTable(table string) bool {
+	if table == "" || len(table) > ProbeMaxTableBytes || !utf8.ValidString(table) ||
+		strings.ContainsAny(table, probeTableSeparators) {
+		return false
+	}
+	for _, r := range table {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return false
 		}
 	}

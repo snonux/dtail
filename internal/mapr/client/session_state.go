@@ -29,17 +29,50 @@ type SessionState struct {
 	lastResult string
 	changedCh  chan struct{}
 	logger     logging.Logger
+	// aggregatesExpected tells the handlers whether the servers may send
+	// aggregate frames (AggregatesExpected); read without mu, once per
+	// frame.
+	aggregatesExpected atomic.Bool
 }
 
-// NewSessionState returns a new shared mapreduce session state.
+// NewSessionState returns a new shared mapreduce session state. A nil query
+// starts it without a query (see ClearQuery), as interactive dtail does when
+// it starts with a plain tail read.
 func NewSessionState(query *mapr.Query, logger logging.Logger) *SessionState {
 	logger = logging.OrNop(logger)
-	return &SessionState{
+	state := &SessionState{
 		query:     query,
-		global:    mapr.NewGlobalGroupSet(logger),
 		changedCh: make(chan struct{}, 1),
 		logger:    logger,
 	}
+	if query != nil {
+		state.global = mapr.NewGlobalGroupSet(logger)
+		state.aggregatesExpected.Store(true)
+	}
+	return state
+}
+
+// AggregatesExpected reports whether the servers may send aggregate frames:
+// while a query is committed, or while a switch to one is pending
+// (ExpectAggregates). A handler takes a payload frame for aggregate data only
+// then, so that a followed --plain line that starts like an aggregate frame
+// (AGGREGATE|...) is printed while interactive dtail follows lines. After a
+// switch back to following lines no aggregate frame arrives any more: a
+// server sends none of the replaced generation after it acknowledged the
+// update, and the client clears the query (ClearQuery) only after every
+// acknowledgement.
+func (s *SessionState) AggregatesExpected() bool {
+	return s.aggregatesExpected.Load()
+}
+
+// ExpectAggregates is called with true before the session is switched to a
+// query, so that the first aggregates of the query, which may arrive before
+// CommitQuery, are taken for aggregate data, and with false when that switch
+// failed: then only a committed query expects them.
+func (s *SessionState) ExpectAggregates(pending bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.aggregatesExpected.Store(pending || s.query != nil)
 }
 
 // Snapshot returns a point-in-time copy of the shared mapreduce state.
@@ -93,10 +126,31 @@ func (s *SessionState) CommitQuery(rawQuery string, generation uint64) (*mapr.Qu
 	s.query = query
 	s.global = mapr.NewGlobalGroupSet(s.logger)
 	s.lastResult = ""
+	s.aggregatesExpected.Store(true)
 	s.mu.Unlock()
 
 	s.notifyChange()
 	return query, nil
+}
+
+// ClearQuery switches the shared state to generation without a query, for a
+// client whose session went from a MapReduce query back to a plain read
+// (interactive dtail, see clients.MaprClient). The query's global group set
+// and last rendered result are dropped with it: Snapshot then returns a nil
+// Query and GlobalGroup, so nothing reports a result; payload frames are
+// no longer taken for aggregate data (AggregatesExpected), and aggregates
+// still queued are discarded (Aggregate.merge), until CommitQuery sets a new
+// query.
+func (s *SessionState) ClearQuery(generation uint64) {
+	s.mu.Lock()
+	s.generation.Store(generation)
+	s.query = nil
+	s.global = nil
+	s.lastResult = ""
+	s.aggregatesExpected.Store(false)
+	s.mu.Unlock()
+
+	s.notifyChange()
 }
 
 // CommitRenderedResult stores the last rendered result for the active generation.

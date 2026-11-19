@@ -1125,7 +1125,7 @@ func (*lifecycleHandler) Server() string                         { return "lifec
 func (*lifecycleHandler) Status() int                            { return 0 }
 func (h *lifecycleHandler) Done() <-chan struct{}                { return h.done }
 func (*lifecycleHandler) WaitForCapabilities(time.Duration) bool { return false }
-func (*lifecycleHandler) WaitForSessionAck(time.Duration) (handlers.SessionAck, bool) {
+func (*lifecycleHandler) WaitForSessionAck(time.Duration, time.Duration) (handlers.SessionAck, bool) {
 	return handlers.SessionAck{}, false
 }
 
@@ -1386,7 +1386,7 @@ func (m *mockHandler) WaitForCapabilities(timeout time.Duration) bool {
 	return m.waitForCapabilities
 }
 
-func (m *mockHandler) WaitForSessionAck(timeout time.Duration) (handlers.SessionAck, bool) {
+func (m *mockHandler) WaitForSessionAck(timeout, _ time.Duration) (handlers.SessionAck, bool) {
 	if timeout <= 0 {
 		return handlers.SessionAck{}, false
 	}
@@ -1464,7 +1464,7 @@ func (*blockingSessionHandler) WaitForCapabilities(time.Duration) bool {
 	return true
 }
 
-func (h *blockingSessionHandler) WaitForSessionAck(timeout time.Duration) (handlers.SessionAck, bool) {
+func (h *blockingSessionHandler) WaitForSessionAck(timeout, _ time.Duration) (handlers.SessionAck, bool) {
 	if timeout <= 0 {
 		select {
 		case ack := <-h.ackCh:

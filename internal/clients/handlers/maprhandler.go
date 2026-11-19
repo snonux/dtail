@@ -68,6 +68,10 @@ func NewMaprHandler(server string, session *client.SessionState, logger clientlo
 // The aggregate messages of p are queued and merged into the global group set
 // once, after the whole of p was handled (see client.Aggregate).
 func (h *MaprHandler) Write(p []byte) (n int, err error) {
+	// Measured as busy time for WaitForSessionAck (busyClock), the
+	// whole call.
+	h.busy.begin()
+	defer h.busy.end()
 	h.scanFrames(p, h.handleMaprFrame)
 	if err := h.aggregate.Merge(); err != nil {
 		h.log().Error("Unable to aggregate data", h.server, err)
@@ -75,10 +79,19 @@ func (h *MaprHandler) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// handleMaprFrame handles one received frame, still undecoded. A frame that
-// is empty once its newlines are dropped is ignored. Only a payload frame
-// can be aggregate data, never a marked control frame.
+// handleMaprFrame handles one received frame, still undecoded. While the
+// session expects aggregates (client.Aggregate.Expected), a frame that is
+// empty once its newlines are dropped is ignored, and only a payload frame
+// can be aggregate data, never a marked control frame. Otherwise the frame is
+// handled like any frame of a ClientHandler (baseHandler.handleFrame).
 func (h *MaprHandler) handleMaprFrame(frame []byte) {
+	if !h.aggregate.Expected() {
+		// No query runs nor is being switched to (interactive dtail
+		// following lines): every frame is handled as by a ClientHandler,
+		// so a --plain line starting like an aggregate frame is printed.
+		h.handleFrame(frame)
+		return
+	}
 	frame = h.dropNewlines(frame)
 	if len(frame) == 0 {
 		return

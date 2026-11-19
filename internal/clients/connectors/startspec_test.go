@@ -33,8 +33,8 @@ func TestReplaceStartSessionSpecBeforeStart(t *testing.T) {
 		sessionAcks: []handlers.SessionAck{{Action: "start", Generation: 1}}}
 	conn := &ServerConnection{server: "srv1", handler: mock}
 
-	if !conn.ReplaceStartSessionSpec(startSpecReloaded) {
-		t.Fatal("ReplaceStartSessionSpec() = false before the start, want true")
+	if replaced, err := conn.ReplaceStartSessionSpec(startSpecReloaded); !replaced || err != nil {
+		t.Fatalf("ReplaceStartSessionSpec() = %v, %v before the start, want true", replaced, err)
 	}
 	err := dispatchInitialCommands("srv1", mock, nil, true, startSpecInitial, &conn.sessionState, logging.NopLogger{})
 	if err != nil {
@@ -62,8 +62,8 @@ func TestReplaceStartSessionSpecAfterStart(t *testing.T) {
 		if acked != (err == nil) || (!acked && !errors.Is(err, ErrSessionAckTimeout)) {
 			t.Fatalf("acked=%v: dispatchInitialCommands() error = %v", acked, err)
 		}
-		if conn.ReplaceStartSessionSpec(startSpecReloaded) {
-			t.Fatalf("acked=%v: ReplaceStartSessionSpec() = true after the start began, want false", acked)
+		if replaced, replaceErr := conn.ReplaceStartSessionSpec(startSpecReloaded); replaced || replaceErr != nil {
+			t.Fatalf("acked=%v: ReplaceStartSessionSpec() = %v, %v after the start began, want false, nil", acked, replaced, replaceErr)
 		}
 		if spec, _, ok := conn.CommittedSession(); ok != acked || (acked && spec.Regex != "ERROR") {
 			t.Fatalf("acked=%v: committed %#v ok %v, want the initial spec only if acked", acked, spec, ok)

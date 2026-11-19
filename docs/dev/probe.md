@@ -40,6 +40,12 @@ in an ordinary command frame (`protocol <version> base64 <...>`), built with
 - `files`: read targets, each a path, a glob or a `journal:` target, written
   as the path word of a read command: a path containing a space, or starting
   with `base64%`, is encoded with `protocol.EncodeReadPath`.
+- `table` (optional): makes the probe table-targeted, see "Table-targeted
+  probe" below. 1 to 64 bytes of valid UTF-8 without blanks, control or
+  format characters, `|` (the log field separator), `,`, quotes or
+  backticks (`protocol.ValidProbeTable`), compared exactly (a
+  query's `from` clause names a table in upper case). Not allowed with
+  `list`. Servers that predate the field ignore it and answer a plain probe.
 
 ## Answer
 
@@ -58,8 +64,11 @@ frame (a marked control frame, see `wire_framing.md`)
   "defaultLogFormat": "default",
   "formats": {
     "default": {
-      "tables": {"STATS": {"currentConnections": ["0", "3"]}},
-      "variables": {"$hostname": ["web1"]}
+      "tables": {"STATS": {"currentConnections": ["0", "3"]},
+                 "ORDERS": {"orderID": ["42"]}},
+      "tableVariables": {"STATS": {"$caller": ["stats.go:56"]},
+                         "ORDERS": {"$caller": ["orders.go:10"]}},
+      "variables": {"$caller": ["stats.go:56", "orders.go:10"], "$hostname": ["web1"]}
     }
   },
   "filesSampled": 1,
@@ -77,6 +86,19 @@ frame (a marked control frame, see `wire_framing.md`)
   `MAPREDUCE:<TABLE>`, `""` for formats without tables) mapping fields to up
   to 5 distinct sample values of at most 64 bytes, `$variables` with sample
   values, and an optional note. Formats that parse no line are left out.
+  `tableVariables` maps a table to the `$variables` the lines of that table
+  filled (with samples), so that a query `from TABLE` can be offered only
+  those; `variables` stays the format-wide view (of all lines, plus the
+  format's known variables without values). `tableVariables` has an entry
+  for every table of `tables`, also for a format of one table (formats
+  without tables have the table `""`), empty for a table none of whose
+  sampled lines filled a variable (a table only the window scan found); it
+  never holds known variables without values. Only a format whose custom
+  probe gives no per-table data leaves it out; its tables then have the
+  format-wide `variables` (`logformat.ProbeResult.VariablesOf`, client
+  `answerTableVariables`). Per table, the variables are capped like fields
+  (256).
+- `table` echoes the request's `table` of a table-targeted probe.
 - `errors` lists `{file, error}` entries: `file` is the request entry (or,
   for `probe: log format probe failed`, the format name; empty for errors of
   the whole request), `error` a fixed reason naming no server-side path or
@@ -135,6 +157,18 @@ uncompressed file's last 256 KiB (at most 500 lines), a compressed file's
 first 500 lines, a journal target's `journalctl -n 500`. A tail sample's
 separately returned first line is put in front of its lines, so header
 formats (csv) name their fields; it is not counted in `linesSampled`.
+The window is streamed (`fs.SampleTail` reads it through a 64 KiB buffer),
+and every line of it, also those the 500-line limit evicts, is passed to
+the formats' table scanners (`fs.SampleOptions.Observe`,
+`logformat.ProbeTableScanner` over parsers implementing
+`logformat.ProbeTabler`: the default format names the `MAPREDUCE:<TABLE>`
+of a line without parsing its fields). The answer lists every table of the
+window so (without fields, and with an empty `tableVariables` entry, when
+none of its lines was kept), so the table list is as complete as the window
+allows and the client can target a table probe at a table it found. A
+`ProbeTabler` that panics is recovered, not used for the rest of the probe,
+and reported as `probe: log format probe failed` for its format (logged at
+WARN), like a failing log format probe.
 A probe takes no cat or tail limiter slot. Every step is bounded by size
 (8 entries, one glob each capped at `MaxGlobTargets`, 8 bounded samples);
 the timeout `probeTimeout` (10 s) stops the sampling, `journalctl`
@@ -145,7 +179,44 @@ check it.
 The answer JSON is at most `protocol.ProbeMaxAnswerBytes` (48 KiB, before
 base64). A larger one first loses all sample values (and notes), then as many
 tables, fields and variables as needed, those of the default log format
-last; `truncated` is set then.
+last; `truncated` is set then. A table's `tableVariables` follow its fields
+in that order, so a cut never keeps them without the table, and a kept table
+of a format with per-table data keeps its (possibly emptied) entry.
+
+## Table-targeted probe
+
+A table that logs rarely is thin or missing in the plain sample (the last
+256 KiB / 500 lines of a file). A request with `table` samples a larger
+window for the lines of that table only and answers that table only
+(`internal/handlers/probe_table.go`):
+
+- The same checks and bounds as a plain probe: every entry goes the way
+  described above (decode, glob, `readfiles` check of every match), at most
+  8 files, the 10 s `probeTimeout`, one probe at a time per session (it is
+  answered busy while another probe of the session runs, and holds the
+  in-flight token like any probe), no cat slot.
+- It scans `probeTableScanBytes` (4 MiB, 16 plain windows) of each
+  uncompressed file's end, and as much decompressed input of a compressed
+  file's beginning (`fs.SampleOptions.ScanBytes`), and asks `journalctl` for
+  `probeTableScanLines` (5,000) entries of a journal target
+  (`fs.SampleOptions.ScanLines`). At most 8 files, so at most 32 MiB read per
+  probe; the window is streamed, so memory does not grow with it.
+- It keeps the lines of the table (`fs.SampleOptions.Keep` =
+  `logformat.ProbeTableScanner.Matcher`), at most 500 lines and 256 KiB of
+  line data per file as a plain sample. A line some format's `ProbeTabler`
+  assigns to a table (the default format's `MAPREDUCE:<TABLE>`) is kept if
+  that is the table, so a line of another table that mentions the name is
+  not; a line no `ProbeTabler` claims is kept if it names the table as a
+  word of its own (not next to an ASCII letter, digit or `_`,
+  `logformat.ProbeTableLineMatcher`), for formats that name tables without
+  implementing `ProbeTabler`. Only lines containing the name are looked at
+  closer. A panicking `ProbeTabler` is handled as in a plain probe.
+- The answer holds, per log format, the requested table only
+  (`logformat.ProbeResult.FilterTable`): its fields and its `tableVariables`
+  (only what its lines filled; the format-wide ones only for a format
+  without per-table data), no format-wide `variables`. A format without that table is left out; a table
+  no line names gives no format, with the files still counted as sampled.
+  `linesSampled` counts the kept lines.
 
 ## Place in the session
 
@@ -404,6 +475,48 @@ Only interactive sessions (`--interactive-query`) probe, in every mode
   come from dserver only (another probe of the session still ran there):
   the client's own probes share the handler's slot (decision N1 above)
   and never fail busy.
+- Per-table `$variables`: the merged catalog keeps them per table
+  (`catalogFormat.TableVariables`), and `catalogFormat.variablesOf(table)`
+  returns only what that table's lines filled, empty for a table no answer
+  gave any for. The only fallback is explicit: an answer's format without
+  per-table data (a dserver from before them, a custom probe that sets
+  none) contributes its format-wide `variables` to each of its tables
+  (`answerTableVariables`), and a catalog format without any per-table data
+  returns its format-wide ones. The query completion offers these: once a
+  `from` table is typed, only the `$variables` (and sample values) of that
+  table's lines (`queryCandidateSource.variableNames`).
+- Table probes (`interactiveProber.requestTable`,
+  `internal/clients/interactive_probe_table.go`): a table-targeted probe of
+  the session's current files is sent to the round's probe targets (at
+  most 3) when Tab completes inside a `--query` value whose `from` table is
+  typed (`completion.probeTable`, `completeWithTableProbe`; only the Tab
+  that sends the request waits for it like for a path listing, at most 1 s
+  with the output running, and completes again; a Tab while it is still on
+  its way, or whose wait ran out, completes from the cache at once with the
+  hint `tableProbeMissingHint`), and
+  when `:fields TABLE` is run (`awaitTableProbe`: the table as the catalog
+  spells it, else in upper case; waited for at most `tableProbeWait`, 2 s,
+  with the output running, before `:fields` answers). It shares the
+  on-demand request state of the path listings (one request per table on
+  its way, ids `t1`, `t2`, ..., bounded by the round timeout, waited for when
+  the prober stops). It is not sent while the catalog holds an answer to a
+  table probe of that table and files younger than `tableProbeMaxAge` (60 s,
+  `fieldCatalog.hasTableProbe`), also one that found nothing (so a table no
+  line names is not probed on every Tab), nor within `tableProbeRetryAfter`
+  (5 s) of a table probe of them no server answered (all failed, timed out
+  or answered busy, `markTableProbeFailed`; e.g. a server that answers
+  nothing while it floods follow output is not asked on every Tab), nor for
+  a session reading only stdin or a name `protocol.ValidProbeTable`
+  rejects. `requestTable` looks at the pending requests before the catalog,
+  under one lock, so a request that just answered is never sent twice. The answers are kept
+  per server and table (`fieldCatalog.storeTable`, at most 64, the oldest
+  dropped; a busy answer is ignored, and the plain answer of a server that
+  ignores `table` is kept for the table too) and merged into the snapshot of
+  the same files: tables, fields and per-table `$variables`, the servers
+  and times, and `catalogSnapshot.TableProbes` (table to lines sampled),
+  but not their errors, which repeat those of the plain probes. `:fields
+  TABLE` shows the table's `$variables` (`variablesOf`) under it and a line
+  `table T probed on its own: N lines of it sampled`.
 
 
 ### Path completion

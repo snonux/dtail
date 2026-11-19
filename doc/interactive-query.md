@@ -35,10 +35,30 @@ the fly (Tab completes), :quit to end.`
 
 ## Control commands
 
-The interactive session understands six control commands:
+The interactive session understands these control commands (`:query` only
+in `dtail` and `dmap`, `:tail` only in `dtail`):
 
 * `:reload <flags>` apply a new workload by reusing the current session
-* `:show` print the current interactive state (mode, files, query, regex,
+* `:query <query>` run the MapReduce query `<query>`: in `dtail` the session
+  switches from following lines to the query (or a running query is
+  replaced), in `dmap` the query is replaced, as `:reload --query` does. The
+  query is the rest of the line as typed, without shell quoting, so
+  `:query from STATS select count($line) where $hostname eq "web1"` needs no
+  outer quotes; only the blanks around it are dropped. A query that does not
+  parse is rejected and the running workload goes on. `:query` alone prints
+  the running query (or that the session follows lines).
+* `:tail [regex]` (`dtail` only) switch the session from the query back to
+  following lines, with the regex (and `--invert`, context lines, `--max`)
+  followed before the query; `:tail <regex>` follows the lines matching
+  `<regex>` instead (clearing `--invert`), also while already following
+  lines. The regex is the rest of the line as typed, blanks around it
+  dropped (write `foo[ ]` for a regex ending in a blank). `:tail` alone
+  while the session already follows lines is rejected. When the session
+  leaves the query, its last result is reported once more (see "How it
+  works"): written to the query's outfile, if it has one, or else printed
+  only if it has rows and differs from the table printed last.
+* `:show` print the current interactive state (mode, the workload as
+  `workload=query` while a query runs and the mode otherwise, files, query, regex,
   whether the regex is inverted, options, timeout), the number of servers
   (`servers=n`) and how many of them have an active session (`sessions=n`,
   the ones a `:reload` updates)
@@ -55,8 +75,13 @@ The interactive session understands six control commands:
   servers that answered, how old the data is, the default log format, the
   servers' probe errors (e.g. a file that could not be read) and whether an
   answer was cut to its size limit. With a table name (any case, as in a
-  query's `from` clause) only that table and the `$variables` of its log
-  format are printed. Names and values a server sent are printed in Go
+  query's `from` clause) only that table is printed, with the `$variables`
+  its lines carry, and the servers are first asked to probe that table on
+  its own (a table probe: up to 4 MiB of the end of each file are searched
+  for its lines, so a table that logs rarely gets fields and samples too;
+  waited for up to 2 seconds with the output running, and asked again only
+  after a minute); a line `table ORDERS probed on its own: 3 lines of it
+  sampled` tells what it found. Names and values a server sent are printed in Go
   quoting where they are not plain printable text. Until a probe answered,
   `:fields` says so. The output stays paused after `:fields`, as after
   `:help`.
@@ -74,7 +99,12 @@ When the control TTY is a terminal, control lines are edited in a small line
 editor (golang.org/x/term, no other dependency):
 
 * **Tab** completes the word before the cursor:
-  * the command: `:re<Tab>` gives `:reload `, `:<Tab>` lists all six;
+  * the command: `:re<Tab>` gives `:reload `, `:<Tab>` lists the commands
+    of the client (with `:query` in `dtail` and `dmap`, `:tail` in `dtail`);
+  * after `:query `, the query language and the probed fields exactly as
+    inside a `--query` value (below), inserted as they are, without shell
+    escaping: `:query from ST<Tab>` gives `:query from STATS `, and a sample
+    value is inserted in the query's own double quotes (`eq "web1" `);
   * after `:fields`, the tables the probe found (`:fields st<Tab>` gives
     `:fields STATS`);
   * after `:reload`, the flags of the client's mode, taken from the same
@@ -90,9 +120,84 @@ editor (golang.org/x/term, no other dependency):
     language: clause keywords, aggregations (`count(`), where operators,
     `and`, `by`, `append`, set functions, log format names and the select
     items for `order by`, plus what the servers' background field probe
-    found: tables, the fields of the typed table (of every table while none
-    is typed), `$variables` and, after a where operator, sample values
+    found: tables, the fields of the query's table (of every table while
+    none is named), `$variables` and, after a where operator, sample values
     (`"web1"` after a string operator, bare numbers after a numeric one).
+    The completion is **guided**: Tab offers one step at a time, in the
+    order `from` -> table -> `select` -> items -> `where` -> `group by` ->
+    `order by` -> `limit`, and a single next step is inserted right away:
+
+    ```
+    :query <Tab>                         -> :query from
+    :query from <Tab>                    -> :query from STATS   (or the tables)
+    :query from STATS <Tab>              -> :query from STATS select
+    :query from STATS select <Tab>
+      select item
+      aggregation: count  sum  min  max  avg  last  len  percentage  percentile
+      field:       currentConnections  lifetimeConnections
+      variable:    $hostname  $time ...   (those seen in STATS lines)
+    :query from STATS select count(<Tab>
+      field to count
+      field:    currentConnections  lifetimeConnections
+      variable: $hostname  $time ...
+    :query from STATS select count(currentConnections) <Tab>
+      next: where  group by  order by  limit
+      (, adds another item)
+    ```
+
+    Tab inserts the `)` after a field inside an aggregation without a
+    blank, so that a comma (for another item) can follow it directly. A
+    Tab right after the `)` of such a finished item (also of a set
+    function, `md5sum($x)`, an order by item or a where value ending in
+    `)`) lists the next step with the comma hint, as above, even a single
+    next clause, and inserts the blank when the item ends the query; with
+    text after the cursor (a blank, a comma, more of a word) it inserts
+    nothing and only lists. Tab after a typed blank inserts a single next
+    clause directly. A whole session built this way is under "Examples".
+
+    A listing starts with a heading saying what is expected at the cursor
+    (`select item`, `field to count`, `field to filter on`, `operator`,
+    `value for currentConnections`, `to order by`, ...; left out where the
+    group labels say it, e.g. `next:` or `table:`, before the first clause,
+    whose group is `clause:`, and where the next clauses are offered beside
+    other words), followed by the candidates in labelled groups, one per
+    line (`and` and the next clauses share one `next:` line), the fields of
+    the log before the `$variables`. Names are listed bare: the `(` after
+    an aggregation, the `)` after a field inside it, the quotes around a
+    value and the trailing blank are added only when Tab inserts the
+    candidate; a field named like a keyword keeps the backticks it must be
+    written in (`` `from` ``). A group longer
+    than the terminal is wide wraps, its rows aligned, and is cut after
+    three rows with `... (N more, type to narrow)`; hints (no field data
+    yet, a comma adds another item, a table probe running) come on a line
+    of their own.
+
+    The table comes first because it narrows the fields, `$variables` and
+    sample values to the lines of that table (`$variables` as the probe saw
+    them in that table's lines); a log format without tables (e.g. `csv`,
+    `generic`) starts at `select`. A clause already in the query, before or
+    after the cursor, is not offered again (`order` and `rorder` count as
+    one). After a finished select item, where condition or `group by` field
+    Tab offers only what continues the query (the next clauses, and `and`
+    after a condition) with a hint that a comma adds another item; after a
+    comma (or `and`) the items come again. A word typed before Tab
+    completes to either: `... count(x) w<Tab>` gives `where `, `... count(x)
+    lif<Tab>` gives `lifetimeConnections `. A where operator position offers
+    only operators, a value position only sample values (no fields).
+    `group` and `order` complete to `group by ` and `order by `, which then
+    offers only the select items (without `by` when the text after the
+    cursor starts with `by` already; `outfile` likewise with `append`). An
+    item already selected is not offered again in `select` (the parser
+    rejects duplicates), and after a where condition no field named `and`.
+    Before the first probe answer the first step is `select `, with the
+    hint that no field data arrived yet. The rare clauses `set`, `interval`,
+    `outfile`, `logformat` and `rorder` complete once their first letters
+    are typed (`int<Tab>` gives `interval `) but are not listed otherwise.
+    Any clause order the parser accepts still completes when typed by hand:
+    a query begun with `select` gets the fields of every table, with a hint
+    that `from <table>` narrows them, and `from` among the next clauses. A
+    `from TABLE` typed after the cursor scopes the completion too
+    (`:query select count(<Tab>) from STATS`).
     What is inserted is escaped for the open quote, so the line still
     reads as the intended query: `:reload --query 'select cou<Tab>` gives
     `'select count(`, and `... where $hostname eq w<Tab>` gives
@@ -112,7 +217,14 @@ editor (golang.org/x/term, no other dependency):
     format names, `order by` items, and fields in `select` and `group by`;
     elsewhere (a where operand or operator, a `set` condition) nothing is
     offered, as a quoted word would be a string. Until a probe answered, the query language
-    still completes and a hint line says that no field data arrived yet;
+    still completes and a hint line says that no field data arrived yet.
+    Once a `from` table is typed, Tab also has the servers probe that
+    table on its own (as `:fields TABLE` does) and waits up to a second for
+    it with the output running, so the fields of a table that logs rarely
+    are offered too. Only that one Tab waits: while the answer is still on
+    its way, Tab completes from what arrived before, with a hint to press
+    Tab again later, and after a probe no server answered the table is
+    only asked for again after 5 seconds;
   * inside a `--files` value (started, quoted or not, or as `--files=...`),
     the **remote file paths**: the last comma-separated entry is completed
     from a listing of its directory on the first server that is up, with only the files
@@ -207,9 +319,10 @@ Clearing the line and pressing Enter resumes it as well.
 While explicitly paused:
 
 * `:show`, `:help`, `:fields` and rejected commands are answered and the
-  output stays paused. This includes a `:reload` or `:probe` line that is
-  rejected (an unknown flag, an unterminated quote, a blank `--files`, a
-  query that does not parse, `:probe` with arguments, ...): the client
+  output stays paused. This includes a `:reload`, `:probe`, `:query` or
+  `:tail` line that is rejected (an unknown flag, an unterminated quote, a
+  blank `--files`, a query that does not parse, a regex that does not
+  compile, `:probe` with arguments, ...): the client
   checks the whole line before it resumes anything.
 * `:reload <flags>` resumes the output first and then applies the reload:
   the servers acknowledge an update over the same connection that carries
@@ -217,9 +330,11 @@ While explicitly paused:
   passed the checks but then fails (no server with an active session, a
   server lacking `journal-v1` for a `journal:` target, no acknowledgement)
   has resumed the output already.
+* `:query <query>` and `:tail` switch the session with an update as
+  `:reload` does, so they resume the output first too.
 * `:probe` resumes the output first too, for the same reason: a server's
   probe answer arrives over that connection. Typed into a pause for typing,
-  both resume the output before they run, without the resumed message.
+  all of them resume the output before they run, without the resumed message.
 * `:quit`, closing the control terminal and Ctrl-C (twice) end the session
   as usual; the held back output is released for the shutdown.
 
@@ -238,8 +353,15 @@ The pause holds back everything the client writes to the terminal (payload,
 `dmap` result tables and the client's own log lines) and, in serverless mode,
 the payload written directly to stdout. Nothing is dropped and nothing is
 buffered without bound: the client stops reading, so the servers wait (as
-for a paused pager) and send the held back output once it resumes. A
-`dtail` follow session that is paused for long can fall behind the shared
+for a paused pager) and send the held back output once it resumes. A pause
+right at the start of a session, before the client read a server's
+acknowledgement of the session start (dserver sends it ahead of the
+session's output, but output that is already on its way can come first), does
+not fail that start: the client waits for 2 seconds of the
+acknowledgement not being held back, and the time it is held back by the
+pause does not count, so the session starts once the output resumes. A
+`:reload` (and `:query`, `:tail`) waits like that too, but never longer than
+10 seconds in all for one server (see below for several). A `dtail` follow session that is paused for long can fall behind the shared
 follow read of its file on dserver and then reads privately until it caught
 up. A dserver closes a connection without any network activity after its
 `IdleSessionTimeoutS` (default 900 seconds), so keep pauses shorter than
@@ -252,8 +374,9 @@ With the line editor and terminal colors enabled (the default; `--noColor`,
 output is colored: messages (paused and resumed, success, errors, hints),
 the headings, commands and examples of `:help`, the keys and values of
 `:show`, the headings, fields and sample values of `:fields`, the prompt and
-the Tab candidate lists, which are grouped by kind (query keywords, fields,
-`$variables`, functions, operators, values, tables, paths and directories).
+the Tab candidate lists, whose names are painted by kind (query keywords,
+fields, `$variables`, functions, operators, values, tables, paths and
+directories) and whose heading and group labels are painted as headings.
 MapReduce queries are highlighted with the same styles, by what the query
 parser reads each word as: the query of `:show`, the query echoed after an
 applied `:reload` (`reload applied successfully`, then `query: ...`, also
@@ -388,6 +511,54 @@ dtail --servers app01 --files /var/log/app.log --grep ERROR --interactive-query
 :reload --grep WARN
 ```
 
+Switch a running `dtail` to a MapReduce query and back to following lines,
+on the same session:
+
+```bash
+dtail --servers app01 --files /var/log/app.log --grep ERROR
+# then type:
+:query from STATS select count($line) group by $hostname
+:tail
+:tail WARN
+```
+
+Build a query with Tab in a running `dtail` whose log has two tables,
+`STATS` and `ORDERS` (`item=apple|price=3`, `item=pear|price=5`). Each
+`<Tab>` below completes one step or lists what can come next (shown
+indented); only the letters before a `<Tab>` are typed:
+
+```
+:query <Tab>                          -> :query from
+:query from <Tab>
+  table: ORDERS  STATS
+:query from OR<Tab>                   -> :query from ORDERS
+:query from ORDERS <Tab>              -> :query from ORDERS select
+:query from ORDERS select <Tab>
+  select item
+  aggregation: count  sum  min  max  avg  last  len  percentage  percentile
+  field:       item  price
+  variable:    $caller  $cgocalls  $cpus  $empty  $goroutines  $hostname  ...
+:query from ORDERS select ma<Tab>     -> :query from ORDERS select max(
+:query from ORDERS select max(pr<Tab> -> :query from ORDERS select max(price)
+:query from ORDERS select max(price) <Tab>
+  next: where  group by  order by  limit
+  (, adds another item)
+:query from ORDERS select max(price) gr<Tab>
+                                      -> ... max(price) group by
+:query from ORDERS select max(price) group by it<Tab>
+                                      -> ... max(price) group by item
+```
+
+Only the fields and `$variables` of `ORDERS` lines are offered (no
+`currentConnections`, and no `$date`, which only the `STATS` lines'
+timestamps fill). Enter runs the query on the session: `query applied`,
+and a result table with `max(price)` `3.000000` and `5.000000` after
+2.5 seconds, then every 5 seconds (the default `interval`) whenever it
+changed, while no followed line is printed. `:tail` goes back to
+following lines (`following lines`, `regex: "..."`), and the next
+`:query` starts another query, all on the same session. This session is
+`TestInteractiveGuidedQuerySession` in `integrationtests/`.
+
 Change the match and its context in a running `dgrep`:
 
 ```bash
@@ -431,10 +602,55 @@ dmap --servers app01 --files /var/log/app.log \
   when no server has an active session is the reload rejected (`no server
   has an active session`). The `journal:` capability check covers the
   servers that are up; a server that connects later without journal support
-  fails its session as at startup.
+  fails its session as at startup. A server whose session start already
+  went out with the reloaded workload when the reload failed, and was not
+  acknowledged within 10 seconds, is switched back to the current workload
+  right after its start is acknowledged (the answer says `rolled back once
+  it is acknowledged`); if that fails, its connection ends. Until the
+  switch back is acknowledged (one round trip), what that server sends for
+  the reloaded workload reaches the client: its lines are printed, and with
+  `dmap` its results are merged into the current aggregation (an
+  interactive `dtail` that the failed reload switched from following lines
+  to a query can print them as `AGGREGATE|...` lines). A reload entered
+  meanwhile treats that server as still connecting.
+* A reload changes the servers one after the other and waits for each at
+  most 10 seconds, and as long again for each rollback, so with servers
+  that all stall a failed reload can take about 20 seconds per server
+  before it is answered.
 * Every successful reload advances a generation boundary; late output from the
   previous workload is dropped so stale matches do not leak into the new result
   stream.
+* An interactive `dtail` runs, with or without `--query`, on one client that
+  can hold both workloads on the same session: following lines and a
+  MapReduce query. Its session switches from one to the other and back
+  (`:query`, `:tail`) with a `SESSION UPDATE`, without a new connection, which every protocol 5
+  dserver and the serverless runtime accept. Query results are printed (or
+  written to the query's outfile) only while a query runs; when the session
+  goes back to following lines, the query's last result is reported once
+  more and its state is dropped, and a query started later begins with an
+  empty result. With an outfile that last result (all received so far) is
+  always written. With `outfile append` it is the only result of the query
+  that is appended (interim reports append nothing), and so is the result
+  of a query a `:reload` or `:query` replaces with another query. Without one it is printed only if the table has rows and
+  differs from the table printed last (an empty or unchanged result is not
+  printed again), and, as `dtail` prints each interval's result on its own,
+  it covers only what arrived since the last printed report. Either way it
+  can lack up to one `interval` of the query: the servers drop what they
+  aggregated since their last periodic report when the query is
+  replaced. The query reads the lines of
+  its table only, so the `--grep`/`--regex`, `--invert`, `--before`,
+  `--after` and `--max` of following lines do not apply to it: they are set
+  aside and apply again once the session follows lines (a set-aside
+  `--invert` is noted in one line). This holds for
+  `dtail --query` started interactively too: its command line's
+  `--grep`/`--regex`, `--invert`, context and `--max` are kept for following
+  lines (a note instead of the `Ignoring --invert` warning) and not sent
+  with the query. While the session follows lines, a `--plain` line that
+  starts like a MapReduce aggregate frame (`AGGREGATE|...`) is printed like
+  any other line; while a query runs (or a switch to one is under way) such
+  a line is taken for aggregate data, as with `dtail --query` and `dmap`. A
+  non-interactive `dtail` keeps the client it always had: the tail client,
+  or the MapReduce client with `--query`. Exit statuses do not change.
 * In the background the client asks up to three of the servers which
   MapReduce tables, fields and `$variables` the lines of the session's files
   carry (a probe: a bounded sample of the last lines of each file, see

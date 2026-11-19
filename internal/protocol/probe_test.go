@@ -60,6 +60,40 @@ func TestValidProbeID(t *testing.T) {
 	}
 }
 
+func TestValidProbeTable(t *testing.T) {
+	for table, want := range map[string]bool{
+		"STATS": true, "a_b-c:d": true, "ÄÖÜ": true, strings.Repeat("T", ProbeMaxTableBytes): true,
+		"": false, "A B": false, "A\tB": false, "A\x00": false, "A\x1b[2J": false,
+		"A\u202eB": false, "\xff": false, strings.Repeat("T", ProbeMaxTableBytes+1): false,
+		"A|B": false, "STATS|x=1": false, "A,B": false, `A"B`: false, "A'B": false, "A`B": false,
+	} {
+		if got := ValidProbeTable(table); got != want {
+			t.Errorf("ValidProbeTable(%q) = %v, want %v", table, got, want)
+		}
+	}
+}
+
+func TestTableProbeRoundTrip(t *testing.T) {
+	command, err := EncodeProbeCommand(ProbeRequest{ID: "t1", Files: []string{"a.log"}, Table: "STATS"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, argument, _ := strings.Cut(command, " ")
+	decoded, err := DecodeProbeRequest(argument)
+	if err != nil || decoded.Table != "STATS" {
+		t.Fatalf("decoded %+v, %v; want table STATS", decoded, err)
+	}
+	data := []byte(`{"id":"t1","table":"STATS","formats":{"default":{"tables":{"STATS":{"a":[]}},` +
+		`"tableVariables":{"STATS":{"$caller":["x.go:1"]}}}},"filesSampled":1,"linesSampled":1}`)
+	answer, err := DecodeProbeAnswer(EncodeProbeAnswer("t1", data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer.Table != "STATS" || answer.Formats["default"].TableVariables["STATS"]["$caller"][0] != "x.go:1" {
+		t.Fatalf("decoded %+v", answer)
+	}
+}
+
 func TestProbeAnswerRoundTrip(t *testing.T) {
 	data := []byte(`{"id":"p1","defaultLogFormat":"default","formats":{"default":{"tables":` +
 		`{"STATS":{"a":["1"]}}}},"filesSampled":1,"linesSampled":2}`)

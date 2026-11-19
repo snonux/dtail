@@ -54,6 +54,7 @@ var validQueries = []string{
 	"select `select`,`by` group by `by`",
 	"select foo where foo eq \"and\" and and eq 1",
 	"select foo order by foo select foo,bar",
+	"select foo order by foo desc limit 1",
 }
 
 func TestScanQueryMatchesTokenize(t *testing.T) {
@@ -69,7 +70,79 @@ func FuzzScanQuery(f *testing.F) {
 	f.Fuzz(func(t *testing.T, query string) {
 		checkScan(t, query)
 		checkPartialInvariants(t, AnalyzePartial(query))
+		checkWholeQuery(t, query)
 	})
+}
+
+// checkWholeQuery checks that AnalyzeQuery reads a query as AnalyzePartial
+// reads it followed by a blank (where the blank does not join an open
+// quote): the state after its last token, no word.
+func checkWholeQuery(t *testing.T, query string) {
+	t.Helper()
+	whole := AnalyzeQuery(query)
+	checkPartialInvariants(t, whole)
+	if whole.Word != "" || whole.InQuote || whole.InBacktick || whole.InAggregation {
+		t.Fatalf("AnalyzeQuery(%q): word %q in a quote, backticks or call", query, whole.Word)
+	}
+	if strings.Count(query, `"`)%2 != 0 {
+		return
+	}
+	blank := AnalyzePartial(query + " ")
+	if whole.Clause != blank.Clause || whole.Expect != blank.Expect || whole.Table != blank.Table ||
+		whole.LogFormat != blank.LogFormat || !slices.Equal(whole.SelectItems, blank.SelectItems) ||
+		whole.AfterComma != blank.AfterComma {
+		t.Fatalf("AnalyzeQuery(%q) = %+v, AnalyzePartial with a blank %+v", query, whole, blank)
+	}
+}
+
+// TestAnalyzeQuery checks the whole-query analysis on the corpus and that
+// a table or log format typed last counts, unlike in AnalyzePartial,
+// where it is the word under the cursor.
+func TestAnalyzeQuery(t *testing.T) {
+	for _, query := range append(slices.Clone(scanCorpus), validQueries...) {
+		checkWholeQuery(t, query)
+	}
+	for _, query := range validQueries {
+		q, err := NewQuery(query, logging.NopLogger{})
+		if err != nil {
+			t.Fatalf("NewQuery(%q): %v", query, err)
+		}
+		checkParsedAgreement(t, AnalyzeQuery(query), q)
+	}
+	p := AnalyzeQuery("select a from STATS")
+	if p.Table != "STATS" || AnalyzePartial("select a from STATS").Table != "" {
+		t.Fatalf("table typed last: %q", p.Table)
+	}
+	if p := AnalyzeQuery(`select a logformat "csv`); p.LogFormat != "csv" || p.InQuote {
+		t.Fatalf("open quote at the end: logformat %q in quote %v", p.LogFormat, p.InQuote)
+	}
+}
+
+// TestAnalyzePartialAfterComma checks that a comma before the word is
+// reported, also with other blanks around it, and that commas inside a
+// quote, before an earlier token or after the word's start do not count.
+func TestAnalyzePartialAfterComma(t *testing.T) {
+	for query, want := range map[string]bool{
+		"":                                 false,
+		",":                                true,
+		"select a":                         false,
+		"select a ":                        false,
+		"select a,":                        true,
+		"select a ,\t":                     true,
+		"select a, co":                     true,
+		"select a, count(":                 true,
+		"select a,b c":                     false,
+		`select a where b eq "x, y" `:      false,
+		`select a where b eq "x, y",`:      true,
+		`select a where b eq "x,`:          false,
+		"select count(a), sum(b) where x ": false,
+		"select a where b == 1 , and ":     false,
+	} {
+		p := AnalyzePartial(query)
+		if p.AfterComma != want {
+			t.Errorf("AnalyzePartial(%q).AfterComma = %v, want %v", query, p.AfterComma, want)
+		}
+	}
 }
 
 // checkScan compares scanQuery with tokenize on query and checks the offsets.
@@ -366,12 +439,23 @@ func TestAnalyzePartialMarksRejectedTokens(t *testing.T) {
 		"select count(fo",
 		`select ""`,
 		"select foo from a b",
+		"select foo order by foo gro",
+		"select foo rorder foo gro",
+		"select foo interval 5 gro",
+		"select foo limit 5 5",
+		"select foo logformat csv gro",
+		`select foo outfile "a" gro`,
+		"select foo gropu by foo",
+		"select foo group foo by",
 		`select foo from ""`,
 		"select foo where a =~ b",
 		"select foo where a == \"1\"",
 		`select foo outfile ""`,
 		`select foo outfile "a" "b"`,
 		"foo select x",
+		`"select" x`,
+		`"SeleCt"0`,
+		"`select` x",
 	} {
 		if _, err := NewQuery(query, logging.NopLogger{}); err == nil {
 			t.Errorf("NewQuery(%q) succeeded, want an error", query)
@@ -417,7 +501,7 @@ func TestAnalyzePartialTokenKinds(t *testing.T) {
 				{"limit", TokenKeyword}, {"2", TokenNumber}, {"logformat", TokenKeyword},
 				{"csv", TokenLogFormat}, {"outfile", TokenKeyword}, {"append", TokenKeyword},
 				{`"o"`, TokenString}}},
-		// Negative cases: what the parser rejects or ignores is unknown.
+		// Negative cases: what the parser rejects is unknown.
 		{"foo select median(x),`y`,count(a)b", []kindedText{{"foo", TokenUnknown},
 			{"select", TokenKeyword}, {"median(x)", TokenUnknown}, {"`y`", TokenField},
 			{"count(a)b", TokenUnknown}}},
@@ -434,6 +518,11 @@ func TestAnalyzePartialTokenKinds(t *testing.T) {
 			{"set", TokenKeyword}, {"a", TokenUnknown}, {"=", TokenOperator},
 			{"sha1(x)", TokenUnknown}, {"$b", TokenVariable},
 			{"==", TokenUnknown}, {"1", TokenNumber}}},
+		// A quoted or backticked keyword starts no clause.
+		{`"select" foo "from" STATS`, []kindedText{{`"select"`, TokenUnknown},
+			{"foo", TokenUnknown}, {`"from"`, TokenUnknown}, {"STATS", TokenUnknown}}},
+		{"`select`0 select a", []kindedText{{"`select`0", TokenUnknown},
+			{"select", TokenKeyword}, {"a", TokenField}}},
 		{"interval 99999999999999 limit 99999999999999", []kindedText{
 			{"interval", TokenKeyword}, {"99999999999999", TokenUnknown},
 			{"limit", TokenKeyword}, {"99999999999999", TokenNumber}}},

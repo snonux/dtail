@@ -12,11 +12,14 @@ type TokenKind int
 
 // The kinds of query pieces AnalyzePartial reports.
 const (
-	// TokenUnknown is a token the parser rejects or ignores, such as a word
-	// before the first clause keyword, an unknown aggregation or operator,
-	// or a second table name.
+	// TokenUnknown is a token the parser rejects, such as a word before the
+	// first clause keyword, an unknown aggregation or operator, a word after
+	// the value of a one-value clause (a second table name, "limit 10 gro")
+	// or a bare by in a select or group list.
 	TokenUnknown TokenKind = iota
-	// TokenKeyword is a clause keyword or one of the words by, and, append.
+	// TokenKeyword is a clause keyword or one of the words by, and, append,
+	// or the direction word after the field of an order (desc) or rorder
+	// (asc) clause.
 	TokenKeyword
 	// TokenAggregation is the name of a select aggregation, e.g. count.
 	TokenAggregation
@@ -124,6 +127,12 @@ type Partial struct {
 	// quote, backtick or parenthesis.
 	Word      string
 	WordStart int
+	// AfterComma tells that a comma is among the blanks between the token
+	// the word is in (or the cursor, when no word is started) and the token
+	// before it. The parser reads a comma as a blank, but a completer can
+	// tell a finished item ("select count(x) ") from the start of another
+	// one ("select count(x), ").
+	AfterComma bool
 	// InQuote tells that the word follows an unclosed double quote.
 	InQuote bool
 	// InBacktick tells that the word follows an opening backtick that is
@@ -168,10 +177,27 @@ type Partial struct {
 // quote at the very end) is the Word; the expectation is that of its
 // position, not of what follows it.
 func AnalyzePartial(query string) Partial {
+	return analyze(query, true)
+}
+
+// AnalyzeQuery analyses a whole query, such as the text of a query on both
+// sides of the cursor: as AnalyzePartial, but no word is under the cursor,
+// so every token is followed before the state is taken. Clause, Expect,
+// SelectItems, Table and LogFormat describe the query up to its end (a
+// table typed last, "from STATS", is the Table); Word is empty and
+// WordStart is len(query), also after an open quote.
+func AnalyzeQuery(query string) Partial {
+	return analyze(query, false)
+}
+
+// analyze walks the tokens of query. With cursorWord, a bareword or open
+// quote reaching the end of query is the word under the cursor: the state
+// is taken before it (AnalyzePartial); otherwise after the last token.
+func analyze(query string, cursorWord bool) Partial {
 	p := Partial{Query: query, WordStart: len(query)}
 	scanned := scanQuery(query)
 	last := len(scanned) - 1
-	inWord := last >= 0 && isWordInProgress(scanned[last], len(query))
+	inWord := cursorWord && last >= 0 && isWordInProgress(scanned[last], len(query))
 	var w partialWalker
 	for i, st := range scanned {
 		if inWord && i == last {
@@ -186,11 +212,23 @@ func AnalyzePartial(query string) Partial {
 	for i := range p.Tokens {
 		p.Tokens[i].Text = query[p.Tokens[i].Start:p.Tokens[i].End]
 	}
+	before, wordToken := scanned, len(query)
 	if inWord {
 		setWord(&p, scanned[last])
+		before, wordToken = scanned[:last], scanned[last].start
 	}
+	p.AfterComma = strings.Contains(query[gapStart(before):wordToken], ",")
 	p.Word = query[p.WordStart:]
 	return p
+}
+
+// gapStart returns where the blanks after the tokens before end: the end
+// of the last of them, 0 for none.
+func gapStart(before []scannedToken) int {
+	if len(before) == 0 {
+		return 0
+	}
+	return before[len(before)-1].end
 }
 
 // EffectiveLogFormat returns the log format the query typed so far uses, by

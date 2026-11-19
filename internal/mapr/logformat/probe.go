@@ -58,13 +58,27 @@ type ProbeSample struct {
 
 // ProbeResult describes the fields a log format found in a sample, for
 // completion and display (the interactive `:fields`). It is plain data and
-// encodes to JSON as {"tables": {...}, "variables": {...}, "note": "..."}.
+// encodes to JSON as {"tables": {...}, "tableVariables": {...},
+// "variables": {...}, "note": "..."}.
 type ProbeResult struct {
 	// Tables maps a table name (MAPREDUCE:<TABLE> of the default format, or
 	// ProbeAnyTable) to its bareword fields, each with up to
 	// ProbeMaxValuesPerField distinct sample values (possibly none, e.g. for
 	// a csv header column without data rows).
 	Tables map[string]map[string][]string `json:"tables,omitempty"`
+	// TableVariables maps a table of Tables to the $-variables the lines of
+	// that table filled, with their sample values, so that a query `from
+	// TABLE` can be offered only what lines of TABLE carry: never the
+	// format's KnownVariables the lines did not show. The generic probe
+	// (and so the default and csv probes) sets it for every table of its
+	// result, an empty map for a table none of whose lines it parsed (e.g.
+	// one only a ProbeTableScanner found). It is per-table data of the
+	// format once it is not nil: Probe then gives every table of Tables an
+	// entry (empty if the Prober set none) and drops the entries of tables
+	// Tables does not list. A Prober may leave it nil (a result built
+	// before it existed stays valid): the format then has no per-table data
+	// and VariablesOf falls back to Variables.
+	TableVariables map[string]map[string][]string `json:"tableVariables,omitempty"`
 	// Variables maps the $-variables of the format to their sample values.
 	// Probe adds the format's KnownVariables that the sample did not show,
 	// without values.
@@ -92,6 +106,40 @@ type Prober interface {
 	Probe(sample ProbeSample) (ProbeResult, error)
 }
 
+// VariablesOf returns the $-variables the lines of table filled, with their
+// sample values: TableVariables[table], empty (not nil) for a table the
+// per-table data does not list. Only a result without per-table data
+// (TableVariables nil, a Prober that does not set it) falls back to the
+// format-wide Variables, KnownVariables without values included. The
+// result shares the maps of r.
+func (r ProbeResult) VariablesOf(table string) map[string][]string {
+	if r.TableVariables == nil {
+		return r.Variables
+	}
+	if variables, ok := r.TableVariables[table]; ok {
+		return variables
+	}
+	return map[string][]string{}
+}
+
+// FilterTable returns the part of r about table (compared exactly, as a
+// query's from clause names it in upper case): Tables with that table only
+// and TableVariables with its variables (VariablesOf, so the format-wide
+// ones only for a result without per-table data), but no format-wide
+// Variables, which are about all lines. The note is kept. It reports false
+// when r does not list table. A table-targeted probe answers with it.
+func (r ProbeResult) FilterTable(table string) (ProbeResult, bool) {
+	fields, ok := r.Tables[table]
+	if !ok {
+		return ProbeResult{}, false
+	}
+	return ProbeResult{
+		Tables:         map[string]map[string][]string{table: fields},
+		TableVariables: map[string]map[string][]string{table: r.VariablesOf(table)},
+		Note:           r.Note,
+	}, true
+}
+
 // Empty reports whether the result holds no table, variable or note.
 func (r ProbeResult) Empty() bool {
 	return len(r.Tables) == 0 && len(r.Variables) == 0 && r.Note == ""
@@ -100,7 +148,9 @@ func (r ProbeResult) Empty() bool {
 // Probe probes sample with the log format logFormatName: it builds the
 // format's parser (with a nil query and hostname as $hostname) and uses its
 // Prober when it implements one, otherwise ProbeWithParser. Every result is cut
-// to the Probe* caps, and a non-empty one gets the format's KnownVariables.
+// to the Probe* caps, and a non-empty one gets the format's KnownVariables
+// (format-wide only: TableVariables keep what lines of a table filled, see
+// ProbeResult.TableVariables).
 //
 // A format whose parser cannot be built (unknown names, the custom1/custom2
 // templates, the mimecast stubs of the open source build) or, with the generic
@@ -131,8 +181,8 @@ func Probe(logFormatName, hostname string, sample ProbeSample) (ProbeResult, err
 // ProbeWithParser is the generic probe: it parses every line of sample with
 // parser, skips lines the parser ignores (ErrIgnoreFields) or fails on, and
 // collects the fields of the others under ProbeAnyTable (bareword fields) and
-// in Variables ($-variables), with up to ProbeMaxValuesPerField distinct
-// values each. The parser should be built with a nil query
+// in Variables and TableVariables[ProbeAnyTable] ($-variables), with up to
+// ProbeMaxValuesPerField distinct values each. The parser should be built with a nil query
 // (mapr.ParserFieldPlan.AllFields), as Probe does, or it fills only the
 // fields of its query. A parser implementing SourceReleaser is released of
 // every source of the sample afterwards.
@@ -168,7 +218,9 @@ func probeLines(parser Parser, sample ProbeSample, tableOf func(line string) str
 		if err != nil {
 			continue
 		}
-		collector.addFields(tableOf(line.Line), parsed)
+		table := tableOf(line.Line)
+		collector.addFields(table, parsed)
+		collector.ensureTableVariables(table)
 	}
 	releaseProbeSources(parser, sample)
 	return collector.result, nil
@@ -208,7 +260,11 @@ func addKnownVariables(result *ProbeResult, logFormatName string) {
 // capProbeResult returns result cut to the Probe* caps. It copies the result,
 // so the caps also hold for a Prober that built a larger one, and goes through
 // tables, fields and variables in sorted order, so what is dropped does not
-// depend on map iteration order.
+// depend on map iteration order. The TableVariables of a table the capped
+// Tables do not list are dropped, and a result with per-table data
+// (TableVariables not nil) gets an entry, empty if need be, for every table
+// it keeps; a table's variables are capped like its fields
+// (ProbeMaxFieldsPerTable).
 func capProbeResult(result ProbeResult) ProbeResult {
 	var collector probeCollector
 	for _, table := range sortedKeys(result.Tables) {
@@ -216,6 +272,17 @@ func capProbeResult(result ProbeResult) ProbeResult {
 		collector.ensureTable(table)
 		for _, field := range sortedKeys(fields) {
 			collector.addValues(table, field, fields[field])
+		}
+	}
+	if result.TableVariables != nil {
+		for table := range collector.result.Tables {
+			collector.ensureTableVariables(table)
+		}
+	}
+	for _, table := range sortedKeys(result.TableVariables) {
+		variables := result.TableVariables[table]
+		for _, name := range sortedKeys(variables) {
+			collector.addTableVariableValues(table, name, variables[name])
 		}
 	}
 	for _, name := range sortedKeys(result.Variables) {

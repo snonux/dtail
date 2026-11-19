@@ -15,7 +15,8 @@ import (
 
 // run answers request: a path listing (request.List set, runList), or else
 // it resolves and samples its files and probes the sample with every
-// registered log format (logformat.Names). It never fails: whatever goes
+// registered log format (logformat.Names), only for request.Table if set
+// (a table-targeted probe, probe_table.go). It never fails: whatever goes
 // wrong is an entry of the answer's Errors.
 func (p *prober) run(ctx context.Context, request protocol.ProbeRequest) protocol.ProbeAnswer {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
@@ -23,35 +24,44 @@ func (p *prober) run(ctx context.Context, request protocol.ProbeRequest) protoco
 	if request.List != "" {
 		return p.runList(ctx, request)
 	}
+	if request.Table != "" && !protocol.ValidProbeTable(request.Table) {
+		return probeErrorAnswer(request.ID, protocol.ProbeErrorInvalidRequest)
+	}
 
 	r := newProbeRun(p)
 	answer := protocol.ProbeAnswer{
 		ID:               request.ID,
 		DefaultLogFormat: (*mapr.Query)(nil).EffectiveLogFormat(p.defaultLogFormat),
+		Table:            request.Table,
 	}
 	if len(request.Files) == 0 {
 		r.addError("", protocol.ProbeErrorInvalidRequest)
 	}
-	sample, files, lines := r.sampleTargets(ctx, r.resolveTargets(request.Files))
+	names := logformat.Names()
+	tables := logformat.NewProbeTableScanner(names, p.hostname)
+	sample, files, lines := r.sampleTargets(ctx, r.resolveTargets(request.Files),
+		p.sampleOptions(request.Table, tables))
 	answer.FilesSampled = files
 	answer.LinesSampled = lines
 	if files > 0 {
-		answer.Formats = r.probeFormats(sample)
+		answer.Formats = r.probeFormats(sample, names, request.Table, tables)
 	}
+	r.tablerFailures(tables)
 	answer.Errors = r.errors
 	return answer
 }
 
-// sampleTargets samples every target and returns the lines of all of them,
-// each with its path as source id, the number of targets sampled and the number
-// of sampled lines. A tail sample's FirstLine is put in front of its lines:
-// it is a line of the same file, and header formats (csv) take a source's
-// first line as its header. It is not counted as a sampled line, so the
-// count is the sampler's (at most 500 lines per file).
-func (r *probeRun) sampleTargets(ctx context.Context, targets []probeTarget) (logformat.ProbeSample, int, int) {
+// sampleTargets samples every target with options and returns the lines of
+// all of them, each with its path as source id, the number of targets
+// sampled and the number of sampled lines. A tail sample's FirstLine is put
+// in front of its lines: it is a line of the same file, and header formats
+// (csv) take a source's first line as its header. It is not counted as a
+// sampled line, so the count is the sampler's (at most 500 lines per file).
+func (r *probeRun) sampleTargets(ctx context.Context, targets []probeTarget,
+	options fs.SampleOptions) (logformat.ProbeSample, int, int) {
+
 	var sample logformat.ProbeSample
 	sampled, lineCount := 0, 0
-	options := fs.SampleOptions{MaxLineLength: r.maxLineLength}
 	for _, target := range targets {
 		if ctx.Err() != nil {
 			r.addError("", protocol.ProbeErrorTimeout)
@@ -85,24 +95,24 @@ func probeSampleReason(ctx context.Context, err error) string {
 	return protocol.CommandFailureReadingFile
 }
 
-// probeFormats probes sample with every registered log format and returns
-// the non-empty results. A format whose probe failed is reported by name.
-func (r *probeRun) probeFormats(sample logformat.ProbeSample) map[string]protocol.ProbeFormat {
+// probeFormats probes sample with every log format of names and returns
+// what the answer holds of each (formatResult): the non-empty results, with
+// the tables scanned in the window added, or for a table-targeted probe
+// (table set) the results listing that table, cut to it. A format whose
+// probe failed is reported by name.
+func (r *probeRun) probeFormats(sample logformat.ProbeSample, names []string, table string,
+	tables *logformat.ProbeTableScanner) map[string]protocol.ProbeFormat {
+
 	formats := make(map[string]protocol.ProbeFormat)
-	for _, name := range logformat.Names() {
+	for _, name := range names {
 		result, err := logformat.Probe(name, r.hostname, sample)
 		if err != nil {
 			r.logger.Warn(r.logContext, "Probe: log format probe failed", name, err)
 			r.addError(name, protocol.ProbeErrorFormat)
 			continue
 		}
-		if result.Empty() {
-			continue
-		}
-		formats[name] = protocol.ProbeFormat{
-			Tables:    result.Tables,
-			Variables: result.Variables,
-			Note:      result.Note,
+		if format, ok := formatResult(name, table, result, tables); ok {
+			formats[name] = format
 		}
 	}
 	return formats
@@ -190,10 +200,14 @@ func marshalFittingEntries(answer protocol.ProbeAnswer, maxBytes int) ([]byte, e
 	return best, nil
 }
 
-// probeItem is one table, field or variable of a format.
+// probeItem is one table, field, table variable or variable of a format.
 type probeItem struct {
 	format, table, field, variable string
 	kind                           probeItemKind
+	// perTable marks the table item of a format with per-table data
+	// (TableVariables not nil): a kept table then keeps an entry there,
+	// empty if all its variables were cut.
+	perTable bool
 }
 
 type probeItemKind int
@@ -201,13 +215,16 @@ type probeItemKind int
 const (
 	probeItemTable probeItemKind = iota
 	probeItemField
+	probeItemTableVariable
 	probeItemVariable
 )
 
-// probeItems lists the tables (each followed by its fields) and variables of
-// formats, the default log format first, then the others by name, and
-// tables, fields and variables sorted, so the items kept of a cut answer do
-// not depend on map order.
+// probeItems lists the tables (each followed by its fields and then its
+// TableVariables) and variables of formats, the default log format first,
+// then the others by name, and tables, fields and variables sorted, so the
+// items kept of a cut answer do not depend on map order. A table's
+// variables follow the table, so no cut keeps them without it; those of a
+// table Tables does not list are left out.
 func probeItems(formats map[string]protocol.ProbeFormat, defaultFormat string) []probeItem {
 	names := sortedKeys(formats)
 	if i := slices.Index(names, defaultFormat); i > 0 {
@@ -217,9 +234,14 @@ func probeItems(formats map[string]protocol.ProbeFormat, defaultFormat string) [
 	for _, name := range names {
 		format := formats[name]
 		for _, table := range sortedKeys(format.Tables) {
-			items = append(items, probeItem{format: name, table: table, kind: probeItemTable})
+			items = append(items, probeItem{format: name, table: table, kind: probeItemTable,
+				perTable: format.TableVariables != nil})
 			for _, field := range sortedKeys(format.Tables[table]) {
 				items = append(items, probeItem{format: name, table: table, field: field, kind: probeItemField})
+			}
+			for _, variable := range sortedKeys(format.TableVariables[table]) {
+				items = append(items, probeItem{format: name, table: table, variable: variable,
+					kind: probeItemTableVariable})
 			}
 		}
 		for _, variable := range sortedKeys(format.Variables) {
@@ -241,8 +263,13 @@ func keepProbeItems(items []probeItem, n int) map[string]protocol.ProbeFormat {
 				format.Tables = make(map[string]map[string][]string)
 			}
 			format.Tables[item.table] = make(map[string][]string)
+			if item.perTable {
+				keptTableVariables(&format, item.table)
+			}
 		case probeItemField:
 			format.Tables[item.table][item.field] = []string{}
+		case probeItemTableVariable:
+			keptTableVariables(&format, item.table)[item.variable] = []string{}
 		case probeItemVariable:
 			if format.Variables == nil {
 				format.Variables = make(map[string][]string)
@@ -252,6 +279,18 @@ func keepProbeItems(items []probeItem, n int) map[string]protocol.ProbeFormat {
 		formats[item.format] = format
 	}
 	return formats
+}
+
+// keptTableVariables returns the TableVariables entry of table in format,
+// creating it (and the map) when missing.
+func keptTableVariables(format *protocol.ProbeFormat, table string) map[string][]string {
+	if format.TableVariables == nil {
+		format.TableVariables = make(map[string]map[string][]string)
+	}
+	if format.TableVariables[table] == nil {
+		format.TableVariables[table] = make(map[string][]string)
+	}
+	return format.TableVariables[table]
 }
 
 // sortedKeys returns the keys of m in ascending order.

@@ -11,6 +11,7 @@ import (
 
 var _ FieldsIntoParser = (*defaultParser)(nil)
 var _ Prober = (*defaultParser)(nil)
+var _ ProbeTabler = (*defaultParser)(nil)
 
 // defaultTableToken is the index of the MAPREDUCE:<TABLE> token in a line of
 // the default format (see MakeFieldsInto).
@@ -265,6 +266,34 @@ func (p *defaultParser) configureFieldPlan(plan mapr.ParserFieldPlan) {
 // query names with `from TABLE`.
 func (p *defaultParser) Probe(sample ProbeSample) (ProbeResult, error) {
 	return probeLines(p, sample, defaultLineTable)
+}
+
+// ProbeLineTable tells the table of a line of the default format without
+// parsing its fields (ProbeTabler): like MakeFieldsInto it needs an INFO
+// line of at least the 11 tokens of a mapreduce line whose table token
+// starts with "MAPREDUCE:". A line whose key=value fields do not parse is
+// named a table too, which the probe then lists without fields.
+func (p *defaultParser) ProbeLineTable(maprLine string) (string, bool) {
+	if !strings.HasPrefix(maprLine, "INFO") {
+		return "", false
+	}
+	start, table := 0, ""
+	for tokenIndex := 0; ; tokenIndex++ {
+		token, next, done := protocol.ScanField(maprLine, start)
+		if tokenIndex == defaultTableToken {
+			var ok bool
+			if table, ok = strings.CutPrefix(token, "MAPREDUCE:"); !ok {
+				return "", false
+			}
+		}
+		if tokenIndex == defaultTableToken+1 {
+			return table, true
+		}
+		if done {
+			return "", false
+		}
+		start = next
+	}
 }
 
 // defaultLineTable returns the table name of a line of the default format,

@@ -82,6 +82,33 @@ func TestSampleJournalSkipsAnOversizedNewestEntry(t *testing.T) {
 	}
 }
 
+// TestSampleJournalScanLinesAndKeep checks a table-targeted journal sample:
+// journalctl is asked for ScanLines entries, and only the ones Keep accepts
+// are kept, every one of them seen by Observe.
+func TestSampleJournalScanLinesAndKeep(t *testing.T) {
+	mock := journaltest.InstallMock(t, journaltest.Scenario{
+		Default: journaltest.Invocation{Lines: []string{"keep-1", "drop", "keep-2"}},
+	})
+	var observed []string
+	got, err := Sample(context.Background(), journalTarget(t), "journal:ssh.service", fs.SampleOptions{
+		ScanLines: 5000,
+		Keep:      func(line []byte) bool { return strings.HasPrefix(string(line), "keep") },
+		Observe:   func(line []byte) { observed = append(observed, string(line)) },
+	})
+	if err != nil {
+		t.Fatalf("Sample: %v", err)
+	}
+	if want := []string{"keep-1", "keep-2"}; !reflect.DeepEqual(got.Lines, want) {
+		t.Fatalf("lines = %q, want %q", got.Lines, want)
+	}
+	if len(observed) != 3 {
+		t.Fatalf("observed %q, want every entry", observed)
+	}
+	if args := strings.TrimSpace(mock.Args(t)); args != "-u ssh.service -n 5000" {
+		t.Fatalf("journalctl args = %q, want %q", args, "-u ssh.service -n 5000")
+	}
+}
+
 func TestSampleJournalCanceledWhileRunning(t *testing.T) {
 	mock := journaltest.InstallMock(t, journaltest.Scenario{
 		Default: journaltest.Invocation{Lines: []string{"alpha"}, HoldOpen: true},

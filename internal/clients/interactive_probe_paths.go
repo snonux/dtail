@@ -18,16 +18,21 @@ import (
 // interactiveProber).
 const pathListingWait = time.Second
 
-// pathListingState is the prober's state of the path listings for the
-// --files completion: the listings requested and not yet answered, each
-// sent once however often it is asked for, and the context they run in.
+// pathListingState is the prober's state of its on-demand requests: the
+// path listings for the --files completion and the table-targeted probes
+// (requestTable, interactive_probe_table.go) requested and not yet
+// answered, each sent once however often it is asked for, and the context
+// they run in. Both run in the background, are bounded by roundTimeout and
+// are waited for by waitListings.
 type pathListingState struct {
 	mu      sync.Mutex
 	ctx     context.Context
 	pending map[string]chan struct{}
-	wg      sync.WaitGroup
-	// sequence numbers the listing ids ("l1", "l2", ...), apart from the
-	// field probes' ids.
+	// tables are the pending table probes by table name.
+	tables map[string]chan struct{}
+	wg     sync.WaitGroup
+	// sequence numbers the listing ids ("l1", "l2", ...) and the table
+	// probe ids ("t1", "t2", ...), apart from the field probes' ids.
 	sequence uint64
 }
 

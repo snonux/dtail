@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -21,45 +22,150 @@ const queryCatalogHint = "(no field data from the servers yet: only the query la
 // candidates for the word (in the query's own syntax, not yet escaped for
 // the shell quote) and an optional hint line.
 type queryCompletion struct {
-	word       string
+	word string
+	// groups are the candidates by what they are (clauses that may come
+	// next, aggregations, fields, $variables, operators, values, ...), in
+	// the order they are offered; candidates are made of them.
+	groups     []candidateGroup
 	candidates []string
-	// kinds is the kind of every candidate, for the listing's style.
-	kinds map[string]candidateKind
-	hint  string
+	// heading says what is expected at the word (queryHeading), shown
+	// above the groups when they are listed.
+	heading string
+	hint    string
+	// table is the query's from table (upper case), typed before the word
+	// or after the cursor, empty if none, for the table probe the editor
+	// asks for (completion.probeTable).
+	table string
+	// afterItem tells that the word under the cursor was a finished item
+	// ending in ")" (count(x), md5sum($y)) and the candidates are those of
+	// the position after the blank that follows it (completeAfterItem):
+	// they are listed, never inserted, not even a single one, as a comma
+	// may follow instead. blankFirst tells that Tab inserts that blank
+	// (the item ends the query); with text after the cursor it inserts
+	// nothing, so it neither doubles a blank nor splits a token.
+	afterItem, blankFirst bool
+}
+
+// insertion returns what Tab inserts in place of the word, "" for
+// nothing, and the candidates to list, nil when the insertion completes
+// the word (decodedReplacement). After a finished item (afterItem) it
+// inserts at most the blank and lists every candidate, both in one Tab.
+func (q queryCompletion) insertion() (string, []string) {
+	if q.afterItem {
+		if q.blankFirst {
+			return " ", q.candidates
+		}
+		return "", q.candidates
+	}
+	return decodedReplacement(q.word, q.candidates)
+}
+
+// listInto sets the listing of q in result: its candidates (listed, from
+// insertion), heading, groups and hint, and its table for the table probe.
+func (q queryCompletion) listInto(result completion, listed []string) completion {
+	result.candidates = listed
+	if listed != nil {
+		result.heading, result.groups = q.heading, q.groups
+	}
+	result.hint, result.probeTable = q.hint, q.table
+	return result
+}
+
+// candidateGroup is a group of query candidates of one kind, labelled with
+// what they are (queryCandidateKinds), so that a listing shows them on a
+// line of their own after the label, painted in the kind's style.
+type candidateGroup struct {
+	label      string
+	kind       candidateKind
+	candidates []string
 }
 
 // completeQueryWord completes the word at the end of query, a --query value
-// typed up to the cursor, from the query language (mapr.AnalyzePartial and
-// the vocabulary tables) and the field catalog. It returns no candidates
-// where nothing can be offered (a number, an outfile path).
-func completeQueryWord(query string, catalog catalogSnapshot) queryCompletion {
+// typed up to the cursor, followed by tail (the rest of the value after the
+// cursor), from the query language (mapr.AnalyzePartial and the vocabulary
+// tables) and the field catalog. What it offers is guided (guideQuery,
+// interactive_complete_query_guide.go): one step at a time, and fields,
+// $variables and values only of the query's table once it names one, on
+// either side of the cursor (queryOutline). Right after a finished item
+// ending in ")" it lists what follows the blank after it, which Tab
+// inserts too at the end of the query (completeAfterItem). It returns no candidates where nothing
+// can be offered (a number, an outfile path).
+func completeQueryWord(query, tail string, catalog catalogSnapshot) queryCompletion {
 	partial := mapr.AnalyzePartial(query)
-	source := newQueryCandidateSource(partial, catalog)
-	var candidates []string
-	kinds := map[string]candidateKind{}
-	for _, kind := range queryCandidateKinds {
-		if partial.Expect.Has(kind.expect) {
-			found := kind.candidates(source)
-			for _, candidate := range found {
-				if _, seen := kinds[candidate]; !seen {
-					kinds[candidate] = kind.kind
-				}
-			}
-			candidates = append(candidates, found...)
-		}
-	}
-	// Tables, fields, $variables and values of the catalog are log content:
-	// a candidate is printed in the listing and inserted into the edit line,
-	// so one holding a control or format character (an escape sequence, a
-	// bidirectional override) is dropped here, for every kind at once, as
-	// the path completion drops such names (readableFilesName).
-	candidates = slices.DeleteFunc(candidates, hasHiddenRune)
-	candidates = matchingQueryWord(dedupe(candidates), partial.Word)
-	result := queryCompletion{word: partial.Word, candidates: candidates, kinds: kinds}
-	if catalog.empty() && partial.Expect.Has(catalogExpectations) {
-		result.hint = queryCatalogHint
+	result := completeQueryPartial(partial, tail, catalog)
+	if next, ok := completeAfterItem(partial, result, tail, catalog); ok {
+		return next
 	}
 	return result
+}
+
+// completeAfterItem completes Tab right after a finished item ending in
+// ")" (select count(x), set $a = md5sum($b), order by count(x), a where
+// value such as eq md5sum($x)) as Tab after the blank that would follow
+// it: it lists the next step of the guided order with its hint (a comma
+// adds another item), even a single next clause, and inserts the blank
+// when the item ends the query (afterItem, blankFirst), so that Tab right
+// after the ")" it inserted continues the query. With text after the
+// cursor (a blank, a comma, the rest of a word) nothing is inserted, also
+// when nothing comes next, so that no blank is doubled (order by
+// count(x)| limit 3) and no token split. The word must end in ")", be no
+// quoted or escaped word and no token the parser rejects (count(x)) or an
+// unclosed md5sum(maskdigits(x)), and its own completion may add nothing
+// but that blank (an order by item completes to itself and a blank); the
+// position after the blank must expect a clause. It reports false
+// otherwise, and when nothing comes next at the end of the query, where
+// Tab completes the word as it is.
+func completeAfterItem(partial mapr.Partial, own queryCompletion, tail string,
+	catalog catalogSnapshot) (queryCompletion, bool) {
+
+	word := partial.Word
+	if !strings.HasSuffix(word, ")") || partial.InQuote || partial.InBacktick ||
+		slices.ContainsFunc(own.candidates, func(c string) bool { return c != word+" " }) {
+		return queryCompletion{}, false
+	}
+	tokens := partial.Tokens
+	if len(tokens) == 0 || tokens[len(tokens)-1].Kind == mapr.TokenUnknown {
+		return queryCompletion{}, false
+	}
+	after := mapr.AnalyzePartial(partial.Query + " ")
+	if !after.Expect.Has(mapr.ExpectClauseKeyword) {
+		return queryCompletion{}, false
+	}
+	next := completeQueryPartial(after, tail, catalog)
+	if len(next.candidates) == 0 && tail == "" {
+		return queryCompletion{}, false
+	}
+	next.afterItem, next.blankFirst = true, tail == ""
+	return next, true
+}
+
+// completeQueryPartial completes the word of partial, the analysis of a
+// query typed up to the cursor, followed by tail (completeQueryWord).
+func completeQueryPartial(partial mapr.Partial, tail string, catalog catalogSnapshot) queryCompletion {
+	outline := newQueryOutline(partial, tail)
+	source := newQueryCandidateSource(partial, outline, catalog)
+	guide := guideQuery(partial)
+	result := queryCompletion{word: partial.Word, groups: source.groups(guide.expect), table: outline.table,
+		heading: queryHeading(partial, guide.expect)}
+	result.candidates = flattenGroups(result.groups)
+	if partial.Clause == "" {
+		// Before the first clause nothing is "next" to anything yet.
+		result.groups = relabel(result.groups, "next", queryClauseLabel)
+	}
+	result.hint = joinLines(guide.hint, source.tableHint(result.groups))
+	if catalog.empty() && (guide.expect.Has(catalogExpectations) || source.atFirstClause(guide.expect)) {
+		result.hint = joinLines(result.hint, queryCatalogHint)
+	}
+	return result
+}
+
+// atFirstClause reports whether the word is where the first clause of the
+// query starts (a clause keyword expected, no word typed, neither from nor
+// select in the query): with an empty catalog the table step is skipped
+// there, as no table is known yet, which queryCatalogHint explains.
+func (s queryCandidateSource) atFirstClause(expect mapr.Expect) bool {
+	return expect.Has(mapr.ExpectClauseKeyword) && s.partial.Word == "" &&
+		!s.outline.isUsed("from") && !s.outline.isUsed("select")
 }
 
 // catalogExpectations are the expected kinds whose candidates come from the
@@ -68,35 +174,41 @@ const catalogExpectations = mapr.ExpectField | mapr.ExpectAggregationField |
 	mapr.ExpectTable | mapr.ExpectValue
 
 // queryCandidateKinds maps every expected kind of word to the function that
-// lists its candidates, in the order candidates are offered, and to the
-// kind they are styled as in the listing (a field starting with $ is styled
-// as a variable, see completion.kindOf).
+// lists its candidates, in the order candidates are offered (and, as it
+// continues a condition, before the next clauses), to the label of their
+// group and to the kind they are styled as in the listing. Fields and
+// $variables get groups of their own (queryCandidateSource.groups).
 var queryCandidateKinds = []struct {
 	expect     mapr.Expect
 	candidates func(queryCandidateSource) []string
+	label      string
 	kind       candidateKind
 }{
-	{mapr.ExpectClauseKeyword, queryKeywordCandidates, candidateKeyword},
-	{mapr.ExpectAggregation, queryAggregationCandidates, candidateFunction},
-	{mapr.ExpectAggregationField, queryAggregationFieldCandidates, candidateField},
-	{mapr.ExpectField, queryFieldCandidates, candidateField},
-	{mapr.ExpectSetVariable, queryVariableCandidates, candidateVariable},
-	{mapr.ExpectSetFunction, queryFunctionCandidates, candidateFunction},
-	{mapr.ExpectWhereOperator, queryOperatorCandidates, candidateOperator},
-	{mapr.ExpectValue, queryValueCandidates, candidateValue},
-	{mapr.ExpectAnd, func(queryCandidateSource) []string { return []string{"and "} }, candidateKeyword},
-	{mapr.ExpectAssign, func(queryCandidateSource) []string { return []string{"= "} }, candidateOperator},
-	{mapr.ExpectBy, func(queryCandidateSource) []string { return []string{"by "} }, candidateKeyword},
-	{mapr.ExpectAppend, func(queryCandidateSource) []string { return []string{"append "} }, candidateKeyword},
-	{mapr.ExpectTable, queryTableCandidates, candidateTable},
-	{mapr.ExpectLogFormat, queryLogFormatCandidates, candidateKeyword},
-	{mapr.ExpectSelectItem, querySelectItemCandidates, candidateField},
+	{mapr.ExpectAnd, func(queryCandidateSource) []string { return []string{"and "} }, "next", candidateKeyword},
+	{mapr.ExpectClauseKeyword, queryKeywordCandidates, "next", candidateKeyword},
+	{mapr.ExpectAggregation, queryAggregationCandidates, "aggregation", candidateFunction},
+	{mapr.ExpectAggregationField, queryAggregationFieldCandidates, "field", candidateField},
+	{mapr.ExpectField, queryFieldCandidates, "field", candidateField},
+	{mapr.ExpectSetVariable, queryVariableCandidates, "variable", candidateVariable},
+	{mapr.ExpectSetFunction, queryFunctionCandidates, "function", candidateFunction},
+	{mapr.ExpectWhereOperator, queryOperatorCandidates, "operator", candidateOperator},
+	{mapr.ExpectValue, queryValueCandidates, "value", candidateValue},
+	{mapr.ExpectAssign, func(queryCandidateSource) []string { return []string{"= "} }, "operator", candidateOperator},
+	{mapr.ExpectBy, func(s queryCandidateSource) []string { return s.outline.leadCandidates("by") },
+		"next", candidateKeyword},
+	{mapr.ExpectAppend, func(s queryCandidateSource) []string { return s.outline.leadCandidates("append") },
+		"next", candidateKeyword},
+	{mapr.ExpectTable, queryTableCandidates, "table", candidateTable},
+	{mapr.ExpectLogFormat, queryLogFormatCandidates, "log format", candidateKeyword},
+	{mapr.ExpectSelectItem, querySelectItemCandidates, "select item", candidateField},
 }
 
 // queryCandidateSource is what the candidate functions draw from: the
-// analysis of the query and the log formats whose catalog data applies.
+// analysis of the query up to the cursor, the outline of the whole query
+// and the log formats whose catalog data applies.
 type queryCandidateSource struct {
 	partial mapr.Partial
+	outline queryOutline
 	// logFormats are the formats whose fields and $variables are offered:
 	// the query's effective log format and, while neither a table nor a
 	// log format is typed (the query is still incomplete; without a table
@@ -109,20 +221,112 @@ type queryCandidateSource struct {
 	catalog     catalogSnapshot
 }
 
-func newQueryCandidateSource(partial mapr.Partial, catalog catalogSnapshot) queryCandidateSource {
+func newQueryCandidateSource(partial mapr.Partial, outline queryOutline,
+	catalog catalogSnapshot) queryCandidateSource {
+
 	defaultFormat := catalog.DefaultLogFormat
 	if defaultFormat == "" {
 		defaultFormat = "default"
 	}
-	source := queryCandidateSource{partial: partial, catalog: catalog, tableFormat: defaultFormat,
-		logFormats: []string{partial.EffectiveLogFormat(defaultFormat)}}
-	if partial.LogFormat != "" {
-		source.tableFormat = partial.LogFormat
+	effective := mapr.Partial{Table: outline.table, LogFormat: outline.logFormat}.EffectiveLogFormat(defaultFormat)
+	source := queryCandidateSource{partial: partial, outline: outline, catalog: catalog,
+		tableFormat: defaultFormat, logFormats: []string{effective}}
+	if outline.logFormat != "" {
+		source.tableFormat = outline.logFormat
 	}
-	if partial.Table == "" && partial.LogFormat == "" && source.logFormats[0] != defaultFormat {
+	if outline.table == "" && outline.logFormat == "" && effective != defaultFormat {
 		source.logFormats = append(source.logFormats, defaultFormat)
 	}
 	return source
+}
+
+// groups returns the candidates of the kinds in expect that match the word,
+// grouped by queryCandidateKinds with fields and $variables apart, empty
+// groups left out. A candidate is kept only in the first group offering
+// it. Tables, fields, $variables and values of the catalog are log
+// content: a candidate is printed in the listing and inserted into the
+// edit line, so one holding a control or format character (an escape
+// sequence, a bidirectional override) is dropped here, for every kind at
+// once, as the path completion drops such names (readableFilesName).
+func (s queryCandidateSource) groups(expect mapr.Expect) []candidateGroup {
+	var groups []candidateGroup
+	seen := map[string]bool{}
+	for _, kind := range queryCandidateKinds {
+		if !expect.Has(kind.expect) {
+			continue
+		}
+		found := slices.DeleteFunc(kind.candidates(s), func(c string) bool { return seen[c] || hasHiddenRune(c) })
+		found = matchingQueryWord(dedupe(found), s.partial.Word)
+		for _, c := range found {
+			seen[c] = true
+		}
+		if kind.kind != candidateField {
+			groups = appendGroup(groups, candidateGroup{label: kind.label, kind: kind.kind, candidates: found})
+			continue
+		}
+		isVariable := func(c string) bool { return strings.HasPrefix(c, "$") }
+		variables := slices.DeleteFunc(slices.Clone(found), func(c string) bool { return !isVariable(c) })
+		fields := slices.DeleteFunc(found, isVariable)
+		groups = appendGroup(groups, candidateGroup{label: kind.label, kind: kind.kind, candidates: fields})
+		groups = appendGroup(groups, candidateGroup{label: "variable", kind: candidateVariable, candidates: variables})
+	}
+	return groups
+}
+
+// appendGroup appends group unless it has no candidates.
+func appendGroup(groups []candidateGroup, group candidateGroup) []candidateGroup {
+	if len(group.candidates) == 0 {
+		return groups
+	}
+	return append(groups, group)
+}
+
+// queryClauseLabel labels the clauses a query may start with.
+const queryClauseLabel = "clause"
+
+// relabel returns groups with every group labelled from labelled to instead.
+func relabel(groups []candidateGroup, from, to string) []candidateGroup {
+	for i := range groups {
+		if groups[i].label == from {
+			groups[i].label = to
+		}
+	}
+	return groups
+}
+
+// flattenGroups returns the candidates of groups in order.
+func flattenGroups(groups []candidateGroup) []string {
+	var candidates []string
+	for _, group := range groups {
+		candidates = append(candidates, group.candidates...)
+	}
+	return candidates
+}
+
+// tableHint returns tableFirstHint where groups offer fields or $variables
+// while the query names no table and the catalog knows tables of its
+// format.
+func (s queryCandidateSource) tableHint(groups []candidateGroup) string {
+	if s.outline.table != "" || s.outline.isUsed("from") || !s.tablesKnown() {
+		return ""
+	}
+	for _, group := range groups {
+		if group.kind == candidateField || group.kind == candidateVariable {
+			return tableFirstHint
+		}
+	}
+	return ""
+}
+
+// tablesKnown reports whether the catalog knows a table of the format
+// tables are offered of.
+func (s queryCandidateSource) tablesKnown() bool {
+	for table := range s.catalog.Formats[s.tableFormat].Tables {
+		if table != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // closing returns what ends a word of the source: the closing double quote
@@ -145,8 +349,10 @@ func (s queryCandidateSource) quote() string {
 	return ""
 }
 
-func queryKeywordCandidates(queryCandidateSource) []string {
-	return withSuffix(mapr.Keywords(), " ")
+// queryKeywordCandidates lists the clauses that may start at the word, as
+// the guided order allows (queryOutline.nextClauses).
+func queryKeywordCandidates(s queryCandidateSource) []string {
+	return s.outline.nextClauses(s.partial.Word, s.tablesKnown())
 }
 
 func queryAggregationCandidates(queryCandidateSource) []string {
@@ -184,7 +390,7 @@ func querySelectItemCandidates(s queryCandidateSource) []string {
 // (a where or set condition); there the fields are written for the quote
 // and closed (quotedQueryWords).
 func queryFieldCandidates(s queryCandidateSource) []string {
-	names := append(s.fieldNames(), s.variableNames()...)
+	names := s.offeredFields()
 	if s.partial.InQuote {
 		return withSuffix(quotedQueryWords(names, true), " ")
 	}
@@ -204,8 +410,25 @@ func queryAggregationFieldCandidates(s queryCandidateSource) []string {
 	if s.partial.InQuote {
 		return nil
 	}
+	return withSuffix(queryFieldWords(s.offeredFields(), true), s.closing(")"))
+}
+
+// offeredFields returns the fields and $variables that can be written at
+// the word: in select none whose item (the name, or AGG(name) inside an
+// aggregation, as selectCondition.FieldStorage) is selected already, which
+// the parser rejects; after a where condition no field named and (in any
+// case, backticks or not), which the parser reads as the joining and.
+func (s queryCandidateSource) offeredFields() []string {
 	names := append(s.fieldNames(), s.variableNames()...)
-	return withSuffix(queryFieldWords(names, true), s.closing(")"))
+	p := s.partial
+	return slices.DeleteFunc(names, func(name string) bool {
+		item := name
+		if p.InAggregation {
+			item = p.Aggregation + "(" + name + ")"
+		}
+		return (p.Clause == "select" && slices.Contains(p.SelectItems, item)) ||
+			(p.Clause == "where" && p.Expect.Has(mapr.ExpectAnd) && strings.EqualFold(name, "and"))
+	})
 }
 
 // inCall reports whether the word is the argument of a call written right
@@ -295,12 +518,12 @@ var partialValueOperators = map[string]bool{"contains": true, "ncontains": true,
 var decimalNumber = regexp.MustCompile(`^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$`)
 
 // fieldNames returns the catalog fields of the query's table, or of every
-// table of its log formats while no table is typed.
+// table of its log formats while the query names none.
 func (s queryCandidateSource) fieldNames() []string {
 	var names []string
 	for _, name := range s.logFormats {
 		for table, fields := range s.catalog.Formats[name].Tables {
-			if s.partial.Table != "" && table != s.partial.Table {
+			if s.outline.table != "" && table != s.outline.table {
 				continue
 			}
 			for field := range fields {
@@ -312,14 +535,18 @@ func (s queryCandidateSource) fieldNames() []string {
 	return dedupe(names)
 }
 
-// variableNames returns the $variables of the query's log formats: the ones
-// the servers saw and the ones the formats are known to fill.
+// variableNames returns the $variables of the query's log formats. Once the
+// query names a table, only those the lines of that table filled
+// (tableVariables); otherwise the ones the servers saw and the ones the
+// formats are known to fill.
 func (s queryCandidateSource) variableNames() []string {
 	var names []string
 	for _, format := range s.logFormats {
-		for name := range s.catalog.Formats[format].Variables {
-			names = append(names, name)
+		if variables, ok := s.tableVariables(format); ok {
+			names = append(names, slices.Collect(maps.Keys(variables))...)
+			continue
 		}
+		names = append(names, slices.Collect(maps.Keys(s.catalog.Formats[format].Variables))...)
 		if known, ok := logformat.KnownVariables(format); ok {
 			names = append(names, known...)
 		}
@@ -328,16 +555,35 @@ func (s queryCandidateSource) variableNames() []string {
 	return dedupe(names)
 }
 
+// tableVariables returns the $variables, with sample values, that the lines
+// of the query's table filled in format (catalogFormat.variablesOf), and
+// whether the table scopes them: only when the query names a table and the
+// catalog has per-table data of format. Without such data (no table of
+// format in the catalog yet) the format-wide and known ones are offered.
+func (s queryCandidateSource) tableVariables(format string) (map[string][]string, bool) {
+	f := s.catalog.Formats[format]
+	if s.outline.table == "" || f.TableVariables == nil {
+		return nil, false
+	}
+	return f.variablesOf(s.outline.table), true
+}
+
 // samples returns the catalog's sample values of field (a field of the
-// query's table or a $variable).
+// query's table or a $variable, of that table's lines once the query names
+// one).
 func (s queryCandidateSource) samples(field string) []string {
 	var values []string
 	for _, name := range s.logFormats {
 		format := s.catalog.Formats[name]
-		values = append(values, format.Variables[field]...)
-		for table, fields := range format.Tables {
-			if s.partial.Table == "" || table == s.partial.Table {
-				values = append(values, fields[field]...)
+		if variables, ok := s.tableVariables(name); ok {
+			values = append(values, variables[field]...)
+		} else {
+			values = append(values, format.Variables[field]...)
+		}
+		// In table order, so the values come the same on every Tab.
+		for _, table := range slices.Sorted(maps.Keys(format.Tables)) {
+			if s.outline.table == "" || table == s.outline.table {
+				values = append(values, format.Tables[table][field]...)
 			}
 		}
 	}
@@ -411,23 +657,37 @@ func completeQueryValue(line string, pos int, args config.Args, catalog func() c
 	if !ok {
 		return completion{}, false
 	}
-	unchanged := completion{line: line, pos: pos}
-	query := completeQueryWord(value, catalog())
+	query := completeQueryWord(value, queryValueTail(parsed, rest+after), catalog())
+	unchanged := completion{line: line, pos: pos, probeTable: query.table}
 	wordStart := valueStart + len(value) - len(query.word)
 	if !parsed.suffixInQuote(wordStart) {
 		return unchanged, true
 	}
 	rawStart := len(before) - len(rest) + parsed.rawOffset(wordStart, len(rest))
-	replacement, listed := decodedReplacement(query.word, query.candidates)
-	if replacement == "" {
-		unchanged.candidates = listed
-		unchanged.kinds = query.kinds
-		unchanged.hint = query.hint
-		return unchanged, true
+	replacement, listed := query.insertion()
+	result := query.listInto(unchanged, listed)
+	if replacement != "" {
+		result.line = before[:rawStart] + escapeForQuote(replacement, parsed.quote) + after
+		result.pos = len(result.line) - len(after)
+		result.changed = result.line != line
 	}
-	newLine := before[:rawStart] + escapeForQuote(replacement, parsed.quote) + after
-	newPos := len(newLine) - len(after)
-	return completion{line: newLine, pos: newPos, changed: newLine != line, hint: query.hint}, true
+	return result, true
+}
+
+// queryValueTail returns the decoded rest of the --query value after the
+// cursor: parsed is the :reload arguments up to the cursor, whole all of
+// them. The value is the token at the same index in both; the rest is what
+// whole's token adds to parsed's (the --query= of that form included in
+// both). It is "" when the token does not continue (a line that does not
+// tokenize the same way past the cursor).
+func queryValueTail(parsed partialArgs, whole string) string {
+	all := splitInteractiveArgsPartial(whole)
+	tokens := append(slices.Clone(all.tokens), all.current)
+	i := len(parsed.tokens)
+	if i >= len(tokens) || !strings.HasPrefix(tokens[i], parsed.current) {
+		return ""
+	}
+	return tokens[i][len(parsed.current):]
 }
 
 // decodedReplacement returns what replaces word: the only candidate, or the

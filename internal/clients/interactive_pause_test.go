@@ -301,7 +301,7 @@ func TestHandleInteractiveLineReloadResumesFirst(t *testing.T) {
 // :reload or :probe line, which resume only once they will run: flag,
 // tokenizer, validation and query errors all keep the pause.
 func TestHandleInteractiveLineRejectedKeepsPause(t *testing.T) {
-	queryArgs := config.Args{Mode: omode.MapClient, What: "/var/log/app.log",
+	mapArgs := config.Args{Mode: omode.MapClient, What: "/var/log/app.log",
 		QueryStr: "from STATS select count($line) group by $hostname"}
 	tests := []struct {
 		name string
@@ -315,8 +315,8 @@ func TestHandleInteractiveLineRejectedKeepsPause(t *testing.T) {
 		{name: "empty grep", line: ":reload --grep ''"},
 		{name: "leftover argument", line: ":reload --regex x y"},
 		{name: "invalid utf8", line: ":reload --regex \xff"},
-		{name: "invalid query", args: &queryArgs, line: ":reload --query 'select'"},
-		{name: "query invert", args: &queryArgs, line: ":reload --invert"},
+		{name: "invalid query", args: &mapArgs, line: ":reload --query 'select'"},
+		{name: "query invert", args: &mapArgs, line: ":reload --invert"},
 		{name: "probe argument", line: ":probe now"},
 		{name: "fields arguments", line: ":fields a b"},
 		{name: "unknown command", line: ":reloadx"},

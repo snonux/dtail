@@ -89,6 +89,30 @@ Older copies of the example config contained ``"Logger": "Fout"``. If your insta
 % grep -n '"Logger"' /etc/dserver/dtail.json
 ```
 
+### Upgrade note: MapReduce queries with stray words are rejected
+
+Older releases silently ignored words the query parser did not expect after the value of a clause, so a misspelled or half-typed word changed nothing or the wrong thing (``order by x asc`` sorted descending, ``order by x reverse`` and ``limit 10 20`` ignored the last word). Such queries are now rejected with an error naming the word (see the notes in [the query language](./querylanguage.md)). Rejected are:
+
+* a word after the value of ``from``, ``order``, ``rorder``, ``interval``, ``limit``, ``logformat`` and ``outfile`` (e.g. ``order by x reverse``, ``limit 10 20``), including a second order field (``order by a,b``); a trailing ``desc`` after ``order`` and ``asc`` after ``rorder`` stay allowed;
+* ``asc`` after ``order`` and ``desc`` after ``rorder``;
+* a bare ``by`` in a ``select`` or ``group by`` list (``select count(x) gropu by x``);
+* ``interval`` without a number;
+* an ``outfile`` path starting with ``append:`` (``outfile append:result.csv`` wrote a new file named ``append:result.csv`` instead of appending to ``result.csv``).
+
+Replacements: use ``rorder by x`` for ascending order (instead of ``order by x asc`` or ``reverse``), write a field named ``by`` as ``` `by` ```, remove the stray word (or add the missing interval), and write ``outfile append result.csv`` to append (or ``outfile ./append:result.csv`` for a file really named so).
+
+dserver does not check the queries of the ``Schedule`` and ``Continuous`` jobs when it starts: a job whose query is now rejected fails each time it runs, with an ERROR log line ``Unable to create job <name>`` followed by the parse error, and writes no outfile. A scheduled job then backs off like any failed run and is given up 24 hours after its ``TimeRange`` ended; a continuous job logs the error at every retry, every minute. Check the dserver log after the upgrade, for example:
+
+```console
+% grep 'Unable to create job' log/*.log
+```
+
+(the ``log`` directory is dserver's ``Common.LogDir``), or check each job query with the new ``dmap --query '...'`` before upgrading dserver: it rejects such a query the same way before connecting.
+
+### Upgrade note: ``outfile append`` appends the result once
+
+``dmap`` and ``dtail --query`` with ``outfile append PATH`` used to append the whole result so far to ``PATH`` at every report interval (every 5 seconds by default), so the file got the same rows again and again. They now append the result once, when the query ends (the client exits, or an interactive reload replaces the query). Scripts that read ``PATH`` while the query runs no longer see interim rows, and a client that is killed or crashes appends nothing. Use ``outfile PATH`` (without ``append``) for a file that is replaced with the result so far at every interval. Scheduled jobs (one final result per run) and continuous jobs (each interval's rows, once) are unchanged.
+
 ### Upgrade note: ``Client.TermColors`` names now take effect
 
 Older releases copied every ``Client.TermColors`` value verbatim into the output, so a colour name such as ``"Red"`` or ``"Dim"`` was printed as literal text instead of a colour; only raw escape sequences such as ``"\u001b[31m"`` worked. Colour and attribute names (matched case-insensitively) are now converted to terminal escape codes, so a configured palette now changes the client's colours.

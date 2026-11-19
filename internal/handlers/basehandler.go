@@ -117,6 +117,7 @@ func newBaseHandler(connCtx context.Context, cfg baseHandlerConfig) *baseHandler
 		handler:          h,
 		maprMessages:     maprMessages,
 		serverMessages:   serverMessages,
+		sessionAcks:      make(chan sessionAck, sessionAckQueueSize),
 		hostname:         cfg.hostname,
 		ackCloseReceived: make(chan struct{}),
 		outputAbort:      internal.NewDone(),
@@ -124,6 +125,7 @@ func newBaseHandler(connCtx context.Context, cfg baseHandlerConfig) *baseHandler
 	}
 	// Set before any goroutine uses the manager, like its configuration.
 	h.outputCoordinator.output.clientSlow = h.outputCoordinator.clientSlow
+	h.output.heldGeneration = h.ackGate.holds
 	return h
 }
 

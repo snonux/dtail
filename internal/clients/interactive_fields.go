@@ -117,6 +117,7 @@ func fieldsText(snap catalogSnapshot, table string, now time.Time) string {
 	case len(formats) == 0:
 		sb.WriteString("\nno log format found fields in the sampled lines")
 	}
+	writeTableProbes(&sb, snap, table)
 	for _, probeErr := range snap.Errors {
 		fmt.Fprintf(&sb, "\nprobe error on %s: %s", displayText(probeErr.Server), displayText(probeErr.Error))
 		if probeErr.File != "" {
@@ -149,36 +150,79 @@ func fieldsFormatOrder(snap catalogSnapshot) []string {
 	return formats
 }
 
+// writeTableProbes writes a line per table probed on its own
+// (catalogSnapshot.TableProbes) that matches table (any case; every one
+// without a table), with the lines its servers sampled.
+func writeTableProbes(sb *strings.Builder, snap catalogSnapshot, table string) {
+	for _, probed := range slices.Sorted(maps.Keys(snap.TableProbes)) {
+		if table != "" && !strings.EqualFold(probed, table) {
+			continue
+		}
+		fmt.Fprintf(sb, "\ntable %s probed on its own: %d lines of it sampled", displayText(probed),
+			snap.TableProbes[probed])
+	}
+}
+
 // writeFieldsFormat writes the tables, $variables and notes of one log
-// format, or only its tables matching table if one is given, and reports
+// format, or only its tables matching table if one is given, each with the
+// $variables its lines filled (catalogFormat.variablesOf), and reports
 // whether it wrote anything.
 func writeFieldsFormat(sb *strings.Builder, name string, format catalogFormat, table string) bool {
-	var tables []string
-	for _, t := range slices.Sorted(maps.Keys(format.Tables)) {
-		if table == "" || strings.EqualFold(t, table) {
-			tables = append(tables, t)
-		}
-	}
-	if table != "" && len(tables) == 0 {
-		return false
+	if table != "" {
+		return writeFieldsTables(sb, name, format, table)
 	}
 	fmt.Fprintf(sb, "\nlog format %s:", displayText(name))
-	for _, t := range tables {
-		if t == "" {
-			sb.WriteString("\n  fields:")
-		} else {
-			fmt.Fprintf(sb, "\n  table %s:", displayText(t))
-		}
-		writeFieldsSamples(sb, format.Tables[t])
+	for _, t := range slices.Sorted(maps.Keys(format.Tables)) {
+		writeFieldsTable(sb, t, format.Tables[t])
 	}
 	if len(format.Variables) > 0 {
 		sb.WriteString("\n  $variables:")
 		writeFieldsSamples(sb, format.Variables)
 	}
+	writeFieldsNotes(sb, format)
+	return true
+}
+
+// writeFieldsTables writes the tables of one log format matching table
+// (any case, as a query's from clause), each followed by the $variables
+// its lines filled, and reports whether any matched.
+func writeFieldsTables(sb *strings.Builder, name string, format catalogFormat, table string) bool {
+	var tables []string
+	for _, t := range slices.Sorted(maps.Keys(format.Tables)) {
+		if strings.EqualFold(t, table) {
+			tables = append(tables, t)
+		}
+	}
+	if len(tables) == 0 {
+		return false
+	}
+	fmt.Fprintf(sb, "\nlog format %s:", displayText(name))
+	for _, t := range tables {
+		writeFieldsTable(sb, t, format.Tables[t])
+		if variables := format.variablesOf(t); len(variables) > 0 {
+			fmt.Fprintf(sb, "\n  $variables of table %s:", displayText(t))
+			writeFieldsSamples(sb, variables)
+		}
+	}
+	writeFieldsNotes(sb, format)
+	return true
+}
+
+// writeFieldsTable writes the heading and fields of one table.
+func writeFieldsTable(sb *strings.Builder, table string, fields map[string][]string) {
+	if table == "" {
+		sb.WriteString("\n  fields:")
+	} else {
+		fmt.Fprintf(sb, "\n  table %s:", displayText(table))
+	}
+	writeFieldsSamples(sb, fields)
+}
+
+// writeFieldsNotes writes the notes of the custom probes of a format.
+func writeFieldsNotes(sb *strings.Builder, format catalogFormat) {
 	for _, note := range format.Notes {
 		fmt.Fprintf(sb, "\n  note: %s", displayText(note))
 	}
-	return true
 }
 
 // writeFieldsSamples writes one line per name, sorted, with its sample

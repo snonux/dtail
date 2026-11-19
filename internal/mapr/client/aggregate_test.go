@@ -333,3 +333,32 @@ func aggregateCountStorage(t *testing.T, query *mapr.Query) string {
 	t.Fatalf("query %q does not contain count() storage", query.RawQuery)
 	return ""
 }
+
+// TestAggregateDropsMessagesWithoutQuery queues aggregate messages while the
+// session has no query (interactive dtail following lines, see
+// SessionState.ClearQuery): Merge and Flush drop them without an error, and
+// after a query is committed again its messages are merged into its own
+// empty group set.
+func TestAggregateDropsMessagesWithoutQuery(t *testing.T) {
+	query := mustSessionStateQuery(t, "select status,count(status) from stats group by status")
+	state := NewSessionState(query, logging.NopLogger{})
+	aggregate := NewAggregate("srv1", state, logging.NopLogger{})
+	countStorage := aggregateCountStorage(t, query)
+
+	state.ClearQuery(2)
+	for _, merge := range []func() error{aggregate.Merge, aggregate.Flush} {
+		addMessage(t, aggregate, countMessage("ERROR", countStorage, "1"))
+		if err := merge(); err != nil {
+			t.Fatalf("merge without a query: %v", err)
+		}
+	}
+
+	if _, err := state.CommitQuery(query.RawQuery, 3); err != nil {
+		t.Fatalf("CommitQuery() error = %v", err)
+	}
+	addMessage(t, aggregate, countMessage("WARN", countStorage, "1"))
+	mergeMessages(t, aggregate)
+	if got := state.Snapshot().GlobalGroup.NumSets(); got != 1 {
+		t.Fatalf("NumSets() = %d, want only the message of the new query", got)
+	}
+}

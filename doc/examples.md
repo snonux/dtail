@@ -65,7 +65,7 @@ them.
 
 ### Aggregating logs
 
-To run ad-hoc map-reduce aggregations on newly written log lines you must add a query. The following example follows all remote log lines and prints out every few seconds the result to standard output.
+To run ad-hoc map-reduce aggregations on newly written log lines you must add a query. The following example follows all remote log lines and prints out the result to standard output every 5 seconds (the query's default `interval`, see `doc/querylanguage.md`) whenever it changed.
 
 Hint: To run a map-reduce query across log lines written in the past, please use the `dmap` command instead.
 
@@ -96,7 +96,7 @@ Here is another example:
 
 ![dtail-map](dtail-map2.gif "Tail mapreduce example 2")
 
-You can also continuously append the results to a CSV file by adding `outfile append filename.csv` to the query:
+You can also append the result to a CSV file by adding `outfile append filename.csv` to the query. As `dtail` accumulates the result of a query with an outfile, the result is appended once, when `dtail` ends (or an interactive reload replaces the query); interim results are not appended. Until then the result is only in memory, so a killed or crashed `dtail` appends nothing; use `outfile result.csv` (without `append`) for a file that always holds the result so far:
 
 ```shell
 % dtail --servers serverlist.txt \
@@ -140,7 +140,7 @@ Hint: `--grep` is an alias for `--regex`.
 
 ## How to use `dmap`
 
-To run a map-reduce aggregation over logs written in the past, the `dmap` command can be used. The following example aggregates all map-reduce fields `dmap` will print interim results every few seconds. You can also write the result to an CSV file by adding `outfile result.csv` to the query.
+To run a map-reduce aggregation over logs written in the past, the `dmap` command can be used. The following example aggregates all map-reduce fields `dmap` will print interim results every 5 seconds (the default `interval`) whenever they changed, and the final result once all files were read. You can also write the result to an CSV file by adding `outfile result.csv` to the query.
 
 ```shell
 % dmap --servers serverlist.txt \
@@ -308,7 +308,7 @@ An option given on the command line overrides the config file also when it names
 
 A regex is matched against the line without its line terminator, for every kind of read (`dtail`, `dcat`, `dgrep`, `dmap`, journal targets): `--regex 'foo$'` selects the lines ending in `foo`, and `--regex '^$'` the empty lines of a `dgrep`.
 
-With `--query`, `dtail` reads the lines of the query's table (every line for `from .` or no table), whatever `--regex` or `--grep` say, and it ignores `--invert` with a warning: inverting the table filter would feed the other tables' lines, or only the empty lines, into the aggregation. In an interactive query session (`dmap`, or `dtail --query`, with `--interactive-query`) `:reload --invert` is rejected with the same reason on the terminal, and the current workload keeps running.
+With `--query`, `dtail` reads the lines of the query's table (every line for `from .` or no table), whatever `--regex` or `--grep` say, and it ignores `--invert` with a warning: inverting the table filter would feed the other tables' lines, or only the empty lines, into the aggregation. An interactive `dtail --query` (on a terminal, the default) prints a one-line note instead: it keeps `--regex`/`--grep`, `--invert`, `--before`, `--after` and `--max` for following lines, which its session can switch to, and sends none of them with the query (see `doc/interactive-query.md`, "How it works"). In an interactive query session (`dmap`, or `dtail --query`, with `--interactive-query`) `:reload --invert` is rejected with the same reason on the terminal, and the current workload keeps running.
 
 ```shell
 % dcat --servers serverlist.txt --trustAllHosts /etc/hostname

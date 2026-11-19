@@ -42,13 +42,13 @@ func startSession(t *testing.T, handler *ServerHandler, dispatched chan []string
 			[]string{"SESSION", "START", mustSessionPayload(t, session.Spec{
 				Mode: omode.GrepClient, Files: []string{"/var/log/old.log"}, Regex: "old",
 			})}, func() {})
-		readServerMessage(t, handler.serverMessages)
+		readSessionAck(t, handler)
 		<-dispatched
 		verb, ack = "UPDATE", sessionAckUpdateOKPrefix
 	}
 	handler.handleSessionCommand(context.Background(), lcontext.LContext{}, 3,
 		[]string{"SESSION", verb, mustSessionPayload(t, spec)}, func() {})
-	if message := readServerMessage(t, handler.serverMessages); !strings.HasPrefix(message, ack) {
+	if message := readSessionAck(t, handler); !strings.HasPrefix(message, ack) {
 		t.Fatalf("session %s answered %q, want prefix %q", verb, message, ack)
 	}
 

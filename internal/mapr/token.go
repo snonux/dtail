@@ -80,15 +80,6 @@ func stripBackticks(t token) token {
 	return t
 }
 
-func tokensConsumeStr(tokens []token) ([]token, []string) {
-	var strings []string
-	tokens, found := tokensConsume(tokens)
-	for _, token := range found {
-		strings = append(strings, token.str)
-	}
-	return tokens, strings
-}
-
 func tokensConsumeOptional(tokens []token, optional string) []token {
 	if len(tokens) < 1 {
 		return tokens

@@ -14,7 +14,8 @@ type probeCollector struct {
 }
 
 // addFields adds the fields of one parsed line of table: $-variables to
-// Variables, the "*" placeholder nowhere, every other field to the table.
+// Variables and to the table's TableVariables, the "*" placeholder nowhere,
+// every other field to the table.
 func (c *probeCollector) addFields(table string, fields map[string]string) {
 	tableFields := c.ensureTable(table)
 	for key, value := range fields {
@@ -22,6 +23,7 @@ func (c *probeCollector) addFields(table string, fields map[string]string) {
 		case key == "*":
 		case strings.HasPrefix(key, "$"):
 			c.addVariableValues(key, []string{value})
+			c.addTableVariableValues(table, key, []string{value})
 		default:
 			if tableFields != nil {
 				addProbeValues(tableFields, key, []string{value})
@@ -75,6 +77,37 @@ func (c *probeCollector) addVariableValues(name string, values []string) {
 		c.result.Variables = make(map[string][]string)
 	}
 	addProbeValues(c.result.Variables, name, values)
+}
+
+// addTableVariableValues adds the values to the $-variable name of table in
+// TableVariables, within the caps, if Tables lists table (cut to
+// ProbeMaxNameBytes, as ensureTable cuts it): the variables of a table that
+// was dropped, as Tables was full, are dropped too.
+func (c *probeCollector) addTableVariableValues(table, name string, values []string) {
+	if variables := c.ensureTableVariables(table); variables != nil {
+		addProbeValues(variables, name, values)
+	}
+}
+
+// ensureTableVariables adds an empty TableVariables entry for table (cut to
+// ProbeMaxNameBytes) unless it exists, if Tables lists table, and returns
+// the entry; nil when Tables does not list table. An empty entry records
+// that the table's lines filled no variable (as opposed to a result
+// without per-table data, see ProbeResult.TableVariables).
+func (c *probeCollector) ensureTableVariables(table string) map[string][]string {
+	table = truncateUTF8(table, ProbeMaxNameBytes)
+	if _, ok := c.result.Tables[table]; !ok {
+		return nil
+	}
+	if c.result.TableVariables == nil {
+		c.result.TableVariables = make(map[string]map[string][]string)
+	}
+	variables, ok := c.result.TableVariables[table]
+	if !ok {
+		variables = make(map[string][]string)
+		c.result.TableVariables[strings.Clone(table)] = variables
+	}
+	return variables
 }
 
 // addProbeValues adds key, cut to ProbeMaxNameBytes, to fields unless fields

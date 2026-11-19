@@ -16,9 +16,11 @@ import (
 
 // TestServerHandlerSessionStartWithManyMissingFilesDoesNotDeadlock: a
 // SESSION START whose reads queue more "Unable to read file(s)" messages
-// than the server message channel holds acks its spec on the command input
-// goroutine only once the channel has room again. Read drains the channel
-// meanwhile instead of holding every frame back until the command returned.
+// than the server message channel holds is acknowledged, and the messages
+// all reach the client: while the workload is held for its acknowledgement
+// (sessionAckGate), Read keeps draining the channel into the deferred
+// messages, so neither the reads nor the command input goroutine block, and
+// none of them goes out ahead of the acknowledgement.
 func TestServerHandlerSessionStartWithManyMissingFilesDoesNotDeadlock(t *testing.T) {
 	dir := t.TempDir()
 	files := make([]string, 60)
@@ -37,8 +39,14 @@ func TestServerHandlerSessionStartWithManyMissingFilesDoesNotDeadlock(t *testing
 
 	writeTestCommandsWithin(t, handler, &writeMu, 10*time.Second, start)
 	output.waitForContains(t, sessionAckStartOKPrefix, 5*time.Second)
-	if !strings.Contains(output.String(), "Unable to read file(s)") {
-		t.Fatalf("no missing file reported: %q", output.String())
+	// The reports of the workload follow its acknowledgement
+	// (sessionAckGate), failure reports included.
+	waitForAfter(t, output, sessionAckStartOKPrefix, "Unable to read file(s)", 5*time.Second)
+	waitForAfter(t, output, sessionAckStartOKPrefix, protocol.HiddenCommandFailedPrefix, 5*time.Second)
+	before, _, _ := strings.Cut(output.String(), sessionAckStartOKPrefix)
+	if strings.Contains(before, "Unable to read file(s)") ||
+		strings.Contains(before, protocol.HiddenCommandFailedPrefix) {
+		t.Fatalf("output of the workload ahead of its acknowledgement: %q", before)
 	}
 	handler.Shutdown()
 	select {

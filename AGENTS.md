@@ -229,7 +229,8 @@ an explicit `--interactive-query[=false]` is kept). The logic lives in
 `internal/cli` because the build compiles each command from its single
 `main.go`. Scheduled and continuous jobs are never interactive: `NewMaprClient`
 forces it off for every mode but `DefaultMode`. `:help` prints per-mode
-`:reload` examples (grep filter, MapReduce query, files), each checked against
+`:reload`, `:query` and `:tail` examples (grep filter, MapReduce query,
+switching between them, files), each checked against
 the real parser by `TestInteractiveHelpExamplesParse`.
 On a terminal the control loop edits lines with `golang.org/x/term`'s
 `Terminal` (`interactiveEditor`, `internal/clients/interactive_tty.go`) in a
@@ -251,8 +252,45 @@ test; names are written as the tokenizer and parser need them,
 `interactive_complete_query_words.go`: a keyword or `by` in backticks,
 `order by` items with a blank in double quotes, and inside an open double
 quote only the kinds `mapr.AnalyzePartial` expects there (`quotedExpect`),
-closed by the quote; an empty catalog adds `queryCatalogHint`); the query
-completion never asks a server, it reads the cache only. Inside a `--files`
+closed by the quote; an empty catalog adds `queryCatalogHint`). The query
+completion is guided (`interactive_complete_query_guide.go`): one step per
+Tab in the order from -> table -> select -> items -> where -> group by ->
+order by -> limit (`queryOutline.nextClauses`; select first when the
+catalog knows no table of the format), a single next step inserted at once;
+clauses present on either side of the cursor are not offered again
+(`newQueryOutline` runs `mapr.AnalyzeQuery` over the whole query: a word
+left of the cursor plus the value's rest, `queryValueTail` for `--query`,
+the line's rest for `:query`); after a finished item only the continuation
+plus `commaItemHint`/`commaConditionHint` (also right after the `)` of a
+finished item, `count(x)|`, or a where value ending in `)`: Tab lists
+that, even one clause, and inserts the blank only at the query's end, never
+before a blank, comma or word, `completeAfterItem`,
+`queryCompletion.afterItem`/`blankFirst`), after a comma
+(`mapr.Partial.AfterComma`) the items again; value positions offer no
+fields; rare clauses (set, interval, outfile, logformat, rorder) only for a
+typed prefix; fields, `$variables` (`catalogFormat.variablesOf`) and values
+only of the query's table, wherever it is typed (`tableFirstHint` while
+none is). Candidates come in labelled `candidateGroup`s
+(`queryCompletion.groups`, `completion.groups`) with a heading of what is
+expected (`queryHeading`: "field to count", "value for x", "next", ...);
+no heading before the first clause (group `clause:`) or where the next
+clauses stand beside other words; the editor prints them with
+`interactiveStyle.listing` (`interactive_listing.go`): heading (dropped
+when every group's label equals it), one line per label (groups of one
+label merged, so `and` and the clauses are one `next:` line;
+`aggregation:`, `field:`, `variable:`, fields before `$variables`), names
+bare (`bareCandidateName` drops the `(`, `)`, quotes, protective
+backticks inside quotes and blank Tab inserts, but keeps the backticks of
+a keyword-named field such as `` `from` ``), wrapped to
+`editorScreen.columns()` (`displayWidth`: East Asian wide runes count two
+columns, from a small range table) and cut after
+`listingMaxRows` rows with `... (N more, type to narrow)`, hints on their
+own line; heading and labels in the theme's Heading style, names per kind,
+plain text without colors. Commands, flags and paths have no groups and
+are listed on one wrapped line. The query
+completion reads the cache only, except that a typed `from` table not probed
+on its own within 60 s has `completeEditorLine` ask for a table probe and
+wait up to 1 s with the output running (see "Probe Command"). Inside a `--files`
 value the editor completes remote paths (`completeEditorLine` in
 `interactive_tty_paths.go` calls `completeFilesValue`,
 `interactive_complete_paths.go`, before `completeInteractive`): the last
@@ -323,13 +361,33 @@ hook (`restoreForForcedExit`) only restores the mode: it waits neither for
 the normal close nor for the SIGCONT/SIGWINCH watcher, which a resize can
 block behind a `Terminal.Write` stuck on stopped output (Ctrl-S). Non-terminal
 control TTYs keep the plain `bufio.Scanner` path.
-The controlling TTY accepts `:reload <flags>`, `:show`, `:fields [table]`,
-`:probe`, `:help`, and `:quit`. `:fields` prints the field catalog of the
+The controlling TTY accepts `:reload <flags>`, `:query [query]` (dtail and
+dmap), `:tail [regex]` (dtail), `:show`, `:fields [table]`,
+`:probe`, `:help`, and `:quit`. `:query <query>` and `:tail [regex]`
+(`internal/clients/interactive_query_command.go`) take the rest of the line
+as typed, only the blanks around it dropped, with no shell quoting (the
+query language has its own double quotes); the query must parse and the
+regex compile before anything runs (rejected while still paused). In dtail
+`:query` switches the running session to the query or replaces it
+(`switchToQuery`), `:tail` switches back to the regex followed before and
+`:tail <regex>` to that regex (`switchToTail`; `:tail` alone while
+following lines is rejected); in dmap `:query` replaces the query like
+`:reload --query` (`applyQueryCommand`); dgrep and dcat reject both, and
+Tab offers them only where they exist (`interactiveCommandsFor`). `:query`
+alone shows the running query. Both resume paused output first
+(`resumesBeforeRun`), answer `query applied` (query echoed) or `following
+lines` (regex), or `query failed:`/`tail failed:` leaving the workload as it
+was. Tab after `:query ` runs the `--query` completer on the rest of the
+line and inserts candidates without shell escaping (`completeQueryCommand`).
+`:show` prints `workload=` (`query` while a query runs, else the mode).
+`:fields` prints the field catalog of the
 background prober (`fieldsText` in `internal/clients/interactive_fields.go`:
 per log format its tables, fields with sample values, `$variables` and probe
 notes, the answering servers, the data's age and the probe errors; a table
-argument, matched ignoring case, narrows it; server text is Go-quoted unless
-plainly printable); Tab after `:fields ` completes the catalog's tables.
+argument, matched ignoring case, narrows it to that table and its lines'
+`$variables`, after a table probe of it, `awaitTableProbe`; server text is
+Go-quoted unless plainly printable); Tab after `:fields ` completes the
+catalog's tables.
 `:probe` resumes the output like `:reload` (an answer is read by the handlers
 the pause blocks), requests a round and waits up to 5 s for a round started
 after the request (`interactiveProber.probeNow`, `probeRounds`), then reports
@@ -339,7 +397,7 @@ An empty line pauses the terminal output (client logger and serverless direct
 output, `interactivePause`/`outputGate` in
 `internal/clients/interactive_pause.go`) and prints the help; the next empty
 line resumes it. The pause blocks the writers (backpressure to the servers, no
-buffering); a `:reload` (or `:probe`) that parsed resumes first, as its
+buffering); a `:reload` (or `:probe`, `:query`, `:tail`) that parsed resumes first, as its
 acknowledgement is read by the blocked handlers, and the control loop resumes
 when it ends; a rejected line (flags, quoting, query parse) is answered with
 the output still paused (`resumesBeforeRun` is asked after
@@ -366,6 +424,38 @@ values and lines that are not valid UTF-8 are rejected. Full rules:
   fallback to the command stream
   (`dispatchInitialCommands` in
   `internal/clients/connectors/sessiontransport.go`).
+- A `SESSION START`/`UPDATE` acknowledgement is waited for for 2 s of idle
+  handler time (`defaultSessionAckTimeout`; a busy handler stretches it),
+  counting only time the client handler was free to read frames
+  (`baseHandler.WaitForSessionAck`, `busyClock` in
+  `internal/clients/handlers/busyclock.go`): a payload write blocked by the
+  paused output (or a host key prompt, a stalled pipe) can hold back an ack
+  that arrived behind payload frames already on their way, so pausing right
+  after the start no longer fails it. dserver sends every ack (ok or error)
+  ahead of queued payload as soon as no frame is left half sent, and an ok
+  ack ahead of all output of the workload it acknowledges (`sessionAckGate`,
+  `internal/handlers/session_ack_gate.go`): before the dispatch the new
+  generation is held, its payload stays queued and its server and MapReduce
+  messages are deferred until the ack, which has a queue of its own
+  (`sessionAcks`), went out; a workload that fails to start releases its
+  hold on the input goroutine. The rest of a replaced generation is stale
+  and dropped. So a slow link no longer makes an ack wait behind the
+  session output buffer, also not the error ack of a rejected update while
+  the running workload floods it; failure reports of the workload follow
+  the ack. Non-`SESSION` command streams hold nothing, and payload still
+  goes before other server messages. The initial `SESSION START`
+  (connection goroutine) has no wall-clock cap; the session's end ends its wait. Everything the
+  interactive control loop waits for is capped at 10 s wall clock
+  (`sessionUpdateAckMaxWait` in `sessiontransport.go`): a `SESSION UPDATE`
+  ack (`:reload`, `:query`, `:tail`, rollbacks) and the session lock a
+  start in flight holds (`ReplaceStartSessionSpec`, which then returns
+  `ErrSessionStartPending` and fails the reload), as the control loop alone
+  answers a host key prompt whose output pause could otherwise deadlock it.
+  Connections are updated and rolled back sequentially, so a failed reload
+  with every server stalling takes up to about 20 s per connection
+  (documented bound; no concurrent apply or total budget, which would break
+  the all-or-nothing rollback). `applyLock.Unlock` of an unlocked lock
+  panics like `sync.Mutex`.
 - A live `:reload` updates every active connection (session committed, its
   handler not done; `partitionReloadConnections` in
   `internal/clients/interactive_reload_inactive.go`) with `SESSION UPDATE`,
@@ -378,7 +468,17 @@ values and lines that are not valid UTF-8 are rejected. Full rules:
   that ended) no longer fail the reload; `reloadRun.updateInactive` skips
   them and the TTY names them, a connection still connecting gets the
   reloaded spec for its SESSION START (`Connector.ReplaceStartSessionSpec`,
-  under the connection's `applyMu`; a rollback gives the previous one back;
+  under the connection's `applyMu`; a rollback gives the previous one back
+  (`RestoreStartSessionSpec`; if that start already began with the
+  reloaded spec and is still unacknowledged after 10 s, the rollback is
+  deferred, `ErrSessionRollbackDeferred`: the start sends a `SESSION
+  UPDATE` back to the previous spec right after its ack, under `applyMu`,
+  and a failure of it fails the connection, `startInitialSession`; until
+  that update finished `CommittedSession` reports the session as not
+  committed, so a reload meanwhile takes the connecting path and waits for
+  `applyMu` instead of recording the failed reload's spec for its own
+  rollback; output of the reloaded spec until the update's ack reaches the
+  client, as the client filters no output by generation);
   once the start began, a committed one is updated like an active one, on
   the same base generation and all or nothing). Every connection is changed
   before the profile commit (for dmap, `CommitQuery`), so no connection
@@ -401,6 +501,49 @@ values and lines that are not valid UTF-8 are rejected. Full rules:
 - A connection takes one session channel and a channel one shell request;
   further ones are refused (`internal/server/server.go`), so `MaxConnections`
   bounds the sessions.
+- Interactive `dtail` (with or without `--query`) is built by
+  `clients.NewInteractiveTailClient` (`cmd/dtail/main.go`
+  `buildTailClient`): a `MaprClient` in tail mode whose query is optional
+  (`clientProfile.switchWorkload`), with `MaprHandler`s, which print payload
+  and aggregate the aggregate frames. Its running session switches between
+  following lines and a query with `SESSION UPDATE`
+  (`baseClient.switchToQuery`/`switchToTail` in
+  `internal/clients/interactive_workload.go`, on top of
+  `applyInteractiveReload`; driven by the `:query`/`:tail`
+  commands). dserver and the serverless runtime need no change for it
+  (`TestSessionUpdateSwitchesTailToQueryAndBack` in
+  `internal/handlers/session_modeswap_test.go`). The query reads without the
+  tail's regex, `--invert`, context and `--max` (`tailFilter`, set aside and
+  restored on the way back, also for a `--query` given at start; an explicit
+  regex for the way back clears `--invert`). `MaprClient.commitSessionSpec`
+  takes a spec without query only for this client: `dropQuery` reports the
+  result once more (`reportResults(true)`: with an outfile it is always
+  written; without one `printResults` prints it only if the rendered table
+  has rows and changed, and for `dtail` without outfile, non-cumulative, it
+  covers only what arrived since the last report; dserver aborts the
+  replaced aggregate, so up to one interval is missing), then `SessionState.ClearQuery` (no
+  query, no global group set; `Aggregate.merge` drops aggregates silently
+  while there is none). `MaprHandler` takes payload frames for aggregate
+  data only while `SessionState.AggregatesExpected` (a committed query, or
+  a pending switch to one, set by `clientProfile.expectQuery` before the
+  update and reset on failure), so followed `--plain` lines starting with
+  `AGGREGATE|` are printed; frames are otherwise handled as by a
+  `ClientHandler`. The reporter idles without a query
+  (`awaitQueryChange`). `finish` reports nothing while the session follows lines, and
+  the incomplete-result warnings skip failures reported before the switch
+  to the query (`queryFailureMarks`). Exit statuses are those of dtail's
+  follow mode; non-interactive `dtail`, `dmap`, `dcat`, `dgrep` and the
+  jobs are unchanged.
+- **`outfile append`** (`MaprClient.writeCumulativeResult`): a cumulative
+  query (`dmap`, `dtail --query` with an outfile, see `isCumulative`)
+  appends no rows on interim reports, as each holds the whole result so
+  far; they only open the outfile for appending (`checkAppendOutfile`,
+  creating it empty) so an unwritable path is logged every interval. The
+  result lives only in memory until its final result is appended, once (`finish`, `dropQuery`, or
+  `appendReplacedResult` when a reload commits another query; a failed
+  commit appends nothing). Continuous jobs (`NonCumulativeMode`) append each
+  interval's swapped-out rows once; scheduled jobs have no interim reports.
+  Semantics per mode: `doc/querylanguage.md`.
 
 ### Auth-Key Fast Reconnect
 Auth-key fast reconnect is enabled by default. The client can register a public key with `dserver` over an already-authenticated session, and subsequent connections can use this in-memory key before falling back to normal SSH auth.
@@ -535,6 +678,30 @@ full description: `docs/dev/probe.md`.
   log format probes. The answer JSON is
   capped at 48 KiB: sample values go first, then fields (the default log
   format's last), with `truncated` set.
+- Per table: a format's `tableVariables` maps every table to the
+  `$variables` its lines filled, also for one table, an empty entry for a
+  table none of whose sampled lines filled one, never known variables
+  without values; only a custom probe without per-table data leaves it
+  out, and only then does `logformat.ProbeResult.VariablesOf` fall back to
+  the format-wide `variables`. The sample window is streamed and every line
+  of it, also those beyond the 500 kept, is passed to the table scanners
+  (`fs.SampleOptions.Observe`, `logformat.ProbeTableScanner`,
+  `ProbeTabler`), so the answer lists every table of the window (without
+  fields, with an empty `tableVariables` entry, where none of its lines was
+  kept). A panicking `ProbeTabler` is recovered and reported as `probe: log
+  format probe failed` for its format.
+- Table-targeted probe (`{id, files, table}`, `internal/handlers/probe_table.go`):
+  same checks, file cap, timeout, one-probe-per-session and no limiter slot
+  as above, but it scans 4 MiB of each file (`probeTableScanBytes`;
+  `ScanBytes` of a head sample, 5,000 `journalctl` entries), streamed, and
+  keeps (500 lines / 256 KiB) only the lines of the table
+  (`ProbeTableScanner.Matcher`: the table a format's `ProbeTabler` assigns,
+  else, for lines no `ProbeTabler` claims, the name as a word); the answer
+  (`table` echoed) holds that table only, with its fields and
+  `tableVariables`, no format-wide `variables`. An invalid table
+  (`protocol.ValidProbeTable`: no blanks, control/format characters, `|`,
+  `,`, quotes or backticks) or a table with `list` is `probe: invalid
+  request`.
 - Failures are `errors` entries with fixed reasons, never `.syn command
   failed`, so a probe changes no exit status. One probe at a time per session
   (another is answered `probe: another probe is running`), and at most one
@@ -633,8 +800,35 @@ full description: `docs/dev/probe.md`.
   mode a field probe sent before the pause does (payload bypasses the
   handler), but a request sent while paused is not handled until the output
   runs, as the in-process server logs to the paused output. The query
-  completion never waits for a server; the path completion waits at most
-  1 s with the output running.
+  completion waits for a server only for a table probe (below); the path
+  completion waits at most 1 s with the output running.
+- Table probes (`interactiveProber.requestTable`,
+  `interactive_probe_table.go`): when Tab completes in a `--query` value
+  with a typed `from` table (`completeWithTableProbe`; only the Tab that
+  sends it waits, like for a path listing, 1 s with the output running; a
+  Tab while it is on its way completes from the cache with a hint) and on
+  `:fields TABLE` (`awaitTableProbe`, 2 s), a table-targeted probe of the
+  current files is sent to the round's targets, unless one is on its way
+  (checked first, under the same lock), the catalog holds a table answer of
+  that table and files younger than 60 s (`hasTableProbe`, also one that
+  found nothing) or one no server answered (failed, timed out, busy) within
+  5 s (`markTableProbeFailed`, `tableProbeRetryAfter`). Answers are kept per
+  server and table (`storeTable`, at most 64) and merged into the snapshot
+  of the same files (`catalogSnapshot.TableProbes`);
+  `catalogFormat.variablesOf(table)` gives only the `$variables` a table's
+  lines filled (format-wide only for answers without per-table data,
+  `answerTableVariables`), which is what the query completion offers
+  once a `from` table is typed.
+- End to end (`integrationtests/interactive_guided_test.go`, dserver and
+  serverless): `TestInteractiveGuidedQuerySession` types the target
+  session of the guided completion with Tab on a PTY (`--noColor`, no SGR
+  in the output) in a `dtail` following a log of two tables, checks that
+  the listings hold only the chosen table's fields and `$variables`, runs
+  the query (result table, no followed line meanwhile), `:tail` back and
+  `:query` again on one session; `TestInteractiveQueryTableScope` checks
+  the tables Tab lists after `from`, where values per table, and a table
+  that only appears before the probe's window, found by the table probe
+  of the Tab after `from RARE` and listed by `:fields RARE`.
 
 ### Wire Framing (server-to-client stream)
 Every server-to-client message (frame) ends with `protocol.MessageDelimiter`,
@@ -1375,7 +1569,7 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 - **Main Server Loop**: `/internal/server/server.go` - Core server processing logic
 - **Client Base**: `/internal/clients/baseclient.go` - Common client functionality
 - **MapReduce Parser**: `/internal/mapr/` (query.go, token.go, whereclause.go, wherecondition.go, selectcondition.go, groupset.go, etc.) - SQL-like query language parser
-- **Partial Query Analysis**: `/internal/mapr/complete.go` (`AnalyzePartial`, with complete_scan.go and complete_walk.go) - reads a query typed up to the cursor with the tokenizer and clause rules of the parser: token kinds with byte offsets for highlighting, the word under the cursor and the kinds of words expected there for completion; tests compare its tokens with `tokenize` so they cannot drift
+- **Partial Query Analysis**: `/internal/mapr/complete.go` (`AnalyzePartial`, with complete_scan.go and complete_walk.go) - reads a query typed up to the cursor with the tokenizer and clause rules of the parser: token kinds with byte offsets for highlighting, the word under the cursor, whether a comma precedes it (`AfterComma`) and the kinds of words expected there for completion; `AnalyzeQuery` reads a whole query (both sides of the cursor) the same way, with no word under the cursor, for the clauses and table a completion must know; tests compare its tokens with `tokenize` so they cannot drift
 - **Log Format Parsers**: `/internal/mapr/logformat/` - Extensible log parsing system
 - **Field Probe Sampler**: `probe.Sample` (`/internal/mapr/probe/sample.go`)
   returns a bounded, one-shot sample of one validated read target for the
@@ -1397,7 +1591,12 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
   256 KiB of line data (`fs.SampleOptions`; `FirstLine` comes on top), cut
   at `MaxLineLength` with `fs.SplitLine` and returned without their LF/CRLF
   terminator; a line larger than 256 KiB on its own is skipped, so it neither
-  evicts nor ends the sample.
+  evicts nor ends the sample. The tail window is streamed (64 KiB buffer),
+  never held whole. Options of a table probe: `ScanBytes` (the tail window
+  and head scan bound instead of the defaults), `ScanLines` (`journalctl
+  -n`), `Keep` (lines kept; the others count towards the scan bounds only;
+  `FirstLine` is then also returned when the window starts at 0 but its
+  first line was not kept) and `Observe` (sees every scanned line).
 - **SSH Authorization Callback**: `/internal/ssh/server/publickeycallback.go` - auth-key fast-path + `authorized_keys` fallback
 - **AUTHKEY Handler**: `/internal/handlers/serverhandler.go` - session command handling for auth-key registration
 - **Auth-Key Cache**: `/internal/authkey/authkeystore.go` - in-memory per-user key cache (TTL/max-keys)

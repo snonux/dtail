@@ -2,6 +2,7 @@ package clients
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestInteractiveStyleOffIsPlain(t *testing.T) {
 		"prompt":  {s.prompt(), interactivePrompt},
 		"show": {s.keyValues([]keyValue{{key: "mode", value: "grep"}, {key: "regex", value: `"a b"`}}),
 			`mode=grep regex="a b"`},
-		"candidates": {s.candidates(completion{candidates: []string{"b ", "$a ", "a/"}, kind: candidatePath}),
+		"candidates": {s.listing(completion{candidates: []string{"b ", "$a ", "a/"}, kind: candidatePath}, 80),
 			"b  $a  a/"},
 	} {
 		if pair[0] != pair[1] {
@@ -98,48 +99,54 @@ func TestInteractiveStylePaints(t *testing.T) {
 	}
 }
 
-// TestInteractiveStyleCandidates checks that candidates are grouped by kind
-// and painted in the kind's style.
+// TestInteractiveStyleCandidates checks that listed candidates are painted
+// in their kind's style: query groups per group (a $variable of a field
+// group as a variable), paths as paths and directories.
 func TestInteractiveStyleCandidates(t *testing.T) {
 	s := testInteractiveStyle()
 	theme := config.DefaultTermColors().Interactive
-	// Candidates keep the blank completion appends after a whole word.
-	from := "from "
 	result := completion{
-		candidates: []string{"status ", "$hostname ", from, "count("},
-		kind:       candidateField,
-		kinds:      map[string]candidateKind{from: candidateKeyword, "count(": candidateFunction},
+		candidates: []string{"from ", "status ", "$hostname ", "count("},
+		groups: []candidateGroup{
+			{label: "next", kind: candidateKeyword, candidates: []string{"from "}},
+			{label: "field", kind: candidateField, candidates: []string{"status ", "$hostname "}},
+			{label: "aggregation", kind: candidateFunction, candidates: []string{"count("}},
+		},
 	}
 	want := strings.Join([]string{
-		s.paint(theme.CandidateKeyword, "from"),
-		s.paint(theme.CandidateField, "status"),
-		s.paint(theme.CandidateVariable, "$hostname"),
-		s.paint(theme.CandidateFunction, "count("),
-	}, "  ")
-	if got := s.candidates(result); got != want {
-		t.Fatalf("candidates = %q, want %q", got, want)
+		s.paint(theme.Heading, "next:") + "        " + s.paint(theme.CandidateKeyword, "from"),
+		s.paint(theme.Heading, "field:") + "       " + s.paint(theme.CandidateField, "status") + "  " +
+			s.paint(theme.CandidateVariable, "$hostname"),
+		s.paint(theme.Heading, "aggregation:") + " " + s.paint(theme.CandidateFunction, "count"),
+	}, "\n")
+	if got := s.listing(result, 80); got != want {
+		t.Fatalf("listing = %q, want %q", got, want)
 	}
 	paths := completion{candidates: []string{"app.log", "sub/"}, kind: candidatePath}
 	want = s.paint(theme.CandidatePath, "app.log") + "  " + s.paint(theme.CandidateDirectory, "sub/")
-	if got := s.candidates(paths); got != want {
-		t.Fatalf("path candidates = %q, want %q", got, want)
+	if got := s.listing(paths, 80); got != want {
+		t.Fatalf("path listing = %q, want %q", got, want)
 	}
 }
 
-// TestQueryCompletionKinds checks the kinds a query completion records for
-// its candidates.
+// TestQueryCompletionKinds checks the kinds of the groups a query
+// completion records for its candidates.
 func TestQueryCompletionKinds(t *testing.T) {
-	result := completeQueryWord("from STATS select ", queryCatalog)
-	for candidate, want := range map[string]candidateKind{
-		"count(": candidateFunction,
-	} {
-		if got := (completion{kinds: result.kinds}).kindOf(candidate); got != want {
-			t.Errorf("kind of %q = %d, want %d", candidate, got, want)
+	kindOf := func(result queryCompletion, candidate string) (candidateKind, bool) {
+		for _, group := range result.groups {
+			if slices.Contains(group.candidates, candidate) {
+				return group.kind, true
+			}
 		}
+		return 0, false
 	}
-	keywords := completeQueryWord("fr", emptyCatalog())
+	result := completeQueryWord("from STATS select ", "", queryCatalog)
+	if got, ok := kindOf(result, "count("); !ok || got != candidateFunction {
+		t.Errorf("kind of count( = %d (%v), want a function", got, ok)
+	}
+	keywords := completeQueryWord("fr", "", emptyCatalog())
 	from := keywords.candidates[0]
-	if got := (completion{kinds: keywords.kinds}).kindOf(from); from != "from " || got != candidateKeyword {
+	if got, _ := kindOf(keywords, from); from != "from " || got != candidateKeyword {
 		t.Errorf("kind of %q = %d, want the keyword from", from, got)
 	}
 }
