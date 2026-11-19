@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -398,7 +400,8 @@ func TestQueryBuilderLogLinesRedrawPromptOnPTY(t *testing.T) {
 	logger := &redirectTestLogger{pausingTestLogger: newPausingTestLogger()}
 	c.loggers.Client = logger
 	deps := testEditorDeps()
-	deps.logOnTerminal = func() bool { return true }
+	// Stdout is the control terminal, through a descriptor of its own.
+	deps.logOnTTY = func(tty *os.File) bool { return sameTerminal(slave, tty) }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	done := make(chan int, 1)
@@ -428,17 +431,32 @@ func TestQueryBuilderLogLinesRedrawPromptOnPTY(t *testing.T) {
 	}
 }
 
-// TestBuilderLogStaysOffTheEditor: log lines that do not go to the terminal
-// (stdout redirected) are not passed through the editor, and outside the
-// builder they never are.
+// TestBuilderLogStaysOffTheEditor: log lines that do not go to the control
+// TTY (stdout redirected to a file, or on another terminal than the control
+// TTY, as with --control-tty) are not passed through the editor, and
+// outside the builder they never are.
 func TestBuilderLogStaysOffTheEditor(t *testing.T) {
 	t.Parallel()
-	for name, setup := range map[string]func(*QueryBuilderClient, *editorDeps){
-		"stdout is no terminal": func(_ *QueryBuilderClient, deps *editorDeps) {
-			deps.logOnTerminal = func() bool { return false }
+	for name, setup := range map[string]func(*testing.T, *QueryBuilderClient, *editorDeps){
+		"stdout is a file": func(t *testing.T, _ *QueryBuilderClient, deps *editorDeps) {
+			stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = stdout.Close() })
+			deps.logOnTTY = func(tty *os.File) bool { return sameTerminal(stdout, tty) }
 		},
-		"no builder": func(c *QueryBuilderClient, deps *editorDeps) {
-			deps.logOnTerminal = func() bool { return true }
+		"stdout is another terminal": func(t *testing.T, _ *QueryBuilderClient, deps *editorDeps) {
+			_, otherPath := openTestPTY(t)
+			stdout, err := os.OpenFile(otherPath, os.O_RDWR|syscall.O_NOCTTY, 0)
+			if err != nil {
+				t.Skipf("pseudo terminal slave: %v", err)
+			}
+			t.Cleanup(func() { _ = stdout.Close() })
+			deps.logOnTTY = func(tty *os.File) bool { return sameTerminal(stdout, tty) }
+		},
+		"no builder": func(_ *testing.T, c *QueryBuilderClient, deps *editorDeps) {
+			deps.logOnTTY = func(*os.File) bool { return true }
 			c.QueryBuilder = false
 			c.Mode = omode.GrepClient
 		},
@@ -454,7 +472,7 @@ func TestBuilderLogStaysOffTheEditor(t *testing.T) {
 			logger := &redirectTestLogger{pausingTestLogger: newPausingTestLogger()}
 			c.loggers.Client = logger
 			deps := testEditorDeps()
-			setup(c, &deps)
+			setup(t, c, &deps)
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 			done := make(chan int, 1)
@@ -469,5 +487,112 @@ func TestBuilderLogStaysOffTheEditor(t *testing.T) {
 				t.Fatalf("the logger was redirected %d times", redirects)
 			}
 		})
+	}
+}
+
+// TestSameTerminalControllingTTY: the default control TTY is /dev/tty, an
+// alias of the controlling terminal with a device of its own, so stdout on
+// that terminal is another file and still the same terminal; stdout on
+// another terminal than the controlling one is not. It runs a child of
+// this test binary in a session of its own with a pseudo terminal as its
+// controlling terminal (sameTerminalChild).
+func TestSameTerminalControllingTTY(t *testing.T) {
+	t.Parallel()
+	_, ctlPath := openTestPTY(t)
+	_, otherPath := openTestPTY(t)
+	for name, tt := range map[string]struct {
+		stdout string
+		want   string
+	}{
+		"stdout is the controlling terminal": {stdout: ctlPath, want: "true"},
+		"stdout is another terminal":         {stdout: otherPath, want: "false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctl, err := os.OpenFile(ctlPath, os.O_RDWR|syscall.O_NOCTTY, 0)
+			if err != nil {
+				t.Skipf("pseudo terminal slave: %v", err)
+			}
+			defer func() { _ = ctl.Close() }()
+			stdout, err := os.OpenFile(tt.stdout, os.O_RDWR|syscall.O_NOCTTY, 0)
+			if err != nil {
+				t.Skipf("pseudo terminal slave: %v", err)
+			}
+			defer func() { _ = stdout.Close() }()
+			result, report, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = result.Close() }()
+			cmd := exec.Command(os.Args[0], "-test.run=^TestSameTerminalChild$")
+			cmd.Env = append(os.Environ(), sameTerminalChildEnv+"=1")
+			cmd.Stdin, cmd.Stdout, cmd.ExtraFiles = ctl, stdout, []*os.File{report}
+			// The child's stdin (descriptor 0) becomes its controlling terminal.
+			cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("child: %v", err)
+			}
+			_ = report.Close()
+			got, _ := io.ReadAll(result)
+			if string(got) != tt.want {
+				t.Fatalf("sameTerminal(stdout, /dev/tty) in the child = %q, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+// sameTerminalChildEnv marks the child process of
+// TestSameTerminalControllingTTY.
+const sameTerminalChildEnv = "DTAIL_TEST_SAME_TERMINAL_CHILD"
+
+// TestSameTerminalChild is the child of TestSameTerminalControllingTTY: it
+// reports on descriptor 3 whether its stdout is the terminal /dev/tty
+// names. Run as a test of its own it does nothing.
+func TestSameTerminalChild(t *testing.T) {
+	if os.Getenv(sameTerminalChildEnv) == "" {
+		return
+	}
+	report := os.NewFile(3, "report")
+	defer func() { _ = report.Close() }()
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		_, _ = fmt.Fprintf(report, "open /dev/tty: %v", err)
+		return
+	}
+	defer func() { _ = tty.Close() }()
+	_, _ = fmt.Fprint(report, sameTerminal(os.Stdout, tty))
+}
+
+// TestSameTerminal: two descriptors of one terminal are the same terminal,
+// two terminals are not, and a file is no terminal.
+func TestSameTerminal(t *testing.T) {
+	t.Parallel()
+	open := func(path string) *os.File {
+		file, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOCTTY, 0)
+		if err != nil {
+			t.Skipf("open %s: %v", path, err)
+		}
+		t.Cleanup(func() { _ = file.Close() })
+		return file
+	}
+	_, pathA := openTestPTY(t)
+	_, pathB := openTestPTY(t)
+	regular := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(regular, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a1, a2, b, file := open(pathA), open(pathA), open(pathB), open(regular)
+	for name, tt := range map[string]struct {
+		a, b *os.File
+		want bool
+	}{
+		"one terminal, two descriptors": {a1, a2, true},
+		"two terminals":                 {a1, b, false},
+		"a file and a terminal":         {file, a1, false},
+		"a terminal and a file":         {a1, file, false},
+		"one file twice":                {file, file, false},
+	} {
+		if got := sameTerminal(tt.a, tt.b); got != tt.want {
+			t.Errorf("%s: sameTerminal = %v, want %v", name, got, tt.want)
+		}
 	}
 }

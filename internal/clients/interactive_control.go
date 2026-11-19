@@ -268,10 +268,13 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 // the line being edited, which the Terminal did not draw again, and its
 // cursor bookkeeping was off for the later edits. In the query builder of
 // dmap the client's log lines go through the editor too
-// (clientlog.Redirect), when they go to the terminal (editorDeps.
-// logOnTerminal): the builder always shows a prompt, and a log line
-// written straight to stdout (a connection error, a server's warning)
-// landed on the prompt's row, which was not drawn again. The builder also
+// (clientlog.Redirect), when they go to the terminal the editor is on
+// (editorDeps.logOnTTY: stdout is the control TTY): the builder always
+// shows a prompt, and a log line written straight to stdout (a connection
+// error, a server's warning) landed on the prompt's row, which was not
+// drawn again. With stdout on another terminal than the control TTY
+// (--control-tty) the log lines stay on stdout: redirected, they left the
+// terminal they were sent to and appeared on the control TTY. The builder also
 // discards the terminal's input when it closes: the returned close, called
 // by the control loop after its last read, until the terminal was quiet
 // (drainTTYInput); the close at the cancellation of ctx, which may run
@@ -287,7 +290,7 @@ func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *
 		c.stats.setInterruptOutput(lines.Writer())
 	}
 	args, _ := c.snapshotConnectionState()
-	routeLog := editing && isQueryBuilder(args) && deps.withDefaults().logOnTerminal()
+	routeLog := editing && isQueryBuilder(args) && deps.withDefaults().logOnTTY(tty)
 	if routeLog {
 		clientlog.Redirect(c.clientLogger(), editorOutput{editor: lines.(*interactiveEditor)})
 	}

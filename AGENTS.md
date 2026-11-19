@@ -865,8 +865,14 @@ server configured with a timeout below 60 s still closes it; it is replaced.
 `stdout` logger, delegated by `fout` and `DLog`; `openControlLines`, undone
 before the editor closes): one arriving at the prompt (a connection error, a
 server warning) is printed above it and prompt and line are drawn again. Only
-when stdout is a terminal (`editorDeps.logOnTerminal`); redirected output
-stays where it goes. A fleet that is all down still logs each failed dial,
+when stdout is the control TTY (`editorDeps.logOnTTY`, `sameTerminal` in
+`interactive_tty.go`: the same character device file, or both the
+controlling terminal of the process, `controllingTerminal`, TIOCGPGRP, as
+the default control TTY `/dev/tty` is an alias with a device of its own);
+output redirected to a file or pipe, and stdout on another terminal than
+the control TTY (`--control-tty`), stays where it goes
+(`TestSameTerminal`, `TestSameTerminalControllingTTY`,
+`TestBuilderLogStaysOffTheEditor`). A fleet that is all down still logs each failed dial,
 at most three per backoff step.
 
 **Paste and pending input:** in the builder a bracketed paste of several

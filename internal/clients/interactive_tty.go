@@ -54,11 +54,12 @@ type editorDeps struct {
 	// that send none watch none, or the SIGCONT of another test would have
 	// their editor write to its terminal.
 	watchSignals func(onContinue, onResize func()) (stop func())
-	// logOnTerminal reports whether the client's log lines go to the
-	// terminal (stdout is one), so that the query builder passes them
-	// through the line editor (openControlLines). Redirected to a file or
-	// a pipe they stay there.
-	logOnTerminal func() bool
+	// logOnTTY reports whether the client's log lines go to the terminal
+	// tty, the control TTY (stdout is that terminal, sameTerminal), so that
+	// the query builder passes them through the line editor
+	// (openControlLines). Redirected to a file or a pipe, or on another
+	// terminal than the control TTY (--control-tty), they stay there.
+	logOnTTY func(tty *os.File) bool
 }
 
 // processEditorDeps returns the dependencies of a client run: the process's
@@ -79,10 +80,27 @@ func (d editorDeps) withDefaults() editorDeps {
 	if d.watchSignals == nil {
 		d.watchSignals = watchTTYSignals
 	}
-	if d.logOnTerminal == nil {
-		d.logOnTerminal = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
+	if d.logOnTTY == nil {
+		d.logOnTTY = func(tty *os.File) bool { return sameTerminal(os.Stdout, tty) }
 	}
 	return d
+}
+
+// sameTerminal reports whether a and b are the same terminal: character
+// devices that are the same file (two descriptors of /dev/pts/3), or both
+// the controlling terminal of this process (controllingTerminal), which
+// /dev/tty, the default control TTY, names beside the terminal's own
+// device. Two terminals of which at most one is the controlling terminal
+// are told apart; another alias of a terminal that is not the controlling
+// one (a symlink is none: it is the same file) is not known and counts as
+// another terminal.
+func sameTerminal(a, b *os.File) bool {
+	infoA, errA := a.Stat()
+	infoB, errB := b.Stat()
+	if errA != nil || errB != nil || infoA.Mode()&os.ModeCharDevice == 0 || infoB.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	return os.SameFile(infoA, infoB) || (controllingTerminal(a) && controllingTerminal(b))
 }
 
 // newControlLines returns the line editor on tty when tty is a terminal that

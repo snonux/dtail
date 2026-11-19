@@ -108,7 +108,9 @@ The builder and the run use separate connections. While you build the query,
 however many `--servers` names: the tables and fields Tab and `:fields` show
 are what those servers found, as in `dtail`. A held server that is down or
 ends its session is replaced by the next one of the list (a single server
-is reconnected); its connection error is shown above the prompt. The held
+is reconnected); its connection error is shown above the prompt (where
+stdout is the terminal you type on; with `--control-tty` naming another
+terminal than stdout's, log lines stay on stdout). The held
 sessions are kept alive with an SSH keepalive every minute, so the server's
 idle timeout (`IdleSessionTimeoutS`, 15 minutes by default) does not close
 them while you type. When you press Enter `dmap` closes them and runs the
