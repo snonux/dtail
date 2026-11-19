@@ -2,7 +2,9 @@ package clients
 
 import (
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"unicode"
@@ -39,6 +41,13 @@ const (
 	// builderErrorPrefix is in front of every rejected line of the builder.
 	builderErrorPrefix = "query builder: "
 )
+
+// builderCommandWords are the words that, typed alone without their colon,
+// are meant as the command and not as a query (bareCommandHint).
+var builderCommandWords = map[string]string{
+	"quit": ":quit", "exit": ":quit", "q": ":quit", "help": ":help", "show": ":show",
+	"fields": ":fields", "probe": ":probe", "reload": ":reload --files PATH", "query": "the query itself",
+}
 
 // errNoQueryBuilder guards the "build" command against a client that is in
 // the builder's state without being the builder (no profile hook).
@@ -124,6 +133,8 @@ func (c *baseClient) handleBuilderLine(tty io.Writer, line string, pause *intera
 func parseBuilderCommand(current config.Args, line string) (interactiveCommand, error) {
 	trimmed := strings.TrimSpace(line)
 	switch {
+	case bareCommandHint(trimmed) != nil:
+		return interactiveCommand{}, bareCommandHint(trimmed)
 	case !strings.HasPrefix(trimmed, ":"):
 		return parseBuiltQuery(current, trimmed)
 	case isCommandLine(trimmed, queryCommand):
@@ -140,6 +151,36 @@ func parseBuilderCommand(current config.Args, line string) (interactiveCommand, 
 	default:
 		return parseInteractiveCommand(current, line)
 	}
+}
+
+// bareCommandHint returns, for a line that is one of the builder's command
+// words without its colon (quit, exit, help, ...), the error that names the
+// command meant; nil for any other line. As a query such a word only gets
+// the parser's error about a query that has no select clause, which does
+// not tell how to leave.
+func bareCommandHint(trimmed string) error {
+	command, found := builderCommandWords[strings.ToLower(trimmed)]
+	if !found {
+		return nil
+	}
+	return fmt.Errorf("%q is no query: type %s", trimmed, command)
+}
+
+// discardTTYInput discards what the control TTY holds unread when the
+// builder ends (tcflush): keys typed or text pasted ahead of the line that
+// ran the query or left the builder. Left in the terminal's input queue
+// they would be read by the run (an interactive one takes them as control
+// lines) or, after dmap exited, by the shell, which would run pasted lines
+// as commands. A terminal with bracketed paste delivers a paste as one line
+// (editInput.joinPaste), so this is for terminals without it and for keys
+// typed ahead. Failures are ignored: a control TTY that is no terminal has
+// no such queue.
+func discardTTYInput(tty *os.File) {
+	raw, err := tty.SyscallConn()
+	if err != nil {
+		return
+	}
+	_ = raw.Control(func(fd uintptr) { _ = flushTTYInput(int(fd)) })
 }
 
 // parseBuiltQuery checks the query entered in the builder as the run will
@@ -190,11 +231,20 @@ func (c *baseClient) runBuildCommand(tty io.Writer, query string) (bool, error) 
 // setBuilderFiles applies the :reload --files of the builder: next's files
 // are what the built query will read, and the prober is asked for a round
 // about them (field probe, path listings). The sessions are not updated.
+// As for a :reload of a running workload, journal: files are refused while
+// a server whose session is up lacks journal-v1
+// (checkReloadJournalCapability), and the files stay as they were: the run
+// would fail on that server. A server that is not connected yet is checked
+// by the run.
 func (c *baseClient) setBuilderFiles(tty io.Writer, next config.Args) error {
-	_, spec := c.snapshotConnectionState()
+	style := styleOf(tty)
+	_, spec, connections := c.snapshotMutableState()
+	active, _ := partitionReloadConnections(connections)
+	if err := checkReloadJournalCapability(active, NewSessionSpec(next)); err != nil {
+		return writeControlLine(tty, style.failure(builderErrorPrefix+"files not set: "+errorLines(err)))
+	}
 	c.storeReloadState(next, spec)
 	c.prober.request()
-	style := styleOf(tty)
 	return writeControlLine(tty, style.success("files set")+"\n"+
 		style.hint("files: ")+strconv.Quote(next.What))
 }

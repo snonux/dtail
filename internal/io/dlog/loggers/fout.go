@@ -2,6 +2,7 @@ package loggers
 
 import (
 	"context"
+	"io"
 	"sync"
 )
 
@@ -137,6 +138,14 @@ func (f *fout) Resume() {
 		if pauser, ok := logger.(Pauser); ok {
 			pauser.Resume()
 		}
+	}
+}
+
+// RedirectOutput redirects the terminal half of the logger; the file keeps
+// every line.
+func (f *fout) RedirectOutput(w io.Writer) {
+	if redirector, ok := f.stdout.(OutputRedirector); ok {
+		redirector.RedirectOutput(w)
 	}
 }
 

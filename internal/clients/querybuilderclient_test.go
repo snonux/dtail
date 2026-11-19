@@ -73,7 +73,7 @@ func newBuilderStartTestClient(runStatus int) (*QueryBuilderClient, *[]config.Ar
 	c := &QueryBuilderClient{runArgs: config.Args{Mode: omode.MapClient, What: "/var/log/app.log"}}
 	c.baseClient = baseClient{mu: newBaseClientMu(), loggers: LoggerDependencies{}.normalized()}
 	c.stats = newTailStats(0, nil, 0, nil)
-	c.newRunner = func(args config.Args) (Client, error) {
+	c.newRunner = func(args config.Args, _ []string) (Client, error) {
 		ran = append(ran, args)
 		return runnerFunc(func(context.Context) int { return runStatus }), nil
 	}
@@ -121,10 +121,48 @@ func TestQueryBuilderClientStartRunsBuiltQuery(t *testing.T) {
 	})
 	t.Run("run that can not be created", func(t *testing.T) {
 		c, _ := newBuilderStartTestClient(0)
-		c.newRunner = func(config.Args) (Client, error) { return nil, errors.New("no server to connect to") }
+		c.newRunner = func(config.Args, []string) (Client, error) {
+			return nil, errors.New("no server to connect to")
+		}
 		c.setBuilt("/var/log/app.log", query)
 		if status := c.Start(context.Background(), nil); status != 1 {
 			t.Fatalf("status = %d, want 1", status)
 		}
 	})
+}
+
+// TestRunHistory: the builder's lines become the history of the interactive
+// run, most recent first: commands as they are, a query as the :query
+// command that replaces the running query with it.
+func TestRunHistory(t *testing.T) {
+	got := runHistory([]string{"  from STATS select count($line) ", ":fields STATS",
+		":reload --files /var/log/b.log", "from STATS select count("})
+	want := []string{":query from STATS select count($line)", ":fields STATS",
+		":reload --files /var/log/b.log", ":query from STATS select count("}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("run history = %q, want %q", got, want)
+	}
+	if got := runHistory(nil); len(got) != 0 {
+		t.Fatalf("run history of no lines = %q", got)
+	}
+}
+
+// TestRunnerStartsWithTheBuildersHistory: the client of the run is created
+// with the history it was given, which its line editor starts with.
+func TestRunnerStartsWithTheBuildersHistory(t *testing.T) {
+	args := config.Args{Mode: omode.MapClient, What: "/var/log/app.log", Serverless: true, ConnectionsPerCPU: 1}
+	c, err := NewQueryBuilderClient(args, clientTestRuntimeConfig(), LoggerDependencies{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args.QueryStr = "from STATS select count($line)"
+	history := []string{":query " + args.QueryStr}
+	runner, err := c.newRunner(args, history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapr, ok := runner.(*MaprClient)
+	if !ok || strings.Join(mapr.seedHistory(), "|") != strings.Join(history, "|") {
+		t.Fatalf("runner %T starts with the history %q, want %q", runner, mapr.seedHistory(), history)
+	}
 }

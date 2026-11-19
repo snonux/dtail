@@ -99,7 +99,7 @@ type interactiveProber struct {
 func (c *baseClient) newInteractiveProber() *interactiveProber {
 	return &interactiveProber{
 		catalog:      newFieldCatalog(),
-		connections:  c.snapshotConnections,
+		connections:  c.probeConnections,
 		files:        c.sessionFiles,
 		serverless:   c.Serverless,
 		stdinPiped:   stdinIsPipe,

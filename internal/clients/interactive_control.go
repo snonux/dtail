@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -83,6 +84,11 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 		statusCh <- c.runConnections(runCtx, statsCh)
 	}()
 	c.prober.start(runCtx)
+	if isQueryBuilder(c.Args) {
+		// The builder's sessions run no workload: keep dserver from
+		// closing them as idle while the query is built.
+		go c.keepSessionsAlive(runCtx, builderKeepAliveInterval, c.heldConnections)
+	}
 
 	controlErrCh := make(chan error, 1)
 	go func() {
@@ -215,6 +221,7 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 	defer pause.resume()
 	lines, closeLines := c.openControlLines(ctx, tty, pause, answers, deps)
 	defer closeLines()
+	defer c.keepHistory(lines)
 	// Written once the terminal mode is set, so that the user's first keys
 	// already reach the line editor.
 	if err := c.writeControlBanner(lines); err != nil {
@@ -256,7 +263,13 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 // read. While the editor runs, the statistics printed on Ctrl-C go through
 // it (stats.setInterruptOutput): written straight to stdout they ran over
 // the line being edited, which the Terminal did not draw again, and its
-// cursor bookkeeping was off for the later edits.
+// cursor bookkeeping was off for the later edits. In the query builder of
+// dmap the client's log lines go through the editor too
+// (clientlog.Redirect), when they go to the terminal (editorDeps.
+// logOnTerminal): the builder always shows a prompt, and a log line
+// written straight to stdout (a connection error, a server's warning)
+// landed on the prompt's row, which was not drawn again. The builder also
+// discards the terminal's unread input when it closes (discardTTYInput).
 func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *interactivePause,
 	answers *promptAnswers, deps editorDeps) (controlLines, func()) {
 
@@ -266,10 +279,22 @@ func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *
 	if routeStats {
 		c.stats.setInterruptOutput(lines.Writer())
 	}
-	// The statistics go to stdout again before the TTY is closed.
+	args, _ := c.snapshotConnectionState()
+	routeLog := editing && isQueryBuilder(args) && deps.withDefaults().logOnTerminal()
+	if routeLog {
+		clientlog.Redirect(c.clientLogger(), editorOutput{editor: lines.(*interactiveEditor)})
+	}
+	// The statistics and the log go to stdout again before the TTY is
+	// closed.
 	closeLines := func() {
 		if routeStats {
 			c.stats.setInterruptOutput(nil)
+		}
+		if routeLog {
+			clientlog.Redirect(c.clientLogger(), nil)
+		}
+		if isQueryBuilder(args) {
+			discardTTYInput(tty)
 		}
 		lines.close()
 	}

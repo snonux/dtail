@@ -23,6 +23,9 @@ const (
 )
 
 type stdout struct {
+	// sink is where the logger writes unless its output is redirected
+	// (RedirectOutput).
+	sink       io.Writer
 	writer     *bufio.Writer
 	mutex      sync.Mutex
 	resumeCond *sync.Cond
@@ -37,6 +40,7 @@ var _ Logger = (*stdout)(nil)
 var _ Starter = (*stdout)(nil)
 var _ Pauser = (*stdout)(nil)
 var _ RawBytesWriter = (*stdout)(nil)
+var _ OutputRedirector = (*stdout)(nil)
 
 func newStdout() *stdout {
 	return newStdoutWriter(os.Stdout)
@@ -49,7 +53,7 @@ func newStdout() *stdout {
 // isolated unit tests); idle/shutdown flushing is only driven once Start()
 // spawns the flush goroutine.
 func newStdoutWriter(w io.Writer) *stdout {
-	s := &stdout{writer: bufio.NewWriterSize(w, stdoutWriterBufSize), dirtyCh: make(chan struct{}, 1)}
+	s := &stdout{sink: w, writer: bufio.NewWriterSize(w, stdoutWriterBufSize), dirtyCh: make(chan struct{}, 1)}
 	s.resumeCond = sync.NewCond(&s.mutex)
 	return s
 }
@@ -178,6 +182,19 @@ func (s *stdout) Resume() {
 	if s.pauseDepth == 0 {
 		s.resumeCond.Broadcast()
 	}
+}
+
+// RedirectOutput makes the logger write to w from now on, or to its own
+// output again for a nil w. What is buffered is flushed to the output it
+// was logged for first.
+func (s *stdout) RedirectOutput(w io.Writer) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	_ = s.writer.Flush()
+	if w == nil {
+		w = s.sink
+	}
+	s.writer.Reset(w)
 }
 
 func (s *stdout) Flush() {

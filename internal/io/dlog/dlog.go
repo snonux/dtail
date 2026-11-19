@@ -3,6 +3,7 @@ package dlog
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -385,6 +386,15 @@ func (d *DLog) Pause() {
 func (d *DLog) Resume() {
 	if pauser, ok := d.logger.(loggers.Pauser); ok {
 		pauser.Resume()
+	}
+}
+
+// RedirectOutput passes the terminal output of the configured sink through
+// w, or gives it its own output back for a nil w; sinks without a terminal
+// output are left alone.
+func (d *DLog) RedirectOutput(w io.Writer) {
+	if redirector, ok := d.logger.(loggers.OutputRedirector); ok {
+		redirector.RedirectOutput(w)
 	}
 }
 

@@ -210,8 +210,9 @@ func TestDMapQueryBuilderQuit(t *testing.T) {
 // TestDMapQueryBuilderStaysInteractive: with an explicit --interactive-query
 // the query built in the builder runs as interactive dmap, against dserver
 // and serverless: the result is printed and the session stays open (the
-// interactive banner follows the builder's), :show reports the running
-// query, :query replaces it, and only :quit ends dmap, with status 0.
+// interactive banner follows the builder's), Up recalls the built query
+// from the builder's history, :show reports the running query, :query
+// replaces it, and only :quit ends dmap, with status 0.
 func TestDMapQueryBuilderStaysInteractive(t *testing.T) {
 	skipIfNotIntegrationTest(t)
 	for _, serverless := range []bool{false, true} {
@@ -226,7 +227,9 @@ func TestDMapQueryBuilderStaysInteractive(t *testing.T) {
 				{WaitFor: probeStoredMessage, Input: "from STATS " + builderQueryRest},
 				{WaitFor: builderRunning, Raw: true},
 				{WaitFor: interactiveBannerPrefix, Raw: true},
-				{WaitFor: builderResultHeader, Input: ":show"},
+				// Up recalls the built query as the command replacing it.
+				{WaitFor: builderResultHeader, Input: "\x1b[A", Raw: true},
+				{WaitFor: ":query from STATS " + builderQueryRest, Input: "\x15:show\n", Raw: true},
 				{WaitFor: "workload=query", Input: ":query from STATS select max(lifetimeConnections)"},
 				{WaitFor: " max(lifetimeConnections) \r\n---", Input: ":quit"},
 			}

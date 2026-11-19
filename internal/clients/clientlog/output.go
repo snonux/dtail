@@ -2,7 +2,11 @@
 // the configured logger without widening the shared diagnostic Logger contract.
 package clientlog
 
-import "github.com/mimecast/dtail/internal/logging"
+import (
+	"io"
+
+	"github.com/mimecast/dtail/internal/logging"
+)
 
 // Logger combines diagnostic logging with the raw output operations required
 // by client handlers. Requiring both prevents a valid diagnostics-only logger
@@ -85,6 +89,19 @@ func RawDiagnostic(logger Logger, message string) {
 func Mapreduce(logger logging.Logger, table string, data map[string]any) {
 	if output, ok := logger.(mapreduceLogger); ok {
 		output.Mapreduce(table, data)
+	}
+}
+
+type outputRedirector interface {
+	RedirectOutput(io.Writer)
+}
+
+// Redirect passes the logger's terminal output through w, or gives the
+// logger its own output back for a nil w. Loggers without a terminal
+// output are left alone.
+func Redirect(logger logging.Logger, w io.Writer) {
+	if output, ok := logger.(outputRedirector); ok {
+		output.RedirectOutput(w)
 	}
 }
 

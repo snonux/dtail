@@ -88,6 +88,41 @@ type ServerConnection struct {
 	// hits both paths.  sync.Once is safe for concurrent callers whereas the
 	// previous bool guard was not synchronized.
 	throttleReleased sync.Once
+	// sshClient is the SSH connection while it is up, for KeepAlive;
+	// guarded by clientMu.
+	clientMu  sync.Mutex
+	sshClient *ssh.Client
+}
+
+// keepAliveRequest is the SSH global request KeepAlive sends, the one
+// OpenSSH clients use (ServerAliveInterval).
+const keepAliveRequest = "keepalive@openssh.com"
+
+// KeepAlive sends an SSH keepalive request over the connection, if it is
+// up, without waiting for an answer. dserver counts every packet it reads
+// as activity of the connection (its IdleSessionTimeoutS is a rolling
+// timeout) and discards requests it does not know, as every SSH server
+// must, so this keeps a session that runs no workload from being closed as
+// idle, with nothing new for dserver to understand. A connection that is
+// not up (still connecting, or ended) sends nothing and reports no error.
+func (c *ServerConnection) KeepAlive() error {
+	c.clientMu.Lock()
+	client := c.sshClient
+	c.clientMu.Unlock()
+	if client == nil {
+		return nil
+	}
+	if _, _, err := client.SendRequest(keepAliveRequest, false, nil); err != nil {
+		return fmt.Errorf("send SSH keepalive to %s: %w", c.server, err)
+	}
+	return nil
+}
+
+// setClient records the SSH connection that is up, nil once it ended.
+func (c *ServerConnection) setClient(client *ssh.Client) {
+	c.clientMu.Lock()
+	defer c.clientMu.Unlock()
+	c.sshClient = client
 }
 
 var _ Connector = (*ServerConnection)(nil)
@@ -405,7 +440,9 @@ func (c *ServerConnection) dial(ctx context.Context, cancel context.CancelFunc,
 		}
 		return err
 	}
+	c.setClient(client)
 	defer func() {
+		c.setClient(nil)
 		if closeErr := client.Close(); closeErr != nil {
 			c.log().Trace(closeErr)
 		}

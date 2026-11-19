@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -53,6 +54,11 @@ type editorDeps struct {
 	// that send none watch none, or the SIGCONT of another test would have
 	// their editor write to its terminal.
 	watchSignals func(onContinue, onResize func()) (stop func())
+	// logOnTerminal reports whether the client's log lines go to the
+	// terminal (stdout is one), so that the query builder passes them
+	// through the line editor (openControlLines). Redirected to a file or
+	// a pipe they stay there.
+	logOnTerminal func() bool
 }
 
 // processEditorDeps returns the dependencies of a client run: the process's
@@ -72,6 +78,9 @@ func (d editorDeps) withDefaults() editorDeps {
 	}
 	if d.watchSignals == nil {
 		d.watchSignals = watchTTYSignals
+	}
+	if d.logOnTerminal == nil {
+		d.logOnTerminal = func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }
 	}
 	return d
 }
@@ -171,6 +180,9 @@ type interactiveEditor struct {
 	closed  bool
 	// resize takes the window size over (SIGWINCH, and after the editor).
 	resize func()
+	// history is the Terminal's history (bindKeys); the control loop
+	// keeps its lines when it ends (baseClient.keepHistory).
+	history *controlHistory
 	// vi is the vi editing mode (Client.EditMode "vi"); nil edits with
 	// x/term's emacs-like keys only.
 	vi *viEditor
@@ -218,7 +230,7 @@ func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 	}
 	vi := c.editMode() == config.EditModeVi
 	args, _ := c.snapshotConnectionState()
-	keys := &editInput{r: tty, viEscape: vi}
+	keys := &editInput{r: tty, viEscape: vi, joinPaste: isQueryBuilder(args)}
 	input := editorTTY{Reader: keys, Writer: tty}
 	editor := &interactiveEditor{terminal: term.NewTerminal(input, ""), screen: newEditorScreen(tty),
 		style: c.interactiveStyle(), pause: pause, mode: mode, setForceExitHook: deps.setForceExitHook,
@@ -307,8 +319,10 @@ func (e *interactiveEditor) bindKeys(c *baseClient, pause *interactivePause, vi 
 	// viUpKey, and editorKey leaves the pause to the history as well): the
 	// history reports the recall.
 	// The answer to the host key question is no control line to recall.
-	history := &controlHistory{onRecall: func() { e.startTyping(pause) }, skip: e.answering}
+	history := &controlHistory{entries: c.seedHistory(), onRecall: func() { e.startTyping(pause) },
+		skip: e.answering}
 	e.terminal.History = history
+	e.history = history
 	if vi {
 		e.vi = newViEditor(history, func(mode viMode) {
 			_, _ = io.WriteString(out, viCursorShapes[mode])
@@ -607,6 +621,36 @@ func (h *controlHistory) At(idx int) string {
 		h.onRecall()
 	}
 	return h.entries[idx]
+}
+
+// seedHistory returns the control lines a new line editor starts its
+// history with: those an earlier control loop of this process left
+// (lineHistory), none otherwise.
+func (c *baseClient) seedHistory() []string {
+	mu := c.stateMu()
+	mu.RLock()
+	defer mu.RUnlock()
+	return slices.Clone(c.lineHistory)
+}
+
+// keepHistory keeps the history of the line editor lines (nothing for
+// plain lines) when the control loop ends, for takeLineHistory. It runs in
+// the control loop's goroutine, the only one that adds to the history.
+func (c *baseClient) keepHistory(lines controlLines) {
+	editor, ok := lines.(*interactiveEditor)
+	if !ok || editor.history == nil {
+		return
+	}
+	mu := c.stateMu()
+	mu.Lock()
+	defer mu.Unlock()
+	c.lineHistory = slices.Clone(editor.history.entries)
+}
+
+// takeLineHistory returns the control lines the control loop ended with,
+// most recent first.
+func (c *baseClient) takeLineHistory() []string {
+	return c.seedHistory()
 }
 
 func trimEach(words []string) []string {

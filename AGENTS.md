@@ -779,7 +779,8 @@ script, cron, the jobs) a missing query stays the error, exit status 1.
 **Design: two phases, no dserver change** (`clients.QueryBuilderClient`,
 `internal/clients/querybuilderclient.go`; the builder's part of the control
 loop is `internal/clients/interactive_builder.go`):
-1. *Builder.* One interactive session per server that holds no workload:
+1. *Builder.* Interactive sessions that hold no workload, on at most
+   `probeMaxConnections` (3) servers (see "Held sessions" below):
    `SESSION START` with `builderHoldSpec`, tail mode without files, which
    yields no command. That is what an interactive `dtail` without `--files`
    sends, so every protocol 5 dserver and the serverless runtime keep such a
@@ -792,10 +793,8 @@ loop is `internal/clients/interactive_builder.go`):
    `fieldCatalog` probes them as in interactive `dtail` (field probe at
    start, table probes on Tab after a typed `from` table and for `:fields
    TABLE`, path listings), and the same `interactiveEditor` edits the line.
-   The builder's connections retry like dtail's (`profile.retry`), so a
-   session ended by `IdleSessionTimeoutS` or a dserver restart while the user
-   types only reconnects; a server that is down logs its connection errors
-   and the builder stays usable.
+   A server that is down logs its connection error and the builder stays
+   usable.
 2. *Run.* Enter on a query that parses hands query and files to the client
    (`clientProfile.queryBuilt`, `runBuildCommand`) and ends the builder's
    sessions like `:quit`; `QueryBuilderClient.Start` then starts
@@ -808,9 +807,9 @@ loop is `internal/clients/interactive_builder.go`):
 Why the query does not run on the held session: a session started with
 `SESSION START` never ends by itself, so the client could not tell when the
 result is complete without a new signal from dserver, which would mean
-redeploying every host. The run costs one more connection per server instead
-(cheap with the auth-key fast reconnect), and `dmap --query` stays byte for
-byte what it was. `TestDMapQueryBuilder` expects exactly two sessions on the
+redeploying every host. The run costs one more connection per held server
+instead (cheap with the auth-key fast reconnect), and `dmap --query` stays byte
+for byte what it was. `TestDMapQueryBuilder` expects exactly two sessions on the
 server, the map command only on the second.
 
 **In the builder** (`config.Args.QueryBuilder`, set only by
@@ -832,15 +831,76 @@ prompt `query> ` (`builderPrompt`, `interactiveEditor.builder`), typing shows
 no pause hint, and an empty line pauses nothing (it is answered with what to
 type): there is no output to pause, only the client's own log lines, which
 the typing pause still holds back while a line is edited and which every
-entered line releases (`handleBuilderLine`). A log line that arrives while
-the prompt waits without a key typed (a connection error, a server warning)
-is printed after the prompt; the next line gets a new one. The builder runs
-with `Quiet`, so no periodic connection STATS are printed over the line.
+entered line releases (`handleBuilderLine`). The builder runs with `Quiet`,
+so no periodic connection STATS are printed. A command word typed without
+its colon (`quit`, `exit`, `q`, `help`, `show`, `fields`, `probe`, `reload`,
+`query`) is answered with the command meant (`"quit" is no query: type
+:quit`, `bareCommandHint`) instead of the parser's error. `:reload --files`
+with a `journal:` target is refused, files unchanged, while a server whose
+session is up lacks `journal-v1` (`checkReloadJournalCapability`, as for a
+reload of a running workload; a server not connected is checked by the run).
+
+**Held sessions** (`internal/clients/interactive_builder_sessions.go`): the
+builder holds sessions only for its prober, so at most `probeMaxConnections`
+(3) at a time, whatever the number of servers (`holdBuilderSessions`,
+`serverRotation`): a session that ends (server down, idle close, restart) is
+replaced after the reconnect backoff (2 s doubling to 60 s) by one to the
+next server not held, in the client's order and around, so a server that is
+down is tried once per round of the rotation; with one server that is a
+reconnect. The prober asks the held connections only
+(`baseClient.probeConnections`; a new held session requests a round), so the
+builder's catalog is those servers' view, as in dtail it is the probed
+servers'. The run connects to every server. Every 60 s
+(`builderKeepAliveInterval`, `keepSessionsAlive`) an SSH `keepalive@openssh.com`
+request goes over each held connection (`connectors.ServerConnection.KeepAlive`,
+no reply awaited): dserver counts every packet read as activity and discards
+unknown requests (`gossh.DiscardRequests`), so `IdleSessionTimeoutS` does not
+close a held session while the query is built, also one without files or
+with a line left unentered, where no probe is sent; no dserver change
+(`TestIdleSessionKeptByKeepAlive`, a real dserver with a 4 s timeout). A
+server configured with a timeout below 60 s still closes it; it is replaced.
+
+**Log lines** go through the line editor while the builder edits
+(`clientlog.Redirect` -> `loggers.OutputRedirector`, implemented by the
+`stdout` logger, delegated by `fout` and `DLog`; `openControlLines`, undone
+before the editor closes): one arriving at the prompt (a connection error, a
+server warning) is printed above it and prompt and line are drawn again. Only
+when stdout is a terminal (`editorDeps.logOnTerminal`); redirected output
+stays where it goes. A fleet that is all down still logs each failed dial,
+at most three per backoff step.
+
+**Paste and pending input:** in the builder a bracketed paste of several
+lines is one line (`editInput.joinPaste`: its line breaks become blanks, as
+Alt-E does) that stays on the edit line until Enter is typed. Entered line by
+line, as the editor does elsewhere, the first pasted line that parses alone
+ran as the query and ended dmap, and the lines behind it were left in the
+terminal's input queue for the shell. When the builder ends (run or `:quit`)
+it discards the control TTY's unread input (`discardTTYInput`, tcflush
+TCIFLUSH; `ttyflush_*.go`: Linux, AIX, Solaris and the BSDs/macOS, a no-op
+elsewhere), so keys typed ahead, or the lines of a paste on a terminal without
+bracketed paste, reach neither the run nor the shell
+(`TestQueryBuilderPastedLinesAreOneLineOnPTY`,
+`TestQueryBuilderDiscardsPendingInputOnPTY`). On such a terminal the first
+pasted line that parses still runs.
+
+**History:** with `--interactive-query` the run's line editor starts with
+the builder's lines (`baseClient.lineHistory`, `keepHistory`, `runHistory`),
+a query as `:query QUERY`, so Up recalls the query built.
+
+**Accepted limits:** the run needs the connection slots the builder just
+released; the builder closes its connections before the run connects, but a
+dserver at `MaxConnections` that has not yet noticed the close can refuse
+the run, which then fails like any refused connection (status 1). Host key
+answers are not carried over: a host refused in the builder is asked about
+again by the run, as are the unknown hosts the builder never connected to.
+`:quit` exits 0, or 1 when a held connection failed last (e.g. a server
+down).
 
 Tests: `TestResolveQueryBuilder` (start-up decision),
-`internal/clients/interactive_builder_test.go` and
-`querybuilderclient*_test.go` (lines, completion, help, the hand-over, the
-editor on a PTY), and `integrationtests/dmap_builder_test.go` on a PTY
+`internal/clients/interactive_builder_test.go`,
+`interactive_builder_sessions_test.go` (held sessions, rotation, keepalive
+loop) and `querybuilderclient*_test.go` (lines, completion, help, the
+hand-over, the editor on a PTY: paste, pending input, log lines, history), and `integrationtests/dmap_builder_test.go` on a PTY
 against dserver and serverless: `TestDMapQueryBuilder` (banner, parse error,
 Tab inserts `from STATS `, result table, exit status 0, two server
 sessions), `TestDMapQueryBuilderQuit`, `TestDMapQueryBuilderStaysInteractive`

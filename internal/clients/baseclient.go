@@ -83,6 +83,16 @@ type baseClient struct {
 	nowFn func() time.Time
 	// Regex is the regular expresion object for line filtering
 	Regex regex.Regex
+	// held are the connections the query builder of dmap holds a session
+	// on, at most probeMaxConnections of connections (see
+	// holdBuilderSessions); guarded by mu.
+	held []connectors.Connector
+	// lineHistory are the control lines the line editor starts its history
+	// with and, once the control loop ended, those it ended with, most
+	// recent first (see seedHistory and keepHistory); guarded by mu. The
+	// query builder of dmap hands them to the interactive run that
+	// follows it, so that Up recalls the query built.
+	lineHistory []string
 	// prober is the background prober of an interactive session and its
 	// field catalog (see interactiveProber), set by startInteractiveControl
 	// before the control loop starts; nil otherwise, which its methods
@@ -277,6 +287,11 @@ func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) 
 	}
 	// Print client stats every time something on statsCh is received.
 	go c.stats.Start(ctx, c.throttleCh, statsCh, c.Quiet)
+
+	if isQueryBuilder(c.Args) {
+		// The query builder holds only the sessions its prober can use.
+		return c.holdBuilderSessions(ctx)
+	}
 
 	var wg sync.WaitGroup
 	connections := c.snapshotConnections()

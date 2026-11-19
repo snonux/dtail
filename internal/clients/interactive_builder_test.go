@@ -5,8 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mimecast/dtail/internal/clients/connectors"
+	"github.com/mimecast/dtail/internal/clients/handlers"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 )
 
 // builderTestArgs are the arguments of a query builder reading files.
@@ -76,10 +79,9 @@ func TestBuilderSessionFiles(t *testing.T) {
 	}
 }
 
-// TestParseBuilderCommand covers the lines of the builder: a line without a
-// leading colon and the argument of :query are the query, :reload takes
-// --files only, the other commands are the control loop's, and what does
-// not parse is rejected.
+// TestParseBuilderCommand covers the lines the builder takes: a line
+// without a leading colon and the argument of :query are the query, :reload
+// takes the files, and the other commands are the control loop's.
 func TestParseBuilderCommand(t *testing.T) {
 	const query = "from STATS select count($line) group by $hostname"
 	current := builderTestArgs("/var/log/app.log")
@@ -87,7 +89,6 @@ func TestParseBuilderCommand(t *testing.T) {
 		line      string
 		wantKind  string
 		wantValue string
-		wantErr   string
 	}{
 		{line: query, wantKind: "build", wantValue: query},
 		{line: "  " + query + " \r", wantKind: "build", wantValue: query},
@@ -99,26 +100,10 @@ func TestParseBuilderCommand(t *testing.T) {
 		{line: ":fields STATS", wantKind: "fields"},
 		{line: ":probe", wantKind: "probe"},
 		{line: ":quit", wantKind: "quit"},
-		{line: "from STATS select count(", wantErr: "invalid query"},
-		{line: "selec foo", wantErr: "invalid query"},
-		{line: ":query from STATS select count(", wantErr: "invalid query"},
-		{line: "from STATS select \xff", wantErr: "not valid UTF-8"},
-		{line: ":reload", wantErr: "reload requires flags"},
-		{line: ":reload --files ''", wantErr: "--files needs at least one non-blank file"},
-		{line: ":reload --plain", wantErr: "flag provided but not defined"},
-		{line: ":reload --query '" + query + "'", wantErr: "flag provided but not defined"},
-		{line: ":tail ERROR", wantErr: ":tail is only available in dtail"},
-		{line: ":bogus", wantErr: "unknown command"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.line, func(t *testing.T) {
 			command, err := parseBuilderCommand(current, tt.line)
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("err = %v, want one containing %q (command %+v)", err, tt.wantErr, command)
-				}
-				return
-			}
 			if err != nil || command.kind != tt.wantKind || command.value != tt.wantValue {
 				t.Fatalf("command = kind %q value %q, err %v; want kind %q value %q",
 					command.kind, command.value, err, tt.wantKind, tt.wantValue)
@@ -131,41 +116,96 @@ func TestParseBuilderCommand(t *testing.T) {
 	}
 }
 
+// TestParseBuilderCommandRejects covers the lines the builder rejects: a
+// query that does not parse or is no valid UTF-8, a :reload with anything
+// but --files, :tail, an unknown command, and a command word typed without
+// its colon, which is answered with the command meant rather than with the
+// parser's error for a query without a select clause.
+func TestParseBuilderCommandRejects(t *testing.T) {
+	const query = "from STATS select count($line) group by $hostname"
+	current := builderTestArgs("/var/log/app.log")
+	tests := []struct {
+		line    string
+		wantErr string
+	}{
+		{line: "from STATS select count(", wantErr: "invalid query"},
+		{line: "selec foo", wantErr: "invalid query"},
+		{line: ":query from STATS select count(", wantErr: "invalid query"},
+		{line: "from STATS select \xff", wantErr: "not valid UTF-8"},
+		{line: ":reload", wantErr: "reload requires flags"},
+		{line: ":reload --files ''", wantErr: "--files needs at least one non-blank file"},
+		{line: ":reload --plain", wantErr: "flag provided but not defined"},
+		{line: ":reload --query '" + query + "'", wantErr: "flag provided but not defined"},
+		{line: ":tail ERROR", wantErr: ":tail is only available in dtail"},
+		{line: ":bogus", wantErr: "unknown command"},
+		{line: "quit", wantErr: `"quit" is no query: type :quit`},
+		{line: " Exit ", wantErr: `"Exit" is no query: type :quit`},
+		{line: "help", wantErr: `"help" is no query: type :help`},
+		{line: "fields", wantErr: `"fields" is no query: type :fields`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			command, err := parseBuilderCommand(current, tt.line)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("err = %v, want one containing %q (command %+v)", err, tt.wantErr, command)
+			}
+		})
+	}
+	// A query that merely starts with such a word is a query.
+	if _, err := parseBuilderCommand(current, "help me"); err == nil || strings.Contains(err.Error(), ":help") {
+		t.Fatalf("\"help me\" was taken for the help command: %v", err)
+	}
+}
+
+// builderLineTest is one case of TestHandleBuilderLine: the lines entered
+// in a builder reading files, whether the last one ends it, the files
+// handed over with builderLineQuery (none: nothing is handed over) and a
+// part of the answers.
+type builderLineTest struct {
+	name       string
+	files      string
+	lines      []string
+	wantQuit   bool
+	wantFiles  string
+	wantAnswer string
+}
+
+// builderLineQuery is the query of the builderLineTests.
+const builderLineQuery = "from STATS select count($line)"
+
+func builderLineTests() []builderLineTest {
+	const files, query = "/var/log/a.log", builderLineQuery
+	return []builderLineTest{
+		{name: "query runs", files: files, lines: []string{query},
+			wantQuit: true, wantFiles: files, wantAnswer: "running the query\nquery: " + query},
+		{name: ":query runs", files: files, lines: []string{":query " + query},
+			wantQuit: true, wantFiles: files, wantAnswer: "running the query"},
+		{name: "files of a reload", files: files,
+			lines:    []string{":reload --files /var/log/b.log,/var/log/c.log", query},
+			wantQuit: true, wantFiles: "/var/log/b.log,/var/log/c.log", wantAnswer: "files set"},
+		{name: "parse error", files: files, lines: []string{"from STATS select count("},
+			wantAnswer: builderErrorPrefix + "invalid query"},
+		{name: "unknown command", files: files, lines: []string{":bogus"},
+			wantAnswer: builderErrorPrefix + `unknown command ":bogus"`},
+		{name: "command word without its colon", files: files, lines: []string{"quit"},
+			wantAnswer: builderErrorPrefix + `"quit" is no query: type :quit`},
+		{name: "empty line", files: files, lines: []string{"  "}, wantAnswer: builderEmptyLineHint},
+		{name: ":query alone", files: files, lines: []string{":query"}, wantAnswer: builderNoQueryText},
+		{name: ":show", files: files, lines: []string{":show"},
+			wantAnswer: `mode=map workload=builder files=/var/log/a.log query="" servers=0 sessions=0`},
+		{name: "no files", lines: []string{query},
+			wantAnswer: builderErrorPrefix + "query not run, " + sessionNoFilesText},
+		{name: ":quit", files: files, lines: []string{":quit"}, wantQuit: true,
+			wantAnswer: "quitting interactive session"},
+	}
+}
+
 // TestHandleBuilderLine runs lines through the builder's line handler: only
 // a query that parses is handed over and ends the builder, with the files
 // of that moment; rejected lines, an empty line and the other commands
 // keep it open and hand nothing over.
 func TestHandleBuilderLine(t *testing.T) {
-	const query = "from STATS select count($line)"
-	tests := []struct {
-		name       string
-		files      string
-		lines      []string
-		wantQuit   bool
-		wantFiles  string
-		wantAnswer string
-	}{
-		{name: "query runs", files: "/var/log/a.log", lines: []string{query},
-			wantQuit: true, wantFiles: "/var/log/a.log", wantAnswer: "running the query\nquery: " + query},
-		{name: ":query runs", files: "/var/log/a.log", lines: []string{":query " + query},
-			wantQuit: true, wantFiles: "/var/log/a.log", wantAnswer: "running the query"},
-		{name: "files of a reload", files: "/var/log/a.log",
-			lines:    []string{":reload --files /var/log/b.log,/var/log/c.log", query},
-			wantQuit: true, wantFiles: "/var/log/b.log,/var/log/c.log", wantAnswer: "files set"},
-		{name: "parse error", files: "/var/log/a.log", lines: []string{"from STATS select count("},
-			wantAnswer: builderErrorPrefix + "invalid query"},
-		{name: "unknown command", files: "/var/log/a.log", lines: []string{":bogus"},
-			wantAnswer: builderErrorPrefix + `unknown command ":bogus"`},
-		{name: "empty line", files: "/var/log/a.log", lines: []string{"  "}, wantAnswer: builderEmptyLineHint},
-		{name: ":query alone", files: "/var/log/a.log", lines: []string{":query"}, wantAnswer: builderNoQueryText},
-		{name: ":show", files: "/var/log/a.log", lines: []string{":show"},
-			wantAnswer: `mode=map workload=builder files=/var/log/a.log query="" servers=0 sessions=0`},
-		{name: "no files", lines: []string{query},
-			wantAnswer: builderErrorPrefix + "query not run, " + sessionNoFilesText},
-		{name: ":quit", files: "/var/log/a.log", lines: []string{":quit"}, wantQuit: true,
-			wantAnswer: "quitting interactive session"},
-	}
-	for _, tt := range tests {
+	for _, tt := range builderLineTests() {
 		t.Run(tt.name, func(t *testing.T) {
 			c, built := newBuilderTestClient(tt.files)
 			var out bytes.Buffer
@@ -183,8 +223,54 @@ func TestHandleBuilderLine(t *testing.T) {
 			if want := (builtQuery{}); tt.wantFiles == "" && *built != want {
 				t.Fatalf("handed over %+v, want nothing", *built)
 			}
-			if tt.wantFiles != "" && (built.files != tt.wantFiles || built.query != query) {
-				t.Fatalf("handed over %+v, want files %q and query %q", *built, tt.wantFiles, query)
+			if tt.wantFiles != "" && (built.files != tt.wantFiles || built.query != builderLineQuery) {
+				t.Fatalf("handed over %+v, want files %q and query %q", *built, tt.wantFiles, builderLineQuery)
+			}
+		})
+	}
+}
+
+// TestBuilderFilesNeedJournalSupport: :reload --files with a journal target
+// is refused while a server whose session is up lacks journal-v1, as a
+// :reload of a running workload is, and the files stay as they were;
+// with every such server supporting it, and for plain files, it is taken.
+func TestBuilderFilesNeedJournalSupport(t *testing.T) {
+	const journal = ":reload --files journal:app.service"
+	for _, tt := range []struct {
+		name      string
+		supported bool
+		line      string
+		wantFiles string
+		wantError string
+	}{
+		{name: "a server without journal-v1", line: journal, wantFiles: "/var/log/a.log",
+			wantError: builderErrorPrefix + "files not set: "},
+		{name: "every server with journal-v1", supported: true, line: journal, wantFiles: "journal:app.service"},
+		{name: "plain files need none", line: ":reload --files /var/log/b.log", wantFiles: "/var/log/b.log"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := newBuilderTestClient("/var/log/a.log")
+			with := newInteractiveReloadSessionHandler(handlers.SessionAck{Action: "update", Generation: 2})
+			with.capabilities[protocol.CapabilityJournalV1] = true
+			other := newInteractiveReloadSessionHandler(handlers.SessionAck{Action: "update", Generation: 2})
+			other.capabilities[protocol.CapabilityJournalV1] = tt.supported
+			c.connections = []connectors.Connector{
+				newInteractiveReloadServerConnection(t, "srv1", with, c.sessionSpec),
+				newInteractiveReloadServerConnection(t, "srv2", other, c.sessionSpec),
+			}
+			var out bytes.Buffer
+			if _, err := c.handleBuilderLine(&out, tt.line, c.newInteractivePause()); err != nil {
+				t.Fatal(err)
+			}
+			if c.What != tt.wantFiles {
+				t.Fatalf("files = %q, want %q (answer %q)", c.What, tt.wantFiles, out.String())
+			}
+			if tt.wantError != "" && (!strings.Contains(out.String(), tt.wantError) ||
+				!strings.Contains(out.String(), "srv2") || strings.Contains(out.String(), "srv1")) {
+				t.Fatalf("answer %q, want the refusal naming srv2 only", out.String())
+			}
+			if tt.wantError == "" && !strings.Contains(out.String(), "files set") {
+				t.Fatalf("answer %q, want the files set", out.String())
 			}
 		})
 	}

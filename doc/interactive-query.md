@@ -73,21 +73,47 @@ query>
   a query is not run until files are named.
 * **`--interactive-query`** (given explicitly) keeps the session open after
   the query ran, as interactive `dmap` always did: `:query <query>` then
-  replaces the query, `:reload` changes it or the files, `:quit` ends.
-  It also opens the builder without a terminal on stdin and stdout.
+  replaces the query, `:reload` changes it or the files, `:quit` ends. Up
+  recalls the query you built (as `:query <query>`) and the builder's other
+  lines. It also opens the builder without a terminal on stdin and stdout.
+* **Pasting** a query of several lines puts it on the line as one line
+  (line breaks become blanks); it runs when you press Enter. This needs a
+  terminal with bracketed paste, which nearly all have; on one without,
+  pasted lines are entered one by one and the first that parses runs.
+  Whatever is still typed or pasted ahead when the builder ends is
+  discarded, so it reaches neither the query run nor your shell.
+* `quit`, `exit` or `help` without the colon are answered with the command
+  meant (`"quit" is no query: type :quit`).
 * **`--no-interactive`** never opens the builder (and wins over
   `--interactive-query`). Without a terminal (a pipe, a script, cron) and
   with `--interactive-query=false` a missing query stays the error it was,
   with exit status 1. With a query, `dmap` runs as before.
 
-The builder and the run use separate connections: while you build the query,
-`dmap` holds one idle session per server (for the probes); when you press
-Enter it closes them and runs the query on new connections, exactly as `dmap
---query` would have. A server that closes the idle session meanwhile (its
-idle timeout, a restart) is reconnected; a server that is down shows its
-connection error, and the query can still be built and run against the
-others. No dserver change is needed for the builder: every protocol 5
-dserver supports it.
+The builder and the run use separate connections. While you build the query,
+`dmap` holds idle sessions for the probes on at most three of the servers,
+however many `--servers` names: the tables and fields Tab and `:fields` show
+are what those servers found, as in `dtail`. A held server that is down or
+ends its session is replaced by the next one of the list (a single server
+is reconnected); its connection error is shown above the prompt. The held
+sessions are kept alive with an SSH keepalive every minute, so the server's
+idle timeout (`IdleSessionTimeoutS`, 15 minutes by default) does not close
+them while you type. When you press Enter `dmap` closes them and runs the
+query on new connections to every server, exactly as `dmap --query` would
+have. No dserver change is needed for the builder: every protocol 5 dserver
+supports it.
+
+Things to know:
+
+* `:reload --files journal:UNIT` is refused while a held server lacks
+  journal support, as a `:reload` of a running workload is.
+* `:quit` exits with status 0, or 1 when the last connection attempt to a
+  held server failed (e.g. the server is down).
+* An unknown host key is asked about for the held servers only; the run asks
+  about the others, and again about a host you refused in the builder.
+* The run needs the connection slots the builder just gave back. A dserver
+  at its `MaxConnections` limit that has not yet noticed the closed
+  connection can refuse the run, which then fails as any refused connection
+  does (exit status 1); run it again.
 
 ## Control commands
 

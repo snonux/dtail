@@ -54,6 +54,10 @@ const externalEditFallback = "vi"
 //     as the first typed key does through the key callback. A pasted line
 //     that ends with its line break needs no pause, it runs at once.
 //
+// With joinPaste (the query builder of dmap) the line breaks of a paste
+// are blanks as well: the pasted text is one line, which stays on the
+// edit line until Enter is typed.
+//
 // Reads are as large as the Terminal's, and a read that filled the buffer
 // (more input is queued) holds back a trailing ESC or unfinished paste
 // marker for the next one (holdsTail), so a backlog (keys typed while the
@@ -81,6 +85,13 @@ type editInput struct {
 	r        io.Reader
 	pasting  bool
 	viEscape bool
+	// joinPaste makes the line breaks of a paste blanks too, so a pasted
+	// text of several lines is one line that stays on the edit line. The
+	// query builder of dmap sets it: there the first line that parses
+	// runs and ends the builder, so a pasted query of three lines would
+	// run as its first line that parses alone, and the lines after it
+	// would be left for whoever reads the terminal next.
+	joinPaste bool
 	// onPaste, when set, is called in the goroutine reading the line
 	// before pasted text that stays on the line is returned.
 	onPaste func()
@@ -238,7 +249,7 @@ func (in *editInput) translateAt(rest []byte) (key []byte, used int) {
 		return pasteEnd, len(pasteEnd)
 	case in.pasting:
 		r, size := utf8.DecodeRune(rest)
-		if pasteBlank(r) {
+		if pasteBlank(r) || (in.joinPaste && (r == '\n' || r == '\r')) {
 			return []byte{' '}, size
 		}
 		return rest[:size], size
