@@ -172,8 +172,8 @@ type interactiveEditor struct {
 	// style paints the control output, the prompt and the candidate lists;
 	// nil paints nothing (colors disabled).
 	style *interactiveStyle
-	// screen writes to the TTY next to the Terminal while a Tab lets the
-	// output run (waitForListing); nil writes nothing.
+	// screen is the TTY next to the Terminal (paste mode, cursor shape)
+	// and the terminal width; nil writes nothing.
 	screen *editorScreen
 	mode   ttyMode
 	stop   func()
@@ -204,17 +204,6 @@ type interactiveEditor struct {
 	// vi is the vi editing mode (Client.EditMode "vi"); nil edits with
 	// x/term's emacs-like keys only.
 	vi *viEditor
-	// hideMu guards hidden and resizePending, and serializes everything
-	// that draws the line (hideLine, showLine, the resize and the control
-	// output of another goroutine, editorOutput) around them.
-	hideMu sync.Mutex
-	// hidden is set while a Tab's wait has the line off the screen
-	// (hideLine until showLine): the Terminal's cursor bookkeeping still
-	// describes the line as drawn, so nothing may have it draw meanwhile.
-	hidden bool
-	// resizePending is a window size change that arrived while hidden;
-	// showLine takes it over once the line is drawn again.
-	resizePending bool
 	// builder is set in the query builder of dmap (isQueryBuilder): every
 	// line has builderPrompt and typing shows no hint.
 	builder bool
@@ -298,17 +287,8 @@ func (e *interactiveEditor) watchTerminal(ttyFd int, watch func(onContinue, onRe
 		// A terminal without a window size (a bare pseudo terminal) reports
 		// 0x0; keep the Terminal's 80x24 default then, as width 0 would wrap
 		// after every character. Not while the external editor runs:
-		// SetSize redraws the line, into the editor's screen. Nor while a
-		// Tab's wait has the line off the screen (hidden): SetSize would
-		// redraw it from the cursor position the Terminal remembers, over
-		// the output that ran since; showLine calls resize again.
+		// SetSize redraws the line, into the editor's screen.
 		if e.inEditor() {
-			return
-		}
-		e.hideMu.Lock()
-		defer e.hideMu.Unlock()
-		if e.hidden {
-			e.resizePending = true
 			return
 		}
 		if width, height, err := term.GetSize(ttyFd); err == nil && width > 0 && height > 0 {
@@ -360,8 +340,8 @@ func (e *interactiveEditor) bindKeys(c *baseClient, pause *interactivePause, vi 
 // sequences. A key that inserts text (or Tab) pauses the output
 // for typing; unbound keys (PageUp, F-keys, Ctrl-G) change nothing on the
 // line and must not freeze the output unnoticed. Tab completes
-// (completeEditorLine, which may wait briefly for a path listing) and is
-// consumed; a comma typed right after the blank Tab inserted after a
+// (completeEditorLine, which may wait briefly for a path listing or a
+// table probe, the paused output held meanwhile) and is consumed; a comma typed right after the blank Tab inserted after a
 // finished query item replaces that blank (commaAfterItemBlank, not in vi
 // normal mode, where the comma is a motion); all other keys are left to
 // the Terminal. While the host key question is asked, Tab is consumed
@@ -396,7 +376,7 @@ func (c *baseClient) editorKey(e *interactiveEditor, pause *interactivePause,
 	if e.answering() {
 		return line, pos, true
 	}
-	result := c.completeEditorLine(e, pause, line, pos)
+	result := c.completeEditorLine(pause, line, pos)
 	e.rememberItemBlank(result)
 	// x/term releases its lock around this callback, so writing here is
 	// safe: Write clears the line, prints the listing (header, heading,
@@ -447,7 +427,6 @@ func (e *interactiveEditor) setPrompt() {
 		prompt = e.style.fittingPrompt(builderPrompt, e.screen.columns())
 	}
 	e.terminal.SetPrompt(prompt)
-	e.screen.setPromptWidth(utf8.RuneCountInString(stripANSI(prompt)))
 }
 
 // insertsText reports whether the Terminal adds key to the line, as its own
@@ -504,22 +483,15 @@ func (e *interactiveEditor) Writer() io.Writer {
 // editorOutput is where the editor's control output goes: to the Terminal,
 // which takes the line being edited off the screen, writes and draws the
 // line again below. The control loop writes its answers between two lines,
-// but the Ctrl-C statistics (stats.setInterruptOutput) come from another
-// goroutine at any time, also while a Tab's wait has the line off the
-// screen (interactiveEditor.hidden): then the Terminal would move up from
-// where it believes the cursor is, into the output that ran since, and
-// draw the line there. So such a write goes to the TTY as it is, like the
-// output running at that time, and showLine draws the line below it.
+// but the Ctrl-C statistics (stats.setInterruptOutput) and, in the query
+// builder, the client's log lines come from another goroutine at any time,
+// also while a Tab waits for a server's answer: the line stays on the
+// screen during that wait (the output is held, not printed), so the
+// Terminal draws it again below them as at any other time.
 type editorOutput struct{ editor *interactiveEditor }
 
 func (o editorOutput) Write(p []byte) (int, error) {
-	e := o.editor
-	e.hideMu.Lock()
-	defer e.hideMu.Unlock()
-	if e.hidden && e.screen != nil && e.screen.out != nil {
-		return e.screen.out.Write(p)
-	}
-	return e.terminal.Write(p)
+	return o.editor.terminal.Write(p)
 }
 
 // Bracketed paste mode (DECSET 2004): the terminal sends pasted text

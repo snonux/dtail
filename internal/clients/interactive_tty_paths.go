@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 )
 
 // editorDefaultWidth is the width golang.org/x/term's Terminal assumes
@@ -22,13 +21,28 @@ const pathListingMissingHint = "(no listing of %s from the server within %s: pre
 const tableProbeMissingHint = "(the servers have not answered the probe of table %s yet: " +
 	"press Tab again to use it once it arrives)"
 
+// holdFullHint is shown instead of the two hints above when the wait had
+// no chance: the held output is full (outputHoldMaxBytes), so the writers
+// block again and no answer of a server is read until the output resumes;
+// pressing Tab again would only wait again.
+const holdFullHint = "(no answer from the server: the held output is full; let the output run " +
+	"(enter the line, or an empty one), then press Tab again)"
+
+// missingAnswerHint is the hint of a Tab whose wait for a server's answer
+// ran out: missing, or holdFullHint when the pause's hold is full.
+func missingAnswerHint(pause *interactivePause, missing string) string {
+	if pause != nil && pause.hold.isFull() {
+		return holdFullHint
+	}
+	return missing
+}
+
 // completeEditorLine completes the line being edited at a Tab press: a
 // --files value from the path listings (completeFilesValue, waiting for a
 // listing that is not cached, awaitPathListing), anything else with
 // completeInteractive and, for a query naming a from table,
 // completeWithTableProbe.
-func (c *baseClient) completeEditorLine(e *interactiveEditor, pause *interactivePause,
-	line string, pos int) completion {
+func (c *baseClient) completeEditorLine(pause *interactivePause, line string, pos int) completion {
 
 	args, _ := c.snapshotConnectionState()
 	result, ok := completeFilesValue(line, pos, args, c.prober.pathListingSource())
@@ -36,36 +50,38 @@ func (c *baseClient) completeEditorLine(e *interactiveEditor, pause *interactive
 		// A method value on a nil prober is fine: catalogSnapshot accepts nil.
 		result = completeInteractive(line, pos, args, c.prober.catalogSnapshot)
 		if result.probeTable != "" {
-			result = c.completeWithTableProbe(e, pause, line, pos, result)
+			result = c.completeWithTableProbe(pause, line, pos, result)
 		}
 		return result
 	}
 	if result.fetch == "" {
 		return result
 	}
-	return c.awaitPathListing(e, pause, line, pos, result)
+	return c.awaitPathListing(pause, line, pos, result)
 }
 
 // completeWithTableProbe has the prober ask for a table probe of the from
 // table of a query completion (requestTable; nothing is sent while a fresh
 // answer is cached or a failed probe of it is recent) and, only for the
 // Tab that sent the request, waits for it like a path listing, at most the
-// prober's listWait with the output running (waitForListing), then
+// prober's listWait with the paused output held (waitForListing), then
 // completes the line again. A later Tab while the probe is still on its way
 // does not wait again: it completes from the cache as result does, with
-// tableProbeMissingHint, as does the Tab whose wait ran out.
-func (c *baseClient) completeWithTableProbe(e *interactiveEditor, pause *interactivePause,
+// tableProbeMissingHint, as does the Tab whose wait ran out (holdFullHint
+// when the held output is full).
+func (c *baseClient) completeWithTableProbe(pause *interactivePause,
 	line string, pos int, result completion) completion {
 
 	done, started := c.prober.requestTable(result.probeTable)
 	if done == nil {
 		return result
 	}
-	if started && c.waitForListing(e, pause, line, pos, done, c.prober.listWait) {
+	if started && waitForListing(pause, done, c.prober.listWait) {
 		args, _ := c.snapshotConnectionState()
 		return completeInteractive(line, pos, args, c.prober.catalogSnapshot)
 	}
-	result.hint = joinLines(result.hint, fmt.Sprintf(tableProbeMissingHint, displayText(result.probeTable)))
+	result.hint = joinLines(result.hint, missingAnswerHint(pause,
+		fmt.Sprintf(tableProbeMissingHint, displayText(result.probeTable))))
 	return result
 }
 
@@ -77,7 +93,7 @@ func (c *baseClient) completeWithTableProbe(e *interactiveEditor, pause *interac
 // another probe of the session still ran there), the candidates found so
 // far are kept and a hint says so; the request goes on, and the next Tab
 // uses a late answer from the cache.
-func (c *baseClient) awaitPathListing(e *interactiveEditor, pause *interactivePause,
+func (c *baseClient) awaitPathListing(pause *interactivePause,
 	line string, pos int, result completion) completion {
 
 	wait := pathListingWait
@@ -88,7 +104,7 @@ func (c *baseClient) awaitPathListing(e *interactiveEditor, pause *interactivePa
 	for result.fetch != "" {
 		done := c.prober.listPaths(result.fetch)
 		remaining := time.Until(deadline)
-		if done == nil || remaining <= 0 || !c.waitForListing(e, pause, line, pos, done, remaining) {
+		if done == nil || remaining <= 0 || !waitForListing(pause, done, remaining) {
 			break
 		}
 		args, _ := c.snapshotConnectionState()
@@ -102,7 +118,7 @@ func (c *baseClient) awaitPathListing(e *interactiveEditor, pause *interactivePa
 	}
 	if result.fetch != "" {
 		dir, _ := listingDirKey(result.fetch)
-		result.hint = joinLines(result.hint, fmt.Sprintf(pathListingMissingHint, dir, wait))
+		result.hint = joinLines(result.hint, missingAnswerHint(pause, fmt.Sprintf(pathListingMissingHint, dir, wait)))
 		result.fetch = ""
 	}
 	return result
@@ -110,25 +126,23 @@ func (c *baseClient) awaitPathListing(e *interactiveEditor, pause *interactivePa
 
 // waitForListing waits until done (a path listing or table probe request,
 // listPaths or requestTable) is closed or timeout passed and reports
-// whether it was closed. A paused output runs meanwhile
-// (interactivePause.runOutput): with a remote server the connection handler
+// whether it was closed. The paused output is held meanwhile
+// (interactivePause.holdOutput): with a remote server the connection handler
 // reads the answer only while it can write the output, and in serverless
 // mode the in-process server handles the request only while it can write
 // its log lines, which go to the paused client output as well (so the
-// serverless answer does not arrive while paused either, although its
-// payload bypasses the handler, see TestProbeAnswerWhileOutputPaused). The
-// line being edited is taken off the screen first, so the output does not
-// run into it, and the Terminal draws it again afterwards (hideLine,
-// showLine). The output is always paused here: the Tab that led here
+// serverless answer does not arrive while the writers block either,
+// although its payload bypasses the handler, see
+// TestProbeAnswerWhileOutputPaused). So the writers go on for the wait, but
+// what they write is kept and printed only when the output resumes:
+// nothing reaches the terminal, and the line being edited stays on the
+// screen as it is. The output is always paused here: the Tab that led here
 // paused it for typing unless it was paused already (editorKey calls
 // startTyping before it completes), so there is no path for running
-// output; runOutput would simply run the wait if it were not.
-func (c *baseClient) waitForListing(e *interactiveEditor, pause *interactivePause,
-	line string, pos int, done <-chan struct{}, timeout time.Duration) bool {
-
+// output; holdOutput would simply run the wait if it were not.
+func waitForListing(pause *interactivePause, done <-chan struct{}, timeout time.Duration) bool {
 	var arrived bool
-	e.hideLine(line, pos)
-	pause.runOutput(func() {
+	pause.holdOutput(func() {
 		timer := time.NewTimer(timeout)
 		defer timer.Stop()
 		select {
@@ -137,59 +151,13 @@ func (c *baseClient) waitForListing(e *interactiveEditor, pause *interactivePaus
 		case <-timer.C:
 		}
 	})
-	e.showLine(line, pos)
 	return arrived
 }
 
-// hideLine takes the line being edited (its cursor at byte offset pos) off
-// the screen for a Tab's wait (editorScreen.hideLine). Until showLine the
-// Terminal must not draw: its cursor bookkeeping still describes the line
-// as it was drawn, so a redraw would move up from the cursor into the
-// output that ran since and draw the line over it. Two things could have
-// it draw from another goroutine meanwhile and are held off (hidden): a
-// resized window (SIGWINCH, deferred until showLine, see resize) and the
-// Ctrl-C statistics (written to the TTY as they are, editorOutput). A nil
-// editor (tests completing without one) has no line to hide.
-func (e *interactiveEditor) hideLine(line string, pos int) {
-	if e == nil {
-		return
-	}
-	e.hideMu.Lock()
-	defer e.hideMu.Unlock()
-	e.screen.hideLine(line, pos)
-	e.hidden = true
-}
-
-// showLine gives the line hidden by hideLine its rows back below the
-// output that ran meanwhile (editorScreen.restoreLine) and has the
-// Terminal draw prompt and line there (redrawLine). A window size change
-// that arrived meanwhile is taken over then, with the line on the screen
-// again, as the Terminal expects it for a resize.
-func (e *interactiveEditor) showLine(line string, pos int) {
-	if e == nil {
-		return
-	}
-	e.hideMu.Lock()
-	e.screen.restoreLine(line, pos)
-	e.redrawLine()
-	e.hidden = false
-	resize := e.resizePending && e.resize != nil
-	e.resizePending = false
-	e.hideMu.Unlock()
-	if resize {
-		e.resize()
-	}
-}
-
-// redrawLine has the Terminal draw its prompt and line again below the
-// output a Tab let run (after restoreLine, showLine). Its Write clears the rows it
-// believes the line takes and draws prompt and line, which also puts its
-// cursor bookkeeping right again: hideLine erased the prompt too, and
-// without a redraw (a completion that lists nothing only sets the new
-// line, starting at the prompt's end) the line would be drawn without the
-// prompt where the Terminal believes the prompt is, misplacing every later
-// cursor move by its width. x/term releases its lock around the key
-// callback, so Write is safe here.
+// redrawLine has the Terminal draw its prompt and line again, after the
+// external editor had the screen (editExternally). Its Write clears the rows
+// it believes the line takes and draws prompt and line. x/term releases its
+// lock around the key callback, so Write is safe here.
 func (e *interactiveEditor) redrawLine() {
 	if e != nil && e.terminal != nil {
 		_, _ = e.terminal.Write(nil)
@@ -207,22 +175,14 @@ func joinLines(lines ...string) string {
 	return strings.Join(kept, "\n")
 }
 
-// editorScreen writes to the control TTY next to the Terminal, to let the
-// output run while a line is being edited (waitForListing). The Terminal
-// moves its cursor only relative to where it believes it is: in the row
-// of the line being edited at the cursor's position. So the line is erased
-// before the output runs (hideLine), and afterwards (restoreLine) the
-// cursor is put as many rows below the output as the Terminal will move
-// up, so that its next redraw lands below the output instead of over it.
-// Like the Terminal, it counts one column per rune (of the prompt, too)
-// and wraps at the width it was last told (setWidth). A nil screen, or one
-// without a writer, writes nothing.
+// editorScreen is the control TTY next to the Terminal: what the editor
+// writes there itself (the bracketed paste and cursor shape sequences) and
+// the terminal width the Terminal was last told (setWidth), which the
+// candidate listings wrap at. A nil screen, or one without a writer, writes
+// nothing.
 type editorScreen struct {
 	out   io.Writer
 	width atomic.Int64
-	// promptWidth is the columns of the Terminal's prompt in front of the
-	// line (setPromptWidth).
-	promptWidth atomic.Int64
 }
 
 func newEditorScreen(out io.Writer) *editorScreen {
@@ -245,46 +205,4 @@ func (s *editorScreen) columns() int {
 		return editorDefaultWidth
 	}
 	return int(s.width.Load())
-}
-
-// setPromptWidth records the columns of the prompt the Terminal draws in
-// front of the line (interactiveEditor.setPrompt).
-func (s *editorScreen) setPromptWidth(width int) {
-	if s != nil {
-		s.promptWidth.Store(int64(width))
-	}
-}
-
-// cursorRow returns the row, counted from the line's first row (where the
-// prompt starts), where the Terminal put the cursor for byte offset pos of
-// line.
-func (s *editorScreen) cursorRow(line string, pos int) int {
-	return (int(s.promptWidth.Load()) + utf8.RuneCountInString(line[:pos])) / int(s.width.Load())
-}
-
-// hideLine erases the line being edited (its cursor at byte offset pos)
-// and leaves the cursor at the start of the line's first row.
-func (s *editorScreen) hideLine(line string, pos int) {
-	if s == nil || s.out == nil {
-		return
-	}
-	var b strings.Builder
-	if rows := s.cursorRow(line, pos); rows > 0 {
-		fmt.Fprintf(&b, "\x1b[%dA", rows)
-	}
-	b.WriteString("\r\x1b[J")
-	_, _ = io.WriteString(s.out, b.String())
-}
-
-// restoreLine moves the cursor, at the start of a row below what was
-// printed since hideLine, down by the rows the Terminal moves up from its
-// cursor (for byte offset pos of line) when it next draws. The Terminal
-// then clears these empty rows and draws the line there.
-func (s *editorScreen) restoreLine(line string, pos int) {
-	if s == nil || s.out == nil {
-		return
-	}
-	if rows := s.cursorRow(line, pos); rows > 0 {
-		_, _ = io.WriteString(s.out, strings.Repeat("\r\n", rows))
-	}
 }

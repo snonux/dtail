@@ -194,7 +194,7 @@ in `dtail` and `dmap`, `:tail` only in `dtail`):
   its lines carry, and the servers are first asked to probe that table on
   its own (a table probe: up to 4 MiB of the end of each file are searched
   for its lines, so a table that logs rarely gets fields and samples too;
-  waited for up to 2 seconds with the output running, and asked again only
+  waited for up to 2 seconds, without printing output meanwhile, and asked again only
   after a minute); a line `table ORDERS probed on its own: 3 lines of it
   sampled` tells what it found. Names and values a server sent are printed in Go
   quoting where they are not plain printable text. Until a probe answered,
@@ -361,7 +361,7 @@ editor (golang.org/x/term, no other dependency):
     `:fields`).
     Once a `from` table is typed, Tab also has the servers probe that
     table on its own (as `:fields TABLE` does) and waits up to a second for
-    it with the output running, so the fields of a table that logs rarely
+    it (nothing is printed meanwhile, see below), so the fields of a table that logs rarely
     are offered too. Only that one Tab waits: while the answer is still on
     its way, Tab completes from what arrived before, with a hint to press
     Tab again later, and after a probe no server answered the table is
@@ -385,14 +385,19 @@ editor (golang.org/x/term, no other dependency):
     that listing is older than two minutes, Tab asks for it again); the
     systemd units of a `journal:` target are not listed in the background,
     only when Tab asks for them, as listing them reads the whole journal on
-    the server (which keeps the unit list for a minute for all sessions). For another directory Tab asks the server and lets
-    the output run (the line being edited is taken off the screen and drawn
-    again below it) until the listing arrives, at most one second, then
-    pauses it again; if the listing did not come in time, a hint says so,
-    and the next Tab uses it once it arrived. The answer of a remote server
-    can only be read while the output runs; in serverless mode the
-    in-process server logs to the same paused output, so it waits the same
-    way. With several servers, a listed set of candidates is headed with the
+    the server (which keeps the unit list for a minute for all sessions). For another directory Tab asks the server and waits
+    until the listing arrives, at most one second; if the listing did not
+    come in time, a hint says so, and the next Tab uses it once it arrived.
+    The answer of a remote server arrives behind the output on the same
+    connection (in serverless mode the in-process server logs to the same
+    paused output), so during this wait, and the wait for a table probe,
+    the client goes on reading the output but does not print it: it keeps
+    it in memory (up to 4 MiB; beyond that it stops reading as while
+    paused, and the Tab then says that the held output is full and that
+    the output must run first, by entering the line or an empty one) and prints it,
+    complete and in order, when the output resumes, i.e. after the line
+    was entered. No log line is printed between the Tab and the entered
+    line. With several servers, a listed set of candidates is headed with the
     server it comes from, as the listing is that one server's view. Listings
     are cached for two minutes; one that timed out or failed on the server
     only for five seconds, so the next Tab asks again. `Server.PathCompletionDisable` on the server
@@ -477,8 +482,7 @@ The terminal is switched to "cbreak" mode for this: line buffering and echo
 are off, but Ctrl-C and Ctrl-Z still send their signals and log output keeps
 its line endings. After Ctrl-Z and `fg` the mode is set again (bash and zsh
 leave the terminal in their own mode), and the editor follows window size
-changes (one that arrives while a Tab waits for a server, with the line
-taken off the screen, is applied when the line is drawn again). The previous mode is restored when the interactive session ends,
+changes. The previous mode is restored when the interactive session ends,
 also on a forced exit after a second Ctrl-C. While `dtail` runs in the
 background (`bg`, `&`) it leaves the terminal mode alone; like any program
 reading its terminal, an interactive `dtail` in the background is stopped
@@ -509,9 +513,7 @@ would land behind the question), Tab completes nothing, and the answer is
 not added to the history. Statistics printed with Ctrl-C go through the
 line editor, which draws the line being typed again below them; so with
 `--interactive-query` and stdout redirected to a file or pipe they go to
-the control terminal, not into the redirected output. While a Tab waits for
-a server (the line is off the screen and the output runs) they are written
-like that output, and the line is drawn below them when the wait ends.
+the control terminal, not into the redirected output.
 
 `:help` and `:fields` keep the output paused, so their answer does not
 scroll away, and the next empty line resumes the output. Typed while the
@@ -559,7 +561,21 @@ The pause holds back everything the client writes to the terminal (payload,
 `dmap` result tables and the client's own log lines) and, in serverless mode,
 the payload written directly to stdout. Nothing is dropped and nothing is
 buffered without bound: the client stops reading, so the servers wait (as
-for a paused pager) and send the held back output once it resumes. A pause
+for a paused pager) and send the held back output once it resumes. The one
+exception is bounded: while Tab (or `:fields TABLE`) waits for a server's
+answer, at most a second or two, the client reads on and keeps up to 4 MiB
+of output in memory instead of printing it; it is printed first when the
+output resumes (also when the session ends), and the daily log file gets
+the client's log lines without that delay. The kept output is written in
+the background, in the order it was read and before anything newer, so
+control lines are still read when the output stalls (a pipe to a stopped
+reader), and while the unknown hosts question or the Ctrl-C statistics are
+shown it waits for them. It is only written while the output is not
+paused: a key typed right behind the Enter, or a new pause, stops it at
+the end of a line, and the rest follows when the output resumes again. At
+the end of the session the client waits up to
+5 seconds for it to be written. Output redirected to a file or
+pipe is held the same way. A pause
 right at the start of a session, before the client read a server's
 acknowledgement of the session start (dserver sends it ahead of the
 session's output, but output that is already on its way can come first), does
@@ -890,7 +906,9 @@ dmap --servers app01 --files /var/log/app.log \
   whose output bypasses that connection, the answer of a probe sent before
   the pause does, but a probe sent while paused waits, as the in-process
   server logs to the same paused output); the query completion therefore
-  reads only what arrived before. After a `:reload` to other files only
+  reads only what arrived before, except for the short waits of Tab and
+  `:fields TABLE` described above, during which the output is read but
+  kept back. After a `:reload` to other files only
   answers about the new files count: `:fields` and the completion show
   nothing from the files read before. The rounds at the start, after a
   `:reload` and on `:probe` (not the periodic ones) also list the

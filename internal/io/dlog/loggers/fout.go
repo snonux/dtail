@@ -27,6 +27,7 @@ var _ Logger = (*fout)(nil)
 var _ Starter = (*fout)(nil)
 var _ Pauser = (*fout)(nil)
 var _ Rotator = (*fout)(nil)
+var _ OutputHolder = (*fout)(nil)
 var _ RawBytesWriter = (*fout)(nil)
 
 // newFout builds the default client logger from injected process options.
@@ -146,6 +147,15 @@ func (f *fout) Resume() {
 func (f *fout) RedirectOutput(w io.Writer) {
 	if redirector, ok := f.stdout.(OutputRedirector); ok {
 		redirector.RedirectOutput(w)
+	}
+}
+
+// HoldOutput holds the terminal half of the paused logger; the file keeps
+// taking every line at once, as the holding callers no longer wait at the
+// terminal half.
+func (f *fout) HoldOutput(take func(w io.Writer, p []byte) bool) {
+	if holder, ok := f.stdout.(OutputHolder); ok {
+		holder.HoldOutput(take)
 	}
 }
 

@@ -34,6 +34,9 @@ type stdout struct {
 	mutex      sync.Mutex
 	resumeCond *sync.Cond
 	pauseDepth int
+	// hold, while set, is offered what is logged while the logger is paused
+	// (HoldOutput): text it takes does not wait for the pause to end.
+	hold func(w io.Writer, p []byte) bool
 	// flushPending covers both an unread dirty notification and an armed
 	// timer. Protected by mutex, it coalesces a burst into one notification.
 	flushPending bool
@@ -45,6 +48,7 @@ var _ Starter = (*stdout)(nil)
 var _ Pauser = (*stdout)(nil)
 var _ RawBytesWriter = (*stdout)(nil)
 var _ OutputRedirector = (*stdout)(nil)
+var _ OutputHolder = (*stdout)(nil)
 
 func newStdout() *stdout {
 	return newStdoutWriter(os.Stdout)
@@ -60,6 +64,13 @@ func newStdoutWriter(w io.Writer) *stdout {
 	s := &stdout{sink: w, writer: bufio.NewWriterSize(w, stdoutWriterBufSize), dirtyCh: make(chan struct{}, 1)}
 	s.resumeCond = sync.NewCond(&s.mutex)
 	return s
+}
+
+// NewTerminal returns the terminal logger (the "stdout" logger: buffering,
+// pause, hold, redirect) writing to w instead of os.Stdout, for the tests
+// of the packages that pause and hold a client's terminal output.
+func NewTerminal(w io.Writer) Logger {
+	return newStdoutWriter(w)
 }
 
 func (s *stdout) Start(ctx context.Context, wg *sync.WaitGroup) {
@@ -117,15 +128,21 @@ func (s *stdout) RawWithColors(message, coloredMessage string) {
 
 // RawBytes writes payload bytes verbatim without a string conversion.
 func (s *stdout) RawBytes(message []byte) {
-	s.lockUnpaused()
+	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if s.waitUnpaused(func() []byte { return message }) {
+		return
+	}
 	_, _ = s.writer.Write(message)
 	s.armIdleFlush()
 }
 
 func (s *stdout) log(message string, nl bool) {
-	s.lockUnpaused()
+	s.mutex.Lock()
 	defer s.mutex.Unlock()
+	if s.waitUnpaused(func() []byte { return heldText(message, nl) }) {
+		return
+	}
 
 	// Buffered writes into the bufio.Writer batch many lines into one write
 	// syscall. Errors are intentionally ignored: a logger that cannot write to
@@ -153,16 +170,83 @@ func (s *stdout) flushIdle() {
 	s.flushPending = false
 }
 
-// lockUnpaused acquires the mutex once logging is not paused. The caller must
-// unlock it.
-func (s *stdout) lockUnpaused() {
-	s.mutex.Lock()
+// waitUnpaused is called with the mutex held and returns false once logging
+// is not paused: the caller then writes. While the logger is paused and
+// holds its output (HoldOutput), the text is offered to the hold instead;
+// once the hold took it, waitUnpaused returns true and the caller is done.
+// A hold that does not take it (it is full, or ended) leaves the caller
+// waiting as without one.
+func (s *stdout) waitUnpaused(text func() []byte) (held bool) {
 	for s.pauseDepth > 0 {
+		if s.hold != nil && s.hold(heldOutput{s: s}, text()) {
+			return true
+		}
 		// Cond.Wait releases the mutex while logging is paused. This lets
 		// Resume acquire it and prevents a waiting log call from blocking the
 		// interactive path that owns the terminal.
 		s.resumeCond.Wait()
 	}
+	return false
+}
+
+// heldText is what log writes for message: the message and, for nl, its
+// line break, in one piece, so that a hold takes both or neither.
+func heldText(message string, nl bool) []byte {
+	text := make([]byte, 0, len(message)+1)
+	text = append(text, message...)
+	if nl {
+		text = append(text, '\n')
+	}
+	return text
+}
+
+// HoldOutput makes the paused logger offer what is logged to take instead
+// of blocking the caller: take reports whether it took the text p (copying
+// it), which it writes to w, unchanged and in the order taken, before the
+// pauser that held it resumes the logger. Text take refuses waits for the
+// pause to end, as without a hold. A nil take ends the holding; text taken
+// before stays with the hold. Writers already waiting are offered to the
+// new hold at once.
+func (s *stdout) HoldOutput(take func(w io.Writer, p []byte) bool) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	s.hold = take
+	if take != nil {
+		s.resumeCond.Broadcast()
+	}
+}
+
+// heldOutput is the writer a hold gives the text it took back through
+// (HoldOutput): it is written past the pause of the pauser that held it,
+// as it was logged before the writers that still wait, and flushed, so
+// that it stays in order with what the hold writes elsewhere next. That
+// pauser calls it before its own Resume. While another pauser has the
+// logger paused too (pause depth above one: the host key question, the
+// Ctrl-C statistics), nothing is written and the error is one whose
+// Paused method reports true: the caller keeps the text and tries again
+// later, so held text never runs into what that pauser shows, all held
+// text keeps one order, and the caller can still decide not to write.
+type heldOutput struct{ s *stdout }
+
+// heldOutputPaused is the error of a held text that can not be written
+// now, as another pauser has the logger.
+type heldOutputPaused struct{}
+
+func (heldOutputPaused) Error() string { return "held output: the logger is paused by another pauser" }
+
+// Paused marks the error for callers that know the logger only as a writer.
+func (heldOutputPaused) Paused() bool { return true }
+
+func (o heldOutput) Write(p []byte) (int, error) {
+	s := o.s
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if s.pauseDepth > 1 {
+		return 0, heldOutputPaused{}
+	}
+	_, err := s.writer.Write(p)
+	_ = s.writer.Flush()
+	return len(p), err
 }
 
 func (s *stdout) Pause() {

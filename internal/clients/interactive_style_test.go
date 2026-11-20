@@ -166,21 +166,6 @@ func TestStripANSI(t *testing.T) {
 	}
 }
 
-// TestEditorScreenCountsPrompt checks that the rows of the edit line count
-// the prompt in front of it.
-func TestEditorScreenCountsPrompt(t *testing.T) {
-	screen := newEditorScreen(nil)
-	screen.setWidth(10)
-	line := strings.Repeat("x", 5)
-	if row := screen.cursorRow(line, len(line)); row != 0 {
-		t.Fatalf("row without a prompt = %d, want 0", row)
-	}
-	screen.setPromptWidth(len(interactivePrompt))
-	if row := screen.cursorRow(line, len(line)); row != 1 {
-		t.Fatalf("row with a %d column prompt = %d, want 1", len(interactivePrompt), row)
-	}
-}
-
 // TestInteractiveStylePaintsEachLine checks that a text of several lines
 // (an error joined with errors.Join) is painted line by line, as :help and
 // :fields are: every line starts in its style and ends reset, so no color
@@ -337,5 +322,25 @@ func TestInteractiveHelpIsPaintedByKind(t *testing.T) {
 			t.Errorf("mode %s: %d headings and %d examples painted, want 2 headings and examples",
 				args.Mode, headings, examples)
 		}
+	}
+}
+
+// stripANSI removes the SGR sequences (ESC [ ... m) paint adds, so that
+// tests can compare painted text with its plain form.
+func stripANSI(text string) string {
+	var sb strings.Builder
+	for {
+		start := strings.Index(text, "\x1b[")
+		if start < 0 {
+			sb.WriteString(text)
+			return sb.String()
+		}
+		end := strings.IndexByte(text[start:], 'm')
+		if end < 0 {
+			sb.WriteString(text)
+			return sb.String()
+		}
+		sb.WriteString(text[:start])
+		text = text[start+end+1:]
 	}
 }

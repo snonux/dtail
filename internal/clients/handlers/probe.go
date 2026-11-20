@@ -54,7 +54,7 @@ var (
 // only the client's slot, while dserver went on sampling and answered the
 // listing with protocol.ProbeErrorBusy. Waiting instead costs at most the
 // rest of a running probe, which the server bounds (10 s of sampling), and
-// with the output running the running probe's answer is read at once. Probe
+// while the output's writers go on the running probe's answer is read at once. Probe
 // runs on the caller's goroutine and never blocks the handler's Write,
 // which only queues answers (handleProbeMessage).
 func (h *baseHandler) Probe(ctx context.Context, request protocol.ProbeRequest) (protocol.ProbeAnswer, error) {

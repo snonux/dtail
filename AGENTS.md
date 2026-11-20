@@ -319,7 +319,8 @@ plain text without colors. Commands, flags and paths have no groups and
 are listed on one wrapped line. The query
 completion reads the cache only, except that a typed `from` table not probed
 on its own within 60 s has `completeEditorLine` ask for a table probe and
-wait up to 1 s with the output running (see "Probe Command"). Inside a `--files`
+wait up to 1 s with the paused output held (see "Tab waits" below and
+"Probe Command"). Inside a `--files`
 value the editor completes remote paths (`completeEditorLine` in
 `interactive_tty_paths.go` calls `completeFilesValue`,
 `interactive_complete_paths.go`, before `completeInteractive`): the last
@@ -337,17 +338,11 @@ fresh ones too; never `journal:`, whose units are listed on Tab only, as
 each listing runs `journalctl --field _SYSTEMD_UNIT`), without waiting for them (`prefetchListings`, `interactive_probe_paths.go`). An uncached listing is asked of the first
 connection up (`interactiveProber.listPaths`, deduplicated, not bound to the
 Tab's wait, so a late answer is cached for the next Tab) and waited for at
-most `pathListingWait` (1 s) with the output running
-(`interactivePause.runOutput`; the edit line is taken off the screen and its
-rows restored by `editorScreen`, through `interactiveEditor.hideLine`/
-`showLine`: while it is `hidden` nothing may have the Terminal draw, whose
-cursor bookkeeping still describes the drawn line, so a SIGWINCH resize is
-deferred until `showLine` (`resizePending`) and control output of another
-goroutine, the Ctrl-C statistics, is written to the TTY as it is
-(`editorOutput`); `TestInteractiveEditorHiddenLineIsNotRedrawn`. The
-output is always paused at such a wait, as `editorKey` calls `startTyping`
-before it completes), also in serverless mode, whose in-process
-server logs to the paused output; on a timeout a hint is shown. A key that inserts text, Tab or a
+most `pathListingWait` (1 s) with the paused output held, not printed
+(see "Tab waits hold the output" below; the output is always paused at
+such a wait, as `editorKey` calls `startTyping` before it completes), also
+in serverless mode, whose in-process server logs to the paused output; on
+a timeout a hint is shown. A key that inserts text, Tab or a
 history recall pauses the output (`interactivePause.pauseTyping`; x/term only
 passes inserting and unbound keys to the callback, recalls are seen through
 `controlHistory.onRecall`), the entered line resumes it silently; an explicit
@@ -360,13 +355,87 @@ still pause, but no hint, Tab consumed without completing, and
 the Ctrl-C statistics go through its writer (`stats.setInterruptOutput`,
 set by `openControlLines`), which redraws the edit line below them (to the
 control TTY, also when stdout is redirected).
+**Tab waits hold the output** (`interactivePause.holdOutput`,
+`outputHold` in `internal/clients/interactive_hold.go`): a server's answer
+to a path listing or table probe is read by the connection handlers that
+write the output (with a remote dserver it is queued behind payload on the
+same channel; the in-process server of serverless mode logs to the paused
+output), so while Tab waits for one (`waitForListing`, 1 s) or `:fields
+TABLE` for its table probe (`awaitTableProbe`, 2 s) the writers the pause
+blocks must go on. They do, but nothing is printed: for the wait the paused
+client logger offers what it would write to the hold instead of blocking
+(`clientlog.Hold` -> `loggers.OutputHolder`, implemented by the `stdout`
+logger next to its pause, delegated by `fout` and `DLog`; the daily file of
+`fout` gets its lines at once), and so does the serverless direct output
+(`outputGate.setHold`/`admit`). The hold is one ordered buffer of both, each
+text with the writer it goes to, at most `outputHoldMaxBytes` (4 MiB); once
+a text did not fit nothing more is taken and the writers block as while
+paused (memory stays bounded; the Tab then gives up with `holdFullHint`
+instead of "press Tab again": no answer can arrive until the output ran,
+`missingAnswerHint`, `outputHold.isFull`). After
+the wait the writers block again and the pause state (explicit or typing)
+is what it was. `interactivePause.resume` has the held text written first:
+`outputHold.release` queues it (one queue for every release, so text held
+later never overtakes text held before) and a goroutine writes the queue
+(`interactivePause.drain`, `outputHold.writeNext`: unchanged, colors
+included, in the order taken); only when the queue is out it lets the
+waiting writers go on (`blocked`, which outlasts `paused`). The drain
+writes only while the output is not paused: it writes pieces of about
+4 KiB ending at a line break (`holdPieceBytes`, `nextPiece`) and before
+each waits for the resume of a pause that began meanwhile (`wanted`,
+`resumed`), and `pause()` waits for the piece being written just then (at
+most `holdPieceWait`, 200 ms, so a terminal taking no write does not hold
+the control loop). So a key typed right behind the Enter, an explicit
+pause or a Tab's wait stops the held text at once, at a line's end; what
+is still queued stays queued, in order, ahead of what that pause's waits
+hold, and its bytes count towards the bound
+(`TestHoldDrainStopsForANewPause`, `TestHoldDrainWaitsWhilePausedAgain`,
+`TestTypeAheadBehindEnterStopsHeldOutputOnPTY`). So the control loop never writes
+held text itself and goes on reading lines when the output takes no
+write (a pipe to a stopped reader): `:show` is answered and `:quit` taken
+(`TestHoldDrainDoesNotBlockTheControlLoop`). Resumes are the entered line,
+an empty line, `:reload`/`:probe`/`:query`/`:tail`, and every exit of the
+control loop, which waits for the drain at most `holdDrainWait` (5 s,
+`interactivePause.end`; the drain goes on behind it); text held before
+`:help`/`:fields` kept the pause stays held until that pause ends. The
+logger's text comes back through `loggers.heldOutput`, written past this
+pause and flushed (so it keeps its place among serverless text). While
+another pauser has the logger too (host key question, Ctrl-C statistics:
+pause depth above one) that write is refused (an error whose `Paused`
+method reports true) and the drain offers the piece again every 20 ms
+(`holdBusyRetry`), looking at the pause each time; the whole queue,
+serverless text included, waits behind it: all held text keeps one order
+and none runs into what that pauser shows. The end of the control loop
+first ends a host key question still asked (`answers.close()`, taken as a
+no), so that it does not wait its 5 s for that pauser
+(`TestHoldDrainKeepsOneOrderUnderAnotherPauser`, on the real terminal
+logger, `loggers.NewTerminal`; `TestHoldDrainOrderStress`).
+A `--log-payload` tee of serverless payload is behind the gate and gets
+held payload at the release. Stdout redirected to a file or pipe is held
+the same way (the pause blocks it as well). As nothing is printed during
+the wait, the edit line stays on the screen: the former hide/restore of
+the line around the wait (`editorScreen.hideLine`/`restoreLine`,
+`interactiveEditor.hideLine`/`showLine`, the `hidden` state with its
+deferred resize and raw statistics output) is gone; a resize or the Ctrl-C
+statistics during a wait go through the Terminal as at any other time
+(`TestInteractiveEditorDrawsDuringTabWaitOnPTY`; the Terminal writes the
+echo of the keys of one read only after it handled them all, so keys read
+together with a waiting Tab are echoed after the wait).
+Both waits hold in both kinds of pause, typing and explicit; after
+`:fields TABLE` in an explicit pause the lines stay held until the empty
+line that resumes, which prints them before its `output resumed`.
+`TestHoldOutputKeepsOneOrder`, `TestExplicitPauseHoldsOutputOfWaits`,
+`TestStdoutHoldsOutputWhilePaused`,
+`TestInteractiveEditorCompletesPathsOnPTY`,
+`integrationtests/interactive_tab_hold_test.go` (dtail: Tab on a path
+listing and on a table probe, `:fields TABLE`, typing and explicit pause;
+dmap query builder: Tab after `from TABLE ` and `:fields TABLE`; dserver
+and serverless).
 `:help` and `:fields` always leave the output paused (`keepPausedAfter`)
 until the next empty line. A line started while the output is paused gets
 the prompt `dtail> ` (`interactiveEditor.setPrompt`, set only between lines:
 x/term draws a prompt at a line's start and counts it in every cursor move,
-so changing it mid-line would misplace the cursor; `editorScreen` counts it
-too, and after a Tab wait that let the output run `redrawLine` has the
-Terminal draw prompt and line again, as `hideLine` erased both). With terminal colors on, the editor's control output is painted by
+so changing it mid-line would misplace the cursor). With terminal colors on, the editor's control output is painted by
 `interactiveStyle` (`internal/clients/interactive_style.go`, theme
 `Client.TermColors.Interactive`, `config.InteractiveTermColors`): messages,
 `:help`, `:show`, `:fields`, the prompt and the Tab candidates, grouped and
@@ -511,7 +580,7 @@ An empty line pauses the terminal output (client logger and serverless direct
 output, `interactivePause`/`outputGate` in
 `internal/clients/interactive_pause.go`) and prints the help; the next empty
 line resumes it. The pause blocks the writers (backpressure to the servers, no
-buffering); a `:reload` (or `:probe`, `:query`, `:tail`) that parsed resumes first, as its
+buffering, except the bounded hold of a Tab's wait, above); a `:reload` (or `:probe`, `:query`, `:tail`) that parsed resumes first, as its
 acknowledgement is read by the blocked handlers, and the control loop resumes
 when it ends; a rejected line (flags, quoting, query parse) is answered with
 the output still paused (`resumesBeforeRun` is asked after
@@ -830,7 +899,9 @@ line; the no-files hint follows it as in every session), every line has the
 prompt `query> ` (`builderPrompt`, `interactiveEditor.builder`), typing shows
 no pause hint, and an empty line pauses nothing (it is answered with what to
 type): there is no output to pause, only the client's own log lines, which
-the typing pause still holds back while a line is edited and which every
+the typing pause still holds back while a line is edited, also during a
+Tab's wait for a table probe or path listing (kept in the hold then, see
+"Tab waits hold the output"), and which every
 entered line releases (`handleBuilderLine`). The builder runs with `Quiet`,
 so no periodic connection STATS are printed. A command word typed without
 its colon (`quit`, `exit`, `q`, `help`, `show`, `fields`, `probe`, `reload`,
@@ -1329,11 +1400,14 @@ full description: `docs/dev/probe.md`.
   handler), but a request sent while paused is not handled until the output
   runs, as the in-process server logs to the paused output. The query
   completion waits for a server only for a table probe (below); the path
-  completion waits at most 1 s with the output running.
+  completion waits at most 1 s. During both waits the paused writers go on
+  into a bounded hold instead of the terminal (`interactivePause.holdOutput`,
+  see "Tab waits hold the output"), so the answer arrives and nothing is
+  printed over the line being typed.
 - Table probes (`interactiveProber.requestTable`,
   `interactive_probe_table.go`): when Tab completes in a `--query` value
   with a typed `from` table (`completeWithTableProbe`; only the Tab that
-  sends it waits, like for a path listing, 1 s with the output running; a
+  sends it waits, like for a path listing, 1 s with the paused output held; a
   Tab while it is on its way completes from the cache with a hint) and on
   `:fields TABLE` (`awaitTableProbe`, 2 s), a table-targeted probe of the
   current files is sent to the round's targets, unless one is on its way

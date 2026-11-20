@@ -35,6 +35,9 @@ type probeTestHandler struct {
 	err      error
 	listings map[string][]protocol.ProbeEntry
 	listGate func(prefix string) bool
+	// tableGate, if set, holds a table probe's answer back until it
+	// reports true.
+	tableGate func() bool
 	// connecting marks a connection whose session is not up yet.
 	connecting bool
 
@@ -69,6 +72,13 @@ func (h *probeTestHandler) Probe(ctx context.Context, request protocol.ProbeRequ
 		return h.answerListing(ctx, request)
 	}
 	if request.Table != "" {
+		for h.tableGate != nil && !h.tableGate() {
+			select {
+			case <-ctx.Done():
+				return protocol.ProbeAnswer{}, ctx.Err()
+			case <-time.After(5 * time.Millisecond):
+			}
+		}
 		answer := tableTestAnswer(request.Table, "field", "caller.go:1", 1)
 		answer.ID = request.ID
 		return answer, nil

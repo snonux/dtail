@@ -21,14 +21,21 @@ import (
 )
 
 // pausingTestLogger is a client logger whose payload writes block while it
-// is paused, as those of the stdout logger do (loggers.stdout.lockUnpaused).
-// Pauses are depth counted like there.
+// is paused, as those of the stdout logger do (loggers.stdout.waitUnpaused).
+// Pauses are depth counted like there, and like there a hold (HoldOutput)
+// takes what is written while paused instead of blocking the writer.
 type pausingTestLogger struct {
 	clientlog.NopLogger
 	mu      sync.Mutex
 	cond    *sync.Cond
 	depth   int
 	written []string
+	// accepted counts the writes that returned: written or taken by a hold.
+	accepted int
+	// hold is offered what is written while paused (HoldOutput).
+	hold func(io.Writer, []byte) bool
+	// out, if set, gets everything written too, as a terminal would.
+	out io.Writer
 	// onRaw, if set, is called after every payload write, outside the lock.
 	onRaw func()
 }
@@ -54,12 +61,49 @@ func (l *pausingTestLogger) Resume() {
 	l.cond.Broadcast()
 }
 
-func (l *pausingTestLogger) Raw(message string) string {
+// HoldOutput has the paused logger offer its writes to take, like the
+// stdout logger.
+func (l *pausingTestLogger) HoldOutput(take func(io.Writer, []byte) bool) {
 	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.hold = take
+	l.cond.Broadcast()
+}
+
+// pausingTestHeld is the writer held text comes back through.
+type pausingTestHeld struct{ l *pausingTestLogger }
+
+func (h pausingTestHeld) Write(p []byte) (int, error) {
+	h.l.mu.Lock()
+	defer h.l.mu.Unlock()
+	h.l.record(string(p))
+	return len(p), nil
+}
+
+// record notes message as written. The caller holds the lock.
+func (l *pausingTestLogger) record(message string) {
+	l.written = append(l.written, message)
+	if l.out != nil {
+		_, _ = io.WriteString(l.out, message)
+	}
+}
+
+// write records message once the logger is not paused, or hands it to the
+// hold while it is. The caller holds the lock.
+func (l *pausingTestLogger) write(message string) {
+	defer func() { l.accepted++ }()
 	for l.depth > 0 {
+		if l.hold != nil && l.hold(pausingTestHeld{l: l}, []byte(message)) {
+			return
+		}
 		l.cond.Wait()
 	}
-	l.written = append(l.written, message)
+	l.record(message)
+}
+
+func (l *pausingTestLogger) Raw(message string) string {
+	l.mu.Lock()
+	l.write(message)
 	onRaw := l.onRaw
 	l.mu.Unlock()
 	if onRaw != nil {
@@ -73,11 +117,24 @@ func (l *pausingTestLogger) Raw(message string) string {
 func (l *pausingTestLogger) log(message string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	for l.depth > 0 {
-		l.cond.Wait()
-	}
-	l.written = append(l.written, message)
+	l.write(message)
 	return message
+}
+
+// acceptedWrites returns the number of writes that returned, printed or
+// held.
+func (l *pausingTestLogger) acceptedWrites() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.accepted
+}
+
+// writable reports whether a write returns now: the logger is not paused,
+// or holds its output.
+func (l *pausingTestLogger) writable() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.depth == 0 || l.hold != nil
 }
 
 // RawBytes is Raw for the client handlers' payload writes
@@ -171,7 +228,10 @@ func TestNilOutputGateNeverBlocks(t *testing.T) {
 	}
 	gate.Pause()
 	gate.Resume()
-	gate.wait()
+	gate.setHold(newOutputHold(1))
+	if gate.admit(&out, []byte("x")) {
+		t.Fatal("nil gate held a write")
+	}
 }
 
 func newPauseTestClient(logger *pausingTestLogger) *baseClient {

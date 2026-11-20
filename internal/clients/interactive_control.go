@@ -218,7 +218,14 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 	// loop ends, so that writers blocked by the pause can finish and the
 	// client shuts down.
 	pause := c.newInteractivePause()
-	defer pause.resume()
+	// A host key question still asked pauses the logger, and held text
+	// waits for it: end the question first (it takes the end of its
+	// answers as a no), so that the end of the loop does not wait its
+	// whole time for it.
+	defer func() {
+		answers.close()
+		pause.end()
+	}()
 	lines, closeLines := c.openControlLines(ctx, tty, pause, answers, deps)
 	defer closeLines()
 	defer c.keepHistory(lines)

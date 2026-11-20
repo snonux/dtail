@@ -11,7 +11,7 @@ import (
 	"github.com/mimecast/dtail/internal/protocol"
 )
 
-// tableProbeWait is how long :fields TABLE waits, with the output running,
+// tableProbeWait is how long :fields TABLE waits, with paused output held,
 // for a table probe of TABLE it asked for (awaitTableProbe). The server
 // stops sampling after 10 s, but a table probe normally answers within
 // milliseconds.
@@ -80,16 +80,16 @@ func (p *interactiveProber) startTableProbe(ctx context.Context, table string, f
 
 // awaitTableProbe has :fields TABLE show what a table probe found: it asks
 // for a table probe of the table (named as the catalog spells it,
-// catalogTableName) and waits for it at most tableProbeWait with the output
-// running (interactivePause.runOutput), as a server's answer is only read
-// while the output runs (see interactiveProber). It returns at once when a
+// catalogTableName) and waits for it at most tableProbeWait with paused
+// output held (interactivePause.holdOutput), as a server's answer is only
+// read while the output's writers go on (see interactiveProber). It returns at once when a
 // fresh answer is cached or nothing can be probed (requestTable).
 func (c *baseClient) awaitTableProbe(pause *interactivePause, table string) {
 	done, _ := c.prober.requestTable(catalogTableName(c.prober.catalogSnapshot(), table))
 	if done == nil {
 		return
 	}
-	pause.runOutput(func() {
+	pause.holdOutput(func() {
 		timer := time.NewTimer(tableProbeWait)
 		defer timer.Stop()
 		select {

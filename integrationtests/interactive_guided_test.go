@@ -268,8 +268,10 @@ func testInteractiveQueryTableScope(t *testing.T, serverless bool) {
 // line is typed afresh (Ctrl-U clears the one before). A where value of
 // $caller is the only one the table's lines have, so Tab inserts it. The
 // first Tab after from RARE asks for the table probe and waits for it at
-// most a second; the step waits for the client's debug line of its answer
-// and Tabs again, which completes the field if the first Tab did not. If
+// most a second; the next step gives the answer two seconds (the client's
+// debug line of it is no signal: log lines are held, not printed, while the
+// line is edited) and Tabs again, which completes the field if the first
+// Tab did not. If
 // the first Tab already completed count(rareField), what the second Tab
 // after the ')' does is not checked: the step waits only for the completed
 // item, which stays on the line, and Ctrl-U clears the line after it.
@@ -285,7 +287,7 @@ func tableScopeSteps() []interactiveStep {
 		tab("$date", "\x15:query from ORDERS"+where),
 		tab(`eq "orders.go:10" `, "\x15:query from STATS"+where),
 		tab(`eq "stats.go:56" `, "\x15:query from RARE select count(ra\t"),
-		tab("|RARE|formats|", "\t"),
+		{WaitFor: "select count(ra", Delay: 2 * time.Second, Input: "\t", Raw: true},
 		tab("count(rareField)", "\x15:fields RARE\r"),
 		{WaitFor: "table RARE probed on its own", Input: ":quit"},
 	}

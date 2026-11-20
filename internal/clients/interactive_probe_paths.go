@@ -13,8 +13,9 @@ import (
 )
 
 // pathListingWait is how long a Tab waits for a path listing that is not
-// cached: the line editor must never block for long. With a remote server
-// the output runs meanwhile, as the answer is only read while it runs (see
+// cached: the line editor must never block for long. The paused output's
+// writers go on meanwhile, as the answer is only read while they do, but
+// what they write is held, not printed (interactivePause.holdOutput, see
 // interactiveProber).
 const pathListingWait = time.Second
 

@@ -6,14 +6,18 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 )
 
 // ptySettle is how long readPTYSettled reads: long enough for a redraw
@@ -104,90 +108,111 @@ func TestInteractiveEditorBracketedPasteOnPTY(t *testing.T) {
 	}
 }
 
-// TestInteractiveEditorHiddenLineIsNotRedrawn takes the line being edited
-// off a real pseudo terminal as a Tab's wait does and, while it is hidden,
-// writes control output from another goroutine (the Ctrl-C statistics) and
-// resizes the window (SIGWINCH): neither may have the Terminal draw, as it
-// would redraw the line from the cursor position it remembers. The
-// statistics are written as they are and the resize is taken over when the
-// line is shown again.
-func TestInteractiveEditorHiddenLineIsNotRedrawn(t *testing.T) {
+// TestInteractiveEditorDrawsDuringTabWaitOnPTY presses Tab on a real pseudo
+// terminal where the completion waits for a server's path listing, and
+// during that wait writes control output from another goroutine (the
+// Ctrl-C statistics) and resizes the window (SIGWINCH). The line stays on
+// the screen for the wait (the output is held, not printed), so both go
+// through the Terminal as at any other time: the statistics are printed
+// above the line, which is drawn again below them, the new width counts at
+// once, and the completion then lands on the intact line.
+func TestInteractiveEditorDrawsDuringTabWaitOnPTY(t *testing.T) {
 	t.Parallel()
 	master, ttyPath := openTestPTY(t)
-	slave, err := os.OpenFile(ttyPath, os.O_RDWR|syscall.O_NOCTTY, 0)
-	if err != nil {
-		t.Skipf("pseudo terminal slave: %v", err)
-	}
-	t.Cleanup(func() { _ = slave.Close() })
-	// The slave's descriptor: Fd on the master would make it blocking, and
-	// its read deadlines would no longer hold.
-	setWinsize := func(columns uint16) {
-		t.Helper()
-		size, err := os.OpenFile(ttyPath, os.O_RDWR|syscall.O_NOCTTY, 0)
-		if err != nil {
-			t.Fatalf("open %s: %v", ttyPath, err)
-		}
-		defer func() { _ = size.Close() }()
-		if err := unix.IoctlSetWinsize(int(size.Fd()), unix.TIOCSWINSZ,
-			&unix.Winsize{Row: 30, Col: columns}); err != nil {
-			t.Skipf("set window size: %v", err)
-		}
-	}
-	setWinsize(100)
-	client := newPauseTestClient(newPausingTestLogger())
-	lines := client.newControlLines(slave, client.newInteractivePause(), nil, testEditorDeps())
-	editor, ok := lines.(*interactiveEditor)
-	if !ok {
-		t.Fatalf("control lines on a terminal = %T, want *interactiveEditor", lines)
-	}
+	client, listingArrives := newGatedListingClient(t)
+	lines, editor := openEditorOnPTY(t, client, ttyPath)
 	read := make(chan string, 1)
 	go func() {
 		line, _ := lines.ReadLine()
 		read <- line
 	}()
-	const typed = ":reload --regex typed-so-far"
+	const typed = ":reload --files /srv/d"
+	// The Tab on its own: the Terminal writes the echo of the keys of one
+	// read only after it handled them all, the waiting Tab included.
 	writePTY(t, master, typed)
 	waitForPTYOutput(t, master, typed, nil)
+	writePTY(t, master, "\t")
+	handler := client.connections[0].Handler().(*probeTestHandler)
+	waitFor(t, "the Tab's listing request", func() bool { return slices.Contains(handler.listed(), "/srv/") })
+	readPTYSettled(t, master)
 
-	editor.hideLine(typed, len(typed))
-	setWinsize(60)
-	editor.resize() // what the SIGWINCH watcher calls
-	if _, err := lines.Writer().Write([]byte("STATS while hidden\n")); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := readPTYSettled(t, master), "\r\x1b[JSTATS while hidden\r\n"; got != want {
-		t.Fatalf("while the line was hidden the TTY got %q, want only the erased line and the statistics %q",
-			got, want)
-	}
-	if columns := editor.screen.columns(); columns != 100 {
-		t.Fatalf("resize applied while the line was hidden: %d columns, want it deferred (100)", columns)
-	}
-
-	editor.showLine(typed, len(typed))
-	if got := readPTYSettled(t, master); !strings.Contains(got, typed) {
-		t.Fatalf("line not drawn again after the wait: %q", got)
-	}
-	if columns := editor.screen.columns(); columns != 60 {
-		t.Fatalf("deferred resize not applied after the wait: %d columns, want 60", columns)
-	}
-	// Shown again, control output goes through the Terminal, which draws
-	// the line below it.
-	if _, err := lines.Writer().Write([]byte("STATS while shown\n")); err != nil {
+	if _, err := lines.Writer().Write([]byte("STATS during the wait\n")); err != nil {
 		t.Fatal(err)
 	}
 	got := readPTYSettled(t, master)
-	stats := strings.Index(got, "STATS while shown")
-	if stats < 0 || !strings.Contains(got[stats:], typed) || !strings.HasPrefix(got, "\x1b[") {
-		t.Fatalf("control output with the line shown: %q, want the line cleared and drawn again below it", got)
+	stats := strings.Index(got, "STATS during the wait")
+	if stats < 0 || !strings.Contains(got[stats:], typed) {
+		t.Fatalf("statistics during the Tab's wait: %q, want them printed and the line drawn again below", got)
 	}
+	setPTYColumns(t, ttyPath, 60)
+	editor.resize() // what the SIGWINCH watcher calls
+	if columns := editor.screen.columns(); columns != 60 {
+		t.Fatalf("resize during the Tab's wait: %d columns, want 60 at once", columns)
+	}
+
+	listingArrives()
+	waitForPTYOutput(t, master, "/srv/data.log", nil)
 	writePTY(t, master, "\n")
 	select {
 	case line := <-read:
-		if line != typed {
-			t.Fatalf("line read = %q, want %q", line, typed)
+		if want := ":reload --files /srv/data.log"; line != want {
+			t.Fatalf("line read = %q, want %q", line, want)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("line not read")
 	}
 	lines.close()
+}
+
+// openEditorOnPTY opens the client's line editor on the pseudo terminal
+// at ttyPath, 100 columns wide.
+func openEditorOnPTY(t *testing.T, client *baseClient, ttyPath string) (controlLines, *interactiveEditor) {
+	t.Helper()
+	slave, err := os.OpenFile(ttyPath, os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Skipf("pseudo terminal slave: %v", err)
+	}
+	t.Cleanup(func() { _ = slave.Close() })
+	setPTYColumns(t, ttyPath, 100)
+	lines := client.newControlLines(slave, client.newInteractivePause(), nil, testEditorDeps())
+	editor, ok := lines.(*interactiveEditor)
+	if !ok {
+		t.Fatalf("control lines on a terminal = %T, want *interactiveEditor", lines)
+	}
+	return lines, editor
+}
+
+// newGatedListingClient returns a client whose server answers path
+// listings only once the returned function was called, and whose Tab waits
+// for one up to ten seconds.
+func newGatedListingClient(t *testing.T) (*baseClient, func()) {
+	t.Helper()
+	client := newPauseTestClient(newPausingTestLogger())
+	conn, handler := probeTestConnection("srv1")
+	handler.listings = map[string][]protocol.ProbeEntry{"/srv/": {{Name: "data.log"}}}
+	var open atomic.Bool
+	handler.listGate = func(string) bool { return open.Load() }
+	client.connections = []connectors.Connector{conn}
+	client.prober = client.newInteractiveProber()
+	client.prober.listWait = 10 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel(); client.prober.wait() })
+	client.prober.start(ctx)
+	return client, func() { open.Store(true) }
+}
+
+// setPTYColumns sets the window width of the pseudo terminal at path,
+// through the slave's descriptor: Fd on the master would make it
+// blocking, and its read deadlines would no longer hold.
+func setPTYColumns(t *testing.T, path string, columns uint16) {
+	t.Helper()
+	size, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		t.Fatalf("open %s: %v", path, err)
+	}
+	defer func() { _ = size.Close() }()
+	if err := unix.IoctlSetWinsize(int(size.Fd()), unix.TIOCSWINSZ,
+		&unix.Winsize{Row: 30, Col: columns}); err != nil {
+		t.Skipf("set window size: %v", err)
+	}
 }

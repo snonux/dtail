@@ -175,7 +175,7 @@ func TestTableProbeOfSilentServer(t *testing.T) {
 		line := ":reload --query 'from orders select "
 		tab := func() (completion, time.Duration) {
 			start := time.Now()
-			result := c.completeEditorLine(nil, pause, line, len(line))
+			result := c.completeEditorLine(pause, line, len(line))
 			return result, time.Since(start)
 		}
 		tableRequests := func() int {
@@ -299,7 +299,7 @@ func TestInteractiveProberRequestTableWithoutFiles(t *testing.T) {
 }
 
 // TestFieldsCommandAwaitsTableProbe: :fields orders asks for a table probe
-// of ORDERS (upper case, as a query names it) with the output running while
+// of ORDERS (upper case, as a query names it) with paused output held while
 // it waits, then shows its answer and leaves the output paused; a second
 // :fields orders while the answer is fresh asks nothing.
 func TestFieldsCommandAwaitsTableProbe(t *testing.T) {
@@ -349,7 +349,7 @@ func TestEditorTabAsksForTableProbe(t *testing.T) {
 
 		var result completion
 		for _, line := range []string{":reload --query 'select ", ":reload --query 'from orders select "} {
-			result = c.completeEditorLine(nil, pause, line, len(line))
+			result = c.completeEditorLine(pause, line, len(line))
 		}
 		synctest.Wait()
 		requests := handler.requestsWhere(func(r protocol.ProbeRequest) bool { return r.Table != "" })

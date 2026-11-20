@@ -4,6 +4,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/logging"
@@ -22,11 +23,15 @@ const (
 // outputGate holds back writes to the serverless direct output while the
 // interactive output is paused. That output bypasses the client logger
 // (handlers.Dependencies.ServerlessOutput), so pausing the logger alone would
-// let serverless payload go on scrolling. A nil *outputGate never blocks.
+// let serverless payload go on scrolling. While the paused output is held
+// (setHold), a write is kept by the hold instead of waiting. A nil
+// *outputGate never blocks.
 type outputGate struct {
 	mu     sync.Mutex
 	cond   *sync.Cond
 	paused bool
+	// hold takes the writes of the paused gate while it is set (setHold).
+	hold *outputHold
 }
 
 func newOutputGate() *outputGate {
@@ -57,36 +62,63 @@ func (g *outputGate) Resume() {
 	g.cond.Broadcast()
 }
 
-// wait blocks while the gate is paused.
-func (g *outputGate) wait() {
+// setHold has the paused gate offer its writes to hold instead of making
+// them wait, also the ones waiting already; nil ends that.
+func (g *outputGate) setHold(hold *outputHold) {
 	if g == nil {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.hold = hold
+	g.cond.Broadcast()
+}
+
+// admit blocks while the gate is paused and returns false once it is open:
+// the caller then writes p. While the paused gate has a hold that takes p
+// (to write it to w later), it returns true at once and the caller is done.
+func (g *outputGate) admit(w io.Writer, p []byte) (held bool) {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	for g.paused {
+		if g.hold.take(w, p) {
+			return true
+		}
 		g.cond.Wait()
 	}
+	return false
 }
 
 // writer wraps w so that every write first waits for the gate to be open.
 // Blocking the writer applies backpressure to the in-process server, like a
-// paused pager does to a remote one.
+// paused pager does to a remote one. A write the gate's hold took is
+// written to w when the hold is released.
 func (g *outputGate) writer(w io.Writer) io.Writer {
 	if g == nil {
 		return w
 	}
-	return gatedWriter{gate: g, w: w}
+	return gatedWriter{gate: g, out: &gatedOutput{w: w}}
 }
+
+// gatedOutput is the output behind a gate; its address is what the hold
+// knows a gated writer's destination by (outputHold.take).
+type gatedOutput struct{ w io.Writer }
+
+func (o *gatedOutput) Write(p []byte) (int, error) { return o.w.Write(p) }
 
 type gatedWriter struct {
 	gate *outputGate
-	w    io.Writer
+	out  *gatedOutput
 }
 
 func (w gatedWriter) Write(p []byte) (int, error) {
-	w.gate.wait()
-	return w.w.Write(p)
+	if w.gate.admit(w.out, p) {
+		return len(p), nil
+	}
+	return w.out.Write(p)
 }
 
 // interactivePause is the pause state of the interactive control loop: an
@@ -96,11 +128,16 @@ func (w gatedWriter) Write(p []byte) (int, error) {
 // pauses it too (pauseTyping), and the command's end resumes it. Pausing
 // blocks the writers (client logger and serverless direct output), which
 // applies backpressure to the servers instead of buffering output without
-// bound. It is used by the control loop goroutine only (the editor's key
-// callback runs inside that goroutine's ReadLine).
+// bound; only while the control loop waits for a server's answer the
+// writers go on and their output is kept, up to outputHoldMaxBytes, until
+// the output resumes (holdOutput). It is used by the control loop goroutine
+// only (the editor's key callback runs inside that goroutine's ReadLine).
 type interactivePause struct {
 	logger logging.Logger
 	gate   *outputGate
+	// hold keeps the output of the waits that must not block the writers
+	// (holdOutput); resume has it written first (drain).
+	hold   *outputHold
 	paused bool
 	// typing is true while the output is paused only because a command is
 	// being typed: the line's end resumes it, without a message.
@@ -108,19 +145,61 @@ type interactivePause struct {
 	// prober is told about every pause and resume, as it holds back its
 	// periodic rounds while the output is paused; nil without one.
 	prober *interactiveProber
+	// mu guards wanted, blocked, draining, drained and writing, which the
+	// drain goroutine shares with the control loop. It is taken before the locks of the
+	// logger, the gate and the hold, never under them.
+	mu sync.Mutex
+	// wanted is paused as the drain goroutine may read it; resumed
+	// (a condition on mu) is signalled when it turns false.
+	wanted  bool
+	resumed *sync.Cond
+	// blocked is true while this pause blocks the writers (logger paused
+	// once, gate paused): from pause until the output resumed and the held
+	// text is written, which can be later than paused turns false.
+	blocked bool
+	// draining is true while the drain goroutine writes released held
+	// text; drained is closed when it is done.
+	draining bool
+	drained  chan struct{}
+	// writing is set while the drain writes a piece of held text and
+	// closed when that piece is out: a pause waits for it (pause).
+	writing chan struct{}
 }
+
+// holdDrainWait is how long the end of the control loop waits for held
+// text to be written (a stalled terminal or a host key question can keep
+// it): the drain goes on after it, as long as the process lives.
+const holdDrainWait = 5 * time.Second
+
+// holdPieceWait is how long a pause waits for the piece of held text the
+// drain is writing just then, so that nothing of it lands on the line
+// being typed; a terminal that takes no write must not hold the control
+// loop longer. holdBusyRetry is how long the drain waits before it offers
+// a piece again that the logger refused for another pauser.
+const (
+	holdPieceWait = 200 * time.Millisecond
+	holdBusyRetry = 20 * time.Millisecond
+)
 
 func (c *baseClient) newInteractivePause() *interactivePause {
 	var gate *outputGate
 	if c.runtime != nil {
 		gate = c.runtime.outputGate
 	}
-	return &interactivePause{logger: c.clientLogger(), gate: gate, prober: c.prober}
+	p := &interactivePause{logger: c.clientLogger(), gate: gate, prober: c.prober,
+		hold: newOutputHold(outputHoldMaxBytes)}
+	p.resumed = sync.NewCond(&p.mu)
+	return p
 }
 
 // pause stops the output unless it is paused already. The logger's pause is
 // depth counted, so it combines with the pauses of the host key prompt and
-// the interrupt statistics.
+// the interrupt statistics; this pause holds it once, also while held text
+// of the pause before is still being written (blocked). That writing stops
+// with the pause: the drain writes no further piece until the output
+// resumes, and the piece it is writing just then is waited for
+// (holdPieceWait), so no held text lands on the line being typed, however
+// soon after the Enter its first key comes.
 func (p *interactivePause) pause() {
 	if p.paused {
 		return
@@ -128,8 +207,24 @@ func (p *interactivePause) pause() {
 	p.paused = true
 	p.typing = false
 	p.prober.setOutputPaused(true)
-	clientlog.Pause(p.logger)
-	p.gate.Pause()
+	p.mu.Lock()
+	p.wanted = true
+	if !p.blocked {
+		clientlog.Pause(p.logger)
+		p.gate.Pause()
+		p.blocked = true
+	}
+	writing := p.writing
+	p.mu.Unlock()
+	if writing == nil {
+		return
+	}
+	timer := time.NewTimer(holdPieceWait)
+	defer timer.Stop()
+	select {
+	case <-writing:
+	case <-timer.C:
+	}
 }
 
 // pauseTyping pauses the output while a command is typed, unless it is
@@ -145,34 +240,127 @@ func (p *interactivePause) pauseTyping() bool {
 }
 
 // resume restarts the output if this loop paused it, and reports whether it
-// did.
+// did. Output held during the pause (holdOutput) comes first: it is queued
+// and written by a goroutine (drain) while the output is not paused again,
+// and the writers that wait are let go on only once it is out, so it comes before everything written after it,
+// while the control loop goes on reading lines also when the terminal
+// takes no output (a pipe to a stopped reader) or another pauser has the
+// logger. Without held text the writers go on at once.
 func (p *interactivePause) resume() bool {
 	if !p.paused {
 		return false
 	}
 	p.paused = false
 	p.typing = false
-	p.gate.Resume()
-	clientlog.Resume(p.logger)
+	p.mu.Lock()
+	p.wanted = false
+	p.resumed.Broadcast()
+	pending := p.hold.release()
+	switch {
+	case p.draining:
+		// The running drain writes what was just queued, too.
+	case pending:
+		p.draining = true
+		p.drained = make(chan struct{})
+		go p.drain()
+	default:
+		p.unblock()
+	}
+	p.mu.Unlock()
 	p.prober.setOutputPaused(false)
 	return true
 }
 
-// runOutput runs fn with the output running: a paused output is released
-// for the time of fn and paused again after it, keeping the pause state
-// (explicit or for typing) as it was, and the prober is not told (it is no
-// resume for its periodic rounds). Tab uses it to wait for a path listing,
-// whose answer arrives only while the output runs (waitForListing).
-func (p *interactivePause) runOutput(fn func()) {
+// unblock lets the writers go on, if this pause blocks them. The caller
+// holds mu.
+func (p *interactivePause) unblock() {
+	if p.blocked {
+		p.gate.Resume()
+		clientlog.Resume(p.logger)
+		p.blocked = false
+	}
+}
+
+// drain writes the released held text in order, piece by piece, and then
+// lets the writers go on. It writes only while the output is not paused:
+// before every piece it waits for the resume of a pause that began
+// meanwhile (the text stays queued, ahead of what that pause's waits
+// hold), and a piece the logger refuses for another pauser (the Ctrl-C
+// statistics, the host key question) is offered again later, after the
+// same look at the pause. Releases are queued under mu, so the queue is
+// found empty and the drain ended in one step: text released later is
+// written by this drain or by the next, never beside it.
+func (p *interactivePause) drain() {
+	for {
+		p.mu.Lock()
+		for p.wanted {
+			p.resumed.Wait()
+		}
+		if !p.hold.hasQueued() {
+			p.draining = false
+			p.unblock()
+			close(p.drained)
+			p.mu.Unlock()
+			return
+		}
+		written := make(chan struct{})
+		p.writing = written
+		p.mu.Unlock()
+		step := p.hold.writeNext()
+		p.mu.Lock()
+		p.writing = nil
+		p.mu.Unlock()
+		close(written)
+		if step == heldBusy {
+			time.Sleep(holdBusyRetry)
+		}
+	}
+}
+
+// end resumes the output for the end of the control loop, so that writers
+// blocked by the pause can finish and the client shuts down, and waits
+// until the held text is written, at most holdDrainWait.
+func (p *interactivePause) end() {
+	p.resume()
+	p.mu.Lock()
+	drained, draining := p.drained, p.draining
+	p.mu.Unlock()
+	if !draining {
+		return
+	}
+	timer := time.NewTimer(holdDrainWait)
+	defer timer.Stop()
+	select {
+	case <-drained:
+	case <-timer.C:
+	}
+}
+
+// holdOutput runs fn, a wait for a server's answer, with the paused output
+// held: the writers the pause blocks (client logger, serverless direct
+// output) go on during fn, as the answer is read by the connection handlers
+// that write the output (with a remote server it is queued behind payload,
+// and the in-process server of serverless mode logs to the paused output),
+// but what they write is kept in memory (outputHold) instead of printed,
+// so that nothing runs over the line being typed. After fn the writers
+// block again; the pause state (explicit or for typing) is as it was, the
+// prober is not told (it is no resume for its periodic rounds), and the
+// held text is written when the output resumes (resume), which every exit
+// of the control loop does (end). Once outputHoldMaxBytes are held the writers
+// block during fn too, and the answer may not arrive in time. Output that
+// is not paused just runs during fn.
+func (p *interactivePause) holdOutput(fn func()) {
 	if !p.paused {
 		fn()
 		return
 	}
-	p.gate.Resume()
-	clientlog.Resume(p.logger)
+	p.hold.start()
+	clientlog.Hold(p.logger, p.hold.take)
+	p.gate.setHold(p.hold)
 	defer func() {
-		clientlog.Pause(p.logger)
-		p.gate.Pause()
+		p.gate.setHold(nil)
+		clientlog.Hold(p.logger, nil)
+		p.hold.stop()
 	}()
 	fn()
 }
@@ -186,8 +374,8 @@ func (p *interactivePause) runOutput(fn func()) {
 // paused only for typing (pauseTyping) is resumed silently once the line
 // was handled, except after :help and :fields, which
 // keep it paused until the next empty line (keepPausedAfter), so that their
-// answer does not scroll away. :fields TABLE first lets the output run
-// while it waits briefly for a table probe of TABLE (awaitTableProbe).
+// answer does not scroll away. :fields TABLE first waits briefly for a
+// table probe of TABLE, with paused output held meanwhile (awaitTableProbe).
 // :quit ends the loop, whose caller resumes the output for the shutdown.
 // The query builder of dmap handles its lines itself (handleBuilderLine).
 func (c *baseClient) handleInteractiveLine(tty io.Writer, line string,
@@ -223,8 +411,8 @@ func (c *baseClient) handleInteractiveLine(tty io.Writer, line string,
 	}
 	if command.kind == "fields" && command.table != "" {
 		// :fields TABLE shows what a table probe of TABLE found: one is
-		// asked for and waited for briefly with the output running, as its
-		// answer is only read then (awaitTableProbe).
+		// asked for and waited for briefly, with paused output held, as its
+		// answer is only read while the writers go on (awaitTableProbe).
 		c.awaitTableProbe(pause, command.table)
 	}
 	if keepsPause(command.kind) && (typing || !pause.paused) {

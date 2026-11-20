@@ -276,23 +276,3 @@ func (s *interactiveStyle) kindStyle(kind candidateKind) config.TermStyle {
 		candidateDirectory: theme.CandidateDirectory,
 	}[kind]
 }
-
-// stripANSI removes the SGR sequences (ESC [ ... m) paint adds, e.g. to
-// count the columns of a painted prompt.
-func stripANSI(text string) string {
-	var sb strings.Builder
-	for {
-		start := strings.Index(text, "\x1b[")
-		if start < 0 {
-			sb.WriteString(text)
-			return sb.String()
-		}
-		end := strings.IndexByte(text[start:], 'm')
-		if end < 0 {
-			sb.WriteString(text)
-			return sb.String()
-		}
-		sb.WriteString(text[:start])
-		text = text[start+end+1:]
-	}
-}

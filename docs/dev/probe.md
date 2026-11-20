@@ -469,8 +469,9 @@ catalog and the completion are the same.
   rather than failing or cancelling it. Cancelling would free only the
   client's slot: dserver goes on sampling (up to 10 s) and would answer the
   listing with `probe: another probe is running`. Waiting costs at most the
-  rest of the running probe, and as Tab lets the output run while it waits,
-  the running probe's answer is read at once. Tab's own wait stays bounded
+  rest of the running probe, and as the output's writers go on while Tab
+  waits (their output held, not printed), the running probe's answer is
+  read at once. Tab's own wait stays bounded
   (1 s, see below); the listing request goes on behind it.
 - `interactiveProber` (started by `startInteractiveControl`, waited for when
   the session ends) runs one round at a time: right away (each probe waits
@@ -550,12 +551,12 @@ catalog and the completion are the same.
   most 3) when Tab completes inside a `--query` value whose `from` table is
   typed (`completion.probeTable`, `completeWithTableProbe`; only the Tab
   that sends the request waits for it like for a path listing, at most 1 s
-  with the output running, and completes again; a Tab while it is still on
+  with the paused output held, and completes again; a Tab while it is still on
   its way, or whose wait ran out, completes from the cache at once with the
   hint `tableProbeMissingHint`), and
   when `:fields TABLE` is run (`awaitTableProbe`: the table as the catalog
   spells it, else in upper case; waited for at most `tableProbeWait`, 2 s,
-  with the output running, before `:fields` answers). It shares the
+  with the paused output held, before `:fields` answers). It shares the
   on-demand request state of the path listings (one request per table on
   its way, ids `t1`, `t2`, ..., bounded by the round timeout, waited for when
   the prober stops). It is not sent while the catalog holds an answer to a
@@ -622,13 +623,15 @@ comma-separated entry (`completeFilesValue`,
 - Waiting (`awaitPathListing`, `waitForListing` in
   `internal/clients/interactive_tty_paths.go`): with the listing not
   cached, Tab sends it and waits at most `pathListingWait` (1 s) with the
-  output running (`interactivePause.runOutput`, the pause state kept), as
-  the answer is only read then: with a remote dserver it is queued behind
-  payload; in serverless mode the in-process server logs to the paused
-  client output while it handles the request, so it waits the same way.
-  Before the output runs the edit line is taken off the screen and
-  afterwards as many empty rows are put below the output as the Terminal
-  moves up to redraw the line (`editorScreen`). When no listing came in
+  paused output held (`interactivePause.holdOutput`, the pause state
+  kept): the answer is only read while the output's writers go on (with a
+  remote dserver it is queued behind payload; in serverless mode the
+  in-process server logs to the paused client output while it handles the
+  request), so for the wait the client logger and the serverless direct
+  output hand what they would print to one ordered in-memory hold of at
+  most 4 MiB (`outputHold`; full, they block as while paused) instead of
+  blocking. Nothing is printed, the edit line stays on the screen, and the
+  held text is written first when the output resumes. When no listing came in
   time (or the request failed), a hint says so and the request goes on.
   A listing answered with an error reason instead of entries shows it as
   a hint, Go-quoted unless plainly printable (`displayText`, as `:fields`
@@ -653,4 +656,4 @@ sent while paused is not handled before the output runs, though, as the
 in-process server logs to the paused client output (found with the path
 completion's serverless integration test). The query completion therefore
 never waits for a server; it uses what the background rounds stored. The
-path completion waits at most 1 s, with the output running.
+path completion waits at most 1 s, with the paused output held.

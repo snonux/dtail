@@ -1,7 +1,6 @@
 package clients
 
 import (
-	"bytes"
 	"context"
 	"reflect"
 	"slices"
@@ -215,8 +214,6 @@ type pathWaitTest struct {
 	logger  *pausingTestLogger
 	handler *probeTestHandler
 	pause   *interactivePause
-	screen  *bytes.Buffer
-	editor  *interactiveEditor
 	// depths records the logger's pause depth whenever a listing went
 	// through the gate.
 	depths []int
@@ -225,7 +222,7 @@ type pathWaitTest struct {
 // newPathWaitTest returns the test client; gate decides, with the
 // client's logger, whether a listing of prefix is answered now.
 func newPathWaitTest(t *testing.T, serverless bool, gate func(logger *pausingTestLogger, prefix string) bool) *pathWaitTest {
-	w := &pathWaitTest{logger: newPausingTestLogger(), screen: &bytes.Buffer{}}
+	w := &pathWaitTest{logger: newPausingTestLogger()}
 	w.c = newPauseTestClient(w.logger)
 	w.c.Serverless = serverless
 	conn, handler := probeTestConnection("srv1")
@@ -247,12 +244,11 @@ func newPathWaitTest(t *testing.T, serverless bool, gate func(logger *pausingTes
 	synctest.Wait() // the first round prefetches /var/log/
 	w.pause = w.c.newInteractivePause()
 	w.pause.pauseTyping()
-	w.editor = &interactiveEditor{screen: newEditorScreen(w.screen)}
 	return w
 }
 
 func (w *pathWaitTest) complete(line string) completion {
-	return w.c.completeEditorLine(w.editor, w.pause, line, len(line))
+	return w.c.completeEditorLine(w.pause, line, len(line))
 }
 
 // requireTypingPause requires the output paused for typing, as before the
@@ -266,25 +262,24 @@ func (w *pathWaitTest) requireTypingPause(t *testing.T) {
 }
 
 // TestTabWaitsForPathListing: with a remote server (whose answer comes only
-// while the output runs) a cached directory completes at once with the
-// output paused; an uncached one lets the output run (the line taken off
-// the screen and its rows given back) until the answer came and pauses it
-// again; a listing that does not come within the wait gives a hint, and
-// the next Tab uses its late answer from the cache.
+// while the output's writers go on) a cached directory completes at once
+// with the output paused; an uncached one has the paused output held (its
+// writers go on, the logger stays paused) until the answer came and blocks
+// them again; a listing that does not come within the wait gives a hint,
+// and the next Tab uses its late answer from the cache.
 func TestTabWaitsForPathListing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var lateOpen atomic.Bool
 		w := newPathWaitTest(t, false, func(logger *pausingTestLogger, prefix string) bool {
-			running := logger.pauseDepth() == 0
-			return running && (prefix != "/late/" || lateOpen.Load())
+			return logger.writable() && (prefix != "/late/" || lateOpen.Load())
 		})
 		requests := len(w.handler.listed())
 
 		if got := w.complete(":reload --files /var/log/a"); got.line != ":reload --files /var/log/app.log" {
 			t.Fatalf("cached: %+v", got)
 		}
-		if len(w.handler.listed()) != requests || w.screen.Len() != 0 {
-			t.Fatalf("cached directory listed again (%q) or touched the screen (%q)", w.handler.listed(), w.screen)
+		if len(w.handler.listed()) != requests {
+			t.Fatalf("cached directory listed again (%q)", w.handler.listed())
 		}
 		w.requireTypingPause(t)
 
@@ -292,8 +287,8 @@ func TestTabWaitsForPathListing(t *testing.T) {
 		if got.line != ":reload --files /srv/data.log" || got.hint != "" {
 			t.Fatalf("uncached: %+v", got)
 		}
-		if w.depths[len(w.depths)-1] != 0 || w.screen.String() != "\r\x1b[J" {
-			t.Fatalf("output not running during the wait (depth %v) or screen %q", w.depths, w.screen)
+		if w.depths[len(w.depths)-1] != 1 {
+			t.Fatalf("output not kept paused (and held) during the wait: depths %v", w.depths)
 		}
 		w.requireTypingPause(t)
 
@@ -305,35 +300,57 @@ func TestTabWaitsForPathListing(t *testing.T) {
 		}
 		w.requireTypingPause(t)
 		lateOpen.Store(true)
-		// The output runs again (the user ran the line), and the answer
+		// The writers go on again (the user ran the line), and the answer
 		// arrives.
-		w.pause.runOutput(func() {
+		w.pause.holdOutput(func() {
 			time.Sleep(100 * time.Millisecond)
 			synctest.Wait()
 		})
-		w.screen.Reset()
-		if got := w.complete(":reload --files /late/l"); got.line != ":reload --files /late/late.log" ||
-			w.screen.Len() != 0 {
-			t.Fatalf("late answer not used: %+v, screen %q", got, w.screen)
+		if got := w.complete(":reload --files /late/l"); got.line != ":reload --files /late/late.log" {
+			t.Fatalf("late answer not used: %+v", got)
 		}
 	})
 }
 
-// TestTabWaitsForServerlessListing: in serverless mode Tab lets the output
-// run while it waits too, as the in-process server logs to the paused
-// client output while it handles the request.
+// TestTabWaitsForServerlessListing: in serverless mode Tab has the paused
+// output held while it waits too, as the in-process server logs to the
+// paused client output while it handles the request.
 func TestTabWaitsForServerlessListing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		w := newPathWaitTest(t, true, func(logger *pausingTestLogger, _ string) bool {
-			return logger.pauseDepth() == 0
+			return logger.writable()
 		})
 		if got := w.complete(":reload --files /srv/d"); got.line != ":reload --files /srv/data.log" {
 			t.Fatalf("serverless: %+v", got)
 		}
-		if w.screen.String() != "\r\x1b[J" {
-			t.Fatalf("screen %q, want the line taken off it", w.screen)
+		w.requireTypingPause(t)
+	})
+}
+
+// TestTabSaysWhenTheHeldOutputIsFull: once the hold is full the writers
+// block during the wait and no answer can arrive; the Tab then says so,
+// for a path listing and for a table probe, and not to press Tab again,
+// which would only wait again.
+func TestTabSaysWhenTheHeldOutputIsFull(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		w := newPathWaitTest(t, false, func(*pausingTestLogger, string) bool { return false })
+		w.pause.hold = newOutputHold(4)
+		blocked := startWrite(func() { w.logger.Raw("more than the hold takes\n") })
+		t.Cleanup(func() { w.pause.resume(); <-blocked })
+
+		got := w.complete(":reload --files /srv/d")
+		if got.hint != holdFullHint {
+			t.Fatalf("path listing with a full hold: hint %q, want %q", got.hint, holdFullHint)
 		}
 		w.requireTypingPause(t)
+
+		w.c.Args = queryArgs
+		conn := w.c.connections[0].(*probeTestConnector)
+		conn.handler.(*probeTestHandler).tableGate = func() bool { return false }
+		got = w.complete(":reload --query 'from STATS select ")
+		if !strings.Contains(got.hint, holdFullHint) || strings.Contains(got.hint, "press Tab again to use it") {
+			t.Fatalf("table probe with a full hold: hint %q", got.hint)
+		}
 	})
 }
 
@@ -353,32 +370,21 @@ func TestTabStopsWaitingForFailedListing(t *testing.T) {
 	})
 }
 
-// TestEditorScreen: hiding the edited line moves up to its first row and
-// clears to the end of the screen; restoring gives back as many rows as the
-// Terminal moves up for the cursor's position.
+// TestEditorScreen: the screen keeps the terminal width it was told, the
+// default until then, and a nil screen takes anything.
 func TestEditorScreen(t *testing.T) {
-	var out bytes.Buffer
-	s := newEditorScreen(&out)
+	s := newEditorScreen(nil)
+	if s.columns() != editorDefaultWidth {
+		t.Fatalf("columns = %d, want the default %d", s.columns(), editorDefaultWidth)
+	}
 	s.setWidth(10)
-	line := strings.Repeat("x", 25)
-	s.hideLine(line, 25)
-	if out.String() != "\x1b[2A\r\x1b[J" {
-		t.Fatalf("hide = %q", out.String())
-	}
-	out.Reset()
-	s.restoreLine(line, 25)
-	if out.String() != "\r\n\r\n" {
-		t.Fatalf("restore = %q", out.String())
-	}
-	out.Reset()
 	s.setWidth(0) // ignored
-	s.hideLine("ab", 1)
-	s.restoreLine("ab", 1)
-	if out.String() != "\r\x1b[J" {
-		t.Fatalf("one row: %q", out.String())
+	if s.columns() != 10 {
+		t.Fatalf("columns = %d, want 10", s.columns())
 	}
 	var nilScreen *editorScreen
-	nilScreen.hideLine(line, 25)
-	nilScreen.restoreLine(line, 25)
 	nilScreen.setWidth(5)
+	if nilScreen.columns() != editorDefaultWidth {
+		t.Fatalf("nil screen columns = %d", nilScreen.columns())
+	}
 }

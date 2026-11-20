@@ -105,6 +105,20 @@ func Redirect(logger logging.Logger, w io.Writer) {
 	}
 }
 
+type outputHolder interface {
+	HoldOutput(func(io.Writer, []byte) bool)
+}
+
+// Hold has the paused logger offer its terminal output to take instead of
+// blocking its callers, or ends that for a nil take: take reports whether
+// it took the text, to write it to the writer it got it with before the
+// logger is resumed. Loggers without a terminal output are left alone.
+func Hold(logger logging.Logger, take func(io.Writer, []byte) bool) {
+	if output, ok := logger.(outputHolder); ok {
+		output.HoldOutput(take)
+	}
+}
+
 // Pause yields an interactive terminal owned by the logger.
 func Pause(logger logging.Logger) {
 	if output, ok := logger.(pauser); ok {

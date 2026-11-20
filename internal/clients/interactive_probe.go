@@ -49,8 +49,9 @@ const (
 // query completion only reads the catalog. The path completion of --files
 // also reads listings the requested rounds prefetched (run); for another
 // directory, or once a listing expired, it asks on demand (listPaths,
-// interactive_probe_paths.go) and waits briefly with the output running
-// (waitForListing).
+// interactive_probe_paths.go) and waits briefly while the paused writers
+// go on into a bounded buffer instead of the terminal (waitForListing,
+// interactivePause.holdOutput).
 //
 // The prober never blocks the session: it runs on a goroutine of its own,
 // one round at a time, and a request while a round runs starts one more

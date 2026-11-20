@@ -1,13 +1,17 @@
 package clients
 
-import "testing"
+import (
+	"bytes"
+	"testing"
+)
 
-// TestRunOutputKeepsPauses: runOutput releases only the control loop's own
-// pause for the time of fn and restores it after, whether it is an explicit
-// pause or one for typing; a pause held elsewhere (the host key prompt or
-// the interrupt statistics, which pause the logger too) stays all along,
-// and output that is not paused is left alone.
-func TestRunOutputKeepsPauses(t *testing.T) {
+// TestHoldOutputKeepsPauses: holdOutput keeps the output paused during fn
+// (the logger's pause depth and the gate as they were, whether the pause is
+// explicit or for typing, and whatever else pauses the logger: the host key
+// prompt or the interrupt statistics), but has the logger and the gate hold
+// what is written; afterwards neither holds any more and the pause state is
+// as before. Output that is not paused is left alone.
+func TestHoldOutputKeepsPauses(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		typing bool
@@ -32,20 +36,20 @@ func TestRunOutputKeepsPauses(t *testing.T) {
 			}
 			gate := client.runtime.outputGate
 			var during int
-			var gatePaused bool
-			pause.runOutput(func() {
+			var writable, gateHeld bool
+			pause.holdOutput(func() {
 				during = logger.pauseDepth()
-				gate.mu.Lock()
-				gatePaused = gate.paused
-				gate.mu.Unlock()
+				writable = logger.writable()
+				gateHeld = gate.admit(&bytes.Buffer{}, []byte("x"))
 			})
-			if during != tt.extra || gatePaused {
-				t.Fatalf("during fn: depth %d gate paused %v, want depth %d and the gate open",
-					during, gatePaused, tt.extra)
+			if during != tt.extra+1 || !writable || !gateHeld {
+				t.Fatalf("during fn: depth %d logger writable %v gate held %v, want depth %d and both holding",
+					during, writable, gateHeld, tt.extra+1)
 			}
-			if logger.pauseDepth() != tt.extra+1 || !pause.paused || pause.typing != tt.typing || !gate.paused {
-				t.Fatalf("after: depth %d paused %v typing %v gate %v", logger.pauseDepth(), pause.paused,
-					pause.typing, gate.paused)
+			if logger.pauseDepth() != tt.extra+1 || !pause.paused || pause.typing != tt.typing || !gate.paused ||
+				logger.writable() || gate.hold != nil {
+				t.Fatalf("after: depth %d paused %v typing %v gate %v logger writable %v gate hold %v",
+					logger.pauseDepth(), pause.paused, pause.typing, gate.paused, logger.writable(), gate.hold)
 			}
 		})
 	}
@@ -54,7 +58,7 @@ func TestRunOutputKeepsPauses(t *testing.T) {
 	client := newPauseTestClient(logger)
 	pause := client.newInteractivePause()
 	ran := false
-	pause.runOutput(func() { ran = true })
+	pause.holdOutput(func() { ran = true })
 	if !ran || pause.paused || logger.pauseDepth() != 0 || client.runtime.outputGate.paused {
 		t.Fatalf("not paused: ran %v paused %v depth %d", ran, pause.paused, logger.pauseDepth())
 	}

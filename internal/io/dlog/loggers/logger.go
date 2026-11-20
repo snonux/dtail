@@ -62,6 +62,18 @@ type OutputRedirector interface {
 	RedirectOutput(w io.Writer)
 }
 
+// OutputHolder is implemented by terminal loggers that can hold their
+// output while they are paused: what is logged then is offered to take,
+// which reports whether it took the text p (it copies it) to write it to w
+// later, unchanged and in order, before the pause ends; the caller of the
+// log method then does not wait for the pause. Text take refuses waits as
+// without a hold. A nil take ends the holding. The line editor of an
+// interactive client uses it while a Tab waits for a server's answer,
+// which the connection handlers read only while they can log.
+type OutputHolder interface {
+	HoldOutput(take func(w io.Writer, p []byte) bool)
+}
+
 // Rotator is implemented by loggers backed by rotatable resources.
 type Rotator interface {
 	Rotate()

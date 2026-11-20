@@ -389,6 +389,15 @@ func (d *DLog) Resume() {
 	}
 }
 
+// HoldOutput has the paused sink offer what is logged to take instead of
+// blocking (loggers.OutputHolder), or ends that for a nil take; sinks
+// without a terminal output are left alone.
+func (d *DLog) HoldOutput(take func(w io.Writer, p []byte) bool) {
+	if holder, ok := d.logger.(loggers.OutputHolder); ok {
+		holder.HoldOutput(take)
+	}
+}
+
 // RedirectOutput passes the terminal output of the configured sink through
 // w, or gives it its own output back for a nil w; sinks without a terminal
 // output are left alone.
