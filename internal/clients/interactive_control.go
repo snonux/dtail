@@ -14,6 +14,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/connectors"
 	"github.com/mimecast/dtail/internal/config"
 	"github.com/mimecast/dtail/internal/mapr"
@@ -83,6 +84,11 @@ func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan
 		statusCh <- c.runConnections(runCtx, statsCh)
 	}()
 	c.prober.start(runCtx)
+	if isQueryBuilder(c.Args) {
+		// The builder's sessions run no workload: keep dserver from
+		// closing them as idle while the query is built.
+		go c.keepSessionsAlive(runCtx, builderKeepAliveInterval, c.heldConnections)
+	}
 
 	controlErrCh := make(chan error, 1)
 	go func() {
@@ -215,6 +221,7 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 	defer pause.resume()
 	lines, closeLines := c.openControlLines(ctx, tty, pause, answers, deps)
 	defer closeLines()
+	defer c.keepHistory(lines)
 	// Written once the terminal mode is set, so that the user's first keys
 	// already reach the line editor.
 	if err := c.writeControlBanner(lines); err != nil {
@@ -243,6 +250,9 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 			return err
 		}
 		if quit {
+			// Closed before the cancellation, which closes the TTY: the
+			// builder discards the terminal's input first (drainTTYInput).
+			closeLines()
 			cancel()
 			return nil
 		}
@@ -256,7 +266,30 @@ func (c *baseClient) runInteractiveControl(ctx context.Context, cancel context.C
 // read. While the editor runs, the statistics printed on Ctrl-C go through
 // it (stats.setInterruptOutput): written straight to stdout they ran over
 // the line being edited, which the Terminal did not draw again, and its
-// cursor bookkeeping was off for the later edits.
+// cursor bookkeeping was off for the later edits. In the query builder of
+// dmap the client's log lines go through the editor too
+// (clientlog.Redirect), when they go to the terminal the editor is on
+// (editorDeps.logOnTTY: stdout is the control TTY): the builder always
+// shows a prompt, and a log line written straight to stdout (a connection
+// error, a server's warning) landed on the prompt's row, which was not
+// drawn again. With stdout on another terminal than the control TTY
+// (--control-tty) the log lines stay on stdout: redirected, they left the
+// terminal they were sent to and appeared on the control TTY. The builder also
+// discards the terminal's input when it closes, until the terminal was
+// quiet (drainTTYInput): the returned close, called by the control loop
+// after its last read. On :quit or a query to run, a cancellation of ctx
+// (Ctrl-C) ends the discarding; when the session is cancelled first, the
+// control loop is made to return (interruptControlRead) and discards in
+// its close as well, with only the quiet time and the cap to end it, so
+// that a paste in flight at a Ctrl-C does not reach the shell. Only when
+// the control loop does not return (it waits for a command, the external
+// editor or a blocked terminal) the close at the cancellation runs
+// instead, which discards what is queued (discardTTYInput) and closes
+// tty. The close runs once, by whichever of the two comes first, and the
+// other waits for it (sync.Once): so all of it is done when the control
+// loop returns, and none of it (the logger given back, the terminal's
+// input discarded) happens later, when the run of the built query has the
+// logger and the terminal.
 func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *interactivePause,
 	answers *promptAnswers, deps editorDeps) (controlLines, func()) {
 
@@ -266,19 +299,112 @@ func (c *baseClient) openControlLines(ctx context.Context, tty *os.File, pause *
 	if routeStats {
 		c.stats.setInterruptOutput(lines.Writer())
 	}
-	// The statistics go to stdout again before the TTY is closed.
-	closeLines := func() {
-		if routeStats {
-			c.stats.setInterruptOutput(nil)
-		}
-		lines.close()
+	args, _ := c.snapshotConnectionState()
+	if editing && isQueryBuilder(args) {
+		lines.(*interactiveEditor).stopReadsWhen(ctx.Done())
+	}
+	routeLog := editing && isQueryBuilder(args) && deps.withDefaults().logOnTTY(tty)
+	if routeLog {
+		clientlog.Redirect(c.clientLogger(), editorOutput{editor: lines.(*interactiveEditor)})
+	}
+	// The statistics and the log go to stdout again before the TTY is
+	// closed.
+	var once sync.Once
+	reading := newControlReading()
+	closeLines := func(discard func(*os.File)) {
+		once.Do(func() {
+			reading.end()
+			if routeStats {
+				c.stats.setInterruptOutput(nil)
+			}
+			if routeLog {
+				clientlog.Redirect(c.clientLogger(), nil)
+			}
+			if isQueryBuilder(args) {
+				discard(tty)
+			}
+			lines.close()
+		})
 	}
 	go func() {
 		<-ctx.Done()
-		closeLines()
+		if isQueryBuilder(args) {
+			reading.interrupt(tty)
+		}
+		closeLines(func(tty *os.File) { discardTTYInput(tty) })
 		_ = tty.Close()
 	}()
-	return lines, closeLines
+	return lines, func() {
+		closeLines(func(tty *os.File) {
+			// A session already cancelled has nothing left to end the
+			// discarding but the quiet time and its cap.
+			var stop <-chan struct{}
+			if ctx.Err() == nil {
+				stop = ctx.Done()
+			}
+			drainTTYInput(tty, stop)
+		})
+	}
+}
+
+// controlReadInterruptWait is how long the cancellation of the builder's
+// session waits for the control loop to return before it closes the
+// control lines itself.
+const controlReadInterruptWait = time.Second
+
+// controlReading tells whether the control loop may still read the control
+// TTY: until the close of its control lines began (end). The cancellation
+// of the builder's session ends a pending read through it (interrupt), so
+// that the control loop returns and discards the terminal's input itself,
+// which only the goroutine that reads the TTY can do (drainTTYInput).
+type controlReading struct {
+	mu    sync.Mutex
+	ended chan struct{}
+}
+
+func newControlReading() *controlReading {
+	return &controlReading{ended: make(chan struct{})}
+}
+
+// end marks the control loop as done reading; no read deadline is set by
+// interrupt from then on, as the deadlines are the drain's.
+func (r *controlReading) end() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	close(r.ended)
+}
+
+// expire lets a read of tty that is pending or begins now time out, unless
+// the control loop is done reading or tty takes no deadline; it reports
+// whether it did.
+func (r *controlReading) expire(tty *os.File) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	select {
+	case <-r.ended:
+		return false
+	default:
+		return tty.SetReadDeadline(time.Now()) == nil
+	}
+}
+
+// interrupt makes the control loop's reads of tty time out, which the
+// control loop takes as its end once its context is done, until it is done
+// reading or controlReadInterruptWait passed. It is repeated, as the line
+// editor clears the deadline after its own timed reads (editInput.readBy).
+// Where reads take no deadline it returns at once; the caller then closes
+// tty, which ends a pending read as well.
+func (r *controlReading) interrupt(tty *os.File) {
+	giveUp := time.After(controlReadInterruptWait)
+	for r.expire(tty) {
+		select {
+		case <-r.ended:
+			return
+		case <-giveUp:
+			return
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }
 
 // dispatchControlLine passes a line typed while the host key question is
@@ -308,11 +434,19 @@ func (c *baseClient) rejectControlLine(w io.Writer, reason error, pause *interac
 
 // writeControlBanner writes the banner (controlBanner) and, for a session
 // that reads no files, the hint how to give it some (noFilesHint), as
-// without files nothing is read and no field data can ever arrive.
+// without files nothing is read and no field data can ever arrive. The
+// query builder first says so when its files look like a query
+// (queryAsFilesHint).
 func (c *baseClient) writeControlBanner(lines controlLines) error {
 	w := lines.Writer()
-	if err := writeControlLine(w, styleOf(w).banner(controlBanner(lines))); err != nil {
+	args, _ := c.snapshotConnectionState()
+	if err := writeControlLine(w, styleOf(w).banner(controlBanner(lines, isQueryBuilder(args)))); err != nil {
 		return err
+	}
+	if hint := queryAsFilesHint(args); hint != "" {
+		if err := writeControlLine(w, styleOf(w).hint(hint)); err != nil {
+			return err
+		}
 	}
 	_, plain := lines.(*scannerLines)
 	if hint := c.prober.noFilesHint(!plain); hint != "" {
@@ -322,9 +456,16 @@ func (c *baseClient) writeControlBanner(lines controlLines) error {
 }
 
 // controlBanner is the banner for lines: it mentions Tab only where the line
-// editor completes.
-func controlBanner(lines controlLines) string {
-	if _, plain := lines.(*scannerLines); plain {
+// editor completes. The query builder of dmap (builder) has banners of its
+// own, which say what to do there.
+func controlBanner(lines controlLines, builder bool) string {
+	_, plain := lines.(*scannerLines)
+	switch {
+	case builder && plain:
+		return builderPlainBanner
+	case builder:
+		return builderBanner
+	case plain:
 		return interactivePlainBanner
 	}
 	return interactiveBanner
@@ -333,7 +474,9 @@ func controlBanner(lines controlLines) string {
 // runInteractiveCommand runs one parsed control command and writes its
 // answer to the TTY. It reports quit for :quit, after which the caller
 // cancels the interactive session. A failed reload is answered on the TTY and
-// is no error: only a failed TTY write ends the control loop.
+// is no error: only a failed TTY write ends the control loop. In the query
+// builder of dmap it also reports quit for a query to run ("build", see
+// runBuildCommand), and "files" sets the files that query will read.
 func (c *baseClient) runInteractiveCommand(tty io.Writer, command interactiveCommand) (quit bool, err error) {
 	style := styleOf(tty)
 	switch command.kind {
@@ -360,6 +503,10 @@ func (c *baseClient) runInteractiveCommand(tty io.Writer, command interactiveCom
 		return false, c.writeQueryState(tty)
 	case "tail":
 		return false, c.runTailCommand(tty, command.value)
+	case "build":
+		return c.runBuildCommand(tty, command.value)
+	case "files":
+		return false, c.setBuilderFiles(tty, command.next)
 	default:
 		return false, writeControlLine(tty, style.failure("unsupported command"))
 	}
@@ -637,8 +784,12 @@ func (c *baseClient) writeInteractiveHelp(writer io.Writer) error {
 // spaces (see doc/interactive-query.md for how to quote such a path). The
 // commands line names :query and :tail only in the modes that have them,
 // and the examples show switching between following lines and a query in
-// dtail (helpSwitchExamples).
+// dtail (helpSwitchExamples). The query builder of dmap has a help of its
+// own (builderHelpText).
 func interactiveHelpText(args config.Args) string {
+	if isQueryBuilder(args) {
+		return builderHelpText()
+	}
 	head := helpCommandsLine(args) + " An empty line pauses or resumes the output.\n" +
 		"On a terminal typing pauses the output until the line is entered, Tab completes commands, " +
 		"flags, after a filter, query or files flag its current value, inside a query the query language " +
@@ -732,9 +883,13 @@ func helpExamples(examples ...[2]string) string {
 // invert as well as regex, because --invert carries over between reloads and
 // decides what the empty regex matches (every line, or none). With colors
 // the query is highlighted (interactiveStyle.quotedQuery), which leaves the
-// text as it is.
+// text as it is. The query builder of dmap, which has no workload yet,
+// answers with writeBuilderState.
 func (c *baseClient) writeInteractiveState(writer io.Writer) error {
 	args, spec, connections := c.snapshotMutableState()
+	if isQueryBuilder(args) {
+		return c.writeBuilderState(writer)
+	}
 	active, _ := partitionReloadConnections(connections)
 	style := styleOf(writer)
 	pairs := []keyValue{
@@ -808,19 +963,7 @@ func isCommandLine(trimmed, command string) bool {
 // the JSON encoding of the spec, and encoding/json would silently replace
 // each invalid byte with U+FFFD, so e.g. a file path would change.
 func parseInteractiveReload(current config.Args, line string) (interactiveCommand, error) {
-	if !utf8.ValidString(line) {
-		return interactiveCommand{}, errors.New("reload line is not valid UTF-8")
-	}
-	remainder := strings.TrimPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), ":reload")
-	remainder = strings.TrimRight(remainder, "\r\n")
-	if strings.TrimSpace(remainder) == "" {
-		return interactiveCommand{}, errors.New("reload requires flags to change")
-	}
-	tokens, err := splitInteractiveArgs(remainder)
-	if err != nil {
-		return interactiveCommand{}, err
-	}
-	nextArgs, err := parseInteractiveReloadArgs(current, tokens)
+	nextArgs, err := parseReloadLine(current, line)
 	if err != nil {
 		return interactiveCommand{}, err
 	}
@@ -833,6 +976,25 @@ func parseInteractiveReload(current config.Args, line string) (interactiveComman
 		next: nextArgs,
 		spec: nextSpec,
 	}, nil
+}
+
+// parseReloadLine tokenizes the flags of a :reload line and applies them to
+// a copy of the current arguments (see parseInteractiveReload for what is
+// trimmed and why invalid UTF-8 is rejected).
+func parseReloadLine(current config.Args, line string) (config.Args, error) {
+	if !utf8.ValidString(line) {
+		return current, errors.New("reload line is not valid UTF-8")
+	}
+	remainder := strings.TrimPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), ":reload")
+	remainder = strings.TrimRight(remainder, "\r\n")
+	if strings.TrimSpace(remainder) == "" {
+		return current, errors.New("reload requires flags to change")
+	}
+	tokens, err := splitInteractiveArgs(remainder)
+	if err != nil {
+		return current, err
+	}
+	return parseInteractiveReloadArgs(current, tokens)
 }
 
 // parseInteractiveReloadArgs applies the flags of a `:reload` line to a copy
@@ -870,10 +1032,17 @@ func parseInteractiveReloadArgs(current config.Args, tokens []string) (config.Ar
 // current, its flags bound to next (initialised from current). It is the one
 // definition of which flags a mode accepts, used by the parser and by the
 // Tab completion (interactiveReloadFlags). grep is the --grep alias value of
-// the grep-driven modes, nil otherwise.
+// the grep-driven modes, nil otherwise. The query builder of dmap takes
+// --files only.
 func newInteractiveReloadFlagSet(current config.Args, next *config.Args) (fs *flag.FlagSet, grep *string, err error) {
 	fs = flag.NewFlagSet("reload", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	if isQueryBuilder(current) {
+		// The builder has no workload to change, only the files its
+		// query will read (parseBuilderFiles).
+		fs.StringVar(&next.What, "files", current.What, "File(s) to read")
+		return fs, nil, nil
+	}
 	bindInteractiveSharedFlags(fs, next, current)
 
 	switch {

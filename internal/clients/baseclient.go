@@ -83,6 +83,16 @@ type baseClient struct {
 	nowFn func() time.Time
 	// Regex is the regular expresion object for line filtering
 	Regex regex.Regex
+	// held are the connections the query builder of dmap holds a session
+	// on, at most probeMaxConnections of connections (see
+	// holdBuilderSessions); guarded by mu.
+	held []connectors.Connector
+	// lineHistory are the control lines the line editor starts its history
+	// with and, once the control loop ended, those it ended with, most
+	// recent first (see seedHistory and keepHistory); guarded by mu. The
+	// query builder of dmap hands them to the interactive run that
+	// follows it, so that Up recalls the query built.
+	lineHistory []string
 	// prober is the background prober of an interactive session and its
 	// field catalog (see interactiveProber), set by startInteractiveControl
 	// before the control loop starts; nil otherwise, which its methods
@@ -99,7 +109,7 @@ func newBaseClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDep
 		colorizer:   colorizer,
 		loggers:     loggers.normalized(),
 		throttleCh:  make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
-		sessionSpec: NewSessionSpec(args),
+		sessionSpec: startSessionSpec(args),
 		profile:     profile,
 	}
 	if err := c.initialize(); err != nil {
@@ -278,6 +288,11 @@ func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) 
 	// Print client stats every time something on statsCh is received.
 	go c.stats.Start(ctx, c.throttleCh, statsCh, c.Quiet)
 
+	if isQueryBuilder(c.Args) {
+		// The query builder holds only the sessions its prober can use.
+		return c.holdBuilderSessions(ctx)
+	}
+
 	var wg sync.WaitGroup
 	connections := c.snapshotConnections()
 	wg.Add(len(connections))
@@ -299,44 +314,34 @@ func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) 
 	return
 }
 
+// startConnection runs the sessions of connection i, starting with conn,
+// and returns the status of the last one: a single session, or for a
+// client that reconnects (clientProfile.retry, dtail's follow mode) one
+// after the other on a new connection each, after the reconnect backoff
+// (retryBackoff), until ctx is done or the connection can not be created
+// again.
 func (c *baseClient) startConnection(ctx context.Context, i int,
 	conn connectors.Connector) (status int) {
 
-	retryDelay := initialRetryDelay
-	retryRandom := newRetryRandom(i)
+	backoff := newRetryBackoff(i)
 
 	for {
 		sessionStart := c.now()
 		status = c.runSession(ctx, i, conn)
-		// A session that ran for a while was a healthy one: start the
-		// backoff over. Otherwise the delay only ever grew, so that after
-		// a handful of dserver restarts over the life of a long-running
-		// dtail every further reconnect waited about a minute.
-		if c.now().Sub(sessionStart) > maxRetryDelay {
-			retryDelay = initialRetryDelay
-		}
 
 		// Do we want to retry?
 		if !c.profile.retry {
 			// No, we don't.
 			return
 		}
-		select {
-		case <-ctx.Done():
-			// No, context is done, so no retry.
-			return
-		default:
-		}
-
-		// Yes, we want to retry with exponential backoff and jitter.
-		sleepDuration := jitterRetryDelay(retryDelay, retryRandom)
-		c.clientLogger().Debug(conn.Server(), "Reconnecting", "backoff", sleepDuration)
-		if !c.sleepRetry(ctx, sleepDuration) {
-			return
-		}
-
-		retryDelay = nextRetryDelay(retryDelay)
+		// Yes, unless the context is done: after the reconnect backoff.
 		server := conn.Server()
+		reconnecting := func(wait time.Duration) {
+			c.clientLogger().Debug(server, "Reconnecting", "backoff", wait)
+		}
+		if !c.awaitReconnect(ctx, backoff, sessionStart, reconnecting) {
+			return
+		}
 		var err error
 		conn, err = c.recreateConnection(i, server)
 		if err != nil {
@@ -427,6 +432,53 @@ func (c *baseClient) now() time.Time {
 		return c.nowFn()
 	}
 	return time.Now()
+}
+
+// retryBackoff is the client's one reconnect policy: how long to wait
+// before the next session of a connection slot after one ended. The delay
+// starts at initialRetryDelay and doubles up to maxRetryDelay, each with
+// jitter, and starts over after a session that lasted (next). A dtail that
+// reconnects (startConnection) and the query builder's held sessions
+// (holdSessions) both wait by it (awaitReconnect).
+type retryBackoff struct {
+	delay  time.Duration
+	random *rand.Rand
+}
+
+// newRetryBackoff returns the backoff of one connection slot; seedOffset
+// (the slot's number) gives each slot its own jitter.
+func newRetryBackoff(seedOffset int) *retryBackoff {
+	return &retryBackoff{delay: initialRetryDelay, random: newRetryRandom(seedOffset)}
+}
+
+// next returns how long to wait after a session that lasted for lasted. A
+// session that ran for more than maxRetryDelay was a healthy one: the
+// backoff starts over. Otherwise the delay only ever grew, so that after a
+// handful of dserver restarts over the life of a long-running dtail every
+// further reconnect waited about a minute.
+func (b *retryBackoff) next(lasted time.Duration) time.Duration {
+	if lasted > maxRetryDelay {
+		b.delay = initialRetryDelay
+	}
+	wait := jitterRetryDelay(b.delay, b.random)
+	b.delay = nextRetryDelay(b.delay)
+	return wait
+}
+
+// awaitReconnect waits backoff's next delay after the session that started
+// at sessionStart ended, and tells announce the delay before it waits (the
+// caller logs it with the server it connects to next, which only it
+// knows). It reports false, without waiting on, once ctx is done: no
+// reconnect then.
+func (c *baseClient) awaitReconnect(ctx context.Context, backoff *retryBackoff, sessionStart time.Time,
+	announce func(wait time.Duration)) bool {
+
+	if ctx.Err() != nil {
+		return false
+	}
+	wait := backoff.next(c.now().Sub(sessionStart))
+	announce(wait)
+	return c.sleepRetry(ctx, wait)
 }
 
 func nextRetryDelay(current time.Duration) time.Duration {

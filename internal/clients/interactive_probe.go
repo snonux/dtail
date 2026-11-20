@@ -98,12 +98,9 @@ type interactiveProber struct {
 // does nothing before start.
 func (c *baseClient) newInteractiveProber() *interactiveProber {
 	return &interactiveProber{
-		catalog:     newFieldCatalog(),
-		connections: c.snapshotConnections,
-		files: func() []string {
-			_, spec := c.snapshotConnectionState()
-			return spec.Files
-		},
+		catalog:      newFieldCatalog(),
+		connections:  c.probeConnections,
+		files:        c.sessionFiles,
 		serverless:   c.Serverless,
 		stdinPiped:   stdinIsPipe,
 		logger:       c.clientLogger(),

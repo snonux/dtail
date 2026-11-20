@@ -189,9 +189,14 @@ func (p *interactivePause) runOutput(fn func()) {
 // answer does not scroll away. :fields TABLE first lets the output run
 // while it waits briefly for a table probe of TABLE (awaitTableProbe).
 // :quit ends the loop, whose caller resumes the output for the shutdown.
+// The query builder of dmap handles its lines itself (handleBuilderLine).
 func (c *baseClient) handleInteractiveLine(tty io.Writer, line string,
 	pause *interactivePause) (bool, error) {
 
+	currentArgs, _ := c.snapshotConnectionState()
+	if isQueryBuilder(currentArgs) {
+		return c.handleBuilderLine(tty, line, pause)
+	}
 	typing := pause.paused && pause.typing
 	if strings.TrimSpace(line) == "" {
 		return false, c.togglePause(tty, pause, typing)
@@ -207,7 +212,6 @@ func (c *baseClient) handleInteractiveLine(tty io.Writer, line string,
 	// Parse while still paused: parsing never writes to the output (a
 	// reload's query is parsed without a logger), so a rejected command is
 	// answered with the output paused and its error does not scroll away.
-	currentArgs, _ := c.snapshotConnectionState()
 	command, err := parseInteractiveCommand(currentArgs, line)
 	if err != nil {
 		return false, writeControlLine(tty, styleOf(tty).failure("interactive query error: "+err.Error()))

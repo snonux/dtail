@@ -443,6 +443,13 @@ Only interactive sessions (`--interactive-query`) probe, in every mode
 `internal/clients/interactive_catalog.go` (`fieldCatalog`) and
 `internal/clients/handlers/probe.go` (`handlers.Prober`).
 
+The query builder of `dmap` (`clients.QueryBuilderClient`, `dmap` without a
+query on a terminal) is such a session too, with one difference: its
+sessions hold no workload (`builderHoldSpec`, tail mode without files), so
+the files to probe are not those of the session spec but the `--files` of
+the client's arguments (`baseClient.sessionFiles`). The requests, the
+catalog and the completion are the same.
+
 - Routing: `baseHandler.handleHiddenMessage` hands a marked control frame
   starting with `protocol.HiddenProbePrefix` to `handleProbeMessage`, which
   decodes it and queues the answer (4 at most) without blocking the frame

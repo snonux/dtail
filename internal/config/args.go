@@ -68,8 +68,12 @@ type Args struct {
 	InteractiveQuery  bool
 	Mode              omode.Mode
 	Plain             bool
-	QueryStr          string
-	Quiet             bool
+	// QueryBuilder marks the arguments of dmap's query builder (set by
+	// clients.NewQueryBuilderClient, never by a flag): the session holds
+	// no workload and the query is still to be entered.
+	QueryBuilder bool
+	QueryStr     string
+	Quiet        bool
 	// ReadShare, when set, asks dserver to share one-shot reads with the
 	// other members of a group of scheduled jobs; see ReadShare.
 	ReadShare   ReadShare
@@ -104,6 +108,7 @@ func (a *Args) String() string {
 	fmt.Fprintf(&sb, "Mode:%v,", a.Mode)
 	fmt.Fprintf(&sb, "NoAuthKey:%v,", a.NoAuthKey)
 	fmt.Fprintf(&sb, "NoColor:%v,", a.NoColor)
+	fmt.Fprintf(&sb, "QueryBuilder:%v,", a.QueryBuilder)
 	fmt.Fprintf(&sb, "QueryStr:%v,", a.QueryStr)
 	fmt.Fprintf(&sb, "Quiet:%v,", a.Quiet)
 	fmt.Fprintf(&sb, "ReadShare:%s,", a.ReadShare.Redacted())

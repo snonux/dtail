@@ -177,6 +177,9 @@ func (c *baseClient) runTailCommand(tty io.Writer, pattern string) error {
 func (c *baseClient) writeQueryState(tty io.Writer) error {
 	style := styleOf(tty)
 	args, _ := c.snapshotConnectionState()
+	if isQueryBuilder(args) {
+		return writeControlLine(tty, style.hint(builderNoQueryText))
+	}
 	if !isInteractiveQueryMode(args) {
 		return writeControlLine(tty, style.hint("no query runs: the session follows lines; "+
 			":query <query> starts one"))
@@ -185,10 +188,14 @@ func (c *baseClient) writeQueryState(tty io.Writer) error {
 }
 
 // workloadName names what the session runs for :show: "query" while a
-// MapReduce query runs, otherwise the mode (tail, grep, cat).
+// MapReduce query runs, "builder" in the query builder of dmap, which has
+// none yet, otherwise the mode (tail, grep, cat).
 func workloadName(args config.Args) string {
-	if isInteractiveQueryMode(args) {
+	switch {
+	case isInteractiveQueryMode(args):
 		return "query"
+	case isQueryBuilder(args):
+		return "builder"
 	}
 	return args.Mode.String()
 }
@@ -209,14 +216,25 @@ func completeQueryCommand(unchanged completion, before, after string, args confi
 	if !found || rest == "" || (rest[0] != ' ' && rest[0] != '\t') || !hasQueryCommand(args) {
 		return completion{}, false
 	}
-	query := completeQueryWord(strings.TrimLeftFunc(rest, unicode.IsSpace), after, catalog())
-	replacement, listed := query.insertion()
-	result := query.listInto(unchanged, listed)
+	return completeQueryText(unchanged, before, strings.TrimLeftFunc(rest, unicode.IsSpace), after, catalog), true
+}
+
+// completeQueryText completes the word at the end of query, the query
+// typed up to the cursor at the end of the line before (after is the line
+// behind the cursor, the rest of the query), where the query is the line's
+// text as typed: after ":query " and on the line of dmap's query builder
+// (completeBuilderQuery). Candidates are inserted without shell escaping.
+func completeQueryText(unchanged completion, before, query, after string,
+	catalog func() catalogSnapshot) completion {
+
+	word := completeQueryWord(query, after, catalog())
+	replacement, listed := word.insertion()
+	result := word.listInto(unchanged, listed)
 	if replacement != "" {
-		result.line = before[:len(before)-len(query.word)] + replacement + after
+		result.line = before[:len(before)-len(word.word)] + replacement + after
 		result.pos = len(result.line) - len(after)
 		result.changed = result.line != unchanged.line
-		result.itemBlank = query.itemBlankSize(replacement)
+		result.itemBlank = word.itemBlankSize(replacement)
 	}
-	return result, true
+	return result
 }

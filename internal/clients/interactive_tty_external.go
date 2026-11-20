@@ -54,6 +54,13 @@ const externalEditFallback = "vi"
 //     as the first typed key does through the key callback. A pasted line
 //     that ends with its line break needs no pause, it runs at once.
 //
+// With joinPaste (the query builder of dmap) the line breaks of a paste
+// are blanks as well: the pasted text is one line, which stays on the
+// edit line until Enter is typed. There a paste without markers (a
+// terminal without bracketed paste) is recognized by the input that
+// follows a line break and passed on as a bracketed paste, too (burst,
+// interactive_tty_burst.go).
+//
 // Reads are as large as the Terminal's, and a read that filled the buffer
 // (more input is queued) holds back a trailing ESC or unfinished paste
 // marker for the next one (holdsTail), so a backlog (keys typed while the
@@ -81,6 +88,21 @@ type editInput struct {
 	r        io.Reader
 	pasting  bool
 	viEscape bool
+	// joinPaste makes the line breaks of a paste blanks too, so a pasted
+	// text of several lines is one line that stays on the edit line. The
+	// query builder of dmap sets it: there the first line that parses
+	// runs and ends the builder, so a pasted query of three lines would
+	// run as its first line that parses alone, and the lines after it
+	// would be left for whoever reads the terminal next.
+	joinPaste bool
+	// stop is closed when the session is cancelled (the builder sets it,
+	// interactiveEditor.stopReadsWhen); nil never stops. The timed reads
+	// of a window or burst then end at once (readBy).
+	stop <-chan struct{}
+	// burst is set, with pasting, while pasted text without paste markers
+	// is passed on as a bracketed paste (settle, fillBurst; only with
+	// joinPaste).
+	burst bool
 	// onPaste, when set, is called in the goroutine reading the line
 	// before pasted text that stays on the line is returned.
 	onPaste func()
@@ -133,19 +155,35 @@ func (in *editInput) Read(p []byte) (int, error) {
 
 // fill reads the TTY once and translates what it read, behind what the
 // previous read held back, into out.
+//
+// In the builder (joinPaste) a line break read outside a paste is first
+// settled: it may start a burst, a paste without markers, which the start
+// marker is then put in front of and whose further reads fillBurst does.
 func (in *editInput) fill(size int) {
-	buf := make([]byte, max(size, editInputMinRead))
+	size = max(size, editInputMinRead)
+	if in.burst {
+		in.fillBurst(size)
+		return
+	}
+	buf := make([]byte, size)
 	n, err := in.r.Read(buf)
 	data := make([]byte, 0, len(in.held)+n)
 	data = append(append(data, in.held...), buf[:n]...)
 	in.held = nil
 	in.pasteOut = in.pasting
-	in.out = in.translate(data, n == len(buf))
-	if err != nil {
+	in.err = err
+	if in.joinPaste && !in.pasting && err == nil {
+		data = in.settle(data, size)
+	}
+	if in.burst {
+		in.out = append(append([]byte(nil), pasteStart...), in.translate(data, false)...)
+	} else {
+		in.out = in.translate(data, n == len(buf))
+	}
+	if in.err != nil {
 		// Nothing follows: what was held back is passed on as it is.
 		in.out, in.held = append(in.out, in.held...), nil
 	}
-	in.err = err
 }
 
 // chunk returns how many bytes of out the next Read returns: at most
@@ -187,9 +225,10 @@ func (in *editInput) announcePaste(chunk []byte) {
 // held back for the next read: the start of a paste marker (not all of
 // one), when the read filled its buffer (full: more input is queued), in a
 // paste (its end marker follows for sure) or when it is more than the
-// ESC. A lone ESC ending a short read outside a paste is the Esc key.
+// ESC. A lone ESC ending a short read outside a paste is the Esc key. In a
+// burst nothing is held: it has no markers, its ESC is a blank.
 func (in *editInput) holdsTail(rest []byte, full bool) bool {
-	if len(rest) >= len(pasteEnd) || (!bytes.HasPrefix(pasteStart, rest) && !bytes.HasPrefix(pasteEnd, rest)) {
+	if in.burst || len(rest) >= len(pasteEnd) || (!bytes.HasPrefix(pasteStart, rest) && !bytes.HasPrefix(pasteEnd, rest)) {
 		return false
 	}
 	return full || in.pasting || len(rest) > 1
@@ -227,18 +266,20 @@ func (in *editInput) translate(data []byte, full bool) []byte {
 // translateAt returns what the start of rest is passed on as and how many
 // bytes of rest that takes: a paste marker (which starts or ends the
 // paste) and any other byte as they are, a control character in a paste as
-// a blank, and outside a paste the keys translate names as their key.
+// a blank, and outside a paste the keys translate names as their key. A
+// burst (a paste without markers) ends when the terminal is quiet
+// (fillBurst), not with an end marker in its text, which is text there.
 func (in *editInput) translateAt(rest []byte) (key []byte, used int) {
 	switch {
 	case !in.pasting && bytes.HasPrefix(rest, pasteStart):
 		in.pasting, in.pasteOut = true, true
 		return pasteStart, len(pasteStart)
-	case in.pasting && bytes.HasPrefix(rest, pasteEnd):
+	case in.pasting && !in.burst && bytes.HasPrefix(rest, pasteEnd):
 		in.pasting = false
 		return pasteEnd, len(pasteEnd)
 	case in.pasting:
 		r, size := utf8.DecodeRune(rest)
-		if pasteBlank(r) {
+		if pasteBlank(r) || (in.joinPaste && (r == '\n' || r == '\r')) {
 			return []byte{' '}, size
 		}
 		return rest[:size], size

@@ -2,6 +2,7 @@ package loggers
 
 import (
 	"context"
+	"io"
 	"sync"
 )
 
@@ -51,6 +52,14 @@ type Starter interface {
 type Pauser interface {
 	Pause()
 	Resume()
+}
+
+// OutputRedirector is implemented by terminal loggers whose output can be
+// passed through another writer for a while: the line editor of an
+// interactive client, which draws the line being edited again below what
+// is logged. A nil writer gives the logger its own output back.
+type OutputRedirector interface {
+	RedirectOutput(w io.Writer)
 }
 
 // Rotator is implemented by loggers backed by rotatable resources.

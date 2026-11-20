@@ -80,6 +80,22 @@ func (m *cbreakTTY) foreground() bool {
 	return err == nil && ttyPgrp == ownPgrp
 }
 
+// controllingTerminal reports whether file is the controlling terminal of
+// this process: only of that one a process may ask the foreground process
+// group (TIOCGPGRP fails with ENOTTY for any other terminal, and for what
+// is no terminal). SyscallConn instead of Fd, which would switch file to
+// blocking mode.
+func controllingTerminal(file *os.File) bool {
+	raw, err := file.SyscallConn()
+	if err != nil {
+		return false
+	}
+	if ctlErr := raw.Control(func(fd uintptr) { _, err = unix.IoctlGetInt(int(fd), unix.TIOCGPGRP) }); ctlErr != nil {
+		return false
+	}
+	return err == nil
+}
+
 // watchTTYSignals calls onContinue when the process is continued after a
 // stop (SIGCONT) and onResize when the terminal size changed (SIGWINCH),
 // until stop is called.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -53,6 +54,12 @@ type editorDeps struct {
 	// that send none watch none, or the SIGCONT of another test would have
 	// their editor write to its terminal.
 	watchSignals func(onContinue, onResize func()) (stop func())
+	// logOnTTY reports whether the client's log lines go to the terminal
+	// tty, the control TTY (stdout is that terminal, sameTerminal), so that
+	// the query builder passes them through the line editor
+	// (openControlLines). Redirected to a file or a pipe, or on another
+	// terminal than the control TTY (--control-tty), they stay there.
+	logOnTTY func(tty *os.File) bool
 }
 
 // processEditorDeps returns the dependencies of a client run: the process's
@@ -73,7 +80,27 @@ func (d editorDeps) withDefaults() editorDeps {
 	if d.watchSignals == nil {
 		d.watchSignals = watchTTYSignals
 	}
+	if d.logOnTTY == nil {
+		d.logOnTTY = func(tty *os.File) bool { return sameTerminal(os.Stdout, tty) }
+	}
 	return d
+}
+
+// sameTerminal reports whether a and b are the same terminal: character
+// devices that are the same file (two descriptors of /dev/pts/3), or both
+// the controlling terminal of this process (controllingTerminal), which
+// /dev/tty, the default control TTY, names beside the terminal's own
+// device. Two terminals of which at most one is the controlling terminal
+// are told apart; another alias of a terminal that is not the controlling
+// one (a symlink is none: it is the same file) is not known and counts as
+// another terminal.
+func sameTerminal(a, b *os.File) bool {
+	infoA, errA := a.Stat()
+	infoB, errB := b.Stat()
+	if errA != nil || errB != nil || infoA.Mode()&os.ModeCharDevice == 0 || infoB.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	return os.SameFile(infoA, infoB) || (controllingTerminal(a) && controllingTerminal(b))
 }
 
 // newControlLines returns the line editor on tty when tty is a terminal that
@@ -171,6 +198,9 @@ type interactiveEditor struct {
 	closed  bool
 	// resize takes the window size over (SIGWINCH, and after the editor).
 	resize func()
+	// history is the Terminal's history (bindKeys); the control loop
+	// keeps its lines when it ends (baseClient.keepHistory).
+	history *controlHistory
 	// vi is the vi editing mode (Client.EditMode "vi"); nil edits with
 	// x/term's emacs-like keys only.
 	vi *viEditor
@@ -185,6 +215,11 @@ type interactiveEditor struct {
 	// resizePending is a window size change that arrived while hidden;
 	// showLine takes it over once the line is drawn again.
 	resizePending bool
+	// builder is set in the query builder of dmap (isQueryBuilder): every
+	// line has builderPrompt and typing shows no hint.
+	builder bool
+	// keys is the reader the Terminal gets its input from (editInput).
+	keys *editInput
 	// itemBlank is the blank the last Tab inserted after a finished query
 	// item, which a comma typed right after it replaces
 	// (commaAfterItemBlank); only the key callback, in the goroutine
@@ -214,11 +249,12 @@ func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 		return nil
 	}
 	vi := c.editMode() == config.EditModeVi
-	keys := &editInput{r: tty, viEscape: vi}
+	args, _ := c.snapshotConnectionState()
+	keys := &editInput{r: tty, viEscape: vi, joinPaste: isQueryBuilder(args)}
 	input := editorTTY{Reader: keys, Writer: tty}
 	editor := &interactiveEditor{terminal: term.NewTerminal(input, ""), screen: newEditorScreen(tty),
 		style: c.interactiveStyle(), pause: pause, mode: mode, setForceExitHook: deps.setForceExitHook,
-		prompting: prompting}
+		prompting: prompting, builder: isQueryBuilder(args)}
 	editor.runEditor = func(path string) error {
 		return runEditorOnTTY(tty.Name(), externalEditorCommand(deps.getenv), path)
 	}
@@ -226,6 +262,7 @@ func (c *baseClient) newInteractiveEditor(tty *os.File, pause *interactivePause,
 	// Pasted text does not reach the key callback: it pauses the output
 	// here, before the Terminal puts it on the line (editInput.onPaste).
 	keys.onPaste = func() { editor.startTyping(pause) }
+	editor.keys = keys
 	editor.watchTerminal(ttyFd, deps.watchSignals)
 	editor.setPasteMode(true)
 	// A forced exit (a second Ctrl-C while the shutdown hangs) calls
@@ -303,8 +340,10 @@ func (e *interactiveEditor) bindKeys(c *baseClient, pause *interactivePause, vi 
 	// viUpKey, and editorKey leaves the pause to the history as well): the
 	// history reports the recall.
 	// The answer to the host key question is no control line to recall.
-	history := &controlHistory{onRecall: func() { e.startTyping(pause) }, skip: e.answering}
+	history := &controlHistory{entries: c.seedHistory(), onRecall: func() { e.startTyping(pause) },
+		skip: e.answering}
 	e.terminal.History = history
+	e.history = history
 	if vi {
 		e.vi = newViEditor(history, func(mode viMode) {
 			_, _ = io.WriteString(out, viCursorShapes[mode])
@@ -376,9 +415,11 @@ func (c *baseClient) editorKey(e *interactiveEditor, pause *interactivePause,
 // the line, prints the hint and draws the line again (with the prompt the
 // pause set). While the host key question is asked it only pauses: the
 // hint would be written right behind the question (which the Terminal does
-// not know of) and push the answer being typed to a later row.
+// not know of) and push the answer being typed to a later row. Nor in the
+// query builder of dmap: its banner said what to type, and there is no
+// output whose pause would need explaining.
 func (e *interactiveEditor) startTyping(pause *interactivePause) {
-	if pause.pauseTyping() && !e.answering() {
+	if pause.pauseTyping() && !e.answering() && !e.builder {
 		_, _ = e.terminal.Write([]byte(e.style.hint(interactiveTypingHint) + "\n"))
 	}
 }
@@ -398,9 +439,13 @@ func (e *interactiveEditor) answering() bool {
 // it is set only between lines: a pause for typing starts with the first
 // key of a line, which keeps the prompt it started with, and so does a
 // line during which the window is resized. It runs in the control loop
-// goroutine, which owns the pause state.
+// goroutine, which owns the pause state. The query builder of dmap always
+// shows builderPrompt: nothing streams there.
 func (e *interactiveEditor) setPrompt() {
 	prompt := e.style.editorPrompt(e.pause != nil && e.pause.paused, e.screen.columns())
+	if e.builder {
+		prompt = e.style.fittingPrompt(builderPrompt, e.screen.columns())
+	}
 	e.terminal.SetPrompt(prompt)
 	e.screen.setPromptWidth(utf8.RuneCountInString(stripANSI(prompt)))
 }
@@ -599,6 +644,31 @@ func (h *controlHistory) At(idx int) string {
 	return h.entries[idx]
 }
 
+// seedHistory returns the control lines an earlier control loop of this
+// process left (lineHistory, keepHistory), most recent first, none
+// otherwise: what a new line editor starts its history with, and what the
+// query builder hands to the run that follows it (runHistory).
+func (c *baseClient) seedHistory() []string {
+	mu := c.stateMu()
+	mu.RLock()
+	defer mu.RUnlock()
+	return slices.Clone(c.lineHistory)
+}
+
+// keepHistory keeps the history of the line editor lines (nothing for
+// plain lines) when the control loop ends, for seedHistory. It runs in
+// the control loop's goroutine, the only one that adds to the history.
+func (c *baseClient) keepHistory(lines controlLines) {
+	editor, ok := lines.(*interactiveEditor)
+	if !ok || editor.history == nil {
+		return
+	}
+	mu := c.stateMu()
+	mu.Lock()
+	defer mu.Unlock()
+	c.lineHistory = slices.Clone(editor.history.entries)
+}
+
 func trimEach(words []string) []string {
 	out := make([]string, len(words))
 	for i, w := range words {
@@ -614,4 +684,16 @@ func (c *baseClient) editMode() string {
 		return config.EditModeEmacs
 	}
 	return c.runtime.clientCfg.EditMode
+}
+
+// stopReadsWhen ends the editor's timed reads (the window behind an Enter
+// and a burst of pasted text in the builder, editInput.readBy) once stop
+// is closed: the builder passes its session's cancellation, so that a
+// Ctrl-C during a paste makes the control loop return at once and discard
+// the rest of the paste itself (drainTTYInput), instead of reading the
+// paste to its end while the cancellation's wait for it runs out.
+func (e *interactiveEditor) stopReadsWhen(stop <-chan struct{}) {
+	if e != nil && e.keys != nil {
+		e.keys.stop = stop
+	}
 }

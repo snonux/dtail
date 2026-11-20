@@ -94,7 +94,9 @@ type completion struct {
 //   - a word inside a --query value (quoted, escaped, or --query=...): the
 //     query language and the field catalog (completeQueryValue);
 //   - a word of the query after ":query ": the same, inserted without
-//     shell quoting (completeQueryCommand).
+//     shell quoting (completeQueryCommand);
+//   - in the query builder of dmap, a word of any line that is no control
+//     command: the same, as the line is the query (completeBuilderQuery).
 //
 // A single candidate replaces the word, several extend it by their common
 // prefix; when that adds nothing, they are returned to be listed. Outside a
@@ -113,6 +115,9 @@ func completeInteractive(line string, pos int, args config.Args, catalog func() 
 		return result
 	}
 	if result, ok := completeQueryCommand(unchanged, line[:pos], line[pos:], args, catalog); ok {
+		return result
+	}
+	if result, ok := completeBuilderQuery(unchanged, line[:pos], line[pos:], args, catalog); ok {
 		return result
 	}
 	if result, ok := completeFieldsTable(line, pos, catalog); ok {

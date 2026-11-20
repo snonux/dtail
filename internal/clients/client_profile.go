@@ -41,6 +41,10 @@ type clientProfile struct {
 	// and whose interactive mode only warns, see MaprClient.finish) and
 	// dtailhealth keep their exit statuses.
 	cutShortStatus int
+	// queryBuilt is set for the query builder of dmap (see
+	// NewQueryBuilderClient): the control loop hands it the files and the
+	// query the user entered, right before it ends the builder's sessions.
+	queryBuilt func(files, query string)
 }
 
 func clientHandlerProfile(logger clientlog.Logger, retry bool) clientProfile {

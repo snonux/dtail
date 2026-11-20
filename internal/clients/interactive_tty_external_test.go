@@ -257,6 +257,44 @@ func TestEditInputBracketedPaste(t *testing.T) {
 	}
 }
 
+// TestEditInputJoinsPastedLines: with joinPaste (the query builder of dmap)
+// the line breaks of a paste are blanks, so a pasted text of several lines
+// is read as one line that is not entered, also when a read cuts it; line
+// breaks typed outside a paste still end their line.
+func TestEditInputJoinsPastedLines(t *testing.T) {
+	tests := []struct {
+		name   string
+		chunks []string
+		want   string
+	}{
+		{name: "three lines", chunks: []string{"\x1b[200~from STATS\nselect count($line)\ngroup by x\n\x1b[201~"},
+			want: "\x1b[200~from STATS select count($line) group by x \x1b[201~"},
+		{name: "CR LF and CR", chunks: []string{"\x1b[200~a\r\nb\rc\x1b[201~"},
+			want: "\x1b[200~a  b c\x1b[201~"},
+		{name: "cut by reads", chunks: []string{"\x1b[200~a\n", "b\n", "c\x1b[201~"},
+			want: "\x1b[200~a b c\x1b[201~"},
+		{name: "typed line breaks are kept", chunks: []string{"a\n", "\x1b[200~b\nc\x1b[201~", "\n"},
+			want: "a\n\x1b[200~b c\x1b[201~\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := &editInput{r: &chunkReader{chunks: tt.chunks}, joinPaste: true}
+			buf := make([]byte, 256)
+			var got strings.Builder
+			for {
+				n, err := in.Read(buf)
+				got.Write(buf[:n])
+				if err != nil {
+					break
+				}
+			}
+			if got.String() != tt.want {
+				t.Fatalf("read %q, want %q", got.String(), tt.want)
+			}
+		})
+	}
+}
+
 // TestPasteModeLeftAloneInBackground: like the terminal mode, bracketed
 // paste is not changed while dtail runs in the background, where the
 // terminal is the shell's (the SIGCONT of "bg" must not switch it on).

@@ -12,7 +12,8 @@ Use DTail to answer log questions across hosts or on the local machine. Choose t
 | Read complete files or snapshots | `dcat` |
 | Search existing files with a Go regular expression | `dgrep` |
 | Follow new lines, optionally filtering them | `dtail` |
-| Aggregate existing logs or CSV data | `dmap` |
+| Aggregate existing logs or CSV data | `dmap --query` |
+| Build that query interactively (a person at a terminal) | `dmap` without `--query` (query builder) |
 | Aggregate new lines continuously | `dtail --query`, or `:query` in an interactive `dtail` |
 | Check a dserver endpoint | `dtailhealth` |
 
@@ -20,6 +21,7 @@ Use DTail to answer log questions across hosts or on the local machine. Choose t
 
 1. Identify the requested hosts, files or journal unit, time scope, and output form. A missing `--servers` selects **local serverless mode**, so do not omit it when the user intended remote hosts. If a remote target is unspecified, obtain it from the user's context or ask for it.
 2. For a finite answer, prefer `dgrep`, `dcat`, or `dmap`. For a live request, use `dtail` and set a suitable end condition (`--shutdownAfter` in seconds, an interactive quit, or a controlled interrupt). Start with a specific file or glob and a specific filter when possible; expand only if the question needs it.
+   Always give `dmap` its `--query`: without one it fails (`no mapreduce query specified`, status 1) unless it runs on a terminal, where it opens an interactive query builder that waits for typed input; an agent or script passes `--no-interactive` to rule that out.
 3. Put command flags before positional paths. Quote globs, regular expressions, and MapReduce queries so the shell does not expand or alter them. Use `--files` and `--query` for unambiguous commands.
 4. Check the command's status and diagnostics before calling a result complete. A zero-match `dgrep` returns `0`; `dmap` can write a partial result and warn while still exiting `0`. See [results and limits](references/results-and-limits.md).
 5. Report the hosts and source paths queried, the relevant result or summary, and any failed or missing sources. Avoid treating a subset of hosts as a fleet-wide answer.
