@@ -14,7 +14,7 @@ endif
 # go build (which is itself incremental and cheap when nothing changed);
 # otherwise make would see an existing binary as up to date and skip
 # rebuilding it after source changes.
-.PHONY: all build build-pgo install clean vet lint test todos test-integration
+.PHONY: all build build-pgo install clean vet lint test todos test-integration gifs
 .PHONY: dserver dcat dgrep dmap dtail dtailhealth dtail-tools
 .PHONY: benchmark benchmark-quick benchmark-full benchmark-upstream-smoke benchmark-upstream
 .PHONY: benchmark-baseline benchmark-baseline-quick benchmark-compare drop-caches
@@ -61,6 +61,11 @@ test:
 	${GO} test -tags '${GO_TAGS}' -race -shuffle=on -timeout 30m ./...
 todos:
 	@git grep -n -E 'NEXT:|TODO:' -- . || true
+# Re-render the documentation GIFs (doc/*.gif) from doc/tapes/*.tape; needs
+# vhs (with ttyd and ffmpeg), gifsicle and ssh-keygen.
+gifs: build
+	./doc/tapes/render.sh
+
 test-integration: clean build
 	${GO} clean -testcache
 	DTAIL_INTEGRATION_TEST_RUN_MODE=yes ${GO} test -v -tags '${GO_TAGS}' --race -count=1 ./integrationtests
