@@ -34,7 +34,27 @@ type stats struct {
 	// they go to stdout.
 	interruptOut atomic.Pointer[io.Writer]
 	logger       logging.Logger
+	// progress measures the read progress the servers report; nil measures
+	// none (see setProgress).
+	progress *progressMeter
+	// progressOut, if set (--progress), gets a PROGRESS line whenever the
+	// progress changed and a final one (finishProgress), whatever the quiet
+	// mode. progressMu orders those writes, and progressDone ends them.
+	progressOut  io.Writer
+	progressMu   sync.Mutex
+	progressDone bool
+	// statsProgress is the progress the last STATS line showed, so that a
+	// STATS line is logged when it changed; used by Start's goroutine only.
+	statsProgress progressTotals
 }
+
+const (
+	// progressTick is how often the read progress is measured and, with
+	// --progress, a changed one written: as often as servers report it.
+	progressTick = time.Second
+	// statsTicks is how many progress ticks make one STATS tick (3 s).
+	statsTicks = 3
+)
 
 // setInterruptOutput makes printStatsDueInterrupt write to w, or to stdout
 // again for nil. The interactive control loop sets its line editor's writer
@@ -64,12 +84,22 @@ func newTailStats(servers int, formatter interruptMessageFormatter, interruptPau
 	}
 }
 
-// Start starts printing client connection stats every time a signal is received or
-// connection count has changed.
+// setProgress makes the stats report the read progress of source: as fields
+// of the STATS lines and, with out set (--progress), as PROGRESS lines to out.
+func (s *stats) setProgress(source func() progressTotals, out io.Writer) {
+	s.progress = newProgressMeter(source)
+	s.progressOut = out
+}
+
+// Start starts printing client connection stats every time a signal is
+// received and, checked every 3 s, when the connection count or the read
+// progress the servers report changed. With --progress it writes a PROGRESS
+// line every second the progress changed. quiet drops the periodic STATS
+// lines, not the PROGRESS lines nor the statistics asked for with Ctrl-C.
 func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 	statsCh <-chan string, quiet bool) {
 
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(progressTick)
 	defer ticker.Stop()
 
 	// The periodic stats are logged by a goroutine of their own, so that this
@@ -82,41 +112,100 @@ func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 	go s.logStats(ctx, logCh)
 
 	var connectedLast int
-	for {
-		var force bool
+	for ticks := 1; ; ticks++ {
 		var messages []string
-
 		select {
 		case message := <-statsCh:
 			messages = append(messages, message)
-			force = true
 		case <-ticker.C:
 		case <-ctx.Done():
 			return
 		}
-
-		connected := len(s.connectionsEstCh)
-		throttle := len(throttleCh)
-
-		newConnections := connected - connectedLast
-		if (connected == connectedLast || quiet) && !force {
-			continue
+		report := s.tickProgress()
+		if len(messages) > 0 || ticks%statsTicks == 0 {
+			connectedLast = s.tick(logCh, throttleCh, messages, report, connectedLast, quiet)
 		}
-
-		switch force {
-		case true:
-			stats := s.statsLine(connected, newConnections, throttle)
-			messages = append(messages, fmt.Sprintf("Connection stats: %s", stats))
-			s.printStatsDueInterrupt(messages)
-		default:
-			queueLatestStats(logCh, s.statsData(connected, newConnections, throttle))
-		}
-
-		connectedLast = connected
-		s.mutex.Lock()
-		s.connected = connected
-		s.mutex.Unlock()
 	}
+}
+
+// tickProgress measures the read progress and writes it as a PROGRESS line
+// if it changed (with --progress), and returns it.
+func (s *stats) tickProgress() progressReport {
+	report, changed := s.measureProgress()
+	s.writeProgress(report, changed)
+	return report
+}
+
+// tick handles a STATS tick of Start or messages, the Ctrl-C hint, which
+// force the statistics on the terminal; else a STATS line is logged when the
+// connection count or the read progress changed since the last one, unless
+// quiet. It returns the connection count to compare the next tick with.
+func (s *stats) tick(logCh chan map[string]any, throttleCh <-chan struct{},
+	messages []string, report progressReport, connectedLast int, quiet bool) int {
+
+	force := len(messages) > 0
+	connected := len(s.connectionsEstCh)
+	throttle := len(throttleCh)
+	newConnections := connected - connectedLast
+
+	progressChanged := report.Reporting > 0 && report.progressTotals != s.statsProgress
+	if (connected == connectedLast && !progressChanged || quiet) && !force {
+		return connectedLast
+	}
+	s.statsProgress = report.progressTotals
+
+	data := s.statsData(connected, newConnections, throttle)
+	report.addTo(data)
+	if force {
+		messages = append(messages, "Connection stats: "+protocol.EncodeStatsLine(data))
+		s.printStatsDueInterrupt(messages)
+	} else {
+		queueLatestStats(logCh, data)
+	}
+
+	s.mutex.Lock()
+	s.connected = connected
+	s.mutex.Unlock()
+	return connected
+}
+
+// measureProgress measures the read progress, if the stats have a source.
+func (s *stats) measureProgress() (progressReport, bool) {
+	if s.progress == nil {
+		return progressReport{}, false
+	}
+	return s.progress.measure()
+}
+
+// writeProgress writes report as a PROGRESS line to progressOut when it
+// changed and a server reported progress, unless finishProgress ran.
+func (s *stats) writeProgress(report progressReport, changed bool) {
+	if s.progressOut == nil || !changed || report.Reporting == 0 {
+		return
+	}
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
+	if !s.progressDone {
+		_, _ = fmt.Fprintln(s.progressOut, report.line())
+	}
+}
+
+// finishProgress writes the final PROGRESS line to progressOut once the
+// sessions ended, also when no server reported progress (reporting=0/N: the
+// servers predate the progress report, or nothing was read), and ends the
+// PROGRESS lines. It does nothing without --progress.
+func (s *stats) finishProgress() {
+	if s == nil || s.progressOut == nil {
+		return
+	}
+	report, _ := s.progress.measure()
+	s.progressMu.Lock()
+	defer s.progressMu.Unlock()
+	if s.progressDone {
+		return
+	}
+	s.progressDone = true
+	_, _ = fmt.Fprintln(s.progressOut, report.line())
 }
 
 // logStats logs the stats queued by Start until ctx is done.
@@ -187,13 +276,14 @@ func (s *stats) statsData(connected, newConnections int,
 	return data
 }
 
-func (s *stats) statsLine(connected, newConnections int, throttle int) string {
-	return protocol.EncodeStatsLine(s.statsData(connected, newConnections, throttle))
-}
-
 func percentOf(total float64, value float64) float64 {
 	if total == 0 || total == value {
 		return 100
 	}
 	return value / (total / 100.0)
+}
+
+// statsLine encodes the connection statistics without the progress fields.
+func (s *stats) statsLine(connected, newConnections int, throttle int) string {
+	return protocol.EncodeStatsLine(s.statsData(connected, newConnections, throttle))
 }

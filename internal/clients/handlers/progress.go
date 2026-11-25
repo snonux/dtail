@@ -1,0 +1,35 @@
+package handlers
+
+import "github.com/mimecast/dtail/internal/protocol"
+
+// ProgressReporter is a handler that knows the read progress its server
+// reported (protocol.HiddenProgressPrefix). Every client handler built on
+// baseHandler is one; it is an interface of its own, asserted where needed,
+// so that Handler and its test doubles stay as they are.
+type ProgressReporter interface {
+	// Progress returns the latest read progress of the session and whether
+	// the server reported any yet. A server of before the progress frame
+	// never does.
+	Progress() (protocol.Progress, bool)
+}
+
+// handleProgressMessage keeps the read progress the server reported. Only the
+// latest counts, as each report holds the session's totals so far; one that
+// does not parse is logged at debug level and dropped.
+func (h *baseHandler) handleProgressMessage(message string) {
+	progress, err := protocol.ParseProgress(message)
+	if err != nil {
+		h.log().Debug(h.server, "Ignoring invalid progress message", err)
+		return
+	}
+	h.progress.Store(&progress)
+}
+
+// Progress returns the latest read progress the server reported, if any.
+func (h *baseHandler) Progress() (protocol.Progress, bool) {
+	progress := h.progress.Load()
+	if progress == nil {
+		return protocol.Progress{}, false
+	}
+	return *progress, true
+}

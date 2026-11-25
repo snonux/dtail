@@ -238,6 +238,7 @@ func (c *baseClient) makeConnections() error {
 	}
 
 	c.stats = newTailStats(len(c.connections), c.runtime.output, c.runtime.InterruptPause(), c.clientLogger())
+	c.stats.setProgress(c.progressTotals, c.progressOutput())
 	return nil
 }
 
@@ -265,7 +266,11 @@ func (c *baseClient) Start(ctx context.Context, statsCh <-chan string) (status i
 	if c.InteractiveQuery {
 		return c.startInteractiveControl(ctx, statsCh)
 	}
-	return c.runConnections(ctx, statsCh)
+	status = c.runConnections(ctx, statsCh)
+	// With --progress the last PROGRESS line follows the end of every
+	// session, so it holds the final numbers.
+	c.stats.finishProgress()
+	return status
 }
 
 func (c *baseClient) runConnections(ctx context.Context, statsCh <-chan string) (status int) {

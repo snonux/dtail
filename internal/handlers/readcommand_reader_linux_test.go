@@ -92,7 +92,7 @@ func TestReadCommandJournalConstructionFailureWarnsAndSkipsLimiter(t *testing.T)
 	command.logger = &warningTextLogger{}
 
 	command.read(context.Background(), emptyLContext(), "journal:ssh.service",
-		&target, "journal:ssh.service", regex.NewNoop())
+		&target, "journal:ssh.service", regex.NewNoop(), nil)
 
 	if got := len(server.catLimiter); got != 0 {
 		t.Fatalf("cat limiter occupancy = %d, want 0", got)

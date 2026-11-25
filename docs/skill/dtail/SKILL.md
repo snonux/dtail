@@ -51,6 +51,13 @@ scheduled jobs, and building/testing DTail itself.
 8. **Host keys:** an unknown host asks a question on the terminal. Use
    `--trustAllHosts` only if the user accepts that trust decision; a
    *changed* key is refused unless `--trustChangedHostKeys` is also given.
+9. **Keep the user posted on long reads.** For a `dcat`/`dgrep`/`dmap` over
+   much data, run it in the background with `--progress`, stdout to a file
+   and stderr to another: `dgrep --plain --progress ... > out.txt 2>
+   progress.txt`. Every 30-60 s read the last `PROGRESS` line and tell the
+   user how much is done, e.g. "1.2 of 4.0 GiB (30%), about 34 s left,
+   2/2 servers reporting". When the command ends, report from the final
+   line. Fields and caveats: [output-and-status.md](references/output-and-status.md#read-progress).
 
 ## Quick reference
 
@@ -61,6 +68,8 @@ dtail --servers servers.txt --files 'journal:myapp.service' --regex ERROR --shut
 dmap  --servers servers.txt --files '/var/run/dserver/log/*.log' --no-interactive \
       --query 'from STATS select $hostname,max($goroutines) group by $hostname'
 dmap  --files data.csv --query 'select name,avg(age) group by name logformat csv'   # serverless
+dgrep --servers servers.txt --files '/var/log/app/*.log.gz' --regex ERROR \
+      --plain --progress > out.txt 2> progress.txt &                             # watch progress.txt
 printf 'a\nb\n' | dgrep --regex a --plain --logger stdout                           # stdin
 dtailhealth --server web01:2222
 ```
@@ -80,8 +89,8 @@ Load only the file the task needs.
   SSH keys/agent, `known_hosts` and trust flags, auth-key fast reconnect,
   connect and handshake timeouts, environment variables.
 - [output-and-status.md](references/output-and-status.md): output line
-  format, `--plain`, client logging (`fout`, `--log-payload`), exit statuses,
-  protocol-5 compatibility.
+  format, `--plain`, read progress (`--progress`, ETA), client logging
+  (`fout`, `--log-payload`), exit statuses, protocol-5 compatibility.
 - [troubleshooting.md](references/troubleshooting.md): symptom -> cause ->
   fix for common failures (empty groups, hanging client, refused hosts,
   `journal-v1`, exit `2`).

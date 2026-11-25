@@ -52,6 +52,11 @@ type outputCoordinator struct {
 	closeSyncEmitted  bool
 	outputAbort       *internal.Done
 	activeGeneration  func() uint64
+	// progressPending is the session's latest read progress frame not sent
+	// yet and progressWake wakes a waiting output goroutine for it (see
+	// postProgress).
+	progressPending atomic.Pointer[string]
+	progressWake    chan struct{}
 
 	readActive         atomic.Bool
 	readerSeen         atomic.Bool
@@ -109,12 +114,16 @@ func (c *outputCoordinator) WaitForOutputEOFAck(ctx context.Context, timeout tim
 }
 
 // next returns what the session output delivers next: an acknowledgement
-// that goes first, payload, a queued message, or what waitForOutput gets.
+// or a read progress frame, which go first, payload, a queued message, or
+// what waitForOutput gets.
 func (c *outputCoordinator) next(p []byte) outputReadResult {
 	// The wait state is taken before the queues are tried, so a change in
 	// between is not lost (outputManager.readWait).
 	outputChanged, eofWait := c.output.readWait()
 	if result, handled := c.tryReadSessionAckFirst(); handled {
+		return result
+	}
+	if result, handled := c.tryReadProgress(); handled {
 		return result
 	}
 	if result, handled := c.tryReadPayload(p); handled {
@@ -174,6 +183,9 @@ func (c *outputCoordinator) waitForOutput(p []byte, outputChanged <-chan struct{
 		stopOptionalTimer(eofTimer)
 		c.closeSyncObserved = true
 		return outputReadResult{kind: outputReadRetry}
+	case <-c.progressWake:
+		stopOptionalTimer(eofTimer)
+		return outputReadResult{kind: outputReadRetry}
 	case <-eofTimerC:
 		return outputReadResult{kind: outputReadRetry}
 	}
@@ -196,8 +208,10 @@ func (c *outputCoordinator) tryReadPayload(p []byte) (outputReadResult, bool) {
 // tryReadQueued takes the next queued message without blocking: a SESSION
 // acknowledgement (and, once it released its generation, the messages
 // deferred for it, see sessionAckGate), a flush error, a server message, a
-// MapReduce message; else it handles flush requests and the close handshake.
-// next calls it only when no payload is to be read.
+// MapReduce message, a read progress frame (also taken ahead of payload by
+// next, but posted since, or let through by the gate only now); else it
+// handles flush requests and the close handshake, which therefore come after
+// the final progress. next calls it only when no payload is to be read.
 func (c *outputCoordinator) tryReadQueued() (outputReadResult, bool) {
 	if result, handled := c.tryReadSessionAck(); handled {
 		return result, true
@@ -222,6 +236,9 @@ func (c *outputCoordinator) tryReadQueued() (outputReadResult, bool) {
 	case message := <-c.maprSource():
 		return c.takeMaprMessage(message), true
 	default:
+	}
+	if result, handled := c.tryReadProgress(); handled {
+		return result, true
 	}
 	return c.tryFlushOrClose()
 }
@@ -411,13 +428,16 @@ func (c *outputCoordinator) ensureFlushChannels() {
 }
 
 // queuedUnits counts the output still queued for the session reader: server
-// messages and acknowledgements, MapReduce messages and payload bytes. A
+// messages, acknowledgements and a read progress frame, MapReduce messages and payload bytes. A
 // generation held for its acknowledgement counts as one unit until the
 // acknowledgement went out (sessionAckGate).
 func (c *outputCoordinator) queuedUnits() int {
 	h := c.handler
 	serverCount := len(c.serverMessages) + len(c.sessionAcks)
 	if c.ackGate.held.Load() != 0 {
+		serverCount++
+	}
+	if c.progressQueued() {
 		serverCount++
 	}
 	maprCount := len(c.maprMessages)

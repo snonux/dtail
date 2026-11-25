@@ -1489,6 +1489,61 @@ full description: `docs/dev/probe.md`.
   that only appears before the probe's window, found by the table probe
   of the Tab after `from RARE` and listed by `:fields RARE`.
 
+### Read Progress (dcat, dgrep, dmap)
+dserver reports how far the snapshot reads of a session got with the hidden
+control frame `.syn progress bytes=<n> total=<n> files=<n> filestotal=<n>`
+(`protocol.EncodeProgress`/`ParseProgress`, `internal/protocol/progress.go`;
+key=value tokens, unknown keys ignored, missing ones 0). It is part of
+protocol 5 without a capability: older protocol 5 clients drop unknown
+hidden messages, and a client of an older dserver simply gets none. Design:
+`docs/dev/read_progress.md`.
+- **Counted:** cat and grep mode reads of files, so dcat, dgrep and dmap's
+  reads; not tail mode, `journal:` targets, stdin or the scheduler's group
+  reads. `readCommand.trackProgress` registers a file once its permission
+  check passed, with its `os.Stat` size, so the total is complete at once
+  also for files still waiting for a cat slot (`readProgress`,
+  `fileProgress`, `internal/handlers/read_progress.go`). Bytes are counted
+  by `fs.ReadOptions.Progress` (`fs.ByteCounter`): `countedSource`
+  (`internal/io/fs/progress.go`) wraps the open descriptor below bufio and
+  the gzip/zstd decompressor, one atomic add per buffer fill; compressed
+  files count compressed bytes on disk; a reopen starts the file's count
+  over.
+- **Growing files:** every report tick re-stats the files being read through
+  their open descriptor (`fileProgress.refreshSize`; rotation-safe, at most
+  `MaxConcurrentCats` per session), so the total follows a log that is
+  appended to while it is read; a file read past its known size counts with
+  the bytes read as its size. A file whose read ended (EOF, `--max`,
+  cancel, error) counts in full, so the final report is 100%.
+- **Generations:** a read command of a newer session generation starts the
+  tracking over; older ones are not tracked. Plain command streams are
+  generation 0 throughout and add up.
+- **Sending:** a goroutine per session posts every second
+  (`progressReportInterval`) when the totals changed, and
+  `readCommand.readFiles` posts once its files ended. Posts go to a one-slot
+  mailbox (`outputCoordinator.postProgress`, `output_progress.go`) that
+  replaces an unsent frame, is taken **ahead of payload** at a frame
+  boundary (`tryReadProgress` in `next`; otherwise a cat keeping the output
+  buffer full starved it), before the close handshake (`tryReadQueued`,
+  counted by `queuedUnits`), not while `sessionAckGate.pending()`, and is
+  dropped for a replaced generation. Serverless uses the same path.
+- **Client:** `baseHandler.handleProgressMessage` keeps the latest
+  (`ProgressReporter`, `internal/clients/handlers/progress.go`);
+  `baseClient.progressTotals` sums all connections and counts `reporting`
+  servers; `progressMeter` (`internal/clients/progress.go`) measures the
+  rate over 15 s and the ETA. The stats loop measures it every second
+  (`progressTick`, `stats.tickProgress`); its STATS tick (every 3 s,
+  `statsTicks`, `stats.tick`) adds `bytes`, `total`, `progress`,
+  `progress%`, `rate`, `eta`, `files`, `reporting` to the STATS line when
+  the progress changed since the last STATS line (so STATS lines now also
+  appear while reads progress; dropped by `--quiet`/`--plain`).
+  `--progress` (`Args.Progress`) writes fixed-order `PROGRESS|...` lines to
+  stderr every second the progress changed, whatever the quiet mode, and a final one after the sessions ended
+  (`stats.finishProgress`, from `baseClient.Start`); not in interactive
+  sessions or the dmap query builder. Without any report, `progress%`,
+  `rate` and `eta` are `unknown` (final line `reporting=0/N`).
+- Tests: `read_progress_test.go` (handlers), `progress_test.go` (protocol,
+  fs, clients, client handlers), `integrationtests/progress_test.go`.
+
 ### Wire Framing (server-to-client stream)
 Every server-to-client message (frame) ends with `protocol.MessageDelimiter`,
 the single byte 0xAC. That byte is also a UTF-8 continuation byte (`€` is
@@ -1507,7 +1562,8 @@ design in `docs/dev/wire_framing.md`):
   its escaped size. Valid UTF-8 never contains 0xFF, so frames without 0xAC
   are written byte for byte.
 - Every control frame (hidden `.syn ...` messages, the capabilities frame
-  included, and `AUTHKEY` replies) starts with the marker `FF 03`, which
+  and the read progress (see "Read Progress") included, and `AUTHKEY`
+  replies) starts with the marker `FF 03`, which
   escaping makes unforgeable; every unmarked frame is payload. So `--plain`
   log lines starting with `.` or reading `AUTHKEY OK` are printed and never
   acted upon (`.syn close connection`, `.syn command failed x`).

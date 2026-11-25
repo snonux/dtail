@@ -125,7 +125,7 @@ func TestSharedFollowReadReportsOutputTooLarge(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop())
+		cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop(), nil)
 	}()
 	defer func() {
 		cancel()
@@ -161,7 +161,7 @@ func TestGroupReadReportsOutputTooLarge(t *testing.T) {
 
 	// A group of one member starts its read at once.
 	cmd.read(contextWithReadShare(context.Background(), "too-large-group:1"), lcontext.LContext{},
-		path, &target, "glob", regex.NewNoop())
+		path, &target, "glob", regex.NewNoop(), nil)
 	if !failed.Load() {
 		t.Fatal("test setup: the member's output never dropped a line")
 	}

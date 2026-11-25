@@ -5,7 +5,8 @@
 - Remote payload lines are prefixed with their source:
   `REMOTE|host|...|file|...` followed by the line. Client diagnostics are
   `CLIENT|host|LEVEL|...`; periodic `STATS` lines report connected servers
-  (`connected=2|servers=2|connected%=100|...`).
+  (`connected=2|servers=2|connected%=100|...`) and, while `dcat`, `dgrep`
+  or `dmap` read, the read progress (see below).
 - `--plain` prints the raw payload only (implies `--quiet`, which only
   drops the periodic STATS lines, and `--noColor`). Colors are not turned
   off automatically when stdout is a pipe. Payload lines that look like
@@ -20,6 +21,58 @@
   highlighted on a terminal; one plain run of text when piped so `grep`
   finds it). See [mapreduce-results.md](mapreduce-results.md).
 - `--colorTable` / `--wideColorTable` (`dtail`) print the color palette.
+
+## Read progress
+
+`dcat`, `dgrep` and `dmap` report how much of the files the servers have
+read so far, summed over all servers. Every dserver sends it about once a
+second (hidden `.syn progress` frame of protocol 5) and a final one before
+the session ends. The client shows it while it changes:
+
+- **Default:** as extra fields of the `STATS` lines on stdout, every 3 s,
+  dropped by `--quiet` and `--plain` like the rest of `STATS`. Field order
+  is random.
+- **`--progress`:** as `PROGRESS` lines on **stderr**, every second, in a
+  fixed order, also with `--plain`/`--quiet`, plus one final line when the
+  command ends.
+  Stdout keeps only the data. Not written in interactive sessions.
+
+```
+PROGRESS|bytes=1288490188|total=4294967296|progress=1.20GiB/4.00GiB|progress%=30.0|rate=85.30MiB/s|eta=35s|files=3/10|reporting=2/2
+```
+
+| Field | Meaning |
+| --- | --- |
+| `bytes`, `total` | Bytes read so far and the summed size of the files, raw numbers. |
+| `progress` | The same in IEC units. |
+| `progress%` | `bytes/total`, one decimal, capped at 100; `unknown` while no server reported. |
+| `rate` | Bytes per second over the last 15 s; `unknown` for the first seconds. |
+| `eta` | `(total-bytes)/rate`, e.g. `1m35s`; `0s` when done; `unknown` without a rate. |
+| `files` | Files whose read ended / files to read. |
+| `reporting` | Servers that reported progress / servers. |
+
+How to report it to a user: take the last `PROGRESS` line (`tail -n 1
+progress.txt`), give `progress`, `progress%` and `eta`, and name
+`reporting` when it is below the server count. If `eta` is `unknown`,
+estimate it from two lines taken `t` seconds apart: `(total - bytes2) /
+((bytes2 - bytes1) / t)`.
+
+Caveats:
+- `reporting` below the server count: servers still connecting, down, or
+  dservers of before the progress report (they send none, and the final
+  line then reads `reporting=0/N` with `progress%=unknown`). The total
+  lacks their files, so the percentage is too high until they report.
+- Compressed files count their compressed bytes on disk, so `total` is not
+  the amount of log text.
+- A file that grows while it is read raises `total` (the read goes on to
+  the end it finds); `eta` follows.
+- A file counts as fully read when its read ends, also when `--max` or an
+  error ended it early, so the final line says 100%. Check the exit status
+  and WARN lines for failures.
+- `journal:` units and stdin have no size and are not counted; `dtail`
+  following files reports no progress.
+- The progress is how far the servers read, not how much output reached
+  you: a slow output pipe slows the read down, so both stay close.
 
 ## Client logging
 

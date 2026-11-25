@@ -23,6 +23,9 @@ Layout:
     control frames)
   * [Probe command](dev/probe.md) (field discovery and path listing for the
     interactive query and path completion)
+  * [Read progress](dev/read_progress.md) (the `.syn progress` frame, how
+    dserver counts the bytes read of dcat, dgrep and dmap, and the client's
+    STATS fields and `--progress` lines)
 * `skill/` — the agent skill [dtail](skill/dtail/SKILL.md): how to use,
   query, run and develop DTail, as a slim index with references loaded on
   demand

@@ -59,6 +59,9 @@ type ServerHandler struct {
 	// queued (or the session ends), so that at most one probe answer waits
 	// to be queued (startProbe).
 	probeInFlight chan struct{}
+	// readProgress tracks how far the session's snapshot reads got and
+	// reports it to the client (see readProgress).
+	readProgress *readProgress
 	// probeOverrides replaces parts of the probe command in tests; its
 	// zero value, which every handler outside the tests has, changes
 	// nothing.
@@ -137,6 +140,7 @@ func NewServerHandler(ctx context.Context, user *user.User, dependencies Depende
 	}
 	h.bindCallbacks()
 	h.output.configure(h.outputManagerConfig(), loggers.Diagnostics)
+	h.readProgress = newReadProgress(h.postProgress, h.done.Done())
 	h.activeGeneration = h.sessionState.currentGeneration
 
 	s := strings.Split(dependencies.Hostname, ".")

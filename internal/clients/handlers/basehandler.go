@@ -116,6 +116,9 @@ type baseHandler struct {
 	// failures are the distinct reasons of the failed commands the server
 	// reported, in the order of their first report.
 	failures []string
+	// progress is the latest read progress the server reported (see
+	// handleProgressMessage); nil while none arrived.
+	progress atomic.Pointer[protocol.Progress]
 }
 
 // maxReportedFailures bounds how many distinct failure reasons a session
@@ -550,6 +553,8 @@ func (h *baseHandler) handleHiddenMessage(message string) {
 		h.handleSessionAckMessage(message)
 	case strings.HasPrefix(message, protocol.HiddenCommandFailedPrefix):
 		h.handleCommandFailedMessage(message)
+	case strings.HasPrefix(message, protocol.HiddenProgressPrefix):
+		h.handleProgressMessage(message)
 	case strings.HasPrefix(message, protocol.HiddenProbePrefix):
 		h.handleProbeMessage(message)
 	case strings.HasPrefix(message, ".syn close connection"):

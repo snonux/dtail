@@ -11,7 +11,8 @@ in serverless mode) is a sequence of frames. Each frame ends with
 * an untagged payload: a plain-mode log line,
 * a control frame, marked as such: a hidden control message starting with `.`
   (e.g. `.syn capabilities ...`, `.syn close connection`, the probe answer
-  `.syn probe <id> <base64>` described in `probe.md`) or an
+  `.syn probe <id> <base64>` described in `probe.md`, the read progress
+  `.syn progress bytes=... total=...` described in `read_progress.md`) or an
   `AUTHKEY OK` / `AUTHKEY ERR ...` reply (see Control frames).
 
 Since protocol 5 every frame of every session, from the first one on, is
@@ -102,7 +103,10 @@ replies (and ignores other marked frames of newer servers) and prints every
 unmarked frame (`frameKind` in `internal/clients/handlers/basehandler.go`);
 MapReduce sessions never take a marked frame for aggregate data. The server
 marks every hidden message and every `AUTHKEY` reply, in plain and REMOTE
-line format alike. Line frames, server messages and aggregates carry no
+line format alike. New hidden messages need no capability as long as a
+client may ignore them: `.syn progress` (`read_progress.md`) was added to
+protocol 5 that way, and the session output takes it from a mailbox of its
+own ahead of payload (`outputCoordinator.postProgress`). Line frames, server messages and aggregates carry no
 marker, so the per-line hot path only escapes.
 
 ## Escaped frames and the output buffer cap
@@ -259,6 +263,8 @@ session (`HealthHandler.frameRejected`) does so for any rejected frame.
 * `internal/protocol/control_frames.go` — control frames (`EncodeControl`,
   `CutControl`, `IsControlMessage`)
 * `internal/protocol/capabilities.go` — capability constants
+* `internal/protocol/progress.go` — the `.syn progress` frame; its mailbox in
+  the session output is `internal/handlers/output_progress.go`
 * `internal/handlers/session_framer.go` — `sessionFraming` and the framing of
   control messages (`readServerMessage`)
 * `internal/handlers/line_writer.go`, `protocol_formatter.go` — line frames

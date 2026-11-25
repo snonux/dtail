@@ -42,6 +42,8 @@ type readCommandDependencies struct {
 	serverless      bool
 	// readHub shares follow reads between sessions; nil reads privately.
 	readHub *readhub.Hub
+	// progress tracks the session's read progress; nil tracks none.
+	progress *readProgress
 }
 
 type readCommandDependencyProvider interface {
@@ -333,6 +335,7 @@ func (h *ServerHandler) readCommandDependencies() readCommandDependencies {
 		abortAfterPanic: h.abortAfterPanic,
 		serverless:      h.serverless,
 		readHub:         h.readHub,
+		progress:        h.readProgress,
 	}
 }
 

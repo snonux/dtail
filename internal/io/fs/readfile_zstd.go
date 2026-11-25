@@ -5,14 +5,13 @@ package fs
 import (
 	"bufio"
 	"io"
-	"os"
 
 	"github.com/DataDog/zstd"
 )
 
-func (f *ReadFile) makeZstdReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {
+func (f *ReadFile) makeZstdReader(source io.Reader) (reader *bufio.Reader, decompressor io.Closer, err error) {
 	f.logger.Info(f.FilePath(), "Detected zstd compression format")
-	zstdReader, err := newZstdDecompressor(f.FilePath(), fd)
+	zstdReader, err := newZstdDecompressor(f.FilePath(), source)
 	if err != nil {
 		return nil, nil, err
 	}

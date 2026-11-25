@@ -6,11 +6,10 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"os"
 )
 
-func (f *ReadFile) makeZstdReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {
-	_, err = newZstdDecompressor(f.FilePath(), fd)
+func (f *ReadFile) makeZstdReader(source io.Reader) (reader *bufio.Reader, decompressor io.Closer, err error) {
+	_, err = newZstdDecompressor(f.FilePath(), source)
 	return
 }
 

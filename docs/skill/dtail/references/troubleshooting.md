@@ -6,6 +6,7 @@
 | `dmap` waits for input / shows `query>` | Started without `--query` on a terminal: query builder | Always pass `--query`; add `--no-interactive`. |
 | `dmap` exits 1: `no mapreduce query specified` | No query, no terminal | Pass `--query '...'`. |
 | `dtail` never ends | Follow mode | `--shutdownAfter SECONDS`, or use `dgrep`/`dcat` for past data. |
+| No progress shown, or final line `reporting=0/N` | `--quiet`/`--plain` drop the STATS fields; dservers older than the progress report send none; `dtail` follow and `journal:`/stdin reads are not counted | Add `--progress` (stderr); upgrade dserver. |
 | Interactive prompt/pause in an agent run | `dtail` is interactive on a terminal | `--no-interactive`, or run without a TTY. |
 | Query result is one empty group, or no rows | A bareword written as `$field` (no value; the client warns `... is not a known variable ... did you mean bareword ...`) | Write dynamic `key=value` fields without `$`. |
 | Query sees no fields / only `$line`, `$hostname` | No `from TABLE`: the `generic` parser is used | Add `from TABLE` (e.g. `from STATS`) or `logformat generickv`/`csv`. |

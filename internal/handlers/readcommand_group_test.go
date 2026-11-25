@@ -135,7 +135,7 @@ func runRead(t *testing.T, server *sharedReadTestServer, rc groupReadCase, path,
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.read(contextWithReadShare(context.Background(), share), rc.ltx, path, &target, "glob", re)
+	cmd.read(contextWithReadShare(context.Background(), share), rc.ltx, path, &target, "glob", re, nil)
 }
 
 func TestGroupReadOutputEqualsPrivateReadOutput(t *testing.T) {
@@ -233,7 +233,7 @@ func TestGroupReadEndings(t *testing.T) {
 			func() {
 				defer func() { recovered = recover() }()
 				cmd.read(contextWithReadShare(context.Background(), "g:2"), lcontext.LContext{}, path,
-					&target, "glob", regex.NewNoop())
+					&target, "glob", regex.NewNoop(), nil)
 			}()
 
 			if calls != 1 {

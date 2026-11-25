@@ -23,7 +23,8 @@ binary with `-h` and `--version` if it may be older.
 | `--auth-key-path`, `--key` (deprecated alias), `--no-auth-key`, `--agentKeyIndex N` (0-based; -1 = all agent keys) | SSH key and fast reconnect; see [auth-and-config.md](auth-and-config.md). |
 | `--known-hosts-path`, `--trustAllHosts`, `--trustChangedHostKeys` | Host key file and trust decisions. |
 | `--plain` | Payload only, without the `REMOTE` source prefix; implies quiet and no color. |
-| `--quiet` | No periodic `STATS` lines. |
+| `--quiet` | No periodic `STATS` lines (and so no progress fields in them). |
+| `--progress` | `dcat`, `dgrep`, `dmap`: write the read progress as `PROGRESS` lines to stderr, also with `--plain`/`--quiet`, and a final line at the end (see [output-and-status.md](output-and-status.md#read-progress)). |
 | `--noColor` | No terminal colors (payload, tables, interactive output). |
 | `--logger`, `--logDir`, `--logLevel` (info; serverless warn), `--log-payload` | Client log sink; see [output-and-status.md](output-and-status.md). |
 | `--interactive-query`, `--control-tty` (/dev/tty), `--edit-mode emacs\|vi` | Interactive control; see [interactive-control.md](interactive-control.md). |

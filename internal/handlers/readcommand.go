@@ -50,6 +50,9 @@ type readCommand struct {
 	// mapQueryFailed is set at dispatch when the map command of this read's
 	// command stream failed, so the read is rejected (see mapQueryFailures).
 	mapQueryFailed bool
+	// progress tracks the session's read progress (see readProgress); nil
+	// tracks none.
+	progress *readProgress
 }
 
 // Reasons a read command reports with reportFailure. They name no path and no
@@ -183,6 +186,7 @@ func newReadCommandWithDependencies(dependencies readCommandDependencies, mode o
 		serverless:    dependencies.serverless,
 		followShared:  followSharedFunc(dependencies.readHub),
 		readGroup:     groupReadFuncFor(dependencies.readHub),
+		progress:      dependencies.progress,
 		aggregate:     aggregate,
 		mode:          mode,
 		shutdownCoordinator: newShutdownCoordinator(dependencies.lifecycle, dependencies.aggregates,
@@ -327,7 +331,7 @@ func (r *readCommand) readPipe(ctx context.Context, ltx lcontext.LContext, re re
 	r.registerPendingFiles(1)
 	defer r.shutdownCoordinator.onFileProcessed(ctx, "-")
 	// Empty file path and globID "-" represents reading from the stdin pipe.
-	r.read(ctx, ltx, "", nil, "-", re)
+	r.read(ctx, ltx, "", nil, "-", re, nil)
 }
 
 func (r *readCommand) readJournal(ctx context.Context, ltx lcontext.LContext,
@@ -413,6 +417,44 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 	totalPending := r.registerPendingFiles(len(paths))
 	r.logger.Info(r.logContext, "Added pending files", "count", len(paths), "totalPending", totalPending)
 
+	skipped := r.readPaths(ctx, ltx, paths, glob, re)
+	r.logger.Info(r.logContext, "All files processed", "count", len(paths))
+
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+
+	// A glob that matched only paths that are no regular files (e.g. only
+	// directories) read nothing, like a glob that matched no path.
+	if skipped == len(paths) {
+		r.logger.Error(r.logContext, "No regular file(s) to read", glob)
+		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
+			"Unable to read file(s), check server logs"))
+		r.reportFailure(ctx, readFailureNoFile)
+	}
+
+	// Every file of this command ended: the client gets the progress now,
+	// ahead of the session's close handshake (see outputCoordinator.
+	// tryReadQueued), not only at the next report tick.
+	r.progress.flush()
+
+	// The handler owns output draining and the epoch-protected EOF handshake.
+	// readCommand only announces that this group of file reads has completed.
+	r.server.FinishReadBatch(ctx, r.mode, r.generation)
+
+	// In output mode with aggregate, we don't close the shared channel here
+	// because it will be used across multiple invocations
+	// The aggregate will handle channel closure when it's done
+}
+
+// readPaths reads paths concurrently, one goroutine each (the read slots
+// bound how many read at once), and returns how many it skipped as no
+// regular files.
+func (r *readCommand) readPaths(ctx context.Context, ltx lcontext.LContext,
+	paths []string, glob string, re regex.Regex) int {
+
 	var wg sync.WaitGroup
 	var skipped atomic.Int32
 	wg.Add(len(paths))
@@ -427,31 +469,7 @@ func (r *readCommand) readFiles(ctx context.Context, ltx lcontext.LContext,
 		}()
 	}
 	wg.Wait()
-
-	r.logger.Info(r.logContext, "All files processed", "count", len(paths))
-
-	select {
-	case <-ctx.Done():
-		return
-	default:
-	}
-
-	// A glob that matched only paths that are no regular files (e.g. only
-	// directories) read nothing, like a glob that matched no path.
-	if int(skipped.Load()) == len(paths) {
-		r.logger.Error(r.logContext, "No regular file(s) to read", glob)
-		r.sendServerMessage(ctx, logging.WarnMessage(r.logger, r.logContext,
-			"Unable to read file(s), check server logs"))
-		r.reportFailure(ctx, readFailureNoFile)
-	}
-
-	// The handler owns output draining and the epoch-protected EOF handshake.
-	// readCommand only announces that this group of file reads has completed.
-	r.server.FinishReadBatch(ctx, r.mode, r.generation)
-
-	// In output mode with aggregate, we don't close the shared channel here
-	// because it will be used across multiple invocations
-	// The aggregate will handle channel closure when it's done
+	return int(skipped.Load())
 }
 
 func (r *readCommand) registerPendingFiles(count int) int32 {
@@ -496,7 +514,9 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 	target, err := r.server.PrepareReadTarget(path)
 	switch {
 	case err == nil:
-		r.read(ctx, ltx, path, &target, globID, re)
+		progress := r.trackProgress(&target)
+		defer r.progress.finish(progress)
+		r.read(ctx, ltx, path, &target, globID, re, progress.counter())
 		return false
 	case errors.Is(err, fs.ErrNotRegularFile):
 		r.logger.Info(r.logContext, "Skipping path that is not a regular file", path, globID)
@@ -520,8 +540,11 @@ func (r *readCommand) readFileIfPermissions(ctx context.Context, ltx lcontext.LC
 	return false
 }
 
+// read reads path, counting the bytes read into progress if it is not nil
+// (a snapshot read of a file, see trackProgress).
 func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
-	path string, target *fs.ValidatedReadTarget, globID string, re regex.Regex) {
+	path string, target *fs.ValidatedReadTarget, globID string, re regex.Regex,
+	progress fs.ByteCounter) {
 
 	r.logger.Info(r.logContext, "Start reading", path, globID)
 	r.logRegexMode(re)
@@ -530,15 +553,7 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 	defer closeServerMessages()
 
 	factory := readerFactoryFor(r.mode)
-	readerOptions := readerFactoryOptions{
-		slots:          r.server,
-		target:         target,
-		path:           path,
-		globID:         globID,
-		serverMessages: serverMessages,
-		maxLineLength:  r.timings.maxLineLength,
-		logger:         r.readerLogger,
-	}
+	readerOptions := r.readerOptions(path, target, globID, serverMessages, progress)
 	// Output is the one and only read path. read() is only ever invoked for the
 	// cat/grep/tail command handlers (see makeReadCommandHandler), and MapReduce
 	// always builds a Aggregate for both server mode and serverless (see
@@ -584,6 +599,22 @@ func (r *readCommand) read(ctx context.Context, ltx lcontext.LContext,
 		return
 	}
 	r.readWithProcessor(ctx, ltx, path, globID, re, reader)
+}
+
+// readerOptions returns the options the reader of path is made with.
+func (r *readCommand) readerOptions(path string, target *fs.ValidatedReadTarget, globID string,
+	serverMessages chan<- string, progress fs.ByteCounter) readerFactoryOptions {
+
+	return readerFactoryOptions{
+		slots:          r.server,
+		target:         target,
+		path:           path,
+		globID:         globID,
+		serverMessages: serverMessages,
+		maxLineLength:  r.timings.maxLineLength,
+		logger:         r.readerLogger,
+		progress:       progress,
+	}
 }
 
 func (r *readCommand) readWithProcessor(ctx context.Context, ltx lcontext.LContext,

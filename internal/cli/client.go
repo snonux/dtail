@@ -86,6 +86,8 @@ func BindCommonClientFlags(fs *flag.FlagSet, args *config.Args) *ClientRunner {
 		"(dmap without --query: open the query builder also without a terminal on stdin and stdout, "+
 		"and keep the session open after the built query ran)")
 	fs.BoolVar(&args.Plain, "plain", false, "Plain output mode")
+	fs.BoolVar(&args.Progress, "progress", false,
+		"Write the read progress of dcat, dgrep and dmap as PROGRESS lines to stderr, also with --plain and --quiet")
 	fs.BoolVar(&args.TrustAllHosts, "trustAllHosts", false, "Trust all unknown host keys")
 	fs.BoolVar(&args.TrustChangedHostKeys, "trustChangedHostKeys", false,
 		"Also trust hosts whose key differs from the one in known_hosts and replace their entries (refused otherwise)")

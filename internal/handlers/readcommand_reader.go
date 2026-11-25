@@ -25,6 +25,8 @@ type readerFactoryOptions struct {
 	serverMessages chan<- string
 	maxLineLength  int
 	logger         logging.Logger
+	// progress counts the bytes a snapshot read consumes; nil counts none.
+	progress fs.ByteCounter
 }
 
 type readerFactory func(readerFactoryOptions) (fs.FileReader, readLimiter, error)
@@ -72,6 +74,7 @@ func makeReader(options readerFactoryOptions, mode omode.Mode, seekEOF bool) (fs
 		GlobID:         options.globID,
 		ServerMessages: options.serverMessages,
 		SeekEOF:        seekEOF,
+		Progress:       options.progress,
 		MaxLineLength:  options.maxLineLength,
 		Logger:         options.logger,
 	})

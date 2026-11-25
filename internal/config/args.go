@@ -68,6 +68,11 @@ type Args struct {
 	InteractiveQuery  bool
 	Mode              omode.Mode
 	Plain             bool
+	// Progress makes dcat, dgrep and dmap write their read progress
+	// (PROGRESS lines) to stderr, also with Quiet or Plain, which only drop
+	// the progress fields of the STATS lines (--progress). The client never
+	// sends it: servers report progress to every client.
+	Progress bool
 	// QueryBuilder marks the arguments of dmap's query builder (set by
 	// clients.NewQueryBuilderClient, never by a flag): the session holds
 	// no workload and the query is still to be entered.
@@ -123,6 +128,7 @@ func (a *Args) String() string {
 	fmt.Fprintf(&sb, "Serverless:%v,", a.Serverless)
 	fmt.Fprintf(&sb, "ServersStr:%v,", a.ServersStr)
 	fmt.Fprintf(&sb, "Plain:%v,", a.Plain)
+	fmt.Fprintf(&sb, "Progress:%v,", a.Progress)
 	fmt.Fprintf(&sb, "Timeout:%v,", a.Timeout)
 	fmt.Fprintf(&sb, "TrustAllHosts:%v,", a.TrustAllHosts)
 	fmt.Fprintf(&sb, "TrustChangedHostKeys:%v,", a.TrustChangedHostKeys)

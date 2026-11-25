@@ -85,6 +85,11 @@ type ReadOptions struct {
 	// It runs on the reader's goroutine. It cannot be combined with a
 	// compressed file or the stdin pipe.
 	HandOverAtEOF func(offset int64, file os.FileInfo) bool
+	// Progress, when set, counts the bytes a snapshot read (cat, grep, and
+	// so map) consumes of its file, the compressed bytes for a compressed
+	// file, and learns the file's size at every open (see ByteCounter).
+	// Follow reads and the stdin pipe count nothing.
+	Progress      ByteCounter
 	MaxLineLength int
 	Logger        logging.Logger
 }
@@ -122,6 +127,8 @@ type ReadFile struct {
 	initialFile *os.File
 	// handOverAtEOF, if set, may end a follow read at the end of the file.
 	handOverAtEOF func(offset int64, file os.FileInfo) bool
+	// progress, if set, counts the bytes read of the file (ReadOptions.Progress).
+	progress ByteCounter
 	// Warned already about a long line.
 	warnedAboutLongLine bool
 	// Maximum line length before a line is split.
@@ -178,6 +185,9 @@ func NewReadFile(options ReadOptions) (*ReadFile, error) {
 		initialOffsetInSplitLine: options.StartOffsetInSplitLine && options.StartOffset > 0,
 		initialFile:              options.StartFile,
 		handOverAtEOF:            options.HandOverAtEOF,
+	}
+	if !follow {
+		readFile.progress = options.Progress
 	}
 	readFile.validatedTarget.Store(target)
 	return readFile, nil
@@ -335,7 +345,7 @@ func (f *ReadFile) makeFileReader() (reader *bufio.Reader, fd *os.File, decompre
 		return
 	}
 
-	reader, decompressor, err = f.makeCompressedFileReader(fd)
+	reader, decompressor, err = f.makeCompressedFileReader(f.countedSource(fd))
 	if err == nil {
 		initialOffset := f.initialOffset
 		f.seekInitialEOF = false
@@ -466,17 +476,20 @@ func CompressionFormat(path string) string {
 	}
 }
 
-func (f *ReadFile) makeCompressedFileReader(fd *os.File) (reader *bufio.Reader, decompressor io.Closer, err error) {
+// makeCompressedFileReader returns the line reader over source, the open
+// file (or the byte counter wrapping it, countedSource), decompressing it by
+// the path's suffix.
+func (f *ReadFile) makeCompressedFileReader(source io.Reader) (reader *bufio.Reader, decompressor io.Closer, err error) {
 	switch CompressionFormat(f.FilePath()) {
 	case "gzip":
 		f.logger.Info(f.FilePath(), "Detected gzip compression format")
-		gzipReader := &lazyGzipReader{source: fd}
+		gzipReader := &lazyGzipReader{source: source}
 		decompressor = gzipReader
 		reader = bufio.NewReader(gzipReader)
 	case "zstd":
-		return f.makeZstdReader(fd)
+		return f.makeZstdReader(source)
 	default:
-		reader = bufio.NewReader(fd)
+		reader = bufio.NewReader(source)
 	}
 	return
 }

@@ -265,7 +265,7 @@ func startTailRead(t *testing.T, server *sharedReadTestServer, path string) (con
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop())
+		cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop(), nil)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -427,7 +427,7 @@ func TestSharedReadEndings(t *testing.T) {
 			go func() {
 				defer close(done)
 				defer func() { panicked <- recover() }()
-				cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop())
+				cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop(), nil)
 			}()
 
 			if tt.wantPanic {
@@ -510,7 +510,7 @@ func TestSharedAndPrivateReadReportTheSameFailure(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop())
+			cmd.read(ctx, lcontext.LContext{}, path, &target, "glob", regex.NewNoop(), nil)
 		}()
 		// Both reads start at the end of the file, so append until a line
 		// reaches the output. The first one fails the writer, and both paths

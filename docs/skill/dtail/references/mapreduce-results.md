@@ -26,6 +26,10 @@
   interval of the latest lines.
 - On a terminal the raw query is printed (highlighted) above each table;
   piped output gets it as plain contiguous text.
+- `dmap` reports how far the servers read its files like `dcat` and
+  `dgrep` (STATS fields, `--progress` lines on stderr with an ETA; see
+  [output-and-status.md](output-and-status.md#read-progress)). The final
+  table follows once every file was read.
 
 ## Outfiles
 
