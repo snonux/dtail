@@ -131,8 +131,12 @@ func TestHandleRequestsRefusesSecondShellRequest(t *testing.T) {
 		t.Fatalf("second shell request was accepted (err=%v)", err)
 	}
 
-	closed := make(chan error, 1)
-	go func() { closed <- clientConn.Wait() }()
+	// Only that the connection ends matters, not the error it ends with.
+	closed := make(chan struct{})
+	go func() {
+		_ = clientConn.Wait()
+		close(closed)
+	}()
 	select {
 	case <-closed:
 	case <-time.After(5 * time.Second):

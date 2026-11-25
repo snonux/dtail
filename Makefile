@@ -37,13 +37,10 @@ dtailhealth:
 	${GO} build ${GO_FLAGS} -tags '${GO_TAGS}' -o dtailhealth ./cmd/dtailhealth/main.go
 dtail-tools:
 	${GO} build ${GO_FLAGS} -tags '${GO_TAGS}' -o dtail-tools ./cmd/dtail-tools/main.go
+# The package directories, not their main.go: go install names a binary after
+# a single file argument, so every one was installed as "main".
 install:
-	${GO} install -tags '${GO_TAGS}' ./cmd/dserver/main.go
-	${GO} install -tags '${GO_TAGS}' ./cmd/dcat/main.go
-	${GO} install -tags '${GO_TAGS}' ./cmd/dgrep/main.go
-	${GO} install -tags '${GO_TAGS}' ./cmd/dmap/main.go
-	${GO} install -tags '${GO_TAGS}' ./cmd/dtail/main.go
-	${GO} install -tags '${GO_TAGS}' ./cmd/dtailhealth/main.go
+	${GO} install -tags '${GO_TAGS}' ./cmd/dserver ./cmd/dcat ./cmd/dgrep ./cmd/dmap ./cmd/dtail ./cmd/dtailhealth
 clean:
 	for dir in ./cmd/*/; do \
 	  rm -f -- "$$(basename "$$dir")"; \

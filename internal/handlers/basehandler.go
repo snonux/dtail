@@ -125,7 +125,7 @@ func newBaseHandler(connCtx context.Context, cfg baseHandlerConfig) *baseHandler
 		progressWake:     make(chan struct{}, 1),
 	}
 	// Set before any goroutine uses the manager, like its configuration.
-	h.outputCoordinator.output.clientSlow = h.outputCoordinator.clientSlow
+	h.output.clientSlow = h.clientSlow
 	h.output.heldGeneration = h.ackGate.holds
 	return h
 }

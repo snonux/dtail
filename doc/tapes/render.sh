@@ -32,6 +32,9 @@ declare -ri BASE_PORT=23231
 
 declare ROOT=''
 declare -a PIDS=()
+# Files a render in the repository root leaves there until it is done
+# (_render); _cleanup removes them when a render fails or is interrupted.
+declare -a REPO_FILES=()
 GO_PATH="$(go env GOPATH)"
 GO_MODCACHE="$(go env GOMODCACHE)"
 GO_CACHE="$(go env GOCACHE)"
@@ -41,6 +44,9 @@ _cleanup() {
     if ((${#PIDS[@]} > 0)); then
         kill "${PIDS[@]}" 2>/dev/null || true
         wait "${PIDS[@]}" 2>/dev/null || true
+    fi
+    if ((${#REPO_FILES[@]} > 0)); then
+        rm -f "${REPO_FILES[@]}"
     fi
     if [[ -n "$ROOT" ]]; then
         chmod -R u+w "$ROOT" 2>/dev/null || true
@@ -156,17 +162,23 @@ _wait_for_port() {
     exit 1
 }
 
-# Writes the archives every server reads (see the header), in parallel.
+# Writes the archives every server reads (see the header), in parallel. The
+# writers are in PIDS, so an interrupt stops them before $ROOT is removed, and
+# each is waited for on its own: `wait PID...` returns only the last one's
+# status, which hid a failed writer and left a truncated archive.
 _setup_archive() {
-    local month
+    local month pid
     local -a writers=()
     mkdir -p "$ROOT/archive"
     for month in 08 09 10; do
         "$TAPE_DIR/demo-logs.sh" archive "$ROOT/archive/app-2026$month.log.gz" \
             1500000 "1$month" "$month" &
         writers+=($!)
+        PIDS+=($!)
     done
-    wait "${writers[@]}"
+    for pid in "${writers[@]}"; do
+        wait "$pid"
+    done
 }
 
 _setup_fleet() {
@@ -193,6 +205,7 @@ _render() {
     local cwd="$ROOT/home"
     if grep -q '^# render-cwd: repo' "$tape"; then
         cwd="$REPO_DIR"
+        REPO_FILES=("$cwd/_settings.tape" "$cwd/$name.gif")
         cp "$TAPE_DIR/_settings.tape" "$cwd/_settings.tape"
     fi
     echo "rendering $name.gif"
@@ -201,6 +214,7 @@ _render() {
     rm -f "$cwd/$name.gif"
     if [[ "$cwd" == "$REPO_DIR" ]]; then
         rm -f "$cwd/_settings.tape"
+        REPO_FILES=()
     fi
 }
 

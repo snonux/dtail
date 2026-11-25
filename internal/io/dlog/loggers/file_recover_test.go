@@ -28,16 +28,16 @@ func TestFileLoggerRecoversAfterWriteError(t *testing.T) {
 	f.writer = bufio.NewWriterSize(failingWriter{}, fileWriterBufSize)
 	f.lastFileName = "dserver"
 
-	if err := f.write([]byte("lost\n")); err != nil {
+	if err = f.write([]byte("lost\n")); err != nil {
 		t.Fatalf("buffered write: %v", err)
 	}
-	if err := f.flushWriter(); !errors.Is(err, syscall.ENOSPC) {
+	if err = f.flushWriter(); !errors.Is(err, syscall.ENOSPC) {
 		t.Fatalf("expected ENOSPC from the flush, got %v", err)
 	}
-	if err := f.write([]byte("kept\n")); err != nil {
+	if err = f.write([]byte("kept\n")); err != nil {
 		t.Fatalf("write after the failure: %v", err)
 	}
-	if err := f.flushWriter(); err != nil {
+	if err = f.flushWriter(); err != nil {
 		t.Fatalf("flush after the failure: %v", err)
 	}
 	got, err := os.ReadFile(path)

@@ -33,7 +33,7 @@ func writeTestSSHKeyPair(t *testing.T, path string) {
 		Type:  "RSA PRIVATE KEY",
 		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
 	})
-	if err := os.WriteFile(path, privateBytes, 0o600); err != nil {
+	if err = os.WriteFile(path, privateBytes, 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
 	pub, err := gossh.NewPublicKey(&privateKey.PublicKey)
