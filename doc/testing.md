@@ -20,8 +20,8 @@ To run all the unit tests simply run the following make command at the top level
 ```
 
 It clears the Go test cache first (`go clean -testcache`) and then runs all
-unit tests with `-race` (race detector) and `-shuffle=on` (randomized test
-order) across every package. `go test ./...` does not abort on the first
+unit tests with `-race` (race detector), `-shuffle=on` (randomized test
+order) and a 30 minute timeout across every package. `go test ./...` does not abort on the first
 failure: it reports results per package, so one package's failing tests do not
 prevent the other packages from running (the make target still fails at the
 end if any package failed).
@@ -33,7 +33,7 @@ Other than the unit tests, which only test the internal code, the integration te
 This means, that you will need to compile all DTail binaries prior to running these tests:
 
 ```shell
-# Not mandatory, but pest practise to delete all previously compiled binaries
+# Not mandatory, but best practice to delete all previously compiled binaries
 % make clean 
 # Now compile all the binaries (dtail, dcat, dmap, dserver...)
 % make build
@@ -62,6 +62,13 @@ To run the integration test together with all the unit tests, simply run `make t
 always rebuild (`make clean && make build`) after code changes before running
 them — `make test-integration` does that rebuild for you.
 
+The interactive integration tests (`integrationtests/interactive_*_test.go`
+and the `dmap` query builder tests) drive `dtail` and `dmap` on a pseudo
+terminal and need `python3` on `PATH`; without it they fail. The test
+servers listen on local ports numbered from 4242 up; to run the suite twice
+on one machine at the same time (e.g. from two git worktrees), give one run
+another base with `DTAIL_INTEGRATION_TEST_PORT_BASE` (e.g. `5241`).
+
 ![testing](testing.gif "Integration tests")
 
 ## Semi-manual tests with DTail server instances running in Docker
@@ -79,6 +86,9 @@ To build the `dserver` Docker image run:
 ```
 % make -C docker
 make: Entering directory '/home/user/git/dtail/docker'
+sh -c 'yes | ssh-keygen -t rsa -f id_rsa_docker'
+.
+.
 cp ../integrationtests/mapr_testdata.log .
 cp ../dserver .
 docker build . -t dserver:develop

@@ -108,7 +108,7 @@ You can also append the result to a CSV file by adding `outfile append filename.
 
 The following example demonstrates how to cat files (display the full content of the files) of multiple servers at once.
 
-The default client logger (`fout`) writes a daily diagnostics file to `~/log/YYYYMMDD.log` containing only the small connection/audit diagnostics (INFO/WARN/ERROR lines); the retrieved payload itself goes to stdout only. If you also want the payload teed into that daily log file, add the `--log-payload` flag (or set `Client.LogPayload` in the config). You can also use the `noColor` and `-plain` flags (this all also work with other DTail commands than `dcat`). To log to stdout only or to no log file at all, use `--logger stdout` or `--logger none`; `--logger file` writes to the log file only.
+The default client logger (`fout`) writes a daily diagnostics file to `~/log/YYYYMMDD.log` containing only the small connection/audit diagnostics (INFO/WARN/ERROR lines); the retrieved payload itself goes to stdout only. If you also want the payload teed into that daily log file, add the `--log-payload` flag (or set `Client.LogPayload` in the config). You can also use the `--noColor` and `--plain` flags (these also work with the other DTail clients). To log to stdout only or to no log file at all, use `--logger stdout` or `--logger none`; `--logger file` writes to the log file only.
 
 ```shell
 % dcat --servers serverlist.txt --files /etc/hostname
@@ -124,7 +124,7 @@ Hint: You can also use the shorthand version:
 
 ## How to use `dgrep`
 
-The following example demonstrates how to grep files (display only the lines which match a given regular expression) of multiple servers at once. In this example, we look after some entries in `/etc/passwd`  This time, we don't provide the server list via an file but rather via a comma separated list directly on the command line. We also explore the `-before`, `-after` and `-max` flags (see animation).
+The following example demonstrates how to grep files (display only the lines which match a given regular expression) of multiple servers at once. In this example, we look after some entries in `/etc/passwd`  This time, we don't provide the server list via a file but directly on the command line (a comma-separated list, here of one server with its port). The animation also shows the `--before`, `--after` and `--max` flags.
 
 ```shell
 % dgrep --servers server1.example.org:2223 \
@@ -353,3 +353,16 @@ With `--query`, `dtail` reads the lines of the query's table (every line for `fr
 % dcat --servers serverlist.txt --log-payload /etc/hostname
 # Also tees the retrieved payload into the daily client log file ~/log/YYYYMMDD.log
 ```
+
+Other client options worth knowing (see `--help` of each client):
+
+* `--cfg FILE` reads another config file (default `~/.config/dtail/dtail.conf`, else `~/.dtail.conf`).
+* `--port N` sets the SSH port of the servers given without `:PORT` (default `2222`).
+* `--known-hosts-path FILE`, `--trustAllHosts` and `--trustChangedHostKeys` control the host key check (see the [Quick Starting Guide](quickstart.md)).
+* `--auth-key-path FILE` (deprecated alias `--key`), `--no-auth-key` and `--agentKeyIndex N` select the SSH keys; see [auth-key-fast-reconnect.md](auth-key-fast-reconnect.md).
+* `--cpc N` limits how many connections are being established per CPU core at a time (default `10`).
+* `--hostname-override NAME` sets the host name the client uses in its log lines and output.
+* `--quiet` suppresses the periodic connection `STATS` lines.
+* `dtail --shutdownAfter N` ends `dtail` after `N` seconds (default `86400`); `--timeout N` (`dtail`, `dmap`) asks the servers to stop reading after `N` seconds (`dtail` also ends then).
+* `--interactive-query` (all clients), `--no-interactive` (`dtail`, `dmap`), `--control-tty DEV` (default `/dev/tty`) and `--edit-mode emacs|vi` set up the interactive control; see [interactive-query.md](interactive-query.md).
+* `--logger`, `--logDir`, `--logLevel` and `--log-payload` choose the client's logging (see "How to use `dcat`" above).
