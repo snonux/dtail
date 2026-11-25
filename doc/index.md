@@ -3,18 +3,27 @@ DTail Documentation
 
 ## Installation and Usage
 
-* To get a taste, please have a look at the [Usage Examples](./examples.md).
-* The [exit statuses of `dcat` and `dgrep`](./examples.md#exit-statuses-of-dcat-and-dgrep) tell missing, denied or unreadable files (`2`) from servers that could not be connected to, failed the SSH handshake or whose session was cut short mid-read, e.g. a killed `dserver` (`1`).
-* Follow the [Quick Starting Guide](./quickstart.md) if you are looking into DTail your first time. It also covers SSH keys and the SSH agent, host key verification (`known_hosts`, `--trustAllHosts`, `--trustChangedHostKeys`), the config file locations and the connect and handshake timeouts (`Common.SSHConnectTimeoutMs`, `Common.SSHHandshakeTimeoutMs`).
-* For a more sustainable setup, please follow the [Installation Guide](./installation.md).
-* To configure `dserver`, see the [Server Configuration Guide](./server-configuration.md) — read permissions, connection limits, journal reads, shared reads and scheduled jobs.
+| Document | Content |
+|----------|---------|
+| [Quick Starting Guide](./quickstart.md) | Install, start a `dserver`, run the first commands |
+| [Usage Examples](./examples.md) | `dtail`, `dcat`, `dgrep`, `dmap`, serverless mode, read progress, exit statuses |
+| [Client Connections](./client-connections.md) | Config file, SSH keys, host key verification, timeouts, client logs |
+| [Exit Statuses](./exit-statuses.md) | What the exit statuses of the clients mean |
+| [Read Progress](./read-progress.md) | `--progress` and the progress fields of `dcat`, `dgrep` and `dmap` |
+| [Installation Guide](./installation.md) | Build options, `systemd` service, key cache, monitoring |
+| [Server Configuration Guide](./server-configuration.md) | Read permissions, limits, journal reads, shared reads, scheduled jobs |
+| [Read Permissions](./read-permissions.md) | How the `readfiles` rules are evaluated |
+| [Scheduled Jobs](./scheduled-jobs.md) | Scheduled and continuous MapReduce jobs, failures and retries |
+| [Upgrade Notes](./upgrade-notes.md) | Behaviour changes to know before upgrading |
 
 ## Advanced topics
 
-* The [DTail Query Language](./querylanguage.md) is the starting point to dig deeper into DTail's own SQL-like mapreduce language for extraction/aggregation stats from log files.
-* The [Interactive Query Reload](./interactive-query.md) documentation describes the interactive mode `dtail` starts in by default on a terminal (`--no-interactive` turns it off, `--interactive-query` turns it on for the other clients), the `dmap` query builder that opens when `dmap` is started without a query on a terminal, `:reload`, `:query` and `:tail` (switching a running `dtail` between following lines and a MapReduce query), `:show`, `:fields`, `:probe`, `:help`, `:quit`, the reload flags per mode, line editing with guided Tab completion of commands, flags, queries (tables and fields the servers' logs carry) and remote file paths, editing the line in `$EDITOR` (Alt-E), the optional vi mode (`--edit-mode vi`), pausing the output, colors, and session reuse semantics.
-* [Log Formats](./logformats.md) explains how to create your own custom log format for use with mapreduce queries.
-* The [Auth-Key Fast-Reconnect](./auth-key-fast-reconnect.md) documentation explains how clients register a temporary public key with `dserver` to skip the full SSH authentication on reconnects.
-* The [client log file](./examples.md#how-to-use-dcat) keeps diagnostics only; `--log-payload` also tees the retrieved payload into it.
-* The [serverless mode](./examples.md#how-to-use-the-dtail-serverless-mode) (see the Usage Examples) works without any `dserver` and without SSH networking.
-* Check out the [Testing Guide](./testing.md) for unit and integration testing.
+| Document | Content |
+|----------|---------|
+| [DTail Query Language](./querylanguage.md) | The SQL-like MapReduce language |
+| [Log Formats](./logformats.md) | Log formats for MapReduce queries, writing your own |
+| [Interactive Mode](./interactive-query.md) | Changing a running session, Tab completion, the `dmap` query builder |
+| [Interactive Mode Reference](./interactive-query-reference.md) | Every command, flag, key and session rule of the interactive mode |
+| [Auth-Key Fast-Reconnect](./auth-key-fast-reconnect.md) | Faster authentication on repeated connections |
+| [Testing Guide](./testing.md) | Unit and integration tests |
+| [Licenses](./licenses.md) | Licenses of DTail and its dependencies |

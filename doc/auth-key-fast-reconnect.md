@@ -1,207 +1,78 @@
-# Auth-Key Fast-Reconnect for DTail
+# Auth-Key Fast Reconnect
 
-## Problem
+## What it is
 
-When using a YubiKey for SSH authentication, each DTail connection requires a
-physical touch of the YubiKey during the SSH handshake. This is slow and becomes
-painful when connecting to many servers concurrently — the YubiKey serialises
-all signing requests, turning parallel connections into sequential ones.
+With a YubiKey (or another key that needs a touch), every DTail connection
+costs one touch, and many servers at once are signed one after the other.
 
-## Solution
+Auth-key fast reconnect avoids that after the first connection:
 
-The DTail client registers a local SSH public key with the DTail server over an
-already-authenticated SSH session. The server caches this key **in-memory only**
-(never written to disk). On subsequent connections the client offers that local
-key first — a pure in-memory signature verify with no YubiKey interaction — and
-falls back to the original auth method if the server does not recognise the
-key.
+1. The first connection authenticates the normal way (agent, YubiKey).
+2. Over that session the client registers a local public key with `dserver`,
+   which keeps it **in memory only**.
+3. Later connections offer the local key first and are accepted without a
+   touch.
+4. When `dserver` does not know the key (restart, expiry), the client falls
+   back to the normal authentication by itself and registers the key again.
 
-The feature is enabled by default. It can be turned off on the client with
-`--no-auth-key` (`Client.AuthKeyDisable` in the client configuration) and on the
-server with `Server.AuthKeyEnabled: false`.
+The local key does not need to be in `authorized_keys`.
 
-## Design Principles
+## How to use it
 
-1. **Transparent fallback** — the client offers its keys through a single
-   `gossh.PublicKeys` auth method whose signers are ordered so the local key is
-   tried first; if the fast key is rejected, the SSH library continues with the
-   next signers (configured fallback keys, then the agent / YubiKey) without
-   any user interaction.
-2. **Server keys are ephemeral** — the in-memory store is lost on server
-   restart. No file I/O, no persistence.
-3. **Trust chain preserved** — an auth-key can only be registered over a session
-   that was already authenticated via the normal (YubiKey) path.
-4. **Minimal protocol addition** — a single `AUTHKEY <base64-pubkey>` command
-   sent over the existing SSH session text protocol.
+It is on by default on both sides. All a client needs is a local key pair
+without a touch requirement, by default `~/.ssh/id_rsa` and
+`~/.ssh/id_rsa.pub`:
 
-## How It Works
-
-```
-┌─────────────────────────────────────────────────────────┐
-│ DTail Client                                            │
-│                                                         │
-│  One gossh.PublicKeys auth method, signers tried in     │
-│  order:                                                 │
-│    1. Auth-key path (default ~/.ssh/id_rsa)  ← FAST     │
-│    2. Config fallback paths                             │
-│    3. SSH agent (YubiKey)                               │
-│    4. Further default key paths                         │
-│                                                         │
-│  After the session is established (and before the       │
-│  DTail commands are dispatched):                        │
-│    → reads <authKeyPath>.pub                            │
-│    → sends AUTHKEY <base64-pubkey> to server            │
-└────────────────────────┬────────────────────────────────┘
-                         │ SSH
-┌────────────────────────▼────────────────────────────────┐
-│ DTail Server (dserver)                                  │
-│                                                         │
-│  PublicKeyCallback:                                     │
-│    1. Check in-memory authkeystore  ← FAST (only when   │
-│       AuthKeyEnabled is set)                            │
-│    2. Check authorized_keys        ← existing path      │
-│                                                         │
-│  AUTHKEY command handler (only inside an authenticated  │
-│  session):                                              │
-│    → authkey.Store.Add(user, pubkey)                    │
-│    → responds AUTHKEY OK / AUTHKEY ERR <reason>         │
-│                                                         │
-│  authkey.Store (in-memory only):                        │
-│    map[username] → []PublicKey (with TTL, max per user) │
-└─────────────────────────────────────────────────────────┘
+```shell
+ssh-keygen -t rsa -f ~/.ssh/id_rsa   # once, if there is none
+dtail --servers server1,server2 --files /var/log/app.log   # touch once per server
+dtail --servers server1,server2 --files /var/log/app.log   # no touch
 ```
 
-### First connection (slow path — YubiKey)
+A key file with a passphrase is only loaded when `DTAIL_KEY_PASSPHRASE`
+holds the passphrase.
 
-1. The client collects signers: the key at `--auth-key-path` (default
-   `~/.ssh/id_rsa`) first, then configured fallback paths, then the SSH agent,
-   then the remaining default key paths, all in one `gossh.PublicKeys` auth
-   method.
-2. SSH handshake begins; the server's `PublicKeyCallback` is called with the
-   local key.
-3. Server checks the in-memory auth-key store → not found.
-4. Server checks `authorized_keys` (or the per-user authorized-keys cache) →
-   not found (this key is not in there).
-5. Server rejects the key; the SSH library tries the next signers, which
-   reach the SSH agent (YubiKey).
-6. The YubiKey signs the challenge; the server finds the YubiKey pubkey in
-   `authorized_keys` → auth succeeds.
-7. Once the session is established — and before any DTail commands are
-   dispatched — the client reads `<authKeyPath>.pub` and sends
-   `AUTHKEY <base64-pubkey>`.
-8. The server's handler parses the command and calls
-   `authkey.Store.Add(user, pubkey)`; it answers `AUTHKEY OK`.
+Another key:
 
-The registration is sent unconditionally (unless the feature is disabled);
-re-registering an already-known key is idempotent — the server drops the old
-entry and re-adds the key with a fresh TTL. If the `.pub` file is missing or
-unreadable, the client silently skips the registration and logs the reason at
-Debug level only.
+```shell
+dcat --auth-key-path ~/.ssh/dtail_fast --servers server1 --files /etc/hostname
+```
 
-### Subsequent connections (fast path — no YubiKey)
+Without the `.pub` file next to the key nothing is registered; the client
+only says so at debug log level.
 
-1. The client offers the same signers, local key first.
-2. The server's `PublicKeyCallback` checks the in-memory auth-key store →
-   **found** → auth succeeds immediately.
-3. No YubiKey touch needed; the session is established instantly.
+To turn it off: `--no-auth-key` on a client, or `Server.AuthKeyEnabled:
+false` on a `dserver`.
 
-### Fallback (server restarted, key expired)
+## Client options
 
-1. The client offers the local key → the server's auth-key store is empty or the
-   entry expired → the key is rejected.
-2. The client's auth method continues with the next signer → YubiKey auth
-   succeeds.
-3. The client re-registers the local pubkey with the `AUTHKEY` command, so the
-   next connection is fast again.
+| Flag | Config key | Default | Meaning |
+| --- | --- | --- | --- |
+| `--auth-key-path FILE` | `Client.AuthKeyPath` | `~/.ssh/id_rsa` | Private key offered first; `FILE.pub` is registered. |
+| `--key FILE` | | | Deprecated alias of `--auth-key-path`, which wins when both are given (with a warning). |
+| `--no-auth-key` | `Client.AuthKeyDisable` | `false` | Turn the feature off. |
 
-## Components
+| Environment variable | Meaning |
+| --- | --- |
+| `DTAIL_AUTH_KEY_PATH` | Auth-key path. |
+| `DTAIL_SSH_PRIVATE_KEYFILE_PATH` | Legacy name, used only when `DTAIL_AUTH_KEY_PATH` is not set. |
 
-### Server: in-memory auth-key store (`internal/authkey/authkeystore.go`)
+Precedence of the path, highest first: the flag, `DTAIL_AUTH_KEY_PATH`,
+`DTAIL_SSH_PRIVATE_KEYFILE_PATH`, `Client.AuthKeyPath`, `~/.ssh/id_rsa`.
 
-`authkey.Store` is a thread-safe, per-user cache of SSH public keys, held in a
-`map[string][]authKeyEntry` guarded by a mutex (one entry per registered key,
-storing the `gossh.PublicKey` and its registration time). Each `dserver`
-instance owns exactly one store; there is no package-level singleton and no
-disk persistence.
+When no path can be determined (no home directory and nothing configured),
+the client disables the feature with a warning; set `DTAIL_AUTH_KEY_PATH`.
 
-* `Add(user, pubKey)` — removes any duplicate entry for the same key and
-  re-adds it with a fresh TTL, so re-registration is idempotent. When the user
-  is at the per-user key limit, the oldest entries are dropped.
-* `Has(user, pubKey)` — returns true only for a non-expired key.
-* `Remove(user, pubKey)` — deletes a single key.
-* Expiry is lazy: `Add`, `Has` and `Remove` prune a user's expired entries
-  before doing their work; there is no background reaper.
-* Bounds: TTL defaults to 24h (`AuthKeyTTLSeconds`, 86400) and at most 5 keys
-  per user are kept (`AuthKeyMaxPerUser`). Both are configurable.
+`dtailhealth` never registers a key. It accepts `--no-auth-key` without
+effect, so existing check scripts keep working.
 
-### Server: PublicKeyCallback (`internal/ssh/server/publickeycallback.go`)
+## Server options
 
-`NewPublicKeyCallback` wires the store into the SSH handshake. When
-`AuthKeyEnabled` is set, the callback checks the in-memory store **first**; on a
-hit the connection is authorized immediately ("Authorized by in-memory auth
-key store"). On a miss it falls through to the existing file-based logic — the
-configured `AuthorizedKeysPath`, the per-user authorized-keys cache, or
-`~/.ssh/authorized_keys` — with no behaviour change. When the feature is
-disabled, only the `authorized_keys` path is consulted.
-
-### Server: AUTHKEY command handler (`internal/handlers/serverhandler.go`)
-
-The `AUTHKEY <base64-pubkey>` command is accepted only within an already
-authenticated session. The handler rejects it with `AUTHKEY ERR <reason>` when:
-
-* the feature is disabled on the server (`feature disabled`),
-* the session user is a password-only user (`unsupported user`),
-* no public key was supplied (`missing public key`),
-* the base64 payload does not decode (`invalid base64`),
-* the decoded blob is not an SSH public key (`invalid public key`), or
-* the server has no key store wired up (`internal key store unavailable`).
-
-Otherwise the key is added to the store and the client receives `AUTHKEY OK`.
-
-### Client: auth method ordering (`internal/ssh/client/authmethods.go`)
-
-The client uses a **single** `gossh.AuthMethod`, `gossh.PublicKeys(signers...)`,
-whose signers are tried in this order:
-
-1. the explicit auth-key path (`--auth-key-path`, defaulting to
-   `~/.ssh/id_rsa`),
-2. additional configured fallback key paths (before the agent, so that an
-   agent with many keys can not exhaust the server's authentication attempts
-   before a known-good key is tried),
-3. all SSH agent keys, or the one chosen with `--agentKeyIndex` (a YubiKey is
-   typically exposed here),
-4. the further default key paths `~/.ssh/id_dsa`, `~/.ssh/id_ecdsa` and
-   `~/.ssh/id_ed25519`.
-
-Duplicate keys are de-duplicated. Because all signers live in one auth method,
-Go's SSH client transparently moves to the next signer when one is rejected —
-that is the transparent fallback.
-
-### Client: auth-key registration (`internal/clients/connectors/serverconnection.go`)
-
-Once the SSH session is established — and before the DTail commands are
-dispatched — every connection registers the auth key, unless the feature is
-disabled. The client reads `<authKeyPath>.pub`, takes the base64 key blob from
-its first non-comment line, and sends `AUTHKEY <base64>`. The server answers
-with a control frame, which the client consumes and never prints: `AUTHKEY OK`
-is logged at Debug level, `AUTHKEY ERR <reason>` as the WARN `AUTHKEY
-registration failed`. Registration is best-effort; a failure does not affect
-the session. When the `.pub` file is missing or unreadable, or the SSH private
-key path could not be resolved at all (see below), the client logs the skip at
-Debug level and continues.
-
-### Configuration and flags
-
-Server config (`dtail.json`, `internal/config/server.go`):
-
-* `AuthKeyEnabled` (bool, default `true`) — enable in-memory auth-key
-  registration and fast reconnect.
-* `AuthKeyTTLSeconds` (int, default `86400` = 24h) — TTL of a cached key.
-* `AuthKeyMaxPerUser` (int, default `5`) — maximum cached keys per user.
-
-`0` or less for either number uses its default. The job users
-(`DTAIL-SCHEDULE`, `DTAIL-CONTINUOUS`) and the health user (`DTAIL-HEALTH`)
-authenticate by password and can not use auth keys.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `Server.AuthKeyEnabled` | `true` | Accept key registrations and cached keys. |
+| `Server.AuthKeyTTLSeconds` | `86400` (24 h) | Lifetime of a cached key; registering it again renews it. `0` or less: the default. |
+| `Server.AuthKeyMaxPerUser` | `5` | Cached keys per user; the oldest is dropped beyond that. `0` or less: the default. |
 
 ```json
 {
@@ -213,58 +84,37 @@ authenticate by password and can not use auth keys.
 }
 ```
 
-Client flags and config (`internal/cli/authkeyflags.go`,
-`internal/cli/client.go`, `internal/config/client.go`):
+The job users (`DTAIL-SCHEDULE`, `DTAIL-CONTINUOUS`) and the health user
+(`DTAIL-HEALTH`) authenticate by password and can not use auth keys.
 
-* `--auth-key-path` (default `~/.ssh/id_rsa`) — path to the local private key
-  tried first and whose `.pub` counterpart is registered.
-* `--key` — deprecated alias for `--auth-key-path`; a warning is printed when
-  both are given (`--auth-key-path` wins).
-* `--no-auth-key` (or `Client.AuthKeyDisable: true` in the config file) —
-  disable the feature entirely.
-* `Client.AuthKeyPath` — the config-file equivalent of `--auth-key-path`.
+## Troubleshooting
 
-Environment variables (`internal/config/initializer.go`), in order of
-precedence (highest first): the CLI flag, then `DTAIL_AUTH_KEY_PATH`, then the
-legacy `DTAIL_SSH_PRIVATE_KEYFILE_PATH` (used only when `DTAIL_AUTH_KEY_PATH`
-is unset), then the config-file value. When no path can be determined at all —
-for example because `$HOME` is empty and nothing else was configured — the
-feature is disabled with a warning telling the user to set
-`DTAIL_AUTH_KEY_PATH` explicitly.
+| Symptom | Cause |
+| --- | --- |
+| Every connection still needs a touch | No `FILE.pub` next to the auth key, the feature is off on one side, or `dserver` restarted in between. |
+| `AUTHKEY registration failed` (client WARN), reason `feature disabled` | `Server.AuthKeyEnabled` is `false` on that server. |
+| A touch again after a day | The cached key expired (`AuthKeyTTLSeconds`); the next connection is fast again. |
 
-`dtailhealth` never registers an auth key: the health user authenticates by
-password and dserver refuses keys for it. It still accepts `--no-auth-key`, now
-without effect, so existing check scripts keep working, and has no
-`--auth-key-path` flag (`cmd/dtailhealth/main.go`,
-`clients.NewHealthClient`). Older `dtailhealth` binaries sent `AUTHKEY` before
-their health command whenever the auth key's `.pub` file existed, which the
-health handler of dserver took for an unknown command, ending the session: a
-healthy server was reported CRITICAL unless `--no-auth-key` was given. Both
-sides are fixed, so either is enough: a current `dtailhealth` works against an
-older protocol 5 dserver, and a current dserver ignores `AUTHKEY` in health
-sessions (no reply, no registration, `HealthHandler.ignoreAuthKey`) for older
-`dtailhealth` binaries.
+## Security notes
 
-## Security Considerations
+* **Memory only.** `dserver` never writes a cached key to disk; a restart
+  drops them all.
+* **Trust chain.** A key can only be registered over a session that already
+  authenticated the normal way.
+* **It is a delegated credential.** Whoever holds the private key can
+  connect as that user to every `dserver` that still caches it, and read
+  what that user may read there. Protect the key file (mode `0600`).
+* **Revocation window.** Removing the user's normal key from
+  `authorized_keys` does not remove a cached auth key. It stays valid until
+  it expires (24 h by default) or `dserver` restarts.
+* **Bounded.** At most `AuthKeyMaxPerUser` keys per user.
 
-- **No server-side disk persistence** — keys exist only in memory, lost on restart.
-- **Trust chain** — auth-keys can only be registered over an already-authenticated
-  session. An attacker cannot register a key without first proving identity.
-- **Delegated credential and revocation window** — an auth-key is a temporary,
-  per-user credential accepted by every `dserver` instance that has cached it.
-  Possession of its private key permits access as that user until the entry
-  expires (default 24h) or the server restarts. Removing or revoking the normal
-  key that originally authenticated the session does **not** remove an already
-  cached auth-key.
-- **Per-user limits** — max 5 keys per user prevents memory exhaustion.
-- **Protect the local private key** — use restrictive file permissions (normally
-  `0600`). The auth-key need not itself be in `authorized_keys`; if it is
-  compromised, it grants access only to the `dserver` instances that still
-  cache it, but it can still be sufficient to read everything that user may
-  read there.
-- **Protocol and operational scope** — `AUTHKEY` is accepted only inside an
-  authenticated session, so it does not allow unauthenticated registration.
-  It intentionally expands the set of keys a server accepts for the cache
-  lifetime, much like temporarily adding the key to that user's
-  `authorized_keys`. Choose a TTL that fits the desired revocation window, or
-  disable the feature where that trade-off is unacceptable.
+In effect the feature adds the key to the user's `authorized_keys` for the
+TTL. Choose a TTL that fits your revocation window, or turn the feature off
+where that is not acceptable.
+
+## See also
+
+* Design, sequences and source files:
+  [docs/dev/auth_key_fast_reconnect.md](../docs/dev/auth_key_fast_reconnect.md)
+* [Server Configuration Guide](./server-configuration.md)

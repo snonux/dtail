@@ -5,8 +5,9 @@
 - Remote payload lines are prefixed with their source:
   `REMOTE|host|...|file|...` followed by the line. Client diagnostics are
   `CLIENT|host|LEVEL|...`; periodic `STATS` lines report connected servers
-  (`connected=2|servers=2|connected%=100|...`) and, while `dcat`, `dgrep`
-  or `dmap` read, the read progress (see below).
+  (`...|connected=2|connected%=100|...|servers=2|...`, the fields sorted by
+  name) and, while `dcat`, `dgrep` or `dmap` read, the read progress (see
+  below).
 - `--plain` prints the raw payload only (implies `--quiet`, which only
   drops the periodic STATS lines, and `--noColor`). Colors are not turned
   off automatically when stdout is a pipe. Payload lines that look like
@@ -30,11 +31,12 @@ second (hidden `.syn progress` frame of protocol 5) and a final one before
 the session ends. The client shows it while it changes:
 
 - **Default:** as extra fields of the `STATS` lines on stdout, every 3 s,
-  dropped by `--quiet` and `--plain` like the rest of `STATS`. Field order
-  is random.
+  dropped by `--quiet` and `--plain` like the rest of `STATS`. The fields
+  of a `STATS` line are sorted by name.
 - **`--progress`:** as `PROGRESS` lines on **stderr**, every second, in a
   fixed order, also with `--plain`/`--quiet`, plus one final line when the
-  command ends.
+  command ends (not repeated if the last line already showed the final
+  numbers, so the last line of stderr is always the final one).
   Stdout keeps only the data. Not written in interactive sessions.
 
 ```
@@ -80,13 +82,19 @@ Caveats:
   dservers of before the progress report (they send none, and the final
   line then reads `reporting=0/N` with `progress%=unknown`). The total
   lacks their files, so the percentage is too high until they report.
+  A server that read no file (none matched, none permitted) reports
+  nothing either: check the exit status and WARN lines.
 - Compressed files count their compressed bytes on disk, so `total` is not
   the amount of log text.
 - A file that grows while it is read raises `total` (the read goes on to
   the end it finds); `eta` follows.
-- A file counts as fully read when its read ends, also when `--max` or an
-  error ended it early, so the final line says 100%. Check the exit status
-  and WARN lines for failures.
+- A file whose read ended counts with the bytes read of it. When `--max`
+  or an error ended the read early, the rest of the file leaves `total`,
+  so the final line says 100% and `bytes` is what was really read (far
+  below the files' size after `--max`). Check the exit status and WARN
+  lines for failures.
+- With several `--files` entries the total can still grow in the first
+  moments, and the percentage can fall then.
 - `journal:` units and stdin have no size and are not counted; `dtail`
   following files reports no progress.
 - The progress is how far the servers read, not how much output reached

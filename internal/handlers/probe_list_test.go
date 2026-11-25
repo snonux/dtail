@@ -35,7 +35,7 @@ type probeListTree struct {
 //	logs/empty/                            permitted beneath, empty
 //	logs/private/p.log                     denied by a deny rule of the directory
 //	logs/archive/a.log, archive/sub/b.log  denied by a deny rule of the form
-//	                                       "!^<dir>/.*$" (doc/server-configuration.md)
+//	                                       "!^<dir>/.*$" (doc/read-permissions.md)
 //	logs/link-to-sub -> sub                a permitted directory
 //	logs/link-to-other -> ../other         a directory outside the permissions
 //	logs/link-allowed -> app.log           a permitted file

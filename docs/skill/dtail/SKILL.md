@@ -136,8 +136,9 @@ Load only the file the task needs.
 
 The user documentation lives in `doc/` at the repository root
 (`quickstart.md`, `examples.md`, `querylanguage.md`, `logformats.md`,
-`interactive-query.md`, `server-configuration.md`, `installation.md`,
-`auth-key-fast-reconnect.md`, `testing.md`); developer notes in `docs/dev/`
-and `AGENTS.md`. Clients and `dserver` speak protocol 5 and must be upgraded
+`interactive-query.md` (short guide) and `interactive-query-reference.md`
+(all rules), `server-configuration.md`, `installation.md`,
+`auth-key-fast-reconnect.md`, `testing.md`); developer notes in `docs/dev/`,
+`AGENTS.md` (a short index) and `docs/agents/` (its detailed sections). Clients and `dserver` speak protocol 5 and must be upgraded
 together. When a deployed binary may be older than this skill, check
 `--version` and `-h` before relying on a flag.

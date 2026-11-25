@@ -1,160 +1,120 @@
 DTail Testing Guide
 ===================
 
-Currently, there are 3 different ways of how DTail can be tested.
+DTail is tested in three ways:
 
 1. Unit tests (automatic)
 2. Integration tests (automatic)
-3. Semi-manual tests with DTail server instances running in Docker.
+3. Semi-manual tests with DTail server instances running in Docker
+
+All commands run in the top level source directory.
 
 ## Quality control
 
-Also, not actually testing, DTail is being linted and vetted before each release. For this run `make lint` and `make vet` at the top level source directory. Furthermore, to improve the quality of the software even more, the code is being scanned by SonarQube and Black Duck periodically. DTail is also audited and pen-tested by Mimecast staff. And, of course, new features are peer reviewed as well...
+Lint and vet the code before a release. `make lint` needs `golangci-lint`
+(another binary: `GOLANGCI_LINT=... make lint`).
+
+```shell
+% make lint
+% make vet
+```
 
 ## Unit tests
-
-To run all the unit tests simply run the following make command at the top level source directory:
 
 ```shell
 % make test
 ```
 
-It clears the Go test cache first (`go clean -testcache`) and then runs all
-unit tests with `-race` (race detector), `-shuffle=on` (randomized test
-order) and a 30 minute timeout across every package. `go test ./...` does not abort on the first
-failure: it reports results per package, so one package's failing tests do not
-prevent the other packages from running (the make target still fails at the
-end if any package failed).
+This clears the Go test cache (`go clean -testcache`) and runs `go test -race
+-shuffle=on -timeout 30m ./...`: race detector, randomized test order, every
+package. A failing package does not stop the others; the target fails at the
+end. The integration tests skip themselves in this run.
 
 ## Integration tests
 
-Other than the unit tests, which only test the internal code, the integration tests will run a set of DTail commands externally and thus simulating common end user scenarios.
-
-This means, that you will need to compile all DTail binaries prior to running these tests:
-
-```shell
-# Not mandatory, but best practice to delete all previously compiled binaries
-% make clean 
-# Now compile all the binaries (dtail, dcat, dmap, dserver...)
-% make build
-```
-
-The integration tests can be enabled setting the following environment variable:
-
-```
-% export DTAIL_INTEGRATION_TEST_RUN_MODE=yes
-```
-
-To run the integration test together with all the unit tests, simply run `make test` in the top level source tree (with `DTAIL_INTEGRATION_TEST_RUN_MODE` exported). In case you only want to run the integration tests without the normal unit tests, the easiest way is the dedicated make target, which rebuilds the binaries and runs the integration tests with the run mode enabled:
+The integration tests run the compiled DTail binaries the way a user would, so
+the binaries must be built from the current code. The dedicated target cleans,
+rebuilds and runs only the integration tests:
 
 ```shell
 % make test-integration
 ```
 
-(If the binaries are already up to date and you want to skip the rebuild, the target is equivalent to:)
+To run them together with the unit tests, build first and set
+`DTAIL_INTEGRATION_TEST_RUN_MODE`:
 
 ```shell
-% go clean -testcache
-% DTAIL_INTEGRATION_TEST_RUN_MODE=yes go test -v --race -count=1 ./integrationtests
+% make clean && make build
+% DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
 ```
 
-**Important:** the integration tests launch the compiled DTail binaries, so
-always rebuild (`make clean && make build`) after code changes before running
-them — `make test-integration` does that rebuild for you.
+To run them without a rebuild, or only some of them:
 
-The interactive integration tests (`integrationtests/interactive_*_test.go`
-and the `dmap` query builder tests) drive `dtail` and `dmap` on a pseudo
-terminal and need `python3` on `PATH`; without it they fail. The test
-servers listen on local ports numbered from 4242 up; to run the suite twice
-on one machine at the same time (e.g. from two git worktrees), give one run
-another base with `DTAIL_INTEGRATION_TEST_PORT_BASE` (e.g. `5241`).
+```shell
+% DTAIL_INTEGRATION_TEST_RUN_MODE=yes go test -v --race -count=1 ./integrationtests
+% DTAIL_INTEGRATION_TEST_RUN_MODE=yes go test --race -count=1 -run 'TestDCat' ./integrationtests
+```
+
+Notes:
+
+* **Rebuild after every code change.** Stale binaries test the old code.
+* The interactive tests (`integrationtests/interactive_*_test.go` and the
+  `dmap` query builder tests) drive `dtail` and `dmap` on a pseudo terminal
+  and need `python3` on `PATH`; without it they fail.
+* The test servers listen on local ports numbered from 4242 up. To run the
+  suite twice on one machine at the same time (e.g. from two git worktrees),
+  give one run another base: `DTAIL_INTEGRATION_TEST_PORT_BASE=5241`.
 
 ![testing](testing.gif "Integration tests")
 
 ## Semi-manual tests with DTail server instances running in Docker
 
-### Requirements 
+### Requirements
 
-This assumes, that you have Docker up and running on your system. The Docker base image used by `docker/Dockerfile` (currently Fedora Linux) must match the GLIBC major version of the binaries you compiled locally, or you may run into issues; see the Dockerfile for the exact, current version.
-
-This also assumes, that you have compiled all the DTail binaries already (with `make` in the top level source directory).
+* Docker is up and running.
+* All DTail binaries are compiled (`make build`).
+* The base image of `docker/Dockerfile` (currently `fedora:42`) must be
+  compatible with the glibc your local `dserver` binary was linked against, as
+  that binary is copied into the image.
 
 ### Building DTail server Docker image
 
-To build the `dserver` Docker image run:
-
-```
+```shell
 % make -C docker
-make: Entering directory '/home/user/git/dtail/docker'
-sh -c 'yes | ssh-keygen -t rsa -f id_rsa_docker'
-.
-.
-cp ../integrationtests/mapr_testdata.log .
-cp ../dserver .
-docker build . -t dserver:develop
-Sending build context to Docker daemon  13.84MB
-Step 1/11 : FROM fedora:42
----> dce66322d647
-Step 2/11 : RUN mkdir -p /etc/dserver /var/run/dserver/ /var/log/dserver
-.
-.
-.
-Successfully built b44e92f7c066
-Successfully tagged dserver:develop
-rm ./dserver
-rm ./mapr_testdata.log
-make: Leaving directory '/home/user/git/dtail/docker'
 ```
+
+This generates the SSH key pair `docker/id_rsa_docker`, copies `dserver` and
+`integrationtests/mapr_testdata.log` into the build context and builds the
+image `dserver:develop`.
 
 ### Starting a DTail server farm
 
-To spin up 10 instances of the `dserver` Docker image, run:
+To spin up 10 containers (another number: `NUM_INSTANCES=3`):
 
 ```shell
 % make -C docker spinup
-make: Entering directory '/home/user/git/dtail/docker'
-./spinup.sh 10
-Creating dserver-serv0
-b34e05f33deb62df628dc00b4ea4e7f1da0be73fdba7895d182fff6dd5b48b2f
-Creating dserver-serv1
-bb303acfb47a620e3f58f7c0539102db1d286ed2104d091eefe52710c2bba86e
-Creating dserver-serv2
-.
-.
-.
-```
-
-Now, have a look at the containers:
-
-```shell
 % docker ps
-CONTAINER ID   IMAGE             COMMAND                  CREATED         STATUS         PORTS                                       NAMES
-3873f7e69620   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2232->2222/tcp, :::2232->2222/tcp   dserver-serv9
-412f79d0f716   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2231->2222/tcp, :::2231->2222/tcp   dserver-serv8
-1ff2a52ae614   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2230->2222/tcp, :::2230->2222/tcp   dserver-serv7
-6d1c78eceedd   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2229->2222/tcp, :::2229->2222/tcp   dserver-serv6
-073fe345235f   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2228->2222/tcp, :::2228->2222/tcp   dserver-serv5
-63fd7f2393f1   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2227->2222/tcp, :::2227->2222/tcp   dserver-serv4
-32c9f940312c   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2226->2222/tcp, :::2226->2222/tcp   dserver-serv3
-91b137c2dd19   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2225->2222/tcp, :::2225->2222/tcp   dserver-serv2
-bb303acfb47a   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2224->2222/tcp, :::2224->2222/tcp   dserver-serv1
-b34e05f33deb   dserver:develop   "/usr/local/bin/dser…"   3 minutes ago   Up 3 minutes   0.0.0.0:2223->2222/tcp, :::2223->2222/tcp   dserver-serv0
+CONTAINER ID   IMAGE             COMMAND                  ...   PORTS                    NAMES
+3873f7e69620   dserver:develop   "/usr/local/bin/dser…"   ...   0.0.0.0:2232->2222/tcp   dserver-serv9
+...
+b34e05f33deb   dserver:develop   "/usr/local/bin/dser…"   ...   0.0.0.0:2223->2222/tcp   dserver-serv0
 ```
+
+The containers `dserver-serv0` to `dserver-serv9` listen on the local ports
+2223 to 2232, which `spinup` writes to `docker/serverlist.txt`.
 
 ### Connecting to all 10 DTail servers
 
-Have a look at `docker/Makefile` for some pre-defined commands. But one example would be:
+`docker/Makefile` has targets for the clients (`dtail`, `dgrep`, `dcat`,
+`dmap`, ...). For example, to follow the `dserver` log files of all
+containers with `dtail`:
 
 ```shell
-make -C docker dtail
+% make -C docker dtail
 ```
-
-This will launch `dtail` and follow the `dserver` log files of all 10 containers.
 
 ### Stopping all Docker containers again
 
-Just run this:
-
 ```shell
-make -C docker spindown
+% make -C docker spindown
 ```

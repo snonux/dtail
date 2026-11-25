@@ -1,32 +1,37 @@
 DTail Server Configuration Guide
 ================================
 
-This page documents the configuration of `dserver`, the DTail server daemon. It
-covers read permissions, connection limits, journal reads, shared reads and the
-built-in job scheduler.
+How to configure `dserver`, the DTail server daemon: every key with its
+default, and short examples. Details live in:
+
+* [Read permissions](./read-permissions.md)
+* [Scheduled and continuous jobs](./scheduled-jobs.md)
+* [Auth-key fast reconnect](./auth-key-fast-reconnect.md)
 
 ## The configuration file
 
-`dserver` reads a single JSON configuration file. The location depends on how
-it is started:
+`dserver` reads one JSON file:
 
-* With the `-cfg` flag, exactly that file is read. The provided
-  `dserver.service.example` systemd unit passes
-  `-cfg /etc/dserver/dtail.json`.
-* Without `-cfg`, `dserver` searches `~/.config/dtail/dtail.conf` first and
-  falls back to `~/.dtail.conf` if that does not exist. The first file found
-  wins; files are never merged.
-* With `-cfg none`, no configuration file is read at all.
+| Started with | File read |
+| --- | --- |
+| `-cfg PATH` | Exactly that file. The example systemd unit passes `-cfg /etc/dserver/dtail.json`. |
+| no `-cfg` | `~/.config/dtail/dtail.conf` if it exists, else `~/.dtail.conf`. Never both. |
+| `-cfg none` | None. |
 
-The same file can hold a `Common`, a `Server` and a `Client` section; only
-`Common` and `Server` apply to `dserver`. The `Common` section carries the
-SSH port (`SSHPort`, default `2222`), the log directory and the cache
-directory, among other things (see "Common settings and logging" below).
-Key names are matched case-insensitively.
+The file has the sections `Common`, `Server` and `Client`; `dserver` uses
+`Common` and `Server`. Key names are matched case-insensitively. Unknown
+keys, e.g. from older releases, are ignored.
+
+* Commented example: [examples/dtail.json.example](../examples/dtail.json.example)
+* JSON schema of every key: [examples/dtail.schema.json](../examples/dtail.schema.json)
+  (a unit test keeps it in sync with the code)
 
 `dserver` refuses to start as root (UID or GID 0); run it as an unprivileged
-user such as `dserver`. Its command-line flags override the configuration
-file:
+user such as `dserver`.
+
+### Command-line flags
+
+Flags override the configuration file.
 
 | Flag | Overrides | Meaning |
 | --- | --- | --- |
@@ -38,37 +43,15 @@ file:
 | `-logDir DIR` | `Common.LogDir` | Log directory. |
 | `-logger NAME` | `Common.Logger` | Logger (`file`, `stdout`, `fout`, `none`). |
 | `-logLevel LEVEL` | `Common.LogLevel` | Log level (default `info`). |
-| `-hostname-override NAME` | `Common.HostnameOverride` | Hostname used in logs and output (also `DTAIL_HOSTNAME_OVERRIDE`). |
+| `-hostname-override NAME` | `Common.HostnameOverride` | Hostname in logs and output (also `DTAIL_HOSTNAME_OVERRIDE`). |
 | `-color` | | Colored log output. |
 | `-pprof ADDR` | | Start a pprof HTTP server at this address. |
 | `-shutdownAfter N` | | Shut down after N seconds (testing). |
 | `-version` | | Print the version and exit. |
 
-A commented example configuration ships in
-[examples/dtail.json.example](../examples/dtail.json.example). The JSON schema
-in [examples/dtail.schema.json](../examples/dtail.schema.json) describes every
-supported key; a unit test keeps it mechanically in sync with the code, so a
-new configuration field can not silently be missing from the schema. Unknown
-keys in old configuration files are ignored by the lenient config decoder.
-
-`dserver`'s log level (`--logLevel`, or `Common.LogLevel`) only decides what
-`dserver` writes to its own log. The warnings and errors it sends to clients
-(e.g. a missing file, a glob matching too many files, a split long line) do
-not depend on it: a `dserver` at `--logLevel error` or `none` still sends a
-client the missing-file warning, with its full text. How the client shows
-these warnings is described in
-[Server warnings and log levels](./examples.md#server-warnings-and-log-levels).
-
-Every log line stays one line: control and format characters in the text a
-line carries (a path, glob or probe entry a client sent, an error) are
-written as Go escapes (`\n`, `\t`, `\x1b`, `\u202e`, ...), so a client can not
-forge log lines or terminal escapes with them. Other text, including
-non-ASCII names, is written unchanged. This applies to the client logs too,
-and to the warnings `dserver` sends to its clients.
-
 ## Read permissions
 
-The `Server.Permissions` map controls which files each SSH user may read:
+`Server.Permissions` controls which files each SSH user may read:
 
 ```json
 "Permissions": {
@@ -84,210 +67,218 @@ The `Server.Permissions` map controls which files each SSH user may read:
 }
 ```
 
-* `Default` applies to every user who has no own entry; `Users` maps a user
-  name to its own rule list, which replaces the default list.
-* **`Default` defaults to `["^/.*"]`**, i.e. every file the OS lets the user
-  (or `dserver`) read. It keeps that value when the configuration file has no
-  `Permissions` or a `Permissions` object without a `Default` key (e.g. only
-  `Users`), so always set `Default` explicitly. An empty list (`[]`) lets
-  users without an own entry read nothing.
-* A rule has the form `readfiles:<regex>`. The `readfiles:` prefix is
-  optional and the default; a bare regex means the same thing.
-* A rule prefixed with `!` (as in `readfiles:!<regex>`) is a deny rule.
-  **Deny wins**: the list is scanned in order and the first matching deny
-  rule rejects the path immediately, no matter what allow rules follow.
-* If no allow rule matches, the path is denied (deny by default).
-* The regex is Go `regexp` syntax, unanchored unless it uses `^`/`$`. A rule
-  whose regex does not compile fails every check that reaches it.
-* The regex is matched against the resolved absolute file path (symlinks are
-  resolved first), so write rules for the real path, not for a symlink.
-  A rule matches that path string, not the file's identity: on a file
-  system that ignores case or Unicode normalization (ext4 with casefold,
-  vfat, CIFS, macOS), `/var/log/SECRET/x` names the same file as
-  `/var/log/secret/x` but passes the deny rule `!^/var/log/secret/`. Write
-  case-insensitive rules there (`!(?i)^/var/log/secret/`).
-* A path that holds a newline (in the file name or in a directory name above
-  it, after symlinks are resolved) is never readable, whatever the rules
-  say; the read fails with `read: no permission to read file` and the path
-  listing offers neither it nor a directory with such a name. In a rule `.`
-  matches no newline and `$` only the end of the path, so the deny rule
-  `!^/var/log/secret/.*$` would not match `/var/log/secret/a<newline>b`
-  while the allow rule `^/var/log/` would; without this, anyone able to
-  create such a name beneath a denied directory could have it read past the
-  deny rule. Rules therefore never need to think of newlines. Scheduled and
-  continuous jobs, which the rules do not apply to, read such paths.
-* The DTail permissions are checked in addition to the operating system's
-  file permissions: the user still needs OS read access to the file (or the
-  `dserver` run user does, when built without Linux ACL support).
-* Journal targets are strings like `journal:nginx.service`, and the rule must
-  match that full target string, e.g. `"readfiles:^journal:.*\\.service$"`.
-  The unit must be a literal unit name with its type (see "Journal reads"
-  below), so globs and names `journalctl` would complete are refused.
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `Permissions.Default` | `["^/.*"]` | Rules of every user without an own entry. The default allows every file the OS lets the user read, so always set it. |
+| `Permissions.Users` | *(none)* | User name to rule list; it replaces `Default` for that user. |
 
-`dserver`'s own scheduled and continuous jobs (see below) run as internal
-users and bypass these permission checks; they read what the job
-configuration tells them to read.
+The rules in short:
 
-The same rules bound the path listing that the clients' interactive path
-completion asks `dserver` for: it offers only files the user may read and
-only units of `journal:` targets the user may read. It offers a directory
-when an allow rule can match some path beneath it, unless a deny rule
-already matches the directory path itself (as `/var/log/secret/` above for
-`jamesblake`). A deny rule ending in `$` hides a directory only when it
-matches the directory path with its trailing `/` and everything beneath it
-(`!^/var/log/secret/.*$`), not when it covers only the files right in it
-(`!^/var/log/[^/]*$`), whose subdirectories stay reachable. A deny rule
-that does not match the directory path itself does not hide the
-directory's name, although it may deny every file beneath: one that only
-matches the files beneath (e.g. `!^/var/log/private/.*\.log$`), or
-`!^/var/log/secret/.+$`, whose `.+` needs a character after the `/`. So to
-hide a directory write a deny rule for the directory path:
-`!^/var/log/secret/` or `!^/var/log/secret/.*$`. The read check itself is
-not affected: such files are denied either way. An unanchored
-allow rule such as `\.log$` makes every directory listable that the OS lets
-`dserver` read. A directory the user may not list looks the same as one
-that does not exist. A `..` in the typed path removes the directory before
-it without looking at it (as `filepath.Clean` does), so it does not tell
-whether that directory exists either. Set
-`Server.PathCompletionDisable` to `true` to turn the listing off.
+* A rule is `[readfiles:][!]<regex>` (Go `regexp`, unanchored unless it uses
+  `^`/`$`). `!` makes it a deny rule.
+* **Deny wins**: a matching deny rule rejects the path wherever it stands in
+  the list. A path no allow rule matches is denied.
+* The regex is matched against the resolved absolute path (symlinks
+  resolved).
+* A `journal:` target must be matched as a whole:
+  `"readfiles:^journal:.*\\.service$"`.
+* The OS file permissions apply as well.
+* `dserver`'s own jobs bypass the rules.
+* A user with an empty rule list gets no session at all.
+
+Everything else (case-insensitive file systems, paths with a newline, which
+directories the interactive path completion lists) is in
+[Read permissions](./read-permissions.md).
 
 ## Connection and session limits
 
-Basic SSH server settings:
+SSH server:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `Server.SSHBindAddress` | `0.0.0.0` | Address the SSH server binds to. |
 | `Common.SSHPort` | `2222` | Port the SSH server listens on. |
-| `Server.HostKeyPath` | `./cache/ssh_host_key` | Private SSH host key (generated if missing). The legacy `Server.HostKeyFile` key is still accepted. |
-| `Server.HostKeyBits` | `4096` | RSA key size in bits when generating a new host key (`0` or less: `4096`). |
-| `Server.AuthorizedKeysPath` | *(empty)* | One `authorized_keys` file for all users. Empty looks up `<CacheDir>/<user>.authorized_keys` first (a relative `CacheDir` is relative to the working directory; see `examples/update_key_cache.sh.example`), then the user's `~/.ssh/authorized_keys`. |
+| `Server.HostKeyPath` | `./cache/ssh_host_key` | Private SSH host key, generated if missing. The legacy key `Server.HostKeyFile` is still accepted. |
+| `Server.HostKeyBits` | `4096` | RSA key size of a generated host key (`0` or less: `4096`). |
+| `Server.AuthorizedKeysPath` | *(empty)* | One `authorized_keys` file for all users. Empty: see below. |
 | `Server.KeyExchanges`, `Server.Ciphers`, `Server.MACs` | *(empty)* | Restrict the allowed SSH algorithms. |
 
-Connection, session and read limits:
+With an empty `AuthorizedKeysPath` a user's keys are read from
+`<CacheDir>/<user>.authorized_keys` if that file exists (see
+`examples/update_key_cache.sh.example`), else from the user's
+`~/.ssh/authorized_keys`. A relative `CacheDir` is relative to the working
+directory.
+
+Limits:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `Server.MaxConnections` | `10` | Maximum concurrent user connections. Connections still in their SSH handshake count too; a client must complete the handshake within 10 seconds (fixed). |
-| `Server.MaxConcurrentCats` | `2` | Maximum concurrent one-shot reads (`dcat`, `dgrep`, `dmap`) per server; further reads wait for a slot. Must be at least `1`. It also bounds how many scheduled jobs run together (see "Shared reads"). |
-| `Server.MaxConcurrentTails` | `50` | Maximum concurrent follow reads (`dtail`, continuous jobs) per server; further reads wait for a slot. Must be at least `1`. |
-| `Server.IdleSessionTimeoutS` | `900` | Rolling inactivity timeout for authenticated sessions, in seconds. Every read or write marks the connection active and a per-connection ticker (every timeout/4, clamped to 1-30 s) refreshes the deadline, so active follow sessions stay connected. A connection with no SSH activity is closed between the timeout plus two and plus three ticker intervals after its last activity (about 960-990 s with the default). Values of `0` or less use the default; values below about a minute are not useful. |
-| `Server.MaxLineLength` | `1048576` | Maximum line length in bytes before a line of a file read, or an entry of a `journal:` read, is split into multiple lines. The length counts a line's bytes without its `\n`, but including the `\r` of a CRLF line ending. Lines of up to this length are read whole, also when the limit is above 1 MiB; a longer line is cut into pieces of exactly this length, in follow reads (`dtail`) as in one-shot reads (`dcat`, `dgrep`, `dmap`), and the client gets a long-line warning. `journal:` targets cut their entries the same way, with the same warning, in follow reads as in one-shot reads, so a long entry no longer ends the journal read; only an unterminated last entry, which a stopped `journalctl` can leave, is dropped (its pieces cut off before are kept). Memory per concurrent read: a one-shot file read holds a pooled buffer of 1 MiB + 1 byte. A `journal:` read, one-shot or follow, holds two for the whole `journalctl` run, one scanning its stdout (the entries) and one its stderr; a `journalctl` stderr line longer than 1 MiB is forwarded to the client cut to 1 MiB, with a note, and its rest is dropped. For a line longer than 1 MiB (only with a limit above 1 MiB) the read (a journal read with its stdout scan) grows a buffer of its own by doubling, held alongside the pooled one, of up to about twice the longest line it read, capped at `MaxLineLength` + 1 bytes; while it grows, the previous and the new buffer exist together for a moment (up to about 1.5 times the final buffer). A follow file read holds the unfinished line, up to `MaxLineLength` bytes, likewise in a buffer that grows. `Server.OutputBufferMaxBytes` must be at least this plus 128 KiB; dserver refuses to start when it is not, or when `MaxLineLength` is so large that this sum exceeds the largest integer. |
-| `Server.MaxGlobTargets` | `1000` | Maximum number of file paths a read command's glob may expand to. Excess paths are dropped and the client is told `read: more files than the server reads`. `0` or less uses the default. |
-| `Server.MaxCommandFrameSize` | `1048576` | Maximum size in bytes of a single command frame. Larger frames are rejected and the session closed. `0` or less disables the limit (health-check sessions keep 1 MiB). |
-| `Server.ReadGlobRetryIntervalMs` | `5000` | Retry interval in milliseconds while waiting for a glob to match a file (e.g. a log file that appears later in the day). |
-| `Server.ReadRetryIntervalMs` | `2000` | Retry interval in milliseconds for re-reading in tail/cat retry loops. |
+| `Server.MaxConnections` | `10` | Concurrent connections, those still in their SSH handshake included. |
+| `Server.MaxConcurrentCats` | `2` | Concurrent one-shot reads (`dcat`, `dgrep`, `dmap`); further reads wait. At least `1`. |
+| `Server.MaxConcurrentTails` | `50` | Concurrent follow reads (`dtail`, continuous jobs); further reads wait. At least `1`. |
+| `Server.IdleSessionTimeoutS` | `900` | Seconds without SSH activity after which a connection is closed (`0` or less: `900`). |
+| `Server.MaxLineLength` | `1048576` | Bytes after which a line, or a journal entry, is split into several. |
+| `Server.MaxGlobTargets` | `1000` | Files one glob may expand to (`0` or less: `1000`). |
+| `Server.MaxCommandFrameSize` | `1048576` | Bytes of one command frame (`0` or less: no limit). |
+| `Server.ReadGlobRetryIntervalMs` | `5000` | Retry interval while a glob matches no file yet. |
+| `Server.ReadRetryIntervalMs` | `2000` | Retry interval for reading a file again in tail/cat loops. |
+
+Notes:
+
+* **Handshake:** a client must complete the SSH handshake within 10 seconds
+  (fixed).
+* **`MaxConcurrentCats`** also bounds how many scheduled jobs run together
+  (see "Shared reads").
+* **`IdleSessionTimeoutS`** is a rolling timeout: every read or write counts
+  as activity, so active follow sessions stay connected. With the
+  default an idle connection is closed 960-990 s after its last activity.
+  Values below about a minute are not useful.
+* **`MaxGlobTargets`:** excess paths are dropped and the client is told
+  `read: more files than the server reads`.
+* **`MaxCommandFrameSize`:** a larger frame is rejected and the session
+  closed. Health-check sessions always keep the 1 MiB limit.
+
+### Line length and memory
+
+`MaxLineLength` counts a line's bytes without its `\n`, but with the `\r` of
+a CRLF ending.
+
+* A line up to the limit is read whole. A longer one is cut into pieces of
+  exactly the limit and the client gets a long-line warning. This holds for
+  follow and one-shot reads, files and `journal:` entries alike.
+* A long journal entry does not end the read. Only an unterminated last
+  entry, which a stopped `journalctl` can leave, is dropped.
+* `Server.OutputBufferMaxBytes` must be at least `MaxLineLength` + 128 KiB,
+  or `dserver` refuses to start.
+
+Memory per concurrent read:
+
+| Read | Buffers held |
+| --- | --- |
+| One-shot file read | One pooled buffer of 1 MiB + 1 byte. |
+| `journal:` read | Two such buffers for the whole `journalctl` run (stdout and stderr). |
+| Follow file read | The unfinished line, up to `MaxLineLength`, in a growing buffer. |
+| Any read of a line over 1 MiB (limit above 1 MiB only) | A buffer of its own beside the pooled one, grown by doubling to about twice the longest line, capped at `MaxLineLength` + 1 bytes. While it grows, the old and the new buffer exist together (up to about 1.5 times the final size). |
+
+A `journalctl` stderr line over 1 MiB reaches the client cut to 1 MiB, with
+a note.
 
 ## Output path limits
 
-These keys bound the memory a single session's pending output can retain and
-the time the server waits on a slow client:
+These bound the memory of one session's pending output and the time
+`dserver` waits for a slow client:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `Server.OutputBufferMaxBytes` | `2097152` (2 MiB) | Maximum payload backing memory retained per SSH session while the output waits for the client. Producers apply backpressure when the cap is reached. Must be at least `MaxLineLength` + 131072 (two 64 KiB writer batches), otherwise dserver refuses to start. Every session escapes its wire frames and so raises its own cap to at least 2 × `MaxLineLength` + 131072 (2228224 bytes with the default `MaxLineLength`), as escaping can almost double a line frame, so the configured value does not need to cover that. |
-| `Server.OutputFlushTimeoutMs` | `2000` | Maximum time the session reader may make no progress while output is drained, in milliseconds. A client that keeps reading, however slowly, or that paused reading while dserver is still writing to it (a pager, a stopped pipeline) is waited for; the idle session timeout bounds a client that never comes back. |
-| `Server.OutputReadRetryIntervalMs` | `1` | Compatibility fallback interval for detecting a stale output generation (for older writers that provide no cancellation signal). Values below the implementation's safety minimum are clamped. |
-| `Server.OutputEOFAckTimeoutMs` | `2000` | Maximum time to wait for the output EOF acknowledgement after signaling EOF, in milliseconds. |
+| `Server.OutputBufferMaxBytes` | `2097152` (2 MiB) | Output memory kept per session while the client is slow; readers are slowed down at the cap. |
+| `Server.OutputFlushTimeoutMs` | `2000` | Time the client may take nothing while output is drained. |
+| `Server.OutputReadRetryIntervalMs` | `1` | Compatibility fallback interval; too small values are clamped. Leave it alone. |
+| `Server.OutputEOFAckTimeoutMs` | `2000` | Time to wait for the client's acknowledgement of the end of the output. |
+
+Notes:
+
+* `OutputBufferMaxBytes` must be at least `MaxLineLength` + 131072, or
+  `dserver` refuses to start.
+* Each session raises its own cap to at least 2 × `MaxLineLength` + 131072
+  (2228224 bytes with the defaults), as escaping can almost double a line
+  on the wire. The configured value need not cover that.
+* `OutputFlushTimeoutMs` is a stall timeout. A client that keeps reading,
+  however slowly, or that paused while `dserver` is still writing to it (a
+  pager, a stopped pipeline) is waited for; `IdleSessionTimeoutS` bounds a
+  client that never comes back.
 
 ## Other server settings
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `Server.MapreduceLogFormat` | `default` | Log format of MapReduce queries without a `logformat` clause (see [Log formats](./logformats.md)). |
-| `Server.SharedReadsDisable` | `false` | Turn shared reads off (see "Shared reads" below). |
-| `Server.PathCompletionDisable` | `false` | Turn off the path listing the clients' interactive path completion asks for; such a request is answered `probe: path listing disabled`. |
+| `Server.MapreduceLogFormat` | `default` | Log format of MapReduce queries with a `from` clause and without a `logformat` clause; queries without `from` use `generic` (see [Log formats](./logformats.md)). |
+| `Server.SharedReadsDisable` | `false` | Turn shared reads off (see "Shared reads"). |
+| `Server.PathCompletionDisable` | `false` | Turn off the path listing of the clients' interactive path completion (answered `probe: path listing disabled`). |
 
 ## Common settings and logging
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `Common.SSHPort` | `2222` | Port `dserver` listens on and clients (and jobs) connect to. |
-| `Common.LogDir` | `log` for `dserver` | Log directory, relative to the working directory unless absolute; `~/` is expanded. The clients default to `~/log`. |
-| `Common.Logger` | `file` for `dserver` | `file` (log file only), `stdout`, `fout` (both) or `none`, case-insensitive. The clients default to `fout`. |
+| `Common.LogDir` | `log` | Log directory, relative to the working directory unless absolute; `~/` is expanded. (Clients: `~/log`.) |
+| `Common.Logger` | `file` | `file`, `stdout`, `fout` (both) or `none`, case-insensitive. (Clients: `fout`.) |
 | `Common.LogLevel` | `info` | `none`, `fatal`, `error`, `warn`, `info`, `default`, `verbose`, `debug`, `devel`, `trace` or `all`, case-insensitive. |
-| `Common.LogRotation` | `daily` | `daily`: one file per day, `<LogDir>/YYYYMMDD.log` (SIGHUP reopens it). Any other value (e.g. `signal`): one file named after the binary, `<LogDir>/dserver.log`, reopened on SIGHUP, so an external tool such as `logrotate` can rotate it. `dserver` never deletes old log files; see `examples/prune_dserver_logs.sh.example`. |
+| `Common.LogRotation` | `daily` | `daily`: `<LogDir>/YYYYMMDD.log`. Any other value (e.g. `signal`): `<LogDir>/dserver.log`. |
 | `Common.CacheDir` | `cache` | Directory of the per-user `<user>.authorized_keys` key cache. |
-| `Common.HostnameOverride` | *(empty)* | Hostname used in logs and output instead of the system's. |
-| `Common.SSHConnectTimeoutMs` | `2000` | Client-side TCP connect timeout; for `dserver` it applies to the connections of its scheduled and continuous jobs. |
-| `Common.SSHHandshakeTimeoutMs` | `30000` | Client-side SSH handshake timeout after the TCP connect, likewise. |
+| `Common.HostnameOverride` | *(empty)* | Hostname in logs and output instead of the system's. |
+| `Common.SSHConnectTimeoutMs` | `2000` | TCP connect timeout of the connections of `dserver`'s jobs (and of the clients). |
+| `Common.SSHHandshakeTimeoutMs` | `30000` | SSH handshake timeout after the TCP connect, likewise. |
 | `Common.ExperimentalFeaturesEnable` | `false` | Experimental features (development only). |
+
+Notes:
+
+* **Rotation:** SIGHUP reopens the log file in both modes, so with a value
+  other than `daily` an external tool such as `logrotate` can rotate
+  `dserver.log`. `dserver` never deletes old log files; see
+  `examples/prune_dserver_logs.sh.example`.
+* **Log level and clients:** the level only decides what `dserver` writes to
+  its own log. The warnings and errors it sends to clients (a missing file,
+  a glob matching too many files, a split long line) are sent at every
+  level, also `none`. How clients show them: [examples.md](./examples.md).
+* **One line per log line:** control and format characters in logged text
+  (a path, glob or error a client sent) are written as Go escapes (`\n`,
+  `\t`, `\x1b`, `‮`, ...), so a client can forge neither log lines nor
+  terminal escapes. Other text, non-ASCII names included, is unchanged. The
+  same holds for the client logs and the warnings sent to clients.
 
 ## Auth-key fast reconnect
 
-The client can register a public key with `dserver` over an already
-authenticated session; later connections then authenticate against that
-in-memory key without touching `authorized_keys` or a YubiKey. The server side
-of the feature is controlled by three keys:
+A client can register a public key with `dserver` over an authenticated
+session; later connections authenticate against that in-memory key, without
+`authorized_keys` or a YubiKey touch.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `Server.AuthKeyEnabled` | `true` | Enable in-memory auth-key registration and fast reconnect. |
-| `Server.AuthKeyTTLSeconds` | `86400` | Time to live of a cached auth key in seconds. |
-| `Server.AuthKeyMaxPerUser` | `5` | Maximum number of cached auth keys per user. |
+| `Server.AuthKeyEnabled` | `true` | Accept key registrations and cached keys. |
+| `Server.AuthKeyTTLSeconds` | `86400` | Lifetime of a cached key in seconds (`0` or less: the default). |
+| `Server.AuthKeyMaxPerUser` | `5` | Cached keys per user (`0` or less: the default). |
 
-See the [Auth-Key Fast-Reconnect](./auth-key-fast-reconnect.md) documentation
-for the full protocol description.
+Usage and security notes:
+[Auth-Key Fast Reconnect](./auth-key-fast-reconnect.md).
 
 ## Journal reads
 
-On hosts with systemd, clients can read the journal instead of a file by
-passing a `journal:unit.service` target (e.g.
-`dcat server1 'journal:nginx.service'`).
+On Linux hosts with systemd, clients can read a unit's journal instead of a
+file:
 
-* The server advertises the capability `journal-v1`, and only on Linux and
-  only when `journalctl` is available on `PATH`. Clients reject journal
-  targets when the server does not advertise it.
-* A non-follow read (`dcat`, `dgrep`, `dmap`) reads the current journal
-  snapshot once. A follow read (`dtail`) runs `journalctl` with `-f -n 0` and
-  keeps restarting it until the client disconnects.
-* Each journal entry is one line. Entries longer than `Server.MaxLineLength`
-  are cut into pieces of exactly that length, with a long-line warning to
-  the client, as file reads cut their lines; a long entry does not end the
-  read.
-* Journal targets are authorized like files, but the permission rule must
-  match the full target string including the `journal:` prefix, for example
-  `"readfiles:^journal:.*\\.service$"`.
-* The unit must be one literal systemd unit name with its unit type, so the
-  rule that matched the target covers exactly what `journalctl -u` reads:
-  only ASCII letters, digits and `:-_.\@`, an explicit type suffix
-  (`.service`, `.socket`, `.timer`, `.scope`, `.mount`, `.automount`,
-  `.swap`, `.target`, `.path` or `.device`) and, for an instance such as
-  `getty@tty1.service`, a non-empty instance. Glob patterns
-  (`journal:ssh*.service`), names without a type (`journal:sshd`, which
-  `journalctl` would read as `sshd.service`), slices (`journal:system.slice`,
-  which would read every unit in the slice) and templates
-  (`journal:getty@.service`) are refused and reported as `read: unable to
-  read file`, so a deny rule such as `"readfiles:!^journal:sshd\\.service$"`
-  can not be bypassed by spelling the target differently. This also holds
-  for scheduled and continuous jobs: a job `Files` entry such as
-  `journal:nginx`, `journal:*.service` or `journal:system.slice` (accepted by
-  older releases) now fails every run; name the unit with its type.
-* A deny rule covers the unit's own log stream only. Messages about the unit
-  logged by other units stay readable through those units, e.g. PID 1's
-  messages in `journal:init.scope`, coredump reports of the unit under its
-  `systemd-coredump@...service` unit, and a user's units under
-  `user@UID.service`; deny those too where that matters.
-* Deny rules must name the canonical unit, not an alias: `journalctl -u`
-  does not resolve aliases (on Debian and Ubuntu `sshd.service` is an alias
-  of `ssh.service`, so a deny rule on `sshd\\.service` protects nothing
-  there).
+```shell
+dcat --servers server1 --files 'journal:nginx.service'
+```
+
+| Topic | Behaviour |
+| --- | --- |
+| Availability | Only on Linux with `journalctl` on `PATH`; `dserver` then advertises the capability `journal-v1`, and clients reject journal targets without it. |
+| One-shot read (`dcat`, `dgrep`, `dmap`) | Reads the current journal once. |
+| Follow read (`dtail`) | Runs `journalctl -f -n 0` and restarts it until the client disconnects. |
+| Lines | One entry is one line, cut at `Server.MaxLineLength` like a file line. |
+| Unit name | One literal unit with its type: `journal:sshd.service`, not `journal:sshd`, a glob, a slice or a template. Others fail with `read: unable to read file`, also in job `Files`. |
+| Permissions | A rule must match the whole target, e.g. `"readfiles:^journal:.*\\.service$"`. |
+
+What exactly is refused, and what a deny rule on a unit does not cover
+(other units' messages about it, aliases), is in
+[Read permissions](./read-permissions.md#journal-targets).
 
 ## Shared reads
 
-Shared reads are on by default; set `Server.SharedReadsDisable` to `true` to
-turn them off. Sessions that follow (tail) the same uncompressed file share a
-single reader of it in `dserver`; each session still passes its own permission
-check and filters and numbers its lines itself. A session that falls too far
-behind is evicted from the shared reader, keeps reading with a private reader
-and rejoins the shared reader once it caught up. Scheduled jobs that the
-scheduler starts in the same wave and that read the same files of the same
-`dserver` share a one-shot read in the same way.
+On by default; `Server.SharedReadsDisable: true` turns them off.
+
+* Sessions that follow (tail) the same uncompressed file share one reader of
+  it. Each session still passes its own permission check and filters and
+  numbers its lines itself.
+* A session that falls too far behind gets a reader of its own and rejoins
+  the shared one once it caught up.
+* Scheduled jobs that the scheduler starts together on the same files of the
+  same `dserver` share a one-shot read the same way.
 
 ## Scheduled and continuous jobs
 
-`dserver` can run MapReduce jobs on its own schedule. Both job arrays live in
-the `Server` section:
+`dserver` can run MapReduce jobs by itself. Both arrays are in the `Server`
+section:
 
 ```json
 "Schedule": [
@@ -315,59 +306,38 @@ the `Server` section:
 ]
 ```
 
-Job fields (both job types share them unless noted):
-
 | Field | Applies to | Meaning |
 | --- | --- | --- |
-| `Name` | both | Job name. The job's SSH connections authenticate as user `DTAIL-SCHEDULE` (scheduled) or `DTAIL-CONTINUOUS` (continuous) with this name as password, so it doubles as a shared secret: keep it unguessable and the configuration file unreadable for others. |
-| `Enable` | both | Set to `true` to run the job at all. |
-| `Files` | both | Comma-separated file list or glob to read. Supports the date placeholders below. |
-| `Query` | both | A [DTail query language](./querylanguage.md) MapReduce query, without an `outfile` clause (the scheduler appends `outfile <Outfile>`). |
-| `Outfile` | both | Where the MapReduce result is written (CSV, written via a `.tmp` file and renamed, plus a `<Outfile>.query` file holding the query). Supports the date placeholders below. A scheduled job does not run while its outfile exists, so an `Outfile` without a date placeholder makes it run once, until the file is removed. |
-| `Servers` | both | Server list, joined with commas into the client's `--servers` value. Whitespace around entries and empty entries are ignored. Without a `Discovery` module, a single entry naming an existing file is read as a server list file (one server per line; blank lines, `#` comment lines and a leading UTF-8 byte order mark are ignored). Empty, or only blank entries, means this `dserver` itself, without a `Discovery` module or with `COMMA`: its `Server.SSHBindAddress` at `Common.SSHPort`, or the loopback address (`127.0.0.1`, or `::1` for `::`) when it listens on every address (`""`, `0.0.0.0`, `::ffff:0.0.0.0` or `::`). With `FILE`, an empty `Servers` makes `FILE` try to open a file named after this `dserver`'s address (e.g. `127.0.0.1`), so the job fails. |
-| `Discovery` | both | Optional server discovery module (the client's `--discovery` value): `COMMA` or `FILE`, case-insensitive (builds may add more). It only selects how `Servers` is read; for `COMMA` and `FILE` the servers always come from `Servers`. `COMMA` reads `Servers` as the server list, `FILE` reads the server list file `Servers` names, e.g. `"Discovery": "file", "Servers": ["/etc/dserver/serverlist"]`. A `MODULE:options` suffix is only for discovery modules a build adds; `COMMA` and `FILE` take no options and reject them (in any case): `comma:server1,server2` or `file:/path/to/serverlist` fails the job's client with `discovery module "comma" takes no options; put the servers in Servers/--servers`, so a scheduled job writes no outfile and is retried after its backoff, and a continuous job logs the error and retries at its next run. Put the servers, or the server list file, in `Servers`. |
-| `AllowFrom` | both | Addresses (hostnames are resolved) the job's SSH connections are accepted from. **Required in practice**: a `dserver` accepts a job connection only when its own configuration has a job of the same type and `Name` (enabled or not) whose `AllowFrom` contains the connecting address; an empty `AllowFrom` accepts none. So every `dserver` in `Servers` needs that job entry with the scheduling `dserver`'s address. A job with empty `Servers` (or `localhost`) on a `dserver` listening on every address connects from the loopback address, so its `AllowFrom` must resolve to `127.0.0.1` or `::1` (e.g. `localhost`). The read permissions do not apply to job connections. |
-| `TimeRange` | `Schedule` only | `[startHour, endHour]` (24h clock); the job runs when `startHour <= hour < endHour`. `[0, 24]` means the whole day; a job without `TimeRange` (`[0, 0]`) never runs. The scheduler checks its jobs every minute, starting 2 s after `dserver` started. |
-| `RestartOnDayChange` | `Continuous` only | Restart the job when the date placeholders roll over at midnight. |
+| `Name` | both | Job name; also the job's password, so keep it unguessable. |
+| `Enable` | both | `true` to run the job. |
+| `Files` | both | Comma-separated files or globs. Date placeholders allowed. |
+| `Query` | both | MapReduce [query](./querylanguage.md) without an `outfile` clause. |
+| `Outfile` | both | Result file (CSV). Date placeholders allowed. A scheduled job does not run while it exists. |
+| `Servers` | both | Servers to query, or one server list file. Empty: this `dserver`. |
+| `Discovery` | both | Optional: `COMMA` or `FILE`, how `Servers` is read. |
+| `AllowFrom` | both | Addresses the job's connections are accepted from. Empty accepts none. |
+| `TimeRange` | `Schedule` | `[startHour, endHour]`: runs while `startHour <= hour < endHour`. `[0, 24]` is the whole day; without it the job never runs. |
+| `RestartOnDayChange` | `Continuous` | Restart at midnight with the new dates. |
 
-`Files` and `Outfile` support date placeholders, replaced with the date in
-`YYYYMMDD` form: `$today`, `$tomorrow`, `$yesterday` (1 day ago), `$yyesterday`
-(2 days ago) and `$yyyesterday` (3 days ago). These are calendar days in the
-scheduling server's local timezone, including across daylight-saving changes.
-Both fields use the same time captured for that run.
+Date placeholders (as `YYYYMMDD`, local time): `$today`, `$tomorrow`,
+`$yesterday`, `$yyesterday`, `$yyyesterday`.
 
-**Failure semantics (scheduled jobs).** A scheduled job only writes its
-outfile while its run completed successfully. Within the job's `TimeRange`, a
-failed run (a server that could not be reached, or a file that could not be
-read) writes **no** outfile, leaves an outfile of an earlier run untouched,
-logs `Job <name> failed and wrote no outfile ...`, and the job retries with a
-growing backoff (1, 2, 4, 8, 16, 32 minutes, then every hour) as long as the
-range lasts. Once the `TimeRange` has ended, the scheduler keeps trying
-with so-called final runs: if only file read failures (`read: no file to
-read`, `read: no permission to read file`, `read: unable to read file`, ...)
-occurred by then, it writes the partial result of what could be read; if
-there were transport failures (no connection, a failed SSH handshake or
-rejected session, a session cut short without the server's close
-handshake, or a failed command that is no file read failure such as `map:
-invalid query`), it still writes nothing and keeps retrying. 24 hours after
-the `TimeRange` ended, the scheduler gives up on the outfile entirely. A `dserver` restart forgets all
-failure state: within the `TimeRange` the job then runs strictly again, but a
-`dserver` restarted after the range ended does not know about the failed run
-and writes no outfile for that period.
+The essentials:
 
-**Continuous jobs** follow their files from their current end, like
-`dtail`, and write the result of each query `interval` to their outfile.
-Continuous jobs and interactive `dmap` with an outfile keep writing interim
-and final results whatever the exit status. A continuous job that exits is
-started again a minute later; with `RestartOnDayChange` it is restarted at
-once at midnight with the new dates filled in.
+* Every `dserver` a job connects to needs the same job entry (type and
+  `Name`) with the scheduling server's address in `AllowFrom`.
+* The scheduler checks its jobs every minute.
+* A scheduled job writes its outfile only when its run completed. A failed
+  run writes nothing and is retried with a growing backoff (1 minute up to
+  1 hour).
+* After its `TimeRange` ended, a job that failed only because files could
+  not be read writes what it could read. After 24 more hours the scheduler
+  gives up.
+* A continuous job follows its files like `dtail`, writes a result every
+  query `interval`, and is started again a minute after it exited.
 
-A job whose servers name no server at all, e.g. a server list file of only
-blank and comment lines, fails before it connects anywhere (`no server to
-connect to`, logged at `WARN` as `Unable to create job <name>`). A scheduled
-job counts that as a failed run (see above). A continuous job writes no
-outfile, so an earlier outfile is not overwritten with empty results, and it
-runs again a minute later, as after any other exit, without a backoff.
+Server lists, authentication, the failure kinds, final runs and log lines:
+[Scheduled and continuous jobs](./scheduled-jobs.md).
 
 ## A minimal example configuration
 

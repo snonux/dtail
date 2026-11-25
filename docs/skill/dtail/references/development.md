@@ -1,7 +1,9 @@
 # Developing DTail
 
-For work on the DTail code base itself. The repository's `AGENTS.md` is the
-detailed developer record; read it before changing code.
+For work on the DTail code base itself. The repository's `AGENTS.md` is a
+short index (commands, layout); the detailed developer record it links to is
+in `docs/agents/*.md`. Read the sections that cover the code before changing
+it.
 
 ## Layout
 
@@ -12,14 +14,15 @@ detailed developer record; read it before changing code.
   (query language, aggregation, `logformat`), `internal/jobs`,
   `internal/config`, `internal/ssh`, `internal/io`, `internal/protocol`,
   `internal/sessionuser` (permissions), `internal/authkey`.
-- User docs in `doc/`, developer docs in `docs/dev/`, examples in
+- User docs in `doc/`, developer docs in `docs/dev/` and `docs/agents/`,
+  examples in
   `examples/`, this skill in `docs/skill/dtail/`.
 
 ## Build
 
 ```sh
 make build            # all binaries into the repo root (also: make all)
-make install          # BROKEN: installs every binary as `main`; use go install ./cmd/X
+make install          # go install the six product binaries (not dtail-tools) into $GOBIN
 make clean            # also deletes every *.tmp and *.prof file
 make dserver          # or dcat, dgrep, dmap, dtail, dtailhealth, dtail-tools
 DTAIL_USE_ACL=yes make build   # tag linuxacl, needs libacl-devel
@@ -90,5 +93,5 @@ dtail-tools pgo [-profiledir -outdir -datasize -iterations -v -profileonly] [cmd
   `doc/querylanguage.md`.
 - New config fields need the schema and example updated.
 - Clients and dserver share protocol 5; wire changes need both sides.
-- Keep the docs, `AGENTS.md` and this skill in sync with user-visible
-  changes.
+- Keep the docs, `AGENTS.md`, `docs/agents/` and this skill in sync with
+  user-visible changes.

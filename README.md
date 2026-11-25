@@ -5,11 +5,13 @@ DTail
 
 [![License](https://img.shields.io/github/license/mimecast/dtail)](https://www.apache.org/licenses/LICENSE-2.0.html) [![Go Report Card](https://goreportcard.com/badge/github.com/mimecast/dtail)](https://goreportcard.com/report/github.com/mimecast/dtail) [![Hits-of-Code](https://hitsofcode.com/github/mimecast/dtail)](https://www.vbrandl.net/post/2019-05-03_hits-of-code/) ![GitHub issues](https://img.shields.io/github/issues/mimecast/dtail) ![GitHub forks](https://img.shields.io/github/forks/mimecast/dtail) ![GitHub stars](https://img.shields.io/github/stars/mimecast/dtail)
 
-DTail (a distributed tail program) is a DevOps tool for engineers programmed in Google Go for following (tailing), catting and grepping (including gzip and zstd decompression support) log files on many machines concurrently. An advanced feature of DTail is to execute distributed MapReduce aggregations across many devices.
+DTail (distributed tail) is a DevOps tool written in Go for following (tailing), catting and grepping log files on many machines concurrently, including gzip and zstd compressed ones. It can also run distributed MapReduce aggregations over them.
 
-For secure authorization and transport encryption, the SSH protocol is used. Furthermore, DTail respects the UNIX file system permission model (traditional on all Linux/UNIX variants and also ACLs on Linux based operating systems).
-
-DTail consists of a server, `dserver`, and the clients `dtail` (follow), `dcat` (cat), `dgrep` (grep), `dmap` (MapReduce) and `dtailhealth` (health check). The DTail server must be installed on all server boxes involved. The DTail clients (possibly running on a regular Laptop) connect to the servers concurrently; `dtail` is interactive on a terminal (change the filter or switch to a MapReduce query while it runs), and `dmap` without a query opens a query builder. That currently scales to multiple thousands of servers per client. Furthermore, DTail can be operated in a serverless mode too. Read more about it in the documentation.
+* **Secure**: authorization and transport encryption use the SSH protocol. Per-user rules in the server configuration limit which files a user may read. A `dserver` built with Linux ACL support also checks the connecting user's file system permissions (see the [Installation Guide](doc/installation.md)).
+* **Server**: `dserver` runs on every machine whose logs are read.
+* **Clients**: `dtail` (follow), `dcat` (cat), `dgrep` (grep), `dmap` (MapReduce) and `dtailhealth` (health check) connect to many servers concurrently.
+* **Interactive**: on a terminal `dtail` lets you change the filter or switch to a MapReduce query while it runs, and `dmap` without a query opens a query builder.
+* **Serverless**: every client can also read local files without a `dserver`.
 
 ![DTail](doc/dtail.gif "Example")
 
@@ -18,7 +20,9 @@ If you like what you see [look here for more examples](doc/examples.md)! You can
 Installation and Usage
 ======================
 
-* Check out the [DTail Documentation](doc/index.md)
+* [Quick Starting Guide](doc/quickstart.md): install, start a `dserver`, run the first commands
+* [Usage Examples](doc/examples.md)
+* [DTail Documentation](doc/index.md): all documents
 
 More
 ====

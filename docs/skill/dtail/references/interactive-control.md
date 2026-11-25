@@ -78,4 +78,4 @@ started while paused gets the prompt `dtail> `.
   `--max` aside and restores them on `:tail`. The last query table is
   reported once more on the switch back.
 
-Full rules: `doc/interactive-query.md`.
+Full rules: `doc/interactive-query-reference.md` (short guide: `doc/interactive-query.md`).

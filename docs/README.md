@@ -26,13 +26,15 @@ Layout:
   * [Read progress](dev/read_progress.md) (the `.syn progress` frame, how
     dserver counts the bytes read of dcat, dgrep and dmap, and the client's
     STATS fields and `--progress` lines)
+* `agents/` — the detailed sections of the repository's
+  [`AGENTS.md`](../AGENTS.md), which is a short index into them (one file
+  per subsystem, e.g. [read progress](agents/read-progress.md))
 * `skill/` — the agent skill [dtail](skill/dtail/SKILL.md): how to use,
   query, run and develop DTail, as a slim index with references loaded on
   demand
 * The animated GIFs of the user documentation are rendered from the VHS
   scripts in [`../doc/tapes/`](../doc/tapes/) with `make gifs` (a demo fleet
   of six local dservers; needs vhs, gifsicle and ssh-keygen)
-  (running and explaining the client commands)
 * `benchmarks/` — raw evidence bundles (scripts, CSV results, logs) backing
   the dated benchmark reports
 * `archive/` — outdated documents kept for historical reference only

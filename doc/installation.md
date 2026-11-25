@@ -1,226 +1,171 @@
 DTail Installation Guide
 ========================
 
-This guide targets maintained Linux distributions. Its service examples use
-`systemd` and its package examples use `dnf` (RHEL, Rocky Linux and Fedora);
-adapt them for your platform. Install at least the Go version declared in
-[`go.mod`](../go.mod) (currently Go 1.26.6) before building.
+This guide sets up `dserver` as a `systemd` service on a Linux host. The
+package examples use `dnf` (RHEL, Rocky Linux and Fedora); adapt them for your
+platform. To only try DTail out, the [Quick Starting Guide](quickstart.md) is
+enough. Upgrading an existing installation? Read the
+[Upgrade Notes](upgrade-notes.md) first.
 
 # Compile it
 
-Please check the [Quick Starting Guide](quickstart.md) for instructions on compiling DTail. It is recommended to automate the build process via your build pipeline (e.g. produce a deployable (.rpm, .deb, ...) via Jenkins). You don't have to use ``go install...`` to compile and install the binaries. You can also use ``make build`` in the clone instead. The default build needs cgo and a C compiler (for the zstd support); see below for a build without it.
+You need at least the Go version declared in [`go.mod`](../go.mod) (currently
+Go 1.26.6) and a C compiler (the zstd support uses cgo). In a clone of the
+repository:
+
+```console
+% make build
+```
+
+This compiles `dserver`, `dcat`, `dgrep`, `dmap`, `dtail`, `dtailhealth` and
+the developer tool `dtail-tools` into the repository root. `make install` runs
+`go install` for the six product binaries (not `dtail-tools`) and puts them
+into `$GOBIN` instead. For a fleet, build a package (.rpm, .deb, ...) in your
+build pipeline.
+
+The build switches below are environment variables read by the Makefile. Any
+non-empty value enables them (also `no`).
 
 ## Linux ACL support
 
-This is optional, but it gives you better security. On Linux, you have the option to compile `dserver` with File System Access Control List support. For that, you need:
-
-### 1. Install the `libacl` development library. On RHEL, CentOS and Fedora, it would be
+Optional, for better security: `dserver` can honour file system access control
+lists on Linux.
 
 ```console
 % sudo dnf install libacl-devel -y
+% DTAIL_USE_ACL=yes make build
 ```
 
-### 2. Enable ACL via a Go build flag
-
-Set the `DTAIL_USE_ACL` environment variable before invoking the make command.
-
-```console
-% export DTAIL_USE_ACL=yes
-```
-
-Alternatively, you could add `-tags linuxacl` to the Go compiler.
+Without the Makefile, pass `-tags linuxacl` to `go build`.
 
 ## Build without zstd (optional)
 
-For targets where CGO-based zstd is unavailable (for example cross-compiling `dserver` for another architecture), build with the `nozstd` tag. Compressed `.zst` log files will not be supported in that binary.
+Where cgo is not available (for example when cross-compiling `dserver` for
+another architecture), build without zstd. That binary can not read `.zst`
+files.
 
 ```console
-% export DTAIL_NO_ZSTD=yes
+% DTAIL_NO_ZSTD=yes make build
 ```
 
-This sets `-tags nozstd` via the Makefile. Plain `go build` users can pass `-tags nozstd` directly.
+Without the Makefile, pass `-tags nozstd` to `go build`.
 
 ## Proprietary features (optional)
 
-Builds can enable the proprietary features with `DTAIL_USE_PROPRIETARY=yes make build`. Leave it off for the regular open-source build.
+`DTAIL_USE_PROPRIETARY=yes make build` (build tag `proprietary`) needs the
+proprietary log format source, which is not in this repository; without it the
+build fails. Leave it off for the regular open-source build.
 
 # Install it
 
-It is recommended to automate all the installation process outlined here. You could use a configuration management system such as Puppet, Chef or Ansible. However, that relies heavily on how your infrastructure is managed and is out of scope of this documentation.
+Automate these steps with your configuration management (Puppet, Chef,
+Ansible, ...). The commands copy the example files from the clone's
+[`examples`](../examples) directory.
 
-1. The ``dserver`` binary has to be installed on all machines (server boxes) involved. A good location for the binary would be ``/usr/local/bin/dserver`` with permissions set as follows:
+1. Install `dserver` on every server, and `dtailhealth` for the
+   [monitoring check](#monitor-it):
 
 ```console
-% sudo chown root:root /usr/local/bin/dserver
-% sudo chmod 0755 /usr/local/bin/dserver
+% sudo install -o root -g root -m 0755 dserver dtailhealth /usr/local/bin/
 ```
 
-2. Create the ``dserver`` run user and group. The user could look like this:
+2. Create the `dserver` run user and group (`dserver` refuses to run as root):
 
 ```console
 % sudo adduser dserver
-% id dserver
-uid=1001(dserver) gid=1001(dserver) groups=1001(dserver)
 ```
 
-3. Create the required file system structure and set the correct permissions:
+3. Create the directories. `dserver` creates its log directory itself, but not
+   the cache directory, which holds its SSH host key and the key cache:
 
 ```console
-% sudo mkdir -p /etc/dserver /var/run/dserver
+% sudo mkdir -p /etc/dserver /var/run/dserver/cache
 % sudo chown -R dserver:dserver /var/run/dserver
 ```
 
-4. Install the ``dtail.json`` config to ``/etc/dserver/dtail.json``. An example can be found [here](../examples/dtail.json.example).
+4. Install the [example config](../examples/dtail.json.example) as
+   `/etc/dserver/dtail.json`:
 
 ```console
-% curl https://raw.githubusercontent.com/mimecast/dtail/master/examples/dtail.json.example |
-    sudo tee /etc/dserver/dtail.json
+% sudo install -m 0644 examples/dtail.json.example /etc/dserver/dtail.json
 ```
 
-Config resolution note: ``dserver`` reads ``/etc/dserver/dtail.json`` only because the example ``systemd`` unit passes ``-cfg /etc/dserver/dtail.json``. Without ``-cfg``, every DTail binary searches for a config at ``~/.config/dtail/dtail.conf`` first and, if that does not exist, at ``~/.dtail.conf`` (the first existing file wins; they are not merged).
-
-### Upgrade note: ``Common.Logger`` and ``Common.LogDir`` now take effect
-
-Older releases silently ignored ``Common.Logger`` (and the client commands' ``Common.LogDir``) from the config file, because every command's ``--logger`` and ``--logDir`` flag default always replaced it. These config values now apply. The precedence is: explicit ``--logger``/``--logDir`` flag > ``Common.Logger``/``Common.LogDir`` from the config file > the per-command default (``file`` and ``log`` for dserver, ``fout`` and ``~/log`` for the client commands). dtailhealth now ignores both config values: it always uses the ``none`` logger unless given ``--logger``, and always the ``log`` directory. It previously honoured ``Common.LogDir`` when run with ``--logger file`` or ``--logger fout``; such log files now go to ``./log``.
-
-Older copies of the example config contained ``"Logger": "Fout"``. If your installed ``/etc/dserver/dtail.json`` still has that line, dserver now tees its log to stdout as well as to the log file, so under systemd every line also lands in the journal. To keep the previous behaviour (log file only), set ``"Logger": "File"`` or remove the ``Logger`` key before restarting dserver after the upgrade:
+5. Install the [example unit](../examples/dserver.service.example):
 
 ```console
-% grep -n '"Logger"' /etc/dserver/dtail.json
-```
-
-### Upgrade note: MapReduce queries with stray words are rejected
-
-Older releases silently ignored words the query parser did not expect after the value of a clause, so a misspelled or half-typed word changed nothing or the wrong thing (``order by x asc`` sorted descending, ``order by x reverse`` and ``limit 10 20`` ignored the last word). Such queries are now rejected with an error naming the word (see the notes in [the query language](./querylanguage.md)). Rejected are:
-
-* a word after the value of ``from``, ``order``, ``rorder``, ``interval``, ``limit``, ``logformat`` and ``outfile`` (e.g. ``order by x reverse``, ``limit 10 20``), including a second order field (``order by a,b``); a trailing ``desc`` after ``order`` and ``asc`` after ``rorder`` stay allowed;
-* ``asc`` after ``order`` and ``desc`` after ``rorder``;
-* a bare ``by`` in a ``select`` or ``group by`` list (``select count(x) gropu by x``);
-* ``interval`` without a number;
-* an ``outfile`` path starting with ``append:`` (``outfile append:result.csv`` wrote a new file named ``append:result.csv`` instead of appending to ``result.csv``);
-* a path after a quoted or escaped ``append`` (``outfile "append" result.csv``, read as ``outfile append result.csv`` before): only the bare word ``append`` is the append mode, a quoted or escaped one is a file name.
-
-Replacements: use ``rorder by x`` for ascending order (instead of ``order by x asc`` or ``reverse``), write a field named ``by`` as ``` `by` ```, remove the stray word (or add the missing interval), and write ``outfile append result.csv`` to append (or ``outfile ./append:result.csv`` for a file really named so).
-
-dserver does not check the queries of the ``Schedule`` and ``Continuous`` jobs when it starts: a job whose query is now rejected fails each time it runs, with an ERROR log line ``Unable to create job <name>`` followed by the parse error, and writes no outfile. A scheduled job then backs off like any failed run and is given up 24 hours after its ``TimeRange`` ended; a continuous job logs the error at every retry, every minute. Check the dserver log after the upgrade, for example:
-
-```console
-% grep 'Unable to create job' log/*.log
-```
-
-(the ``log`` directory is dserver's ``Common.LogDir``), or check each job query with the new ``dmap --query '...'`` before upgrading dserver: it rejects such a query the same way before connecting.
-
-### Upgrade note: MapReduce table names are literal, ``from *`` reads every table
-
-The line filter of a MapReduce query is built by the client (``dmap``, ``dtail --query``, and dserver for its ``Schedule`` and ``Continuous`` jobs), so this takes effect with the upgraded client or scheduling dserver:
-
-* A table name is matched literally. It used to be put into a regular expression unescaped, which was never documented: ``from "(A|B)"`` read the tables ``A`` and ``B``, ``from STATS.*`` every table starting with ``STATS``, and ``from A.B`` also the table ``AXB``. Such a query now reads only the table of exactly that name (usually none). Use one query per table, or ``from *`` with a ``where`` condition.
-* ``from *`` reads every ``MAPREDUCE`` line, whatever its table, as documented. It used to read only the lines of a table without a name (``|MAPREDUCE:|``), so a query using it returns more rows than before.
-
-### Upgrade note: paths holding a newline are no longer readable
-
-dserver's read permission check now denies every path that holds a newline character, in the file name or in a directory name above it (after symlinks are resolved), for every user the ``Server.Permissions`` rules apply to. In a rule ``.`` matches no newline and ``$`` only the end of the path, so a deny rule such as ``!^/var/log/secret/.*$`` did not match such a path while an allow rule ``^/var/log/`` did, and the file was read past the deny rule. A read of such a path now fails with ``read: no permission to read file`` (``dcat`` and ``dgrep`` then exit ``2``, also when only one file a glob matched has such a name), and the path completion offers neither the file nor a directory with such a name. There is no option to turn this off; rename such files. dserver's own scheduled and continuous jobs, which the rules do not apply to, still read them.
-
-### Upgrade note: ``outfile append`` appends the result once
-
-``dmap`` and ``dtail --query`` with ``outfile append PATH`` used to append the whole result so far to ``PATH`` at every report interval (every 5 seconds by default), so the file got the same rows again and again. They now append the result once, when the query ends (the client exits, or an interactive reload replaces the query). Scripts that read ``PATH`` while the query runs no longer see interim rows, and a client that is killed or crashes appends nothing. Use ``outfile PATH`` (without ``append``) for a file that is replaced with the result so far at every interval. Scheduled jobs (one final result per run) and continuous jobs (each interval's rows, once) are unchanged.
-
-### Upgrade note: ``Client.TermColors`` names now take effect
-
-Older releases copied every ``Client.TermColors`` value verbatim into the output, so a colour name such as ``"Red"`` or ``"Dim"`` was printed as literal text instead of a colour; only raw escape sequences such as ``"\u001b[31m"`` worked. Colour and attribute names (matched case-insensitively) are now converted to terminal escape codes, so a configured palette now changes the client's colours.
-
-Existing config files keep loading, dserver included (it reads the same file but never renders colours):
-
-* The prefixed spellings used by the example configs of v4.0.0 through v4.3.4 (``samples/dtail.json.sample``, later ``examples/dtail.json.example``) (``"FgBlack"``, ``"BgCyan"``, ``"AttrDim"``, ``"AttrNone"`` ...) are still accepted and mean the colour or attribute they name. They are deprecated, and ``examples/dtail.schema.json`` reports them; drop the ``Fg``/``Bg``/``Attr`` prefix to silence the schema.
-* Raw SGR escape sequences (``ESC[...m``, including several concatenated ones and ``:``-separated parameters) are used unchanged, as before, and ``""`` still means no escape code. Other raw strings that older releases passed through verbatim (for example ``"\u001b[K"`` or an escape code followed by text) are now treated like any other invalid value, see below.
-* Any other value (for example a typo such as ``"Bleu"``) no longer ends up in the output. dtail uses that field's default colour instead and prints a warning naming the config file and the value on stderr, for example ``WARN: config file /etc/dserver/dtail.json: ignoring invalid background color "Bleu", using the default instead: ...``. A bad colour value is never a fatal config error.
-
-### SSH listen address (``SSHBindAddress``)
-
-The example config sets ``Server.SSHBindAddress`` to ``0.0.0.0``, so dserver listens on **every** local IPv4 address, including your LAN (e.g. ``192.168.1.x`` on eth0) and any other interface (loopback, WireGuard, etc.). Clients reach it as ``<that-host-LAN-IP>:2222``; you do **not** need to change this for normal LAN access.
-
-To listen **only** on a specific address—for example only the home LAN and not on a VPN—set ``SSHBindAddress`` in ``/etc/dserver/dtail.json`` to **that machine’s** address (each host needs its own value), e.g. ``192.168.1.125`` on ``pi0``, ``192.168.1.126`` on ``pi1``. Alternatively, override from the command line (after ``-cfg``): ``dserver -cfg /etc/dserver/dtail.json -bindAddress 192.168.1.125``. Then reload or restart dserver.
-
-5. It is recommended to configure DTail server as a service to ``systemd``. An example unit file for ``systemd`` can be found [here](../examples/dserver.service.example).
-
-```console
-% curl https://raw.githubusercontent.com/mimecast/dtail/master/examples/dserver.service.example |
-    sudo tee /etc/systemd/system/dserver.service
+% sudo install -m 0644 examples/dserver.service.example /etc/systemd/system/dserver.service
 % sudo systemctl daemon-reload
 ```
 
-The unit is intended to stay **disabled** until you opt in. Start DTail server manually when needed:
+The unit runs `/usr/local/bin/dserver -cfg /etc/dserver/dtail.json` as user
+`dserver` in the working directory `/var/run/dserver`. The relative `LogDir`
+(`log`), `CacheDir` (`cache`) and `HostKeyPath` (`cache/ssh_host_key`) of the
+example config are resolved there.
 
-```console
-% sudo systemctl start dserver
-```
+## Persistent locations
 
-To start it automatically at boot, run once: `sudo systemctl enable dserver`.
+`/var/run` (usually `/run`) is a `tmpfs`, so everything below
+`/var/run/dserver` is gone after a reboot: the directory itself (the unit's
+`WorkingDirectory`), the SSH host key, the key cache, the logs and the helper
+scripts installed further down.
+
+* Without the working directory the service does not start, so create the
+  directories at boot (for example with `systemd-tmpfiles`) or use a
+  persistent directory such as `/var/lib/dserver`.
+* A host key that is generated anew makes clients refuse the server (`HOST KEY
+  CHANGED`). Keep it on persistent storage with an absolute `Server.HostKeyPath`.
+* If you move the directory or the scripts, change `WorkingDirectory=` and the
+  `ExecStart=` paths in the units and the paths inside the scripts to match.
 
 # Configure it
 
-The example config above only sets a few keys. The most important ``Server`` settings (built-in defaults, see ``examples/dtail.schema.json``):
+Review these settings in `/etc/dserver/dtail.json` before the first start. All
+keys, defaults and the command-line flags that override them are described in
+[server-configuration.md](server-configuration.md); the schema is
+[`examples/dtail.schema.json`](../examples/dtail.schema.json).
 
-| Key | Default | Purpose |
+| Key | Example config | What to decide |
 | --- | --- | --- |
-| ``SSHBindAddress`` | ``0.0.0.0`` | Address the SSH server binds to |
-| ``MaxConnections`` | ``10`` | Max concurrent user connections (SSH handshakes included) |
-| ``IdleSessionTimeoutS`` | ``900`` | Rolling inactivity timeout of authenticated sessions, in seconds |
-| ``MaxConcurrentCats`` | ``2`` | Max concurrent cat/grep/MapReduce reads; also bounds grouped scheduled jobs |
-| ``MaxConcurrentTails`` | ``50`` | Max concurrent tails |
-| ``SharedReadsDisable`` | ``false`` | Turn off shared reads (same-file follow reads and grouped job reads) |
-| ``PathCompletionDisable`` | ``false`` | Turn off the path listing of the interactive path completion (it offers only paths the user may read) |
-| ``MaxLineLength`` | ``1048576`` | Max line length in bytes before a line of a file read, or an entry of a `journal:` read, is split |
-| ``HostKeyPath`` | ``./cache/ssh_host_key`` | Private SSH host key (generated on first start) |
-| ``HostKeyBits`` | ``4096`` | RSA host key size in bits |
-| ``AuthKeyEnabled`` | ``true`` | In-memory auth-key registration and fast reconnect |
-| ``AuthKeyTTLSeconds`` | ``86400`` | Auth-key cache entry TTL in seconds |
-| ``AuthKeyMaxPerUser`` | ``5`` | Max cached auth keys per user |
-| ``OutputBufferMaxBytes`` | ``2097152`` | Per-session payload backing memory cap; producers apply backpressure |
-| ``OutputFlushTimeoutMs`` | ``2000`` | Max time without progress of the session reader while output is drained (slow or paused clients are waited for) |
-| ``OutputReadRetryIntervalMs`` | ``1`` | Stale-generation fallback poll interval |
-| ``OutputEOFAckTimeoutMs`` | ``2000`` | Max wait for the output EOF acknowledgement |
-| ``MaxGlobTargets`` | ``1000`` | Max files one read command's glob may dispatch |
-| ``Permissions.Default`` | ``["^/.*"]`` | Read permissions for users without a ``Users`` entry |
+| `Server.SSHBindAddress` | `0.0.0.0` | Listens on every local IPv4 address. Set one address of the host to listen only there (or start with `-bindAddress ADDR`). |
+| `Common.SSHPort` | `2222` | The port clients connect to. |
+| `Server.Permissions` | everything readable | Which files each user may read. The example lists sample users; replace them. |
+| `Server.MaxConnections` | `50` | Concurrent connections (built-in default `10`). |
+| `Server.Schedule`, `Server.Continuous` | one disabled job | MapReduce jobs dserver runs itself. |
 
-A few pointers beyond the table:
+`dserver` reads `/etc/dserver/dtail.json` only because the unit passes `-cfg`.
+Without `-cfg`, every DTail binary reads `~/.config/dtail/dtail.conf` or, if
+that does not exist, `~/.dtail.conf`.
 
-* **Auth-key fast reconnect**: ``AuthKeyEnabled``/``AuthKeyTTLSeconds``/``AuthKeyMaxPerUser`` tune the in-memory auth-key cache, see [auth-key-fast-reconnect.md](auth-key-fast-reconnect.md).
-* **Session/output tuning**: ``IdleSessionTimeoutS`` plus the ``Output*`` keys above bound idle sessions and slow clients; ``SharedReadsDisable`` trades the shared-read optimization for per-session readers; ``MaxConnections``/``MaxConcurrentCats``/``MaxConcurrentTails`` size the connection and read slots.
-* **Journal support**: dserver advertises the ``journal-v1`` capability on Linux when ``journalctl`` is on ``PATH``; clients can then read ``journal:unit.service`` targets (permission rules must match the full ``journal:...`` target).
-* **Protocol 5**: clients and dserver must both speak protocol 5 (printed by ``--version``); a client refuses an older dserver (``unsupported DTail server ... please update DTail server``, exit status 1) and dserver rejects the commands of an older client with a version mismatch error (``... please update DTail client``), keeping the session of a protocol 4.x or older client open until the client is stopped or ``IdleSessionTimeoutS`` passes, so that an older ``dtail`` does not reconnect in a loop (a 4.x ``dtailhealth`` session is ended at once, so the health check fails right away). Upgrade both sides together. This also holds between dservers during a rolling upgrade: the scheduled and continuous jobs of a not yet upgraded 4.x dserver are 4.x clients, so a job that reads from an already upgraded dserver gets the mismatch error and its session stays open like that of any older one-shot client, until ``IdleSessionTimeoutS`` on the upgraded dserver; a released 4.x dserver (e.g. v4.3.4) runs its scheduled jobs one after another, so such a job holds up its other scheduled jobs meanwhile.
-* **Read progress**: dserver reports how far ``dcat``, ``dgrep`` and ``dmap`` read their files with a hidden ``.syn progress`` frame of protocol 5 (no capability, no version change). Clients from before it ignore the frame; with a dserver from before it a client shows no progress, and ``--progress`` prints a final line with ``reporting=0/N``.
-* **UTF-8 lines with `€`, `¬`, `Ь`**: every session escapes the protocol's 0xAC message delimiter byte in its frames, so such characters (whose UTF-8 encoding contains that byte) are transferred intact.
-* **File paths containing spaces**: dserver reads such paths (also globs, job ``Files`` and ``:reload --files``); the client sends them encoded. Commas always separate files (``--files a.log,b.log``, positional arguments and job ``Files`` are joined and split at commas), so paths containing a comma cannot be read, and blanks around a path are removed.
-* **`--plain` lines starting with `.` or reading `AUTHKEY OK`**: dserver marks its control messages (hidden `.syn ...` messages, `AUTHKEY` replies), so `--plain` server-mode output keeps log lines such as `.hidden`, `.syn close connection` or `AUTHKEY OK` and never acts upon them.
-* **Scheduled and continuous MapReduce jobs**: the ``Schedule`` and ``Continuous`` config arrays run MapReduce queries periodically (``TimeRange`` hours) or continuously and write CSV outfiles; see the config schema for the job fields.
+Related: [auth-key fast reconnect](auth-key-fast-reconnect.md) (enabled by
+default). Reading `journal:unit.service` targets needs `journalctl` on the
+server's `PATH`.
 
 # Start it
 
-To start the DTail server via ``systemd`` run:
+The unit is not enabled by the steps above. Start it, and enable it if it
+should start at boot:
 
 ```console
 % sudo systemctl start dserver
+% sudo systemctl enable dserver
 % sudo systemctl status dserver
 ● dserver.service - DTail server
-   Loaded: loaded (/etc/systemd/system/dserver.service; disabled; vendor preset: disabled)
-   Active: active (running) since Fri 2019-12-06 13:21:24 GMT; 2s ago
-   Main PID: 12296 (dserver)
-   Memory: 1.5M
-   CGroup: /dserver.slice/dserver.service
+   Loaded: loaded (/etc/systemd/system/dserver.service; enabled; ...)
+   Active: active (running) ...
      └─12296 /usr/local/bin/dserver -cfg /etc/dserver/dtail.json
 
-    Dec 06 13:21:24 serv-001.lan.example.org systemd[1]: Started DTail server.
-    Dec 06 13:21:24 serv-001.lan.example.org dserver[12296]: DTail 5.0.0 Protocol 5.0 Have a lot of fun!
+    ... dserver[12296]: DTail 5.0.0 Protocol 5.0 Have a lot of fun!
 ```
 
-With the example config (no ``Logger`` key, so dserver's default ``file`` logger) only the version line goes to the journal; the log lines (``Starting server``, ``Binding server``, ...) go to the daily file in ``LogDir`` (``/var/run/dserver/log/YYYYMMDD.log``). dserver also takes ``-port``, ``-bindAddress``, ``-host-key-path``, ``-authorized-keys-path``, ``-logger``, ``-logDir`` and ``-logLevel``, which override the config file.
+With the example config only this version line goes to the journal. The log
+lines (`Starting server`, `Binding server`, ...) go to the daily file
+`/var/run/dserver/log/YYYYMMDD.log`.
 
 ### Firewall (firewalld on RHEL, Rocky Linux, Fedora, …)
 
-The DTail server listens on TCP port ``2222`` (see ``SSHPort`` in ``dtail.json``). **ICMP (ping) may work while TCP to 2222 is blocked**, because host firewalls often allow ping but not arbitrary ports.
-
-If ``firewalld`` is active, allow the DTail port permanently and reload:
+Clients need TCP port `2222` (`Common.SSHPort`). A working ping does not mean
+the port is open; a blocked port typically shows on the client as `dial tcp …:
+connect: no route to host`. With `firewalld`:
 
 ```console
 % sudo firewall-cmd --permanent --add-port=2222/tcp
@@ -228,59 +173,68 @@ If ``firewalld`` is active, allow the DTail port permanently and reload:
 % sudo firewall-cmd --list-ports
 ```
 
-Clients may report ``dial tcp …: connect: no route to host`` when the firewall rejects the connection with an ICMP unreachable—opening ``2222/tcp`` fixes that. For other firewalls (nftables, ufw, …), add an equivalent allow rule for ``2222/tcp``. A small helper script is [firewalld-dserver-port.sh.example](../examples/firewalld-dserver-port.sh.example).
+[firewalld-dserver-port.sh.example](../examples/firewalld-dserver-port.sh.example)
+does the same. For other firewalls (nftables, ufw, …) add an equivalent rule.
 
 # Register SSH public keys in DTail server
 
-The DTail server now runs as a ``systemd`` service under system user ``dserver``. However, the system user ``dserver`` has no permissions to read the SSH public keys from ``/home/USER/.ssh/authorized_keys``. Therefore, no user would be able to establish an SSH session to DTail server. As an alternative path DTail server also checks for public SSH key files in ``/var/run/dserver/cache/USER.authorized_keys``.
+The `dserver` user can not read `/home/USER/.ssh/authorized_keys`, so no user
+could log in. `dserver` therefore also looks for a user's public keys in its
+cache directory, `/var/run/dserver/cache/USER.authorized_keys`.
 
-It is recommended to execute [update_key_cache.sh](../examples/update_key_cache.sh.example) periodically to update the key cache. In case you manage your public SSH keys via Puppet you could subscribe the script to corresponding module. Or alternatively just configure a cron job or a systemd timer to run every once in a while, e.g. every 30 minutes:
+[update_key_cache.sh](../examples/update_key_cache.sh.example) copies the keys
+of all users below `/home` there. Run it periodically, here with the example
+timer (every 30 minutes), or from your configuration management:
 
 ```console
-% curl https://raw.githubusercontent.com/mimecast/dtail/master/examples/update_key_cache.sh.example |
-    sudo tee /var/run/dserver/update_key_cache.sh
-% sudo chmod 755 /var/run/dserver/update_key_cache.sh
-% curl https://raw.githubusercontent.com/mimecast/dtail/master/examples/dserver-update-keycache.service.example |
-    sudo tee /etc/systemd/system/dserver-update-keycache.service
-% curl https://raw.githubusercontent.com/mimecast/dtail/master/examples/dserver-update-keycache.timer.example |
-    sudo tee /etc/systemd/system/dserver-update-keycache.timer
+% sudo install -m 0755 examples/update_key_cache.sh.example /var/run/dserver/update_key_cache.sh
+% sudo install -m 0644 examples/dserver-update-keycache.service.example /etc/systemd/system/dserver-update-keycache.service
+% sudo install -m 0644 examples/dserver-update-keycache.timer.example /etc/systemd/system/dserver-update-keycache.timer
 % sudo systemctl daemon-reload
 % sudo systemctl start dserver-update-keycache.service
-% sudo systemctl enable dserver-update-keycache.timer
-% sudo systemctl start dserver-update-keycache.timer
+% sudo systemctl enable --now dserver-update-keycache.timer
 ```
 
-**Note on persistent script locations:** ``/var/run`` (usually ``/run``) is a ``tmpfs``: the installed scripts vanish on reboot while the systemd timers keep firing (and failing). Installing the scripts into a persistent location such as ``/usr/local/bin`` is recommended instead — the example units reference ``/var/run/dserver/`` out of the box, so if you move the scripts, also update the ``ExecStart=`` paths in the service units accordingly. The dserver ``WorkingDirectory=/var/run/dserver`` with the relative ``CacheDir`` ``cache`` and ``LogDir`` ``log`` is fine to keep: those are regenerable caches and rotating logs.
+The example units expect the script in `/var/run/dserver`; see
+[Persistent locations](#persistent-locations).
 
 # Prune old dserver log files
 
-Log files live under ``/var/run/dserver/log`` (see ``LogDir`` in ``dtail.json``). To remove ``*.log`` files **older than seven days**, install [prune_dserver_logs.sh](../examples/prune_dserver_logs.sh.example) and a systemd timer (runs daily with a randomized delay). As with the key-cache script above, prefer a persistent location such as ``/usr/local/bin`` over ``/var/run/dserver`` — see the note there:
+`dserver` writes one log file per day and does not delete old ones.
+[prune_dserver_logs.sh](../examples/prune_dserver_logs.sh.example) deletes the
+`*.log` files in `/var/run/dserver/log` that are older than seven days; the
+example timer runs it daily:
 
 ```console
-% curl https://raw.githubusercontent.com/mimecast/dtail/master/examples/prune_dserver_logs.sh.example |
-    sudo tee /var/run/dserver/prune_dserver_logs.sh
-% sudo chmod 755 /var/run/dserver/prune_dserver_logs.sh
-% curl https://raw.githubusercontent.com/mimecast/dtail/master/examples/dserver-prune-logs.service.example |
-    sudo tee /etc/systemd/system/dserver-prune-logs.service
-% curl https://raw.githubusercontent.com/mimecast/dtail/master/examples/dserver-prune-logs.timer.example |
-    sudo tee /etc/systemd/system/dserver-prune-logs.timer
+% sudo install -m 0755 examples/prune_dserver_logs.sh.example /var/run/dserver/prune_dserver_logs.sh
+% sudo install -m 0644 examples/dserver-prune-logs.service.example /etc/systemd/system/dserver-prune-logs.service
+% sudo install -m 0644 examples/dserver-prune-logs.timer.example /etc/systemd/system/dserver-prune-logs.timer
 % sudo systemctl daemon-reload
 % sudo systemctl enable --now dserver-prune-logs.timer
 ```
 
-The script uses ``find /var/run/dserver/log -type f -name '*.log' -mtime +7 -delete``.
-
 # Run DTail client
 
-Now you should be able to use DTail client like outlined in the [Quick Starting Guide](quickstart.md). Also, have a look at the [Examples](examples.md).
+Use the clients as shown in the [Quick Starting Guide](quickstart.md) and the
+[Examples](examples.md).
 
 # Monitor it
 
-To verify that DTail server is up and running and functioning as expected, you should configure the Nagios check [check_dserver.sh](../examples/check_dserver.sh.example) in your monitoring system. The check has to be executed locally on the server (e.g. via NRPE). How to configure the monitoring system in detail is out of scope of this guide.
+Run the Nagios check [check_dserver.sh](../examples/check_dserver.sh.example)
+locally on each server (e.g. via NRPE):
 
 ```console
 % ./check_dserver.sh
 OK: All fine at localhost:2222 :-)
 ```
 
-The script runs ``dtailhealth --server localhost:2222``. ``dtailhealth`` exits ``0`` (OK), ``1`` (WARNING, e.g. run without ``--server``, which only checks serverless mode) or ``2`` (CRITICAL), as Nagios expects. It trusts unknown host keys without asking and never registers an auth key; a server whose host key changed is CRITICAL unless ``--trustChangedHostKeys`` is given.
+The script runs `/usr/local/bin/dtailhealth --server localhost:2222`, which
+exits `0` (OK), `1` (WARNING, e.g. without `--server`) or `2` (CRITICAL), as
+Nagios expects. It trusts unknown host keys without asking; a server whose
+host key changed is CRITICAL unless `--trustChangedHostKeys` is given.
+
+# Upgrading
+
+Clients and servers must both be DTail 5.x (protocol 5, see `--version`);
+upgrade them together. What else changes for an existing installation is
+listed in the [Upgrade Notes](upgrade-notes.md).

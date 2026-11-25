@@ -20,7 +20,7 @@ It is a hidden control message, sent as a marked control frame
 | field | meaning |
 |-------|---------|
 | `bytes` | bytes the session's file reads consumed so far (compressed bytes on disk for `.gz`/`.zst`) |
-| `total` | summed size of the files the session reads |
+| `total` | summed size of the files the session reads; a file whose read ended counts with the bytes read of it |
 | `files` | files whose read ended |
 | `filestotal` | files the session reads |
 
@@ -32,7 +32,8 @@ START`/`UPDATE`.
 without a protocol version change. A protocol 5 client of before it ignores
 it, as `handleHiddenMessage` drops unknown hidden messages. A client talking
 to a dserver of before it gets no frame and shows no progress; with
-`--progress`, its final line reads `reporting=0/N`.
+`--progress`, its final line reads `reporting=0/N`. So does the final line of
+a session that read no file (none matched, or none was permitted).
 
 ## Server side
 
@@ -46,9 +47,16 @@ the aggregate. The following are not counted:
 **Registration.** `readCommand.readFileIfPermissions` registers each file as
 soon as the session's permission check of it passed (`trackProgress`,
 `internal/handlers/read_progress.go`), with its size from `os.Stat` of the
-resolved path. The total is therefore complete at once, also for globs with
-more files than `MaxConcurrentCats` that wait for a cat slot. Denied and
-missing files are not counted. The read is reported as a failure as before.
+resolved path. The total of a read command is therefore complete at once,
+also for globs with more files than `MaxConcurrentCats` that wait for a cat
+slot. Denied and missing files are not counted. The read is reported as a
+failure as before.
+
+Every file argument (the entries of a comma-separated `--files`) is a read
+command of its own, and the commands of a session start one after the other
+as dserver takes them. The total of a session therefore grows while its
+commands start, and the percentage can fall when one does: a small file can
+be read in full (100%) before the command of a large one registered it.
 
 **Counting.** `fs.ReadOptions.Progress` (an `fs.ByteCounter`) reaches
 `ReadFile`. In `makeFileReader`, `countedSource` hands the counter the open
@@ -64,15 +72,21 @@ descriptors, so a file rotated away meanwhile is still the one measured. Only
 open files are stat'ed: at most `MaxConcurrentCats` per session. A file read
 past its last known size counts with the bytes read as its size.
 
-**End of a file.** When a file's read ends, it counts as read in full
-(`fileProgress.finish`), however it ended: EOF, `--max`, cancellation or a
-read error. The final report then says 100%, and failures are reported by
-`.syn command failed` as before. A newer generation starts the tracking over;
+**End of a file.** When a file's read ends, the bytes read of it are its size
+from then on (`fileProgress.finish`), however it ended. At EOF that is the
+file. For a read that ended early (`--max`, cancellation, a read error) the
+rest of the file is no longer to be read and leaves the total. The final
+report so says 100% while `bytes` stays what was really read (a `--max 1`
+grep of a 1 GB file ends with what its reader had taken from disk by then,
+about 1 MiB of 1 MiB, not 1 GB of 1 GB).
+Failures are reported by `.syn command failed` as before. A newer generation starts the tracking over;
 read commands of an older one are not tracked.
 
-**Sending.** A goroutine per session (`readProgress.report`), started at the
-first registration, posts the totals every second (`progressReportInterval`)
-when they changed. `readCommand.readFiles` posts once more when all files of
+**Sending.** A goroutine per session (`readProgress.report`), started by a
+registration, posts the totals every second (`progressReportInterval`)
+when they changed. It ends once the read of every registered file ended
+(`flushAndIdle`), and the next registration starts it again, so a session
+that stays open after its reads (an interactive one) keeps no ticker. `readCommand.readFiles` posts once more when all files of
 its command ended. Posts go to a one-slot mailbox on the output coordinator
 (`outputCoordinator.postProgress`, `internal/handlers/output_progress.go`)
 instead of the server message queue:
@@ -99,18 +113,23 @@ the frames, but its control frames do not.
 - `baseHandler.handleProgressMessage` (`internal/clients/handlers/progress.go`)
   keeps the latest progress of the session. `MaprHandler` passes hidden
   frames to the same switch. `Progress()` and the `ProgressReporter`
-  interface, asserted rather than added to `Handler`, expose it.
+  interface, asserted rather than added to `Handler`, expose it. An ok
+  acknowledgement of a `SESSION START`/`UPDATE` forgets it (`resetProgress`,
+  called by `handleSessionAckMessage`): what was reported belongs to the
+  replaced workload, and one that reports none (following lines, a journal)
+  would otherwise keep showing its numbers.
 - `baseClient.progressTotals` (`internal/clients/progress.go`) sums the
   handlers of all connections and counts the servers that reported
   (`reporting`).
 - `progressMeter` measures the rate over the last 15 s
-  (`progressRateWindow`). It starts the rate over when bytes or total
-  shrink, i.e. a new workload after an interactive reload. ETA is
-  `(total-bytes)/rate`.
+  (`progressRateWindow`). It starts the rate over when the bytes shrink,
+  i.e. a new workload after an interactive reload; a smaller total alone is
+  a read that ended early. ETA is `(total-bytes)/rate`.
 - The stats loop measures the progress every second (`progressTick`,
   `stats.tickProgress`) and shows a changed one in one of two ways:
   - **Default:** as fields of the STATS line (`bar`, `progress%`,
-    `progress`, `rate`, `eta`, `files`, `reporting`, `bytes`, `total`), checked every 3 s
+    `progress`, `rate`, `eta`, `files`, `reporting`, `bytes`, `total`; a STATS line has its fields sorted by
+    name, `protocol.EncodeStatsLine`, `DLog.Mapreduce`), checked every 3 s
     (`statsTicks`, `stats.tick`) against what the last STATS line showed,
     dropped by `--quiet`/`--plain`. The Ctrl-C statistics carry them too.
   - **`--progress`** (`Args.Progress`, all clients, meant for dcat, dgrep
@@ -119,7 +138,8 @@ the frames, but its control frames do not.
     up in place; `progressReport.bar`) every second in a fixed field order
     on stderr (`stats.writeProgress`), whatever the quiet mode. After the sessions
     ended, `baseClient.Start` writes one final line
-    (`stats.finishProgress`). Interactive sessions and the dmap query builder
+    (`stats.finishProgress`), unless the last line already showed the final
+    numbers (`stats.progressWritten`), which then is the final line. Interactive sessions and the dmap query builder
     write no PROGRESS lines, as stderr would bypass the paused output and the
     line editor.
 - While no server reported, `progress%`, `rate` and `eta` are `unknown`.
@@ -131,15 +151,16 @@ the frames, but its control frames do not.
   bytes equal the size on disk for plain, gzip and zstd files; follow reads
   count nothing.
 - `internal/handlers/read_progress_test.go`:
-  - totals, files counted in full, generations, a file growing while it is
-    read;
+  - totals, ended files counted by what was read, generations, a file
+    growing while it is read, the reporting goroutine ending with the reads;
   - the mailbox ahead of queued payload;
   - the final progress before the close handshake for dcat's and dgrep's
     command stream in server and serverless mode.
 - `internal/clients/handlers/progress_test.go`: client and MapReduce
   handler, invalid frames, unmarked look-alikes printed as payload.
-- `internal/clients/progress_test.go`: rate window, ETA, formatting, STATS
-  fields, PROGRESS lines and the final line.
+- `internal/clients/progress_test.go`: rate window (kept when only the total
+  shrinks), ETA, formatting, STATS fields, PROGRESS lines and the final line
+  (not repeated).
 - `integrationtests/progress_test.go`: dcat, dgrep and dmap with `--plain
   --progress` over a plain and a gzip file, against dserver and serverless.
   The final line must count every byte. Stdout must hold no PROGRESS line and

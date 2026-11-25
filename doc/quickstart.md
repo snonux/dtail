@@ -1,89 +1,80 @@
 Quick Starting Guide
 ====================
 
-This is the quick starting guide. For a more sustainable setup involving creating a background service via ``systemd``, recommendations about automation via Jenkins and Puppet and health monitoring via Nagios, please follow the [Installation Guide](installation.md).
+Install DTail, start a server and run the first commands. For a permanent
+setup (``systemd`` service, key cache, monitoring) follow the
+[Installation Guide](installation.md).
 
-This guide assumes that you know how to generate and configure a public/private SSH key pair for secure authorization and shell access. For more information, please have a look at the OpenSSH documentation of your distribution.
+You need Go, a C compiler (the zstd support uses cgo; the
+[Installation Guide](installation.md) describes a build without it) and an SSH
+key pair.
 
 # Install it
-
-To compile and install all DTail binaries, clone the repository and run ``go install`` on its commands (a C compiler is needed, as the zstd support uses cgo; see the [Installation Guide](installation.md) for a build without it):
 
 ```console
 % git clone https://github.com/mimecast/dtail.git
 % cd dtail
-% go install ./cmd/dcat ./cmd/dgrep ./cmd/dmap ./cmd/dtail ./cmd/dserver ./cmd/dtailhealth
+% make install
 ```
 
-Do not use ``go install github.com/mimecast/dtail/cmd/...@latest``: the module path carries no major version suffix, so ``@latest`` resolves to the ancient v1.1.0, not to the protocol 5 release (DTail 5.0.0) this documentation describes. Clients and servers must both be DTail 5.x (protocol 5), see ``--version``.
+``make install`` installs these binaries into ``$GOBIN`` (default ``$HOME/go/bin``):
 
-It produces the following executables in ``$GOBIN`` (default ``$HOME/go/bin``):
+| Binary | Purpose |
+|--------|---------|
+| ``dserver`` | The DTail server |
+| ``dtail`` | Follow log files (distributed tail) |
+| ``dcat`` | Display whole files (distributed cat) |
+| ``dgrep`` | Search files with a regex (distributed grep) |
+| ``dmap`` | Run distributed MapReduce queries |
+| ``dtailhealth`` | Health check of a ``dserver`` |
 
-* ``dcat``: Client for displaying whole files remotely (distributed cat)
-* ``dgrep``: Client for searching whole files remotely using a regex (distributed grep)
-* ``dmap``: Client for executing distributed MapReduce queries (may consume a lot of RAM and CPU)
-* ``dtail``: Client for tailing/following log files remotely (distributed tail)
-* ``dtailhealth``: Client for dserver health checks
-* ``dserver``: The DTail server
-
-Alternatively, run ``make build`` in the clone, which compiles all of the binaries above plus ``dtail-tools`` (a helper binary with benchmarking, profiling and PGO tooling) into the repository root. (``make install`` is no substitute: it installs every binary under the name ``main``.)
+* ``make build`` compiles them into the repository root instead, plus the developer helper ``dtail-tools``.
+* Without ``make``: ``go install ./cmd/dcat ./cmd/dgrep ./cmd/dmap ./cmd/dtail ./cmd/dserver ./cmd/dtailhealth``.
+* Do not use ``go install github.com/mimecast/dtail/cmd/...@latest``: ``@latest`` resolves to the old v1.1.0.
+* Clients and servers must both be DTail 5.x (protocol 5). Check with ``--version``.
 
 # Start DTail server
 
-Copy the ``dserver`` binary to the remote server machines of your choice (e.g. ``serv-001.lan.example.org`` and ``serv-002.lan.example.org``) and start it on each of the servers as follows:
+Copy ``dserver`` to every server machine (e.g. ``serv-001.lan.example.org``) and start it there:
 
 ```console
-❯ ./dserver --logger Stdout --logLevel debug --bindAddress $(hostname) --port 2222
+% mkdir -p cache
+% ./dserver --cfg none --logger stdout --port 2222
 DTail 5.0.0 Protocol 5.0 Have a lot of fun!
-INFO|20250923-222429|Starting server|DTail 5.0.0 Protocol 5.0 Have a lot of fun!
-INFO|20250923-222429|Reading private server RSA host key from file|./cache/ssh_host_key
-INFO|20250923-222429|Starting server
-INFO|20250923-222429|Binding server|X.Y.Z.W:2222
-DEBUG|20250923-222429|Starting listener loop
-INFO|20250923-222429|Starting continuous job runner after 2s
-INFO|20250923-222429|Starting scheduled job runner after 2s
+INFO|1125-181549|Starting server|DTail 5.0.0 Protocol 5.0 Have a lot of fun!
+INFO|1125-181549|Generating private server RSA host key
+INFO|1125-181550|Starting server
+INFO|1125-181550|Binding server|0.0.0.0:2222
+INFO|1125-181550|Starting scheduled job runner after 2s
+INFO|1125-181550|Starting continuous job runner after 2s
 ```
 
-``dserver`` is now listening on TCP port 2222 and waiting for incoming connections. All SSH keys listed in ``~/.ssh/authorized_keys`` are now respected by the DTail server for authorization. On first start, the server generates an RSA host key into ``./cache/ssh_host_key`` (configurable via the ``HostKeyPath`` config setting).
+* ``dserver`` listens on TCP port 2222 on all addresses (``--bindAddress`` restricts it).
+* A user may connect with every SSH key in their ``~/.ssh/authorized_keys`` on that machine.
+* The host key is generated on the first start and stored in ``./cache/ssh_host_key`` (``HostKeyPath``). The ``cache`` directory must exist: otherwise the key is not saved, and the clients see a changed host key after every restart.
+* Without ``--logger stdout`` the server logs to files in ``./log``.
+* ``dserver`` refuses to run as root.
+* By default every authorized user may read every file the ``dserver`` process can read. Restrict that with ``Server.Permissions``.
+
+Configuration: [Server Configuration Guide](server-configuration.md).
 
 # Setup DTail client
 
 ## Setup SSH
 
-Ensure that your public SSH key is listed in ``~/.ssh/authorized_keys`` on all server machines involved. The private SSH key counterpart should preferably stay on your Laptop or workstation in one of the default key locations ``~/.ssh/id_rsa``, ``~/.ssh/id_dsa``, ``~/.ssh/id_ecdsa`` or ``~/.ssh/id_ed25519`` — the DTail client tries all of them in that order.
+Put your public SSH key into ``~/.ssh/authorized_keys`` on every server machine. The private key stays on your workstation.
 
-DTail relies on SSH for secure authentication and communication. You can either use an SSH Agent or a private SSH key file directly.
-
-### SSH Agent
-
-The clients (all client binaries such as ``dtail``, ``dgrep`` and so on...) communicate with an auth backend via the SSH auth socket. The SSH auth socket is configured via the environment variable ``SSH_AUTH_SOCK`` which usually points to ``~/.ssh/ssh_auth_socket`` or similar (depending on your configuration, it may also point to other auth backends such as GPG Agent, in which case ``SSH_AUTH_SOCK`` would point to ``~/.gnupg/S.gpg-agent.ssh`` or similar).
-
-Usually you would use the SSH Auth Agent. For this the private SSH key has to be registered at the SSH Agent:
+The client uses ``~/.ssh/id_rsa`` (or the file given with ``--auth-key-path``) and the keys of a running SSH agent:
 
 ```console
-% ssh-add ~/.ssh/id_rsa
-Enter passphrase for ~/.ssh/id_rsa: **********
-Identity added: ~/.ssh/id_rsa (~/.ssh/id_rsa)
+% ssh-add ~/.ssh/id_ed25519
 ```
 
-To test whether SSH is set up correctly, you should be able to SSH into the servers with the OpenSSH client and your private SSH key through the SSH Agent without entering the private key's passphrase. The following assumes to have an OpenSSH server running on ``serv-001.lan.example.org`` and an OpenSSH client installed on your laptop or workstation. Please notice that DTail does not require to have an OpenSSH infrastructure set up, but DTail uses by default the same public/private key file paths as OpenSSH. OpenSSH can be of great help to verify that the SSH keys are configured correctly:
+If the machines also run OpenSSH, ``ssh serv-001.lan.example.org`` without a password prompt shows that the key works. DTail itself does not need OpenSSH.
 
-```console
-workstation01 ~ % ssh serv-001.lan.example.org
-serv-001 ~ %
-serv-001 ~ % exit
-workstation01 ~ %
-```
-
-Please consult the OpenSSH documentation of your distribution if the test above does not work for you.
-
-### SSH Private Key file
-
-As an alternative to using an SSH Agent, an SSH private key file can be used directly. Just add the argument ``--auth-key-path ~/.ssh/id_rsa`` (pointing to your private key) to the DTail client (``--key`` is a deprecated alias). The same path can also be configured via the ``DTAIL_AUTH_KEY_PATH`` environment variable (or the legacy ``DTAIL_SSH_PRIVATE_KEYFILE_PATH``, used only when ``DTAIL_AUTH_KEY_PATH`` is unset) or the ``Client.AuthKeyPath`` config setting. With several keys in the SSH agent, ``--agentKeyIndex N`` uses only the agent's key at the 0-based index ``N`` (default ``-1``, all keys); ``--user`` sets the SSH user name (default: your system user). Password-protected keys are supported via the ``DTAIL_KEY_PASSPHRASE`` environment variable (there is no interactive passphrase prompt, so env-var is the only way).
+Other key files, the key order, ``--user`` and password-protected keys: [client-connections.md](client-connections.md#ssh-keys).
 
 ## Run DTail client
-
-Now it is time to connect to the DTail servers through the DTail client:
 
 ```console
 % dtail --servers serv-001.lan.example.org,serv-002.lan.example.org --files "/var/log/service/*.log"
@@ -93,33 +84,39 @@ CLIENT|workstation01|INFO|Added hosts to known hosts file|/home/user/.ssh/known_
 REMOTE|serv-001|100|1|service.log|2025-09-23T22:25:01|INFO|Service started
 REMOTE|serv-002|100|1|service.log|2025-09-23T22:25:01|INFO|Service started
 CLIENT|workstation01|INFO|STATS:STATS|connected=2|servers=2|connected%=100|new=2|throttle=0|goroutines=37|cgocalls=7|cpu=8
-.
-.
 ```
 
-The `STATS` lines report the connected servers. `dcat`, `dgrep` and `dmap` also report in them how far the servers have read the files (`bar=[######--------------]|progress%=30.0|progress=1.20GiB/4.00GiB|rate=...|eta=35s|...`); add `--progress` to get that as `PROGRESS` lines on stderr, also with `--plain` (see [examples.md](examples.md), "Watching the read progress").
+* Unknown hosts are asked about once and stored in ``~/.ssh/known_hosts``. ``--trustAllHosts`` skips the question.
+* A host whose key changed is refused with ``HOST KEY CHANGED``.
+* The ``STATS`` lines report the connected servers.
+* On a terminal ``dtail`` is interactive: type ``:help``, leave with ``:quit``. ``--no-interactive`` turns that off.
 
-The client collects unknown hosts whose handshakes arrive close together and asks about them in one question, about 2 seconds after the last of them (or once 50 are pending). With ``--trustAllHosts`` (or after answering ``a=all``) nothing is asked and there is no 2 second wait: unknown hosts are collected for only about 20 milliseconds and then trusted and written to ``known_hosts``, so a fresh ``known_hosts`` file does not slow down scripts and CI runs. Writing ``known_hosts`` can still wait up to 5 seconds while another dtail client holds its lock to update it.
+The other clients take the same ``--servers`` and ``--files``:
 
-A host whose key differs from the one in ``known_hosts`` is not an unknown host: its key changed, which is a reinstalled server or someone in the middle. Such a host is refused with a ``HOST KEY CHANGED`` error, also with ``--trustAllHosts``; remove its entry from ``known_hosts`` to connect again. With the additional flag ``--trustChangedHostKeys`` (all clients and ``dtailhealth``) the client accepts it instead: the question then says that the key changed, and with ``--trustAllHosts`` the client logs a ``HOST KEY CHANGED`` warning when it replaces the entry. A key marked ``@revoked`` in ``known_hosts`` is never trusted. The file is ``~/.ssh/known_hosts`` unless ``--known-hosts-path`` (or ``Client.KnownHostsPath``) names another; its directory is created when it does not exist yet. With ``--interactive-query`` on a terminal, the lines typed while the question is asked answer it instead of being taken as control commands.
+```console
+% dcat --servers serv-001.lan.example.org --files /etc/hostname
+% dgrep --servers serv-001.lan.example.org --regex ERROR --files "/var/log/service/*.log"
+% dmap --servers serv-001.lan.example.org --files "/var/log/service/*.log" \
+    --query 'from STATS select count($line) group by $hostname'
+```
 
-Without the ``--cfg`` flag, all client commands look for a JSON config file at ``~/.config/dtail/dtail.conf`` first and, if that does not exist, at ``~/.dtail.conf``. The first file that exists wins (they are not merged).
+Their ``STATS`` lines also show how far the files have been read; ``--progress`` writes that as ``PROGRESS`` lines to stderr. More commands: [examples.md](examples.md).
 
-Two timeouts bound connecting to a server: ``Common.SSHConnectTimeoutMs`` (default 2000) the TCP connect, and ``Common.SSHHandshakeTimeoutMs`` (default 30000) the SSH handshake after it (version and key exchange, authentication), so a host that accepts the TCP connection but never completes the handshake fails with ``no handshake within 30s`` instead of leaving the client connecting forever. The time the host key check takes, e.g. while the unknown host question waits for your answer, does not count; the time an SSH agent takes to sign does: with a key that needs a touch or a confirmation per signature (a hardware key, ``ssh-add -c``) and many servers, confirm promptly or raise ``Common.SSHHandshakeTimeoutMs``. Both apply to every client, ``dtailhealth`` and the scheduled and continuous jobs of ``dserver``.
+Host key verification, the config file (``~/.config/dtail/dtail.conf``), timeouts and the client log file (``~/log/YYYYMMDD.log``): [client-connections.md](client-connections.md).
 
 # What else can it do?
 
-* **Serverless mode**: All clients also work without any ``dserver`` — just omit the server list (or pass ``--servers serverless``) to read local files directly. See [examples.md](examples.md).
-* **Journal reads**: On Linux, a ``journal:unit.service`` file target follows or reads the systemd journal of that unit (requires the server to advertise the ``journal-v1`` capability, i.e. ``journalctl`` on ``PATH``).
-* **Auth-key fast reconnect**: Enabled by default; the client registers a key with ``dserver`` on first connect so repeated connections skip the normal SSH auth round-trips. See [auth-key-fast-reconnect.md](auth-key-fast-reconnect.md).
-* **Interactive query control**: ``--interactive-query`` keeps the run open for ``:reload <flags>``, ``:query [query]`` (``dtail`` and ``dmap``), ``:tail [regex]`` (``dtail``: back from a query to following lines), ``:show``, ``:fields [table]``, ``:probe``, ``:help`` and ``:quit`` control commands; pressing Enter on an empty line pauses the output while a command is typed, and Enter again resumes it. ``dtail`` does this by default in a terminal (``--no-interactive`` turns it off; pipes, cron and scripts are unaffected), and ``:help`` shows examples of changing the grep filter or MapReduce query on the fly. On a terminal, Tab completes commands, flags and the current filter, query or files value, inside a ``--query`` the query language and the tables, fields and sample values found in the logs being read (``:fields`` lists them), inside ``--files`` remote file paths the server lets you read; Up/Down recall earlier lines, Alt-E opens the line in your ``$EDITOR``, ``--edit-mode vi`` (or ``Client.EditMode``) adds vi normal mode keys, typing a command pauses the output until it is entered, and the control output and queries are colored unless ``--noColor``/``--plain``. See [interactive-query.md](interactive-query.md).
-* **Client logs**: by default (logger ``fout``) a client writes its diagnostics, not the payload, to a daily file ``~/log/YYYYMMDD.log`` as well as to stdout; ``--log-payload`` (or ``Client.LogPayload``) tees the payload into that file too, and ``--logger stdout|file|none`` and ``--logDir`` choose another sink. See [examples.md](examples.md#how-to-use-dcat).
-* **Query builder**: ``dmap`` started without ``--query`` on a terminal opens a query builder instead of failing: the files are probed for their tables and fields, Tab guides through the query, and Enter runs it as ``--query`` would have (``:quit`` leaves; ``--no-interactive``, pipes and scripts keep the error for the missing query). See [interactive-query.md](interactive-query.md).
+| Feature | In short | Details |
+|---------|----------|---------|
+| Serverless mode | Omit ``--servers`` (or pass ``--servers serverless``) to read local files without any ``dserver`` | [examples.md](examples.md) |
+| Journal reads | On Linux servers with ``journalctl``, the file target ``journal:unit.service`` reads that unit's systemd journal | [server-configuration.md](server-configuration.md) |
+| Auth-key fast reconnect | On by default: the client registers a key with ``dserver``, so later connections authenticate faster | [auth-key-fast-reconnect.md](auth-key-fast-reconnect.md) |
+| Interactive mode | Change the filter, files or query of a running session (``:reload``, ``:query``, ``:tail``), with Tab completion. Default for ``dtail`` on a terminal, ``--interactive-query`` for the other clients | [interactive-query.md](interactive-query.md), [reference](interactive-query-reference.md) |
+| Query builder | ``dmap`` without a query on a terminal probes the files and guides through the query with Tab | [interactive-query.md](interactive-query.md) |
+| MapReduce queries | SQL-like aggregation of log lines | [querylanguage.md](querylanguage.md), [logformats.md](logformats.md) |
 
-An interactive `dtail` switching between a filter and a query, and the `dmap` query builder:
+An interactive ``dtail`` switching between a filter and a query, and the ``dmap`` query builder:
 
 ![dtail-interactive](dtail-interactive.gif "Interactive dtail")
 
 ![dmap-query-builder](dmap-query-builder.gif "The dmap query builder")
-
-Have a look [here](examples.md) for more usage examples.

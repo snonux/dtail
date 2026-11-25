@@ -49,4 +49,4 @@ exit `1`). **Agents always pass `--query`.**
   mistyped query opens the builder (it hints when the files look like a
   query).
 
-Full description: "The `dmap` query builder" in `doc/interactive-query.md`.
+Full description: "The `dmap` query builder" in `doc/interactive-query-reference.md`.

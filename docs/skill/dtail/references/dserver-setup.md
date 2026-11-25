@@ -17,7 +17,9 @@ go install ./cmd/dserver ./cmd/dcat ./cmd/dgrep ./cmd/dmap ./cmd/dtail ./cmd/dta
 The required Go version is in `go.mod`; the default build needs cgo and a C
 compiler (zstd). **Never** `go install github.com/mimecast/dtail/cmd/...@latest`:
 the module path has no major-version suffix, so `@latest` installs v1.1.0.
-`make install` is broken too (it installs every binary as `main`). Make
+`make install` does the same `go install` from a clone (in checkouts from
+before 2026-11-25 it installed every binary as `main`; use the line above
+there). Make
 sure the clone holds the protocol-5 sources (`dserver --version` prints
 `Protocol 5.0`). `make build-pgo` / `make pgo` build
 profile-optimized binaries into `pgo-build/` (see

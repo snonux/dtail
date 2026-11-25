@@ -128,12 +128,13 @@ make profile-web PROFILE=profiles/dcat_cpu_*.prof
 
 ### Benchmark Integration
 
-Run profiling-enabled benchmarks:
-
-```bash
-cd benchmarks
-go test -bench="WithProfiling" -benchtime=1x
-```
+`benchmarks/profile_runner.go` holds the profile runner (`ProfileBenchmark`,
+`RunProfiledCommand`) and three ready-made benchmarks
+(`BenchmarkDCatWithProfiling`, `BenchmarkDGrepWithProfiling`,
+`BenchmarkDMapWithProfiling`). `go test` does not run those three: the file is
+no `_test.go` file, so `go test -bench="WithProfiling"` matches no benchmark.
+To run profiling-enabled benchmarks, call `ProfileBenchmark` from a benchmark
+in a `_test.go` file, as shown below, or use `make profile-quick`.
 
 ### Custom Profile Runner
 
