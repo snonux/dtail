@@ -18,7 +18,10 @@ nothing. Everything else keeps the old behaviour without any flag: a pipe
 (`dtail ... | grep x`), a redirection (also `< /dev/null`), cron, CI, ssh
 without a TTY and scripts.
 
-* `--no-interactive` turns it off. It wins over `--interactive-query`.
+* `--no-interactive` turns it off. It wins over `--interactive-query`. Only
+  `dtail` and `dmap` (see the query builder below) have this flag; `dcat`
+  and `dgrep`, which are never interactive without `--interactive-query`,
+  reject it as an unknown flag.
 * `--interactive-query` and `--interactive-query=false` are used as given,
   terminal or not.
 
@@ -105,8 +108,14 @@ query>
   recognized as pasted, and only what the terminal has queued when the
   builder ends is discarded. A control TTY that is no terminal (a pipe) is
   never discarded from.
-* `quit`, `exit` or `help` without the colon are answered with the command
-  meant (`"quit" is no query: type :quit`).
+* A command word typed without its colon (`quit`, `exit`, `q`, `help`,
+  `show`, `fields`, `probe`, `reload`, `query`) is answered with the
+  command meant (`"quit" is no query: type :quit`) instead of a parse
+  error. An empty line is answered with what to type (there is no output
+  to pause in the builder), and `:tail` is rejected, as in `dmap`.
+  Every line has the prompt `query> `; no hint about paused output is
+  shown while you type, and no periodic connection statistics are
+  printed.
 * **A query given as an argument must hold `select `** to be taken as the
   query (`dmap 'from STATS select ...' FILE`); otherwise the argument is a
   file name, and with no query `dmap` opens the builder. When the files
@@ -123,7 +132,9 @@ The builder and the run use separate connections. While you build the query,
 however many `--servers` names: the tables and fields Tab and `:fields` show
 are what those servers found, as in `dtail`. A held server that is down or
 ends its session is replaced by the next one of the list (a single server
-is reconnected); its connection error is shown above the prompt (where
+is reconnected), after a wait of about 2 seconds that doubles up to a
+minute while sessions keep ending early (the reconnect wait of `dtail`); its
+connection error is shown above the prompt (where
 stdout is the terminal you type on; with `--control-tty` naming another
 terminal than stdout's, log lines stay on stdout). The held
 sessions are kept alive with an SSH keepalive every minute, so the server's
@@ -180,8 +191,9 @@ in `dtail` and `dmap`, `:tail` only in `dtail`):
 * `:help` print the commands and examples of changing the workload on the
   fly for the client's mode: the grep filter for `dtail` and `dgrep`
   (`--grep`, `--regex`, `--before`/`--after`, `--invert`, `--files`), the
-  MapReduce query for `dmap` and `dtail --query`, the files for `dcat`. Every
-  example is a valid `:reload` line of that mode. The output stays paused
+  MapReduce query for `dmap` and `dtail --query`, the files for `dcat`, plus
+  `:query` and `:tail` examples where the mode has them. Every example is a
+  valid line of that mode. The output stays paused
   after `:help` until Enter is pressed on an empty line.
 * `:fields [table]` print what the background field probe of the servers
   (see "How it works") found: per log format (the server's default format
@@ -328,8 +340,7 @@ editor (golang.org/x/term, no other dependency):
     cursor starts with `by` already; `outfile` likewise with `append`). An
     item already selected is not offered again in `select` (the parser
     rejects duplicates), and after a where condition no field named `and`.
-    Before the first probe answer the first step is `select `, with the
-    hint that no field data arrived yet. The rare clauses `set`, `interval`,
+    The rare clauses `set`, `interval`,
     `outfile`, `logformat` and `rorder` complete once their first letters
     are typed (`int<Tab>` gives `interval `) but are not listed otherwise.
     Any clause order the parser accepts still completes when typed by hand:
@@ -659,11 +670,15 @@ Mode-specific flags:
 
 * `dtail` (grep-driven) and `dgrep`: `--grep`/`--regex`, `--before`, `--after`,
   `--max`, `--invert`, plus the shared flags
-* `dmap`, and query-driven `dtail` (started with `--query`): `--query`, plus
-  the shared flags. `--invert` is rejected with a reason (a query selects
-  the lines of its table itself, so its filter is never inverted);
-  `--invert=false` is accepted and changes nothing
+* `dmap`, and query-driven `dtail` (started with `--query`, or switched to
+  a query with `:query`): `--query`, plus the shared flags. `--invert` is
+  rejected with a reason (a query selects the lines of its table itself, so
+  its filter is never inverted); `--invert=false` is accepted and changes
+  nothing. While a `dtail` session runs a query, `--grep`, `--regex`,
+  `--before`, `--after` and `--max` are therefore unknown to `:reload`:
+  `:tail` (or `:tail <regex>`) goes back to following lines first
 * `dcat`: the shared flags only
+* the `dmap` query builder: `--files` only
 
 `--grep` is an alias of `--regex` and behaves as on the `dgrep` and `dtail`
 command lines: a non-empty `--grep` wins over `--regex` whatever their order.
@@ -812,10 +827,12 @@ Adapt a distributed MapReduce query without reconnecting:
 
 ```bash
 dmap --servers app01 --files /var/log/app.log \
-  --query 'from STATS select count($line) group by hostname' \
+  --query 'from STATS select count($line) group by $hostname' \
   --interactive-query
 # then type:
-:reload --query "from STATS select count($line),avg(latency) group by hostname"
+:reload --query "from STATS select count($line),avg(latency) group by $hostname"
+# or, without quoting:
+:query from STATS select count($line),avg(latency) group by $hostname
 ```
 
 ## How it works
