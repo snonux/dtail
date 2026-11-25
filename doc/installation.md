@@ -8,7 +8,7 @@ adapt them for your platform. Install at least the Go version declared in
 
 # Compile it
 
-Please check the [Quick Starting Guide](quickstart.md) for instructions on compiling DTail. It is recommended to automate the build process via your build pipeline (e.g. produce a deployable (.rpm, .deb, ...) via Jenkins). You don't have to use ``go install...`` to compile and install the binaries. You can also clone the repository and use ``make`` instead.
+Please check the [Quick Starting Guide](quickstart.md) for instructions on compiling DTail. It is recommended to automate the build process via your build pipeline (e.g. produce a deployable (.rpm, .deb, ...) via Jenkins). You don't have to use ``go install...`` to compile and install the binaries. You can also use ``make build`` in the clone instead. The default build needs cgo and a C compiler (for the zstd support); see below for a build without it.
 
 ## Linux ACL support
 
@@ -210,12 +210,10 @@ To start the DTail server via ``systemd`` run:
      └─12296 /usr/local/bin/dserver -cfg /etc/dserver/dtail.json
 
     Dec 06 13:21:24 serv-001.lan.example.org systemd[1]: Started DTail server.
-    Dec 06 13:21:24 serv-001.lan.example.org dserver[12296]: SERVER|serv-001|INFO|Launching server|server|DTail 1.0.0
-    Dec 06 13:21:24 serv-001.lan.example.org dserver[12296]: SERVER|serv-001|INFO|Creating server|DTail 1.0.0
-    Dec 06 13:21:24 serv-001.lan.example.org dserver[12296]: SERVER|serv-001|INFO|Reading private server RSA host key from file|cache/ssh_host_key
-    Dec 06 13:21:24 serv-001.lan.example.org dserver[12296]: SERVER|serv-001|INFO|Starting server
-    Dec 06 13:21:24 serv-001.lan.example.org dserver[12296]: SERVER|serv-001|INFO|Binding server|1.2.3.4:2222
+    Dec 06 13:21:24 serv-001.lan.example.org dserver[12296]: DTail 5.0.0 Protocol 5.0 Have a lot of fun!
 ```
+
+With the example config (no ``Logger`` key, so dserver's default ``file`` logger) only the version line goes to the journal; the log lines (``Starting server``, ``Binding server``, ...) go to the daily file in ``LogDir`` (``/var/run/dserver/log/YYYYMMDD.log``). dserver also takes ``-port``, ``-bindAddress``, ``-host-key-path``, ``-authorized-keys-path``, ``-logger``, ``-logDir`` and ``-logLevel``, which override the config file.
 
 ### Firewall (firewalld on RHEL, Rocky Linux, Fedora, …)
 
@@ -281,5 +279,7 @@ To verify that DTail server is up and running and functioning as expected, you s
 
 ```console
 % ./check_dserver.sh
-OK: DTail SSH Server seems fine
+OK: All fine at localhost:2222 :-)
 ```
+
+The script runs ``dtailhealth --server localhost:2222``. ``dtailhealth`` exits ``0`` (OK), ``1`` (WARNING, e.g. run without ``--server``, which only checks serverless mode) or ``2`` (CRITICAL), as Nagios expects. It trusts unknown host keys without asking and never registers an auth key; a server whose host key changed is CRITICAL unless ``--trustChangedHostKeys`` is given.

@@ -18,7 +18,8 @@ Since protocol 5 every frame of every session, from the first one on, is
 written in `protocol.EscapedControlFraming` (escaped bodies, marked control
 frames); nothing is negotiated (see "Protocol 5: one framing"). The
 client-to-server direction is unchanged apart from the version:
-`protocol 5 base64 <command>;`.
+`protocol 5.0 base64 <base64 of the command>;` (`protocol.ProtocolCompat`,
+`commandFrame` in `internal/clients/handlers/basehandler.go`).
 
 The message of a `SERVER` frame that carries a diagnostic (a missing file,
 the glob cap, a protocol version mismatch, a long line split, ...) is the

@@ -5,7 +5,7 @@ The query language allows you to run mapreduce queries on log files. This page i
 
 ## Prerequisites
 
-For this to work, DTail needs to understand your log format. DTail already understands its own log format. You can have a look at all examples of the [examples](./examples.md) page using `-query` (these would be all examples of the `dmap` command, and some examples using the `dtail` command).
+For this to work, DTail needs to understand your log format. DTail already understands its own log format. You can have a look at all examples of the [examples](./examples.md) page using `--query` (these would be all examples of the `dmap` command, and some examples using the `dtail` command).
 
 DTail also ships with a generic log format, which only allows you to run very basic queries. Check out the [log format](./logformats.md) documentation for this. That page also documents how to implement your own log format parser.
 
@@ -60,8 +60,8 @@ OPERATOR := FLOATOPERATOR|STRINGOPERATOR
 FLOATOPERATOR := One of: == != < <= =< > >= =>
 STRINGOPERATOR := eq|ne|contains|ncontains|lacks|hasprefix|nhasprefix|hassuffix|nhassuffix
 ORDERFIELD := FIELD|AGGREGATION(FIELD)
-SET := $VARIABLE = FLOAT|STRING|FIELD|FUNCTION(FIELD)
-LOGFORMAT := default|generic|generickv|...
+SET := $VARIABLE = FLOAT|STRING|FIELD|FUNCTION(FIELD)|FUNCTION(FUNCTION(FIELD))...
+LOGFORMAT := default|generic|generickv|csv|... (case sensitive)
 AGGREGATION := count|sum|min|max|avg|last|len|percentage|percentile
 FUNCTION := md5sum|maskdigits
 ```
@@ -92,6 +92,27 @@ FUNCTION := md5sum|maskdigits
 * Where conditions are separated by commas or by the keyword `and`
   (`where $a eq 1 and $b ne 2` is the same as `where $a eq 1, $b ne 2`), and
   they are AND-ed together: a line must satisfy every condition to be counted.
+  There is no `or`. A condition on a field the line does not have is false,
+  also for the negating operators (`ne`, `ncontains`, `!=`, ...), and so is a
+  float comparison whose field value is no number: `where status ne "ok"`
+  skips the lines without `status`.
+* The operands of the float operators must be barewords (numbers or fields
+  holding numbers): `where bytes > "3"` is rejected with `Expected bareword
+  at 'where' clause's rValue: 3`.
+* Quoting depends on the clause: in `select`, `group by`, `order by` and
+  `from` a quoted word is a field (or table) name, which may hold blanks and
+  commas (`select "foo bar"`); in `where` and `set` a quoted word is a string
+  literal. Outside quotes a comma is the same as a blank.
+* `set` runs after `where`, for every line that passed it, and before the
+  line is grouped: a variable set there can be selected and grouped by, but a
+  `where` condition on it sees no value and is false. The `=` must stand
+  apart (`set $a = $b`; `set $a=$b` is rejected with `Not enough arguments in
+  'set' clause`), the variable set must start with `$`, and set conditions
+  are separated by commas or blanks. A FIELD on the right (also a function's
+  argument) that the line does not have is taken as its literal text. The
+  functions can be nested (`set $h = maskdigits(md5sum($line))`, the inner one
+  first): `md5sum` gives the hex MD5 checksum of its argument, `maskdigits`
+  replaces every digit `0`-`9` with `.`.
 * A bare number as an argument of a string operator is a literal:
   `where $a eq 1` compares the value of `$a` with the string `1`. A field
   that is named like a number is given in backticks (`` `1` ``); any other
@@ -153,7 +174,24 @@ FUNCTION := md5sum|maskdigits
   is replaced by `||`.
 * If no `group by` clause is given, DTail implicitly groups by the first select
   field. For `select count(*)` that field is `*`, i.e. everything collapses
-  into a single group.
+  into a single group, while `select count($line)` alone groups by `$line`
+  and so counts every distinct line on its own. A line that has none of the
+  select fields adds no row; a group field the line lacks counts as the
+  empty string.
+* Results are sorted by the group key unless `order` or `rorder` is given.
+  Printed to stdout (a terminal or not), a result shows at most 10 rows
+  without a `limit` clause (with a warning naming the number of rows);
+  `limit N` sets the
+  number of rows printed and written to an outfile, which otherwise gets all
+  rows. `count` is printed as a whole number, `sum`, `min`, `max`, `avg`,
+  `len`, `percentage` and `percentile` with six decimals, and a plain select
+  field (aggregated with `last`) as received.
+* `outfile PATH` writes the result as CSV (see the `csv` log format in
+  [log formats](./logformats.md)) with the select fields as written as its
+  header, and the query to `PATH.query`. Without `append` the file is written
+  to `PATH.tmp` first and renamed to `PATH`. The client writes it (for
+  scheduled and continuous jobs the scheduling dserver), so a relative `PATH`
+  is relative to the client's working directory.
 * Multiple group fields form a tuple: `("x,y", "z")` and `("x", "y,z")`
   are distinct groups. Compound keys escape commas and percent signs internally;
   selected values are unchanged. Ordinary compound keys and single-field keys
@@ -302,15 +340,24 @@ in a regular expression: `from "A+B"` reads the lines of
 table names are special:
 
 * `from .` — and likewise omitting the `from` clause entirely — matches every
-  line.
+  line. Only omitting `from` also switches to the `generic` log format (see
+  "Selecting the log format" below): `from .` and `from *` keep the
+  configured one (`default` unless dserver's `MapreduceLogFormat` says
+  otherwise), which parses only DTail's own `MAPREDUCE` lines, so on other
+  logs they find nothing unless a `logformat` clause names a fitting format.
 * `from *` matches every `MAPREDUCE` line (every line holding
   `|MAPREDUCE:`) regardless of the table name, also those of a table without
   a name (`|MAPREDUCE:|`) and of a table whose name holds lower-case
   letters (`|MAPREDUCE:stats|`), which no table name selects.
 
-Also note: a query using the `csv` log format without a `from` clause
+Also note: a query with `logformat csv` and without a `from` clause
 automatically behaves as if `from .` was given, so every line of the CSV file
 is processed.
+
+The table alone selects the lines a query reads: `dmap` has no `--regex`,
+and `dtail --query` replaces its `--regex`/`--grep` with the line filter of
+the table and ignores `--invert` (with a warning). Use a `where` clause to
+narrow the lines down.
 
 ## Selecting the log format and dynamic fields
 
@@ -321,9 +368,11 @@ resolve" while positional/built-in fields work. Both are by design:
    like `...|service=web|bytes=100` exposes `service` and `bytes` as *barewords*.
    Query them as `select service,sum(bytes)` — **not** `$service`/`$bytes`. The
    `$` prefix is reserved for values DTail sets itself (e.g. `$time`, `$hostname`,
-   `$line`). A `$name` that is not one of those built-ins silently resolves to
-   the empty string, which is exactly what "did not resolve" looks like:
-   everything collapses into a single empty group. To catch this early, the
+   `$line`). A `$name` that is not one of those built-ins has no value on any
+   line, which is exactly what "did not resolve" looks like: grouped by, it
+   is the empty string and everything collapses into a single empty group;
+   selected, it adds no row; in a `where` condition it matches no line. To
+   catch this early, the
    client prints a plan-time warning to stderr for every `$`-variable the
    selected parser cannot populate, e.g.
    `warning: $service is not a known variable for log format "default"; did you
@@ -337,7 +386,8 @@ resolve" while positional/built-in fields work. Both are by design:
    log format, which
    exposes only the common variables (`$line`, `$hostname`, ...) and **no**
    dynamic `key=value` fields and **no** default-format `$`-variables such as
-   `$time`. To query DTail's own default-format logs (lines containing
+   `$time`. Any `from` clause, also `from .` and `from *`, keeps the
+   configured format. To query DTail's own default-format logs (lines containing
    `MAPREDUCE:STATS`), use `from STATS`, for example:
 
    ```shell
@@ -346,5 +396,7 @@ resolve" while positional/built-in fields work. Both are by design:
    ```
 
    Alternatively, name the parser explicitly with the `logformat` keyword (e.g.
-   `logformat generickv`), which works regardless of the `from` clause. See the
+   `logformat generickv`), which works regardless of the `from` clause. The
+   name is case sensitive: dserver logs an error for a name it has no parser
+   for (e.g. `logformat CSV`) and falls back to `generic`. See the
    [log formats](./logformats.md) documentation for details.

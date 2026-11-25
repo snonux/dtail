@@ -7,15 +7,17 @@ This guide assumes that you know how to generate and configure a public/private 
 
 # Install it
 
-To compile and install all DTail binaries directly from GitHub run:
+To compile and install all DTail binaries, clone the repository and run ``go install`` on its commands (a C compiler is needed, as the zstd support uses cgo; see the [Installation Guide](installation.md) for a build without it):
 
 ```console
-% for cmd in dcat dgrep dmap dtail dserver dtailhealth; do
-    go install github.com/mimecast/dtail/cmd/$cmd@latest;
-  done
+% git clone https://github.com/mimecast/dtail.git
+% cd dtail
+% go install ./cmd/dcat ./cmd/dgrep ./cmd/dmap ./cmd/dtail ./cmd/dserver ./cmd/dtailhealth
 ```
 
-It produces the following executables in ``$GOPATH/bin``:
+Do not use ``go install github.com/mimecast/dtail/cmd/...@latest``: the module path carries no major version suffix, so ``@latest`` resolves to the ancient v1.1.0, not to the protocol 5 release (DTail 5.0.0) this documentation describes. Clients and servers must both be DTail 5.x (protocol 5), see ``--version``.
+
+It produces the following executables in ``$GOBIN`` (default ``$HOME/go/bin``):
 
 * ``dcat``: Client for displaying whole files remotely (distributed cat)
 * ``dgrep``: Client for searching whole files remotely using a regex (distributed grep)
@@ -24,7 +26,7 @@ It produces the following executables in ``$GOPATH/bin``:
 * ``dtailhealth``: Client for dserver health checks
 * ``dserver``: The DTail server
 
-Alternatively, you can clone the repository and run ``make build``, which compiles all of the binaries above plus ``dtail-tools`` (a helper binary with benchmarking, profiling and PGO tooling) into the repository root.
+Alternatively, run ``make build`` in the clone, which compiles all of the binaries above plus ``dtail-tools`` (a helper binary with benchmarking, profiling and PGO tooling) into the repository root. (``make install`` is no substitute: it installs every binary under the name ``main``.)
 
 # Start DTail server
 
@@ -77,7 +79,7 @@ Please consult the OpenSSH documentation of your distribution if the test above 
 
 ### SSH Private Key file
 
-As an alternative to using an SSH Agent, an SSH private key file can be used directly. Just add the argument ``--auth-key-path ~/.ssh/id_rsa`` (pointing to your private key) to the DTail client. The same path can also be configured via the ``DTAIL_AUTH_KEY_PATH`` environment variable or the ``Client.AuthKeyPath`` config setting. Password-protected keys are supported via the ``DTAIL_KEY_PASSPHRASE`` environment variable (there is no interactive passphrase prompt, so env-var is the only way).
+As an alternative to using an SSH Agent, an SSH private key file can be used directly. Just add the argument ``--auth-key-path ~/.ssh/id_rsa`` (pointing to your private key) to the DTail client (``--key`` is a deprecated alias). The same path can also be configured via the ``DTAIL_AUTH_KEY_PATH`` environment variable (or the legacy ``DTAIL_SSH_PRIVATE_KEYFILE_PATH``, used only when ``DTAIL_AUTH_KEY_PATH`` is unset) or the ``Client.AuthKeyPath`` config setting. With several keys in the SSH agent, ``--agentKeyIndex N`` uses only the agent's key at the 0-based index ``N`` (default ``-1``, all keys); ``--user`` sets the SSH user name (default: your system user). Password-protected keys are supported via the ``DTAIL_KEY_PASSPHRASE`` environment variable (there is no interactive passphrase prompt, so env-var is the only way).
 
 ## Run DTail client
 
@@ -97,7 +99,7 @@ CLIENT|workstation01|INFO|STATS:STATS|connected=2|servers=2|connected%=100|new=2
 
 The client collects unknown hosts whose handshakes arrive close together and asks about them in one question, about 2 seconds after the last of them (or once 50 are pending). With ``--trustAllHosts`` (or after answering ``a=all``) nothing is asked and there is no 2 second wait: unknown hosts are collected for only about 20 milliseconds and then trusted and written to ``known_hosts``, so a fresh ``known_hosts`` file does not slow down scripts and CI runs. Writing ``known_hosts`` can still wait up to 5 seconds while another dtail client holds its lock to update it.
 
-A host whose key differs from the one in ``known_hosts`` is not an unknown host: its key changed, which is a reinstalled server or someone in the middle. Such a host is refused with a ``HOST KEY CHANGED`` error, also with ``--trustAllHosts``; remove its entry from ``known_hosts`` to connect again. With the additional flag ``--trustChangedHostKeys`` (all clients and ``dtailhealth``) the client accepts it instead: the question then says that the key changed, and with ``--trustAllHosts`` the client logs a ``HOST KEY CHANGED`` warning when it replaces the entry. A key marked ``@revoked`` in ``known_hosts`` is never trusted. The directory of the ``known_hosts`` file is created when it does not exist yet. With ``--interactive-query`` on a terminal, the lines typed while the question is asked answer it instead of being taken as control commands.
+A host whose key differs from the one in ``known_hosts`` is not an unknown host: its key changed, which is a reinstalled server or someone in the middle. Such a host is refused with a ``HOST KEY CHANGED`` error, also with ``--trustAllHosts``; remove its entry from ``known_hosts`` to connect again. With the additional flag ``--trustChangedHostKeys`` (all clients and ``dtailhealth``) the client accepts it instead: the question then says that the key changed, and with ``--trustAllHosts`` the client logs a ``HOST KEY CHANGED`` warning when it replaces the entry. A key marked ``@revoked`` in ``known_hosts`` is never trusted. The file is ``~/.ssh/known_hosts`` unless ``--known-hosts-path`` (or ``Client.KnownHostsPath``) names another; its directory is created when it does not exist yet. With ``--interactive-query`` on a terminal, the lines typed while the question is asked answer it instead of being taken as control commands.
 
 Without the ``--cfg`` flag, all client commands look for a JSON config file at ``~/.config/dtail/dtail.conf`` first and, if that does not exist, at ``~/.dtail.conf``. The first file that exists wins (they are not merged).
 
@@ -108,7 +110,14 @@ Two timeouts bound connecting to a server: ``Common.SSHConnectTimeoutMs`` (defau
 * **Serverless mode**: All clients also work without any ``dserver`` — just omit the server list (or pass ``--servers serverless``) to read local files directly. See [examples.md](examples.md).
 * **Journal reads**: On Linux, a ``journal:unit.service`` file target follows or reads the systemd journal of that unit (requires the server to advertise the ``journal-v1`` capability, i.e. ``journalctl`` on ``PATH``).
 * **Auth-key fast reconnect**: Enabled by default; the client registers a key with ``dserver`` on first connect so repeated connections skip the normal SSH auth round-trips. See [auth-key-fast-reconnect.md](auth-key-fast-reconnect.md).
-* **Interactive query control**: ``--interactive-query`` keeps the run open for ``:reload <flags>``, ``:show``, ``:fields [table]``, ``:probe``, ``:help`` and ``:quit`` control commands; pressing Enter on an empty line pauses the output while a command is typed, and Enter again resumes it. ``dtail`` does this by default in a terminal (``--no-interactive`` turns it off; pipes, cron and scripts are unaffected), and ``:help`` shows examples of changing the grep filter or MapReduce query on the fly. On a terminal, Tab completes commands, flags and the current filter, query or files value, inside a ``--query`` the query language and the tables, fields and sample values found in the logs being read (``:fields`` lists them), inside ``--files`` remote file paths the server lets you read; Up/Down recall earlier lines, Alt-E opens the line in your ``$EDITOR``, ``--edit-mode vi`` adds vi normal mode keys, typing a command pauses the output until it is entered, and the control output and queries are colored unless ``--noColor``/``--plain``. See [interactive-query.md](interactive-query.md).
+* **Interactive query control**: ``--interactive-query`` keeps the run open for ``:reload <flags>``, ``:query [query]`` (``dtail`` and ``dmap``), ``:tail [regex]`` (``dtail``: back from a query to following lines), ``:show``, ``:fields [table]``, ``:probe``, ``:help`` and ``:quit`` control commands; pressing Enter on an empty line pauses the output while a command is typed, and Enter again resumes it. ``dtail`` does this by default in a terminal (``--no-interactive`` turns it off; pipes, cron and scripts are unaffected), and ``:help`` shows examples of changing the grep filter or MapReduce query on the fly. On a terminal, Tab completes commands, flags and the current filter, query or files value, inside a ``--query`` the query language and the tables, fields and sample values found in the logs being read (``:fields`` lists them), inside ``--files`` remote file paths the server lets you read; Up/Down recall earlier lines, Alt-E opens the line in your ``$EDITOR``, ``--edit-mode vi`` (or ``Client.EditMode``) adds vi normal mode keys, typing a command pauses the output until it is entered, and the control output and queries are colored unless ``--noColor``/``--plain``. See [interactive-query.md](interactive-query.md).
+* **Client logs**: by default (logger ``fout``) a client writes its diagnostics, not the payload, to a daily file ``~/log/YYYYMMDD.log`` as well as to stdout; ``--log-payload`` (or ``Client.LogPayload``) tees the payload into that file too, and ``--logger stdout|file|none`` and ``--logDir`` choose another sink. See [examples.md](examples.md#how-to-use-dcat).
 * **Query builder**: ``dmap`` started without ``--query`` on a terminal opens a query builder instead of failing: the files are probed for their tables and fields, Tab guides through the query, and Enter runs it as ``--query`` would have (``:quit`` leaves; ``--no-interactive``, pipes and scripts keep the error for the missing query). See [interactive-query.md](interactive-query.md).
+
+An interactive `dtail` switching between a filter and a query, and the `dmap` query builder:
+
+![dtail-interactive](dtail-interactive.gif "Interactive dtail")
+
+![dmap-query-builder](dmap-query-builder.gif "The dmap query builder")
 
 Have a look [here](examples.md) for more usage examples.

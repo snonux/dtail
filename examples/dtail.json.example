@@ -132,6 +132,7 @@
         "Query": "from STATS select $hostname,avg($goroutines),max($cgocalls),lifetimeConnections group by $hostname",
         "Outfile": "/var/lib/dtail/stats-$today.csv",
         "Servers": ["localhost"],
+        "AllowFrom": ["localhost"],
         "TimeRange": [9, 17]
       }
     ],

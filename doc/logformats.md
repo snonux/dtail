@@ -9,24 +9,24 @@ You could either make your application follow the DTail default log format, or y
 
 The following log formats are currently available out of the box:
 
-* `default` - The default DTail log format
-* `generic` - A generic log format with a simple set of fields
-* `generickv` - A simple log format expecting all log lines in the form of `field1=value1|field2=value2|...`
-* `csv` - Comma separated CSV with a header on the first line of each file. Fields and header names containing commas or double quotes use standard CSV quoting: surround the field with double quotes and double any quotes inside it. Query outfiles use the same encoding and can be read again with `logformat csv`. Records must fit on one physical line: embedded CR/LF characters are unsupported, malformed quoted input is reported as a parse error, and exporting values with CR/LF fails instead of writing corrupt rows. Append mode writes the header only when the destination is missing or empty.
-* `mimecast` and `mimecastgeneric` - Registered built-ins for Mimecast log formats. In the open source build these are stubs that return an error (`the mimecast logformat is not available in this build of DTail`); the real parsers are only compiled in with the proprietary build tag.
+* `default` - The default DTail log format: `|`-separated lines `INFO|TIME|PID|CALLER|CPUS|GOROUTINES|CGOCALLS|LOADAVG|UPTIME|MAPREDUCE:TABLE|key1=value1|key2=value2|...`, e.g. `INFO|1002-071143|1|stats.go:56|8|13|7|0.21|471h0m21s|MAPREDUCE:STATS|currentConnections=0|lifetimeConnections=1`. The positional fields become `$`-variables (below), every `key=value` field after the table a bareword field `key`. Lines not starting with `INFO`, without the `MAPREDUCE:` token at that position or with fewer than 11 fields are ignored; a field after the table without `=` makes the line a parse error.
+* `generic` - A generic log format with a simple set of fields: only the common variables below (e.g. `$line`), no bareword fields. Every line is accepted.
+* `generickv` - A simple log format expecting all log lines in the form of `field1=value1|field2=value2|...`: every `|`-separated `key=value` field becomes the bareword field `key`; fields without `=` are skipped, and every line is accepted.
+* `csv` - Comma separated CSV with a header on the first line of each file. Every column becomes a bareword field named after its header column; values are taken as they are, blanks around them included. A row may have fewer columns than the header, a row with more is a parse error. Fields and header names containing commas or double quotes use standard CSV quoting: surround the field with double quotes and double any quotes inside it. Query outfiles use the same encoding and can be read again with `logformat csv`. Records must fit on one physical line: embedded CR/LF characters are unsupported, malformed quoted input is reported as a parse error, and exporting values with CR/LF fails instead of writing corrupt rows. Append mode writes the header only when the destination is missing or empty.
+* `mimecast` and `mimecastgeneric` - Registered built-ins for Mimecast log formats. In the open source build these are stubs that return an error (`the mimecast logformat is not available in this build of DTail`); the real parsers are only compiled in with the `proprietary` build tag (`DTAIL_USE_PROPRIETARY=yes make build`), from `*_proprietary.go` sources that are not part of the repository.
 * `custom1` and `custom2` - Customizable log formats. Out of the box these are templates returning a "not implemented" error; register your own parsers under these names (see below) to use them.
 
 Selecting a log format whose parser cannot be created — an unregistered name, or the `custom1`/`custom2`/`mimecast` stubs in a build without them — makes `dserver` log an error and fall back to the `generic` parser.
 
 ### Selecting a log format
 
-By default, DTail will use the `default` log format. You can override the log format with the `logformat` keyword:
+A query with a `from` clause (any table, also `from .` and `from *`) uses the `default` log format; a query without a `from` clause uses the `generic` one. You can override the log format with the `logformat` keyword, whatever the `from` clause (the name is case sensitive):
 
 ```shell
 % dmap --files /var/log/example.log --query 'from EXAMPLE select ....queryhere.... logformat generickv'
 ```
 
-You can override the default log format with `MapreduceLogFormat` in the Server section of `dtail.json`.
+You can change the log format of queries with a `from` clause and without a `logformat` clause with `MapreduceLogFormat` in the Server section of `dtail.json` (default `default`); queries without a `from` clause still use `generic`. The client does not know a server's `MapreduceLogFormat`: its warning about unknown `$`-variables (see the [query language](./querylanguage.md)) assumes `default`.
 
 ## Under the hood: generickv
 
@@ -91,6 +91,10 @@ Two interfaces matter here:
 
 A parser that keeps per-source state (like the CSV parser keeps header rows) should also implement `SourceReleaser` (`ReleaseSource(sourceID string)`), which the aggregator calls once it has parsed the last line of a source.
 
+The aggregator passes every line with the blanks around it trimmed (`strings.TrimSpace`-like). A parser that needs the line as it is, only its LF or CRLF removed, implements `WhitespacePreservingParser` (`PreserveWhitespace() bool` returning true), as the `csv` parser does.
+
+Only parsers in the `logformat` package learn the query (the unexported `setQuery`, see the example below), so that they fill only the fields the query uses; a parser registered from outside the package is built without it and fills all its fields.
+
 ## Log format variables
 
 ### Common variables:
@@ -101,7 +105,7 @@ The common variables may exist in all log formats:
 * `$hostname` - The server FQDN
 * `$line` - The whole log line
 * `$server` - Alias for `$hostname`
-* `$timeoffset` -  Offset of $timezone
+* `$timeoffset` -  Offset of $timezone in seconds east of UTC
 * `$timezone` -  The current time zone
 * `*` - Special placeholder. E.g. sometimes used by the query language to group by everything.
 

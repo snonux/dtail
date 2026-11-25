@@ -2,8 +2,9 @@
 
 > **Historical note:** This is a point-in-time record of a specific optimization
 > effort (trace-logging and buffering fixes) with the measurements taken at that
-> time; the numbers and file paths (e.g. `turbo_writer.go`, since renamed to
-> `line_writer.go`) are preserved as-is. The "turbo mode" it compares against a
+> time; the numbers and file paths (e.g. `/internal/server/handlers/turbo_writer.go`,
+> since renamed and moved to `internal/handlers/line_writer.go`) are preserved
+> as-is. The "turbo mode" it compares against a
 > "non-turbo mode" is now the single, default read/output path — there is no mode
 > split any more, and the `DTAIL_TURBOBOOST_DISABLE` toggle has been removed.
 

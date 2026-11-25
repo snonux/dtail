@@ -12,8 +12,9 @@ all signing requests, turning parallel connections into sequential ones.
 The DTail client registers a local SSH public key with the DTail server over an
 already-authenticated SSH session. The server caches this key **in-memory only**
 (never written to disk). On subsequent connections the client offers that local
-key first — a pure in-memory RSA verify with no YubiKey interaction — and falls
-back to the original auth method if the server does not recognise the key.
+key first — a pure in-memory signature verify with no YubiKey interaction — and
+falls back to the original auth method if the server does not recognise the
+key.
 
 The feature is enabled by default. It can be turned off on the client with
 `--no-auth-key` (`Client.AuthKeyDisable` in the client configuration) and on the
@@ -24,7 +25,8 @@ server with `Server.AuthKeyEnabled: false`.
 1. **Transparent fallback** — the client offers its keys through a single
    `gossh.PublicKeys` auth method whose signers are ordered so the local key is
    tried first; if the fast key is rejected, the SSH library continues with the
-   next signer (agent / YubiKey) without any user interaction.
+   next signers (configured fallback keys, then the agent / YubiKey) without
+   any user interaction.
 2. **Server keys are ephemeral** — the in-memory store is lost on server
    restart. No file I/O, no persistence.
 3. **Trust chain preserved** — an auth-key can only be registered over a session
@@ -41,10 +43,11 @@ server with `Server.AuthKeyEnabled: false`.
 │  One gossh.PublicKeys auth method, signers tried in     │
 │  order:                                                 │
 │    1. Auth-key path (default ~/.ssh/id_rsa)  ← FAST     │
-│    2. SSH agent (YubiKey)                               │
-│    3. Config fallback paths, further default key paths  │
+│    2. Config fallback paths                             │
+│    3. SSH agent (YubiKey)                               │
+│    4. Further default key paths                         │
 │                                                         │
-│  After the session is established (and before the        │
+│  After the session is established (and before the       │
 │  DTail commands are dispatched):                        │
 │    → reads <authKeyPath>.pub                            │
 │    → sends AUTHKEY <base64-pubkey> to server            │
@@ -53,10 +56,10 @@ server with `Server.AuthKeyEnabled: false`.
 ┌────────────────────────▼────────────────────────────────┐
 │ DTail Server (dserver)                                  │
 │                                                         │
-│  PublicKeyCallback:                                    │
+│  PublicKeyCallback:                                     │
 │    1. Check in-memory authkeystore  ← FAST (only when   │
 │       AuthKeyEnabled is set)                            │
-│    2. Check authorized_keys        ← existing path     │
+│    2. Check authorized_keys        ← existing path      │
 │                                                         │
 │  AUTHKEY command handler (only inside an authenticated  │
 │  session):                                              │
@@ -64,22 +67,23 @@ server with `Server.AuthKeyEnabled: false`.
 │    → responds AUTHKEY OK / AUTHKEY ERR <reason>         │
 │                                                         │
 │  authkey.Store (in-memory only):                        │
-│    map[username] → []PublicKey (with TTL, max per user)│
+│    map[username] → []PublicKey (with TTL, max per user) │
 └─────────────────────────────────────────────────────────┘
 ```
 
 ### First connection (slow path — YubiKey)
 
 1. The client collects signers: the key at `--auth-key-path` (default
-   `~/.ssh/id_rsa`) first, then the SSH agent, then configured fallback paths and
-   the remaining default key paths, all in one `gossh.PublicKeys` auth method.
+   `~/.ssh/id_rsa`) first, then configured fallback paths, then the SSH agent,
+   then the remaining default key paths, all in one `gossh.PublicKeys` auth
+   method.
 2. SSH handshake begins; the server's `PublicKeyCallback` is called with the
    local key.
 3. Server checks the in-memory auth-key store → not found.
 4. Server checks `authorized_keys` (or the per-user authorized-keys cache) →
    not found (this key is not in there).
-5. Server rejects the key; the SSH library tries the next signer: the SSH agent
-   (YubiKey).
+5. Server rejects the key; the SSH library tries the next signers, which
+   reach the SSH agent (YubiKey).
 6. The YubiKey signs the challenge; the server finds the YubiKey pubkey in
    `authorized_keys` → auth succeeds.
 7. Once the session is established — and before any DTail commands are
@@ -161,8 +165,11 @@ whose signers are tried in this order:
 
 1. the explicit auth-key path (`--auth-key-path`, defaulting to
    `~/.ssh/id_rsa`),
-2. all SSH agent keys (a YubiKey is typically exposed here),
-3. additional configured fallback key paths,
+2. additional configured fallback key paths (before the agent, so that an
+   agent with many keys can not exhaust the server's authentication attempts
+   before a known-good key is tried),
+3. all SSH agent keys, or the one chosen with `--agentKeyIndex` (a YubiKey is
+   typically exposed here),
 4. the further default key paths `~/.ssh/id_dsa`, `~/.ssh/id_ecdsa` and
    `~/.ssh/id_ed25519`.
 
@@ -175,10 +182,13 @@ that is the transparent fallback.
 Once the SSH session is established — and before the DTail commands are
 dispatched — every connection registers the auth key, unless the feature is
 disabled. The client reads `<authKeyPath>.pub`, takes the base64 key blob from
-its first non-comment line, and sends `AUTHKEY <base64>`. The server's reply is
-an ordinary session message; registration is best-effort. When the `.pub` file
-is missing or unreadable, or the SSH private key path could not be resolved at
-all (see below), the client logs the skip at Debug level and continues.
+its first non-comment line, and sends `AUTHKEY <base64>`. The server answers
+with a control frame, which the client consumes and never prints: `AUTHKEY OK`
+is logged at Debug level, `AUTHKEY ERR <reason>` as the WARN `AUTHKEY
+registration failed`. Registration is best-effort; a failure does not affect
+the session. When the `.pub` file is missing or unreadable, or the SSH private
+key path could not be resolved at all (see below), the client logs the skip at
+Debug level and continues.
 
 ### Configuration and flags
 
@@ -188,6 +198,10 @@ Server config (`dtail.json`, `internal/config/server.go`):
   registration and fast reconnect.
 * `AuthKeyTTLSeconds` (int, default `86400` = 24h) — TTL of a cached key.
 * `AuthKeyMaxPerUser` (int, default `5`) — maximum cached keys per user.
+
+`0` or less for either number uses its default. The job users
+(`DTAIL-SCHEDULE`, `DTAIL-CONTINUOUS`) and the health user (`DTAIL-HEALTH`)
+authenticate by password and can not use auth keys.
 
 ```json
 {

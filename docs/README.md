@@ -21,11 +21,20 @@ Layout:
   * [Wire framing](dev/wire_framing.md) (server-to-client frames, the 0xAC
     delimiter, the escaped framing every protocol 5 session uses and marked
     control frames)
+  * [Probe command](dev/probe.md) (field discovery and path listing for the
+    interactive query and path completion)
+* `skill/` — the agent skill [dtail](skill/dtail/SKILL.md): how to use,
+  query, run and develop DTail, as a slim index with references loaded on
+  demand
+* The animated GIFs of the user documentation are rendered from the VHS
+  scripts in [`../doc/tapes/`](../doc/tapes/) with `make gifs` (a demo fleet
+  of six local dservers; needs vhs, gifsicle and ssh-keygen)
+  (running and explaining the client commands)
 * `benchmarks/` — raw evidence bundles (scripts, CSV results, logs) backing
   the dated benchmark reports
 * `archive/` — outdated documents kept for historical reference only
 * Top level — dated, point-in-time reports such as
   [code-quality-audit-2026-09-06.md](code-quality-audit-2026-09-06.md),
-  [performance-plan-2026-09-15.md](performance-plan-2026-09-15.md) and
+  [performance-plan-2026-09-15.md](performance-plan-2026-09-15.md),
   [upstream-benchmark-2026-09-23.md](upstream-benchmark-2026-09-23.md) and
   [upstream-benchmark-2026-11-11.md](upstream-benchmark-2026-11-11.md)

@@ -9,7 +9,7 @@ DTail (Distributed Tail) is a DevOps tool written in Go for distributed log oper
 ## Build Commands
 
 ```bash
-# Build all binaries
+# Build all binaries (also the default target, `make` / `make all`)
 make build
 
 # Build individual components
@@ -19,17 +19,23 @@ make dcat       # Client for displaying files
 make dgrep      # Client for searching files
 make dmap       # Client for MapReduce queries
 make dtailhealth # Health check client
+make dtail-tools # Developer toolkit: benchmark, profile and pgo subcommands
 
-# Clean build artifacts
+# go install the six product binaries (not dtail-tools)
+make install
+
+# Remove the binaries of every ./cmd/* and all *.tmp and *.prof files in the tree
 make clean
 
-# Enable ACL support (requires libacl-devel)
+# Enable ACL support (build tag linuxacl, cgo with -lacl; requires libacl-devel)
 DTAIL_USE_ACL=yes make build
 
-# Build without zstd (CGO-free cross-compiles; .zst logs unsupported)
+# Build without zstd (build tag nozstd; CGO-free cross-compiles; .zst logs unsupported)
 DTAIL_NO_ZSTD=yes make build
 
-# Enable proprietary features
+# Enable proprietary features (build tag proprietary). Needs the proprietary
+# mimecast log format source, which is not in this repository: without it the
+# build fails with "undefined: newMimecastParser".
 DTAIL_USE_PROPRIETARY=yes make build
 
 # Build PGO-optimized binaries (requires existing profiles)
@@ -39,10 +45,15 @@ make build-pgo
 make pgo
 ```
 
+The three `DTAIL_*` build switches are tested with make's `ifdef`, so any
+non-empty value (also `no`) enables them. The tags apply to every build, test,
+vet and lint target (`GO_TAGS`); `GO_FLAGS` is passed to the binary builds.
+
 ## Testing & Development
 
 ```bash
-# Run all tests (unit tests only)
+# Run all tests (unit tests only; the integration tests skip themselves).
+# Runs `go clean -testcache`, then `go test -race -shuffle=on -timeout 30m ./...`
 make test
 
 # Run all tests including integration tests
@@ -53,14 +64,26 @@ DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
 # Quick integration test workflow (recommended)
 make build && DTAIL_INTEGRATION_TEST_RUN_MODE=yes make test
 
-# Run linting
+# Integration tests only: clean, build, then
+# DTAIL_INTEGRATION_TEST_RUN_MODE=yes go test -v --race -count=1 ./integrationtests
+make test-integration
+
+# Run linting (golangci-lint; override the binary with GOLANGCI_LINT=...)
 make lint
 
 # Run go vet
 make vet
 
-# Run integration tests individually (requires binaries built first)
-cd integrationtests && go test
+# List NEXT:/TODO: markers in the tree
+make todos
+
+# Re-render the documentation GIFs (doc/*.gif) from doc/tapes/*.tape against a
+# demo fleet of six local dservers (needs vhs with ttyd and ffmpeg, gifsicle)
+make gifs
+
+# Run integration tests individually (requires binaries built first; without
+# the variable every integration test is skipped)
+cd integrationtests && DTAIL_INTEGRATION_TEST_RUN_MODE=yes go test -race -count=1 -run 'TestDCat'
 ```
 
 ## Benchmarking
@@ -75,22 +98,31 @@ make benchmark-quick
 # Full benchmarks with longer runs
 make benchmark-full
 
-# Create a baseline for comparison
+# Create a baseline for comparison (prompts for a name)
 make benchmark-baseline
 
-# Create a quick baseline (small files only, will prompt for name)
+# Create a quick baseline (small files only, prompts for a name)
 make benchmark-baseline-quick
 
-# Compare current performance against a baseline
+# Compare current performance against a baseline (without BASELINE it lists them)
 make benchmark-compare BASELINE=benchmarks/baselines/baseline_TIMESTAMP.txt
 
-# Compare the local fork with upstream (sibling checkout of github.com/mimecast/dtail)
+# Compare the local fork with upstream (checkout of github.com/mimecast/dtail at
+# ../dtail-upstream; other paths and options only by running
+# benchmarks/upstream_vs_local_bench.sh smoke|run --upstream-root PATH ... directly)
 make benchmark-upstream-smoke   # Compile both trees, tiny correctness checks, no timings
 make benchmark-upstream         # Paired end-to-end scenarios; run only on an idle host
 
-# Drop system caches before a benchmark run
+# Drop system caches before a benchmark run (sudo; /usr/local/sbin/drop-caches
+# if executable, else benchmarks/drop_caches.sh)
 make drop-caches
 ```
+
+The benchmark targets build first and run `dtail-tools benchmark`, a wrapper
+around `go test -bench ./benchmarks`: `-mode run|baseline|compare|list|clean`,
+`-quick` (`-bench=BenchmarkQuick`), `-memory` (`-benchmem`), `-iterations 3x`
+(`-benchtime`, used by `benchmark-full`), `-tag NAME`, `-baseline FILE`,
+`-output FILE`, `-verbose`, `-dir` (baselines, default `benchmarks/baselines`).
 
 ## Profile-Guided Optimization (PGO)
 
@@ -118,10 +150,26 @@ make pgo-clean
 
 # Show PGO help
 make pgo-help
+
+# Direct usage with dtail-tools (run from the repository root)
+dtail-tools pgo                    # Optimize all commands
+dtail-tools pgo dcat dgrep         # Optimize specific commands
+dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
+dtail-tools pgo -profileonly       # Profiles only (what make pgo-generate runs)
 ```
 
 ### PGO Notes
 
+- `dtail-tools pgo` flags: `-profiledir` (default `pgo-profiles`), `-outdir`
+  (default `pgo-build`), `-datasize` (log lines, default 1000000; the csv gets
+  a tenth), `-iterations` (default 3, merged with `go tool pprof -proto`),
+  `-v`/`-verbose`, `-profileonly`. `make pgo-quick` is `-datasize 100000
+  -iterations 2`. The workflow: baseline builds (`pgo-build/<cmd>-baseline`)
+  -> profiles -> PGO builds (`pgo-build/<cmd>`) -> a timing comparison.
+- The comparison step (`comparePerformance`, `benchmarkCommand`) knows only
+  dcat, dgrep and dmap: for dtail and dserver it returns `unknown benchmark
+  command`, so a run that includes them (the default set) ends with an error
+  after the profiles and the PGO binaries were written.
 - PGO provides additional performance improvements on top of DTail's default optimized read/output path
 - Measured improvements are workload-dependent and modest: on a 100 MB
   serverless run, DGrep ~7-8%, DCat ~3%, DMap within measurement noise. PGO
@@ -167,7 +215,7 @@ make profile-analyze PROFILE=profiles/dcat_cpu_*.prof
 # Open the web interface for a profile (go tool pprof -web)
 make profile-web PROFILE=profiles/dcat_cpu_*.prof
 
-# Clean all profile data
+# Clean all profile data (removes the profiles/ and testdata/ directories)
 make profile-clean
 
 # Show all profiling options
@@ -177,8 +225,17 @@ make profile-help
 ### Profiling Notes
 
 - Profiles are saved in the `profiles/` directory by default
-- Each command generates CPU, memory, and allocation profiles
-- Use `go tool pprof` for detailed analysis of profile files
+- The targets run `dtail-tools profile -mode quick|full|dmap|list|analyze`
+  (flags `-dir`, `-testdata`, `-runs`, `-commands dcat,dgrep`, `-timeout`,
+  `-nocolor`; `analyze FILE [-web]`); generated test data goes to `testdata/`
+- The clients (`dcat`, `dgrep`, `dmap`, `dtail`) take `-cpuprofile`,
+  `-memprofile`, `-profile` (both) and `-profiledir DIR`; with `-profile` each
+  run writes `<cmd>_cpu_<ts>.prof`, `<cmd>_mem_<ts>.prof` and
+  `<cmd>_alloc_<ts>.prof`. `dserver` and `dtailhealth` have only
+  `--pprof ADDR` (an HTTP pprof endpoint); dserver also enables mutex and
+  block profiling with it
+- Use `go tool pprof` for detailed analysis of profile files; see
+  `docs/dev/profiling.md`
 
 ## Test Execution Details
 
@@ -2083,58 +2140,6 @@ verbatim ("Using turbo mode for reading", "Using turbo aggregate processor for
 MapReduce", "Creating turbo aggregate for MapReduce"). These are deliberately kept
 as stable log strings and do not imply a separate mode.
 
-## Benchmarking & Profiling
-
-```bash
-# Run benchmarks
-make benchmark
-
-# Run performance profiling (see the Profiling section for all profile-* targets)
-make profile-quick
-make profile-all
-
-# Run specific benchmark suites
-make benchmark-quick
-make benchmark-full
-
-# Compare the local fork with upstream
-make benchmark-upstream-smoke
-make benchmark-upstream
-```
-
-## Profile-Guided Optimization (PGO)
-
-```bash
-# Run PGO for all commands
-make pgo
-
-# Quick PGO with smaller datasets
-make pgo-quick
-
-# PGO for specific commands
-make pgo-commands COMMANDS='dcat dgrep'
-
-# Clean PGO artifacts
-make pgo-clean
-
-# Show PGO help
-make pgo-help
-
-# Direct usage with dtail-tools
-dtail-tools pgo                    # Optimize all commands
-dtail-tools pgo dcat dgrep         # Optimize specific commands
-dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
-
-# After PGO, optimized binaries are in pgo-build/
-```
-
-### PGO Notes
-
-- PGO uses profile data from real workloads to optimize binary performance
-- The process involves: building baseline → generating profiles → building with PGO
-- Typical improvements range from 5-20% depending on the workload
-- Optimized binaries are placed in the `pgo-build/` directory
-
 ## Architecture & Code Organization
 
 ### Binary Entry Points
@@ -2144,18 +2149,27 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 - `/cmd/dgrep/` - Remote file searching client
 - `/cmd/dmap/` - MapReduce query client
 - `/cmd/dtailhealth/` - Health check client
+- `/cmd/dtail-tools/` - Developer toolkit (`benchmark`, `profile`, `pgo`; not installed by `make install`)
 
 ### Core Implementation
 - `/internal/clients/` - Client implementations for each tool
+- `/internal/cli/` - Shared client flag binding, runtime lifecycle, interactive defaults, pprof startup
 - `/internal/server/` - Server daemon logic
 - `/internal/handlers/` - Transport-neutral session handlers and read engine
 - `/internal/jobs/` - Scheduled and continuous MapReduce client workloads
 - `/internal/mapr/` - MapReduce engine and query parsing
+- `/internal/protocol/` - Wire version, framing/escaping, control frames, probe and session wire types
+- `/internal/session/` - Workload specs: plain command streams and `SESSION START`/`UPDATE`
 - `/internal/authkey/` - Shared in-memory cache for registered public keys
 - `/internal/sessionuser/` - Session identity and read authorization
 - `/internal/ssh/` - SSH client/server components
 - `/internal/config/` - Configuration management
-- `/internal/io/` - File operations, logging, compression handling
+- `/internal/io/` - File operations (`fs`, `fs/readhub`), journal reads, logging (`dlog`), line processing, pools, prompts, signals
+- `/internal/discovery/` - Server list resolution (comma lists, files, modules)
+- `/internal/color/`, `/internal/logging/` - Terminal colors, logger interface and messages
+- `/internal/profiling/` - `-profile`/`-cpuprofile`/`-memprofile` capture for the clients
+- `/internal/tools/` - `dtail-tools` subcommands (`benchmark`, `profile`, `pgo`, shared `common`)
+- Small helpers: `ctxutil`, `lcontext` (grep context), `omode` (operation modes), `options` (read option map), `regex`, `source`, `user` (no running as root), `version`, and `done.go` (shutdown signal)
 
 ### Key Architectural Patterns
 
@@ -2210,8 +2224,13 @@ dtail-tools pgo -v -iterations 5   # Verbose with 5 iterations
 
 ## Configuration Files
 
-- Server config: `/etc/dserver/dtail.json` or `./dtail.json`
-- Example configs: `/examples/`
+- Config file: `--cfg PATH` (every binary; `--cfg none` loads none). Without
+  `--cfg`, the first of `~/.config/dtail/dtail.conf` and `~/.dtail.conf` that
+  exists is read (not merged; `config.initializer.parseConfig`). There is no
+  `./dtail.json` lookup: dserver reads `/etc/dserver/dtail.json` only because
+  the example systemd unit passes `-cfg /etc/dserver/dtail.json`
+- Example configs: `/examples/` (`dtail.json.example`, the JSON schema
+  `dtail.schema.json`, systemd units and helper scripts)
 - Docker configs: `/docker/`
 
 ### Auth-Key Related Options
