@@ -479,7 +479,7 @@
           "properties": {
             "Default": {
               "$ref": "#/definitions/userPermission",
-              "description": "Permissions of users without an entry in Users (default [\"^/.*\"]).",
+              "description": "Permissions of users without an entry in Users. Rules are readfiles:REGEX allow rules and readfiles:!REGEX deny rules (a matching deny rule always wins; no matching allow rule denies). Default [\"^/.*\"] (every file), kept when this key is absent, so set it explicitly.",
               "default": [
                 "^/.*"
               ]
@@ -554,14 +554,14 @@
               },
               "AllowFrom": {
                 "type": "array",
-                "description": "Addresses of the dserver instances allowed to connect to run this job.",
+                "description": "Addresses (hostnames are resolved) of the dserver instances allowed to connect to run this job. A dserver accepts a job connection (user DTAIL-SCHEDULE or DTAIL-CONTINUOUS, the job Name as password) only when its own configuration has a job of the same type and Name whose AllowFrom contains the connecting address, so an empty AllowFrom accepts none: every dserver in Servers needs that entry. A job of this dserver listening on every address connects from the loopback address (e.g. allow localhost).",
                 "items": {
                   "type": "string"
                 }
               },
               "TimeRange": {
                 "type": "array",
-                "description": "Hours [start, end) of the day during which the job runs.",
+                "description": "Hours [start, end) of the day during which the job runs: start <= hour < end. [0, 24] is the whole day; a job without TimeRange ([0, 0]) never runs.",
                 "items": [
                   {
                     "type": "integer",
@@ -620,7 +620,7 @@
               },
               "AllowFrom": {
                 "type": "array",
-                "description": "Addresses of the dserver instances allowed to connect to run this job.",
+                "description": "Addresses (hostnames are resolved) of the dserver instances allowed to connect to run this job. A dserver accepts a job connection (user DTAIL-SCHEDULE or DTAIL-CONTINUOUS, the job Name as password) only when its own configuration has a job of the same type and Name whose AllowFrom contains the connecting address, so an empty AllowFrom accepts none: every dserver in Servers needs that entry. A job of this dserver listening on every address connects from the loopback address (e.g. allow localhost).",
                 "items": {
                   "type": "string"
                 }

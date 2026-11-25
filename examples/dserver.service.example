@@ -15,7 +15,7 @@ PrivateDevices=true
 PrivateTmp=true
 CPUAccounting=true
 MemoryAccounting=true
-BlockIOAccounting=true
+IOAccounting=true
 
 [Install]
 WantedBy=multi-user.target
