@@ -22,8 +22,9 @@ dtail-tools pgo [options] [commands...]
    - Provides performance comparison
 
 2. **Profiling Integration**
-   - All dtail commands now support the `-profile` flag
-   - dserver uses HTTP pprof endpoint for profiling
+   - The clients (dcat, dgrep, dmap, dtail) support the `-profile` flag
+   - dserver uses its HTTP pprof endpoint (`--pprof ADDR`) for profiling
+   - dtailhealth is not profiled
    - Profiles are generated during realistic workloads
 
 3. **Makefile Integration**
@@ -39,7 +40,9 @@ dtail-tools pgo [options] [commands...]
 2. **Generate Profiles**: Run workloads to collect CPU profiles
 3. **Merge Profiles**: Combine multiple profile iterations
 4. **Build with PGO**: Use profiles to guide optimization
-5. **Compare Performance**: Measure improvement
+5. **Compare Performance**: Measure improvement (implemented for dcat, dgrep
+   and dmap only; for dtail and dserver this step fails with `unknown
+   benchmark command`, see `pgo_commands_detail.md`)
 
 ### Profile Generation Details
 

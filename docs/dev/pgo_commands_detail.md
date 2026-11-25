@@ -11,12 +11,17 @@ When running `make pgo-generate` or `dtail-tools pgo`, the following commands ar
 ### 1. Building Baseline Binaries
 
 ```bash
-go build -o pgo-build/dtail-baseline ./cmd/dtail
 go build -o pgo-build/dcat-baseline ./cmd/dcat
 go build -o pgo-build/dgrep-baseline ./cmd/dgrep
 go build -o pgo-build/dmap-baseline ./cmd/dmap
+go build -o pgo-build/dtail-baseline ./cmd/dtail
 go build -o pgo-build/dserver-baseline ./cmd/dserver
 ```
+
+The commands are built in the order of the command list (by default dcat,
+dgrep, dmap, dtail, dserver, so that the serverless profiles are captured
+before the SSH-based workloads run). `dtail-tools pgo` passes no build tags;
+`make build-pgo` (`pgo-build-binaries`) builds with the Makefile's `GO_TAGS`.
 
 ### 2. Profile Generation Commands
 
@@ -200,19 +205,31 @@ pgo-build/dgrep-baseline -cfg none -plain -regex ERROR /tmp/pgo_bench.log
 pgo-build/dmap-baseline -cfg none -plain -files /tmp/pgo_bench.csv -query "select count(*)"
 ```
 
+The comparison (`comparePerformance`, `benchmarkCommand`) runs on small data
+(`/tmp/pgo_bench.log`, about 10,000 lines, and `/tmp/pgo_bench.csv`, about
+1,000 rows) and knows only dcat, dgrep and dmap: for dtail and dserver
+`benchmarkCommand` returns `unknown benchmark command`, so a run that
+includes them (the default command set) ends with an error at this step,
+after the profiles and the PGO binaries were written.
+
 ## Test Data Generation
 
 The PGO framework generates realistic test data:
 
+Both files are written by `internal/tools/common` (`GenerateLogFile`,
+`GenerateCSVFile`) into the profile directory and removed after the run. The
+generator sizes them in bytes from the requested line count (about 100 bytes
+per log line, 50 per csv row), so the line counts are approximate.
+
 ### Log File (test.log)
-- Contains timestamps, log levels (INFO, WARN, ERROR, DEBUG)
-- Includes user actions, durations, and status information
-- Default size: 1,000,000 lines (configurable with -datasize)
+- Lines like `[<timestamp>] <LEVEL> - User <user> performed <action> action
+  (duration: <n>ms, status: <status>)`, levels INFO, WARN, ERROR, DEBUG
+- Default size: about 1,000,000 lines (configurable with -datasize)
 
 ### CSV File (test.csv)
-- Contains employee data with departments, salaries, status
+- Header `timestamp,user,action,duration,status`, one row per event
 - Used for MapReduce queries
-- Default size: 100,000 rows (1/10 of log file size)
+- Default size: about 100,000 rows (1/10 of the -datasize lines)
 
 ### Follow Log File (dtail workload)
 - Used specifically for dtail profile generation

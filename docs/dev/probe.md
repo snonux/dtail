@@ -437,8 +437,9 @@ it works the same in serverless mode.
 
 ## Client: background prober and field catalog
 
-Only interactive sessions (`--interactive-query`) probe, in every mode
-(fields are also useful before switching to `--query`). Code:
+Only interactive sessions (`--interactive-query`, and `dtail` on a terminal,
+where it is the default) probe, in every mode (fields are also useful before
+switching to `--query`). Code:
 `internal/clients/interactive_probe.go` (`interactiveProber`),
 `internal/clients/interactive_catalog.go` (`fieldCatalog`) and
 `internal/clients/handlers/probe.go` (`handlers.Prober`).
@@ -655,5 +656,7 @@ the answer of a probe it is already running arrives while paused; a request
 sent while paused is not handled before the output runs, though, as the
 in-process server logs to the paused client output (found with the path
 completion's serverless integration test). The query completion therefore
-never waits for a server; it uses what the background rounds stored. The
-path completion waits at most 1 s, with the paused output held.
+uses what the background rounds stored and waits for a server only for a
+table probe (the Tab that sends it, at most 1 s; `:fields TABLE` at most
+2 s). The path completion waits at most 1 s. Every such wait holds the
+paused output (`interactivePause.holdOutput`) so the answer can be read.

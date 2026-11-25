@@ -2,12 +2,15 @@
 
 > **Status**: This guide was originally written as a forward-looking plan. That
 > plan has since been executed: `integrationtests/testhelpers.go` now contains
-> exactly the helpers described here (`skipIfNotIntegrationTest`,
+> the helpers described here (`skipIfNotIntegrationTest`,
 > `NewTestServer`, `NewCommandArgs`, `runDualModeTest`, `TestFileSet`,
-> `cleanupFiles`, `runCommandAndVerify`). This document is kept as **backlog**
+> `cleanupFiles`). The former `runCommandAndVerify` helper is gone: tests call
+> `runCommand` (`commandutils.go`) and then `compareFiles` (`fileutils.go`).
+> This document is kept as **backlog**
 > for the *remaining* work: several older test files (e.g. `dcat_test.go`,
-> `dgrep_test.go`, `dserver_test.go`, the `djournal*` tests, `dtailhealth_test.go`)
-> still use the old `startCommand` pattern and have not been migrated to the
+> `dgrep_test.go`, `dserver_test.go`, `dtail_test.go`, `djournal_test.go`,
+> `dtailhealth_test.go`, `authkey_test.go`) still start dserver with
+> `startCommand`/`startCommandWithEnv` and have not been migrated to the
 > helpers yet. Newly written tests should use the helpers from
 > `integrationtests/testhelpers.go` directly.
 
@@ -147,7 +150,7 @@ func TestX(t *testing.T) {
 
 ### Phase 2: Refactor Test by Test (remaining work)
 1. Start with simpler tests (e.g., `dcat_test.go`, `dgrep_test.go`, then the
-   `dserver*`, `djournal*` and `dtailhealth` tests)
+   `dserver*`, `djournal_test.go` and `dtailhealth` tests)
 2. Refactor one test function at a time
 3. Run tests after each refactoring
 4. Commit after each file is complete
@@ -227,9 +230,12 @@ func testDCat1WithServer_Refactored(t *testing.T, inFile string) {
     args.TrustAllHosts = true
     args.NoColor = true
 
-    err := runCommandAndVerify(t, server.ctx, fileSet.OutputFile, fileSet.ExpectedFile,
-        "../dcat", args.ToSlice()...)
-    if err != nil {
+    if _, err := runCommand(server.ctx, t, fileSet.OutputFile,
+        "../dcat", args.ToSlice()...); err != nil {
+        t.Error(err)
+        return
+    }
+    if err := compareFiles(t, fileSet.OutputFile, fileSet.ExpectedFile); err != nil {
         t.Error(err)
     }
 }
@@ -248,8 +254,8 @@ Based on the examples:
 1. ~~Review and approve the helper functions~~ (done: `testhelpers.go` is merged)
 2. ~~Create a PR with `testhelpers.go`~~ (done)
 3. Incrementally migrate the remaining test files that still use the old
-   `startCommand` pattern — e.g. `dcat_test.go`, `dgrep_test.go`,
-   `dserver_test.go` (and the other `dserver_*` tests), the `djournal*` tests,
+   `startCommand`/`startCommandWithEnv` pattern — e.g. `dcat_test.go`, `dgrep_test.go`,
+   `dserver_test.go` (and the other `dserver_*` tests), `djournal_test.go`,
    and `dtailhealth_test.go` — one test function (or file) at a time, running
    the integration tests after each migration
 4. Document any new patterns that emerge

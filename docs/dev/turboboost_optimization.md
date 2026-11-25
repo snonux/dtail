@@ -10,6 +10,10 @@ in early revisions of this document (`DTAIL_TURBOBOOST_DISABLE`,
 `DTAIL_CHANNELLESS_GREP`, `DTAIL_OPTIMIZED_READER`) have been removed; the
 channel-less path is now unconditional.
 
+> **Historical note:** the "Problem Statement" (the channel pipeline) and the
+> "Feature Flags" section describe code and switches that no longer exist; the
+> rest describes the current read/output path.
+
 ## Problem Statement
 
 The original dgrep implementation used multiple channels in a pipeline:
