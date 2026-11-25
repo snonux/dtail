@@ -279,8 +279,9 @@ func TestDLogMapreduceFormatsClientAndServerRecords(t *testing.T) {
 		process       source.Source
 		wantSubstring string
 	}{
-		{name: "client stats", process: source.Client, wantSubstring: "INFO|STATS:REQUESTS|count=2"},
-		{name: "server stats", process: source.Server, wantSubstring: "|MAPREDUCE:REQUESTS|count=2"},
+		// The fields are sorted by name.
+		{name: "client stats", process: source.Client, wantSubstring: "INFO|STATS:REQUESTS|avg=1|count=2|max=3"},
+		{name: "server stats", process: source.Server, wantSubstring: "|MAPREDUCE:REQUESTS|avg=1|count=2|max=3"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -292,7 +293,7 @@ func TestDLogMapreduceFormatsClientAndServerRecords(t *testing.T) {
 				maxLevel:      Info,
 				hostname:      "host-a",
 			}
-			if got := d.Mapreduce("requests", map[string]any{"count": 2}); !strings.Contains(got, tt.wantSubstring) {
+			if got := d.Mapreduce("requests", map[string]any{"max": 3, "count": 2, "avg": 1}); !strings.Contains(got, tt.wantSubstring) {
 				t.Fatalf("Mapreduce() = %q, want substring %q", got, tt.wantSubstring)
 			}
 		})

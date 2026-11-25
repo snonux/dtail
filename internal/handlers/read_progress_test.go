@@ -34,7 +34,10 @@ func snapshotOf(p *readProgress) protocol.Progress {
 	return p.snapshotLocked()
 }
 
-func TestReadProgressCountsFilesInFull(t *testing.T) {
+// TestReadProgressCountsEndedFilesByWhatWasRead checks that a file whose read
+// ended is done in full with the bytes read as its size: bytes stays what was
+// read, and the rest of a file whose read ended early leaves the total.
+func TestReadProgressCountsEndedFilesByWhatWasRead(t *testing.T) {
 	progress, posts := newPostRecorder(t)
 	first := progress.register(0, 100)
 	second := progress.register(0, 50)
@@ -42,12 +45,13 @@ func TestReadProgressCountsFilesInFull(t *testing.T) {
 	if got, want := snapshotOf(progress), (protocol.Progress{Bytes: 40, Total: 150, FilesTotal: 2}); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
-	// A read ended early (--max, an error) counts in full.
+	// A read ended early (--max, an error): its 60 unread bytes are neither
+	// read nor to be read any more.
 	progress.finish(first)
 	second.Add(70) // read past its size: the file grew
 	progress.flush()
 	progress.flush() // unchanged: not posted again
-	want := protocol.EncodeProgress(protocol.Progress{Bytes: 170, Total: 170, Files: 1, FilesTotal: 2})
+	want := protocol.EncodeProgress(protocol.Progress{Bytes: 110, Total: 110, Files: 1, FilesTotal: 2})
 	if len(*posts) != 1 || (*posts)[0] != want {
 		t.Fatalf("posts = %q, want [%q]", *posts, want)
 	}
@@ -61,6 +65,41 @@ func TestReadProgressStartsOverForANewGeneration(t *testing.T) {
 	stale.Add(1000)
 	if got, want := snapshotOf(progress), (protocol.Progress{Total: 10, FilesTotal: 1}); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+// TestReadProgressReporterEndsWithTheReads checks that the reporting
+// goroutine ends once every registered file's read ended, and that a file
+// registered later starts it again.
+func TestReadProgressReporterEndsWithTheReads(t *testing.T) {
+	progress, posts := newPostRecorder(t)
+	isStarted := func() bool {
+		progress.mu.Lock()
+		defer progress.mu.Unlock()
+		return progress.started
+	}
+	file := progress.register(0, 10)
+	if !isStarted() {
+		t.Fatal("no reporter after a registration")
+	}
+	if progress.flushAndIdle() {
+		t.Fatal("reporter idle while a file is read")
+	}
+	file.Add(10)
+	progress.finish(file)
+	if !progress.flushAndIdle() || isStarted() {
+		t.Fatal("reporter not idle after the last read ended")
+	}
+	want := protocol.EncodeProgress(protocol.Progress{Bytes: 10, Total: 10, Files: 1, FilesTotal: 1})
+	progress.mu.Lock() // posts are appended under it
+	got := (*posts)[len(*posts)-1]
+	progress.mu.Unlock()
+	if got != want {
+		t.Fatalf("last post %q, want %q", got, want)
+	}
+	progress.register(0, 5)
+	if !isStarted() {
+		t.Fatal("no reporter for a file registered after the reads ended")
 	}
 }
 

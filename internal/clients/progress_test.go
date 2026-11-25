@@ -90,6 +90,20 @@ func TestProgressMeterStartsOverWithANewWorkload(t *testing.T) {
 	}
 }
 
+// TestProgressMeterKeepsRateWhenTheTotalShrinks checks that a smaller total
+// with bytes going on (a read ended early, its rest left the total) is no new
+// workload: the rate is kept.
+func TestProgressMeterKeepsRateWhenTheTotalShrinks(t *testing.T) {
+	source := &fakeProgressSource{totals: totalsOf(500, 2000, 1, 1)}
+	meter, now := newTestMeter(source)
+	meter.measure()
+	*now = now.Add(2 * time.Second)
+	source.totals = totalsOf(700, 1000, 1, 1)
+	if report, _ := meter.measure(); !report.RateKnown || report.Rate != 100 {
+		t.Fatalf("rate = %v (known %v), want 100 B/s kept", report.Rate, report.RateKnown)
+	}
+}
+
 func TestProgressReportEdges(t *testing.T) {
 	done := progressReport{progressTotals: totalsOf(1100, 1000, 1, 1)}
 	if done.percent() != 100 || done.eta() != "0s" {
@@ -162,7 +176,8 @@ func TestStatsProgressLines(t *testing.T) {
 	source.totals = totalsOf(70, 100, 2, 2)
 	s.tickProgress()
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.Contains(lines[2], "|bytes=60|") {
+	// The line at 60 already showed the final numbers: no third line.
+	if len(lines) != 2 || !strings.Contains(lines[1], "|bytes=60|") {
 		t.Fatalf("lines after the final one: %q", lines)
 	}
 }

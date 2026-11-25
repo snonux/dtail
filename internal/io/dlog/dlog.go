@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -364,10 +366,10 @@ func (d *DLog) Mapreduce(table string, data map[string]any) string {
 		args[0] = fmt.Sprintf("STATS:%s", strings.ToUpper(table))
 	}
 
-	i := 1
-	for k, v := range data {
-		args[i] = fmt.Sprintf("%s=%v", k, v)
-		i++
+	// Sorted by name, so that every line of a table has its fields in the
+	// same place (as protocol.EncodeStatsLine does for the Ctrl-C statistics).
+	for i, k := range slices.Sorted(maps.Keys(data)) {
+		args[i+1] = fmt.Sprintf("%s=%v", k, data[k])
 	}
 	return d.log(Info, args)
 }

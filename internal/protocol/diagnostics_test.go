@@ -49,6 +49,13 @@ func TestDiagnosticCodecsPreserveWireFormat(t *testing.T) {
 			got:  EncodeStatsLine(map[string]any{"connected": 2}),
 			want: "connected=2",
 		},
+		{
+			// Sorted by name, so every line has its fields in one place.
+			name: "stats fields sorted",
+			got: EncodeStatsLine(map[string]any{"servers": 3, "connected%": 66, "bar": "[#-]",
+				"connected": 2, "bytes": 5}),
+			want: "bar=[#-]|bytes=5|connected=2|connected%=66|servers=3",
+		},
 	}
 
 	for _, test := range tests {

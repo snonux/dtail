@@ -14,8 +14,9 @@ import (
 //
 // bytes is what the session's file reads have consumed of their files so far
 // (compressed files count the compressed bytes on disk), total the summed size
-// of the files it reads, files the files whose read ended and filestotal the
-// files it reads. All four cover the session's current generation, i.e. the
+// of the files it reads (a file whose read ended counts with the bytes read
+// of it, so the rest of a file whose read ended early is not in it), files
+// the files whose read ended and filestotal the files it reads. All four cover the session's current generation, i.e. the
 // read commands of its plain command stream or of its latest SESSION
 // START/UPDATE. Journal targets and stdin have no size and are not counted.
 //

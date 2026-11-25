@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -99,18 +101,18 @@ func AppendDiagnosticDetails(encoded *strings.Builder, details []any) {
 }
 
 // EncodeStatsLine encodes client connection statistics without stream framing.
-// Field order is intentionally unspecified, matching Go map iteration.
+// The fields are sorted by name, so that every line has them in the same
+// place (map iteration order moved them around from line to line, which made
+// the read progress fields hard to follow).
 func EncodeStatsLine(fields map[string]any) string {
 	var encoded strings.Builder
-	i := 0
-	for name, value := range fields {
+	for i, name := range slices.Sorted(maps.Keys(fields)) {
 		if i > 0 {
 			encoded.WriteString(fieldDelimiter)
 		}
 		encoded.WriteString(name)
 		encoded.WriteByte('=')
-		fmt.Fprintf(&encoded, "%v", value)
-		i++
+		fmt.Fprintf(&encoded, "%v", fields[name])
 	}
 	return encoded.String()
 }

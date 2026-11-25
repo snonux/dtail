@@ -20,9 +20,11 @@ const progressReportInterval = time.Second
 // protocol.HiddenProgressPrefix frames.
 //
 // Each file a read command will read is registered as soon as the session's
-// permission check of it passed (readCommand.readFileIfPermissions), with the
-// size its validation saw, so the total is complete right away even while
-// files wait for a cat slot. The file's reader then counts the bytes it
+// permission check of it passed (readCommand.readFileIfPermissions), with its
+// size as of then (trackProgress stats it), so the total of a read command
+// is complete right away even while its files wait for a cat slot. Every
+// file argument is a read command of its own, so the total of a session
+// grows as its commands start, and the percentage can fall when one does. The file's reader then counts the bytes it
 // consumes (fs.ReadOptions.Progress, the compressed bytes of a compressed
 // file) and corrects the size at every open.
 //
@@ -31,17 +33,21 @@ const progressReportInterval = time.Second
 // through their open descriptors (fileProgress.refreshSize; only files
 // holding a cat slot, as only those are open) and the total grows with them.
 // A file that is read past its last known size counts with the bytes read as
-// its size. When a read ends, however (to EOF, at --max, cancelled or
-// failed), its file counts as done in full, so the progress ends at 100%.
+// its size. When a read ends, its file counts with the bytes read as its
+// size too: at EOF that is the file, and for a read that ended early (at
+// --max, cancelled or failed) the rest is no longer to be read, so it leaves
+// the total. The progress so ends at 100% while bytes stays what was read.
 //
 // The progress covers one session generation: a read command of a newer one
 // (a SESSION UPDATE) starts it over, and one of an older one is not tracked.
 // A plain command stream has generation 0 throughout, so all its read
 // commands add up.
 //
-// A goroutine started with the first registration posts a frame every
-// progressReportInterval while the numbers changed, and readCommand.readFiles
-// posts one when its files are done. Posting replaces a frame not sent yet
+// A goroutine started with a registration posts a frame every
+// progressReportInterval while the numbers changed and ends once every
+// registered file's read ended (the next registration starts it again), so
+// a session that stays open after its reads has no ticker left; readCommand.
+// readFiles posts a frame when its files are done. Posting replaces a frame not sent yet
 // (outputCoordinator.postProgress), so the client always gets the latest
 // numbers and the session output never queues them.
 type readProgress struct {
@@ -51,7 +57,8 @@ type readProgress struct {
 	// lastPosted is what was posted last, to post only changes.
 	lastPosted protocol.Progress
 	posted     bool
-	started    bool
+	// started is set while the reporting goroutine runs.
+	started bool
 	// post hands an encoded, generation-tagged frame to the session output.
 	post func(message string)
 	// done ends the reporting goroutine with the session.
@@ -98,16 +105,15 @@ func (f *fileProgress) Add(n int64) {
 	f.read.Add(n)
 }
 
-// finish marks the file's read as ended: it counts as read in full, at the
-// larger of its last known size and the bytes read.
+// finish marks the file's read as ended: the bytes read are its size from
+// now on (see snapshotLocked), so it is done in full without counting bytes
+// an early end (--max, cancel, error) left unread.
 func (f *fileProgress) finish() {
 	if f.finished.Swap(true) {
 		return
 	}
 	f.open.Store(nil)
-	if size := f.size.Load(); f.read.Load() < size {
-		f.read.Store(size)
-	}
+	f.size.Store(f.read.Load())
 }
 
 func newReadProgress(post func(string), done <-chan struct{}) *readProgress {
@@ -162,39 +168,59 @@ func (p *readProgress) flush() {
 	p.postLocked()
 }
 
-// report posts the progress every progressReportInterval until the session
-// ends.
+// report posts the progress every progressReportInterval until every
+// registered file's read ended or the session ends.
 func (p *readProgress) report() {
 	ticker := time.NewTicker(progressReportInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			p.flush()
+			if p.flushAndIdle() {
+				return
+			}
 		case <-p.done:
 			return
 		}
 	}
 }
 
-// postLocked posts the current progress if it changed. Snapshot and post
-// happen under p.mu, so a later post never carries older numbers.
-func (p *readProgress) postLocked() {
+// flushAndIdle posts the current progress if it changed and reports whether
+// every registered file's read ended. It then marks the reporting goroutine
+// as stopped, under the lock register starts it with, so that a file
+// registered later gets a new one.
+func (p *readProgress) flushAndIdle() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	current := p.postLocked()
+	if current.Files < current.FilesTotal {
+		return false
+	}
+	p.started = false
+	return true
+}
+
+// postLocked posts the current progress if it changed, and returns it.
+// Snapshot and post happen under p.mu, so a later post never carries older
+// numbers.
+func (p *readProgress) postLocked() protocol.Progress {
 	if len(p.files) == 0 {
-		return
+		return protocol.Progress{}
 	}
 	current := p.snapshotLocked()
 	if p.posted && current == p.lastPosted {
-		return
+		return current
 	}
 	p.lastPosted = current
 	p.posted = true
 	p.post(encodeGeneratedMessage(p.generation, protocol.EncodeProgress(current)))
+	return current
 }
 
 // snapshotLocked sums the files' progress, taking the current size of the
 // files being read first, as they may grow. A file read past its known size
-// (it grew since it was last measured) counts with what was read as its size.
+// (it grew since it was last measured) counts with what was read as its
+// size, and so does a file whose read ended (see fileProgress.finish).
 func (p *readProgress) snapshotLocked() protocol.Progress {
 	var progress protocol.Progress
 	for _, file := range p.files {
@@ -202,9 +228,9 @@ func (p *readProgress) snapshotLocked() protocol.Progress {
 		size, read := file.size.Load(), file.read.Load()
 		size = max(size, read)
 		if file.finished.Load() {
-			// Done in full, also should a refreshSize racing with the
-			// finish have raised the size after it.
-			read = size
+			// What was read is the file, also should a refreshSize racing
+			// with the finish have stored another size after it.
+			size = read
 			progress.Files++
 		}
 		progress.Bytes += read

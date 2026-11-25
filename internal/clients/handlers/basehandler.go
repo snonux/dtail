@@ -751,8 +751,11 @@ func (h *baseHandler) handleSessionAckMessage(message string) {
 		h.log().Warn(h.server, "Unable to parse session acknowledgement", message)
 		return
 	}
-	if ack.Error == "" && h.onSessionAcked != nil {
-		h.onSessionAcked()
+	if ack.Error == "" {
+		h.resetProgress()
+		if h.onSessionAcked != nil {
+			h.onSessionAcked()
+		}
 	}
 	if h.sessionAcks == nil {
 		return

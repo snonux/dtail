@@ -40,6 +40,23 @@ func TestHandlerKeepsLatestProgress(t *testing.T) {
 	}
 }
 
+// TestHandlerForgetsProgressOfAReplacedWorkload checks that an acknowledged
+// SESSION UPDATE drops the progress of the workload it replaced, and that a
+// rejected one keeps it.
+func TestHandlerForgetsProgressOfAReplacedWorkload(t *testing.T) {
+	handler := NewClientHandler("srv1", &payloadRecorder{})
+	report := marked(protocol.EncodeProgress(protocol.Progress{Bytes: 5, Total: 5, Files: 1, FilesTotal: 1}))
+	writeInChunks(t, handler, frame(marked(protocol.HiddenCapabilitiesPrefix), report,
+		marked(protocol.HiddenSessionErrorPrefix+"rejected")), 7)
+	if _, ok := handler.Progress(); !ok {
+		t.Fatal("progress dropped by a rejected session update")
+	}
+	writeInChunks(t, handler, frame(marked(protocol.HiddenSessionUpdateOKPrefix+"2")), 7)
+	if progress, ok := handler.Progress(); ok {
+		t.Fatalf("progress %+v kept after the workload was replaced", progress)
+	}
+}
+
 // TestMaprHandlerKeepsProgress checks that the MapReduce handler passes
 // progress frames to the same handling.
 func TestMaprHandlerKeepsProgress(t *testing.T) {

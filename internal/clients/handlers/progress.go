@@ -25,6 +25,17 @@ func (h *baseHandler) handleProgressMessage(message string) {
 	h.progress.Store(&progress)
 }
 
+// resetProgress forgets the read progress: a SESSION START or UPDATE was
+// acknowledged, so what was reported belongs to the replaced workload. The
+// server sends the new workload's progress only after its acknowledgement
+// (sessionAckGate holds it back) and drops frames of the replaced one, so
+// nothing reported for the new workload is lost. Without this a workload
+// that reports none (following lines, a journal) kept showing the last
+// numbers of the reads before it in the client's statistics.
+func (h *baseHandler) resetProgress() {
+	h.progress.Store(nil)
+}
+
 // Progress returns the latest read progress the server reported, if any.
 func (h *baseHandler) Progress() (protocol.Progress, bool) {
 	progress := h.progress.Load()

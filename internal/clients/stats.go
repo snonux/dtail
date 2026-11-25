@@ -40,9 +40,12 @@ type stats struct {
 	// progressOut, if set (--progress), gets a PROGRESS line whenever the
 	// progress changed and a final one (finishProgress), whatever the quiet
 	// mode. progressMu orders those writes, and progressDone ends them.
-	progressOut  io.Writer
-	progressMu   sync.Mutex
-	progressDone bool
+	// progressWritten is what the last PROGRESS line showed (nil before the
+	// first), so that the final line does not repeat it.
+	progressOut     io.Writer
+	progressMu      sync.Mutex
+	progressDone    bool
+	progressWritten *progressTotals
 	// statsProgress is the progress the last STATS line showed, so that a
 	// STATS line is logged when it changed; used by Start's goroutine only.
 	statsProgress progressTotals
@@ -186,14 +189,23 @@ func (s *stats) writeProgress(report progressReport, changed bool) {
 	s.progressMu.Lock()
 	defer s.progressMu.Unlock()
 	if !s.progressDone {
-		_, _ = fmt.Fprintln(s.progressOut, report.line())
+		s.writeProgressLocked(report)
 	}
+}
+
+// writeProgressLocked writes report as a PROGRESS line and remembers what it
+// showed. The caller holds progressMu.
+func (s *stats) writeProgressLocked(report progressReport) {
+	_, _ = fmt.Fprintln(s.progressOut, report.line())
+	s.progressWritten = &report.progressTotals
 }
 
 // finishProgress writes the final PROGRESS line to progressOut once the
 // sessions ended, also when no server reported progress (reporting=0/N: the
-// servers predate the progress report, or nothing was read), and ends the
-// PROGRESS lines. It does nothing without --progress.
+// servers predate the progress report, or no file was read), and ends the
+// PROGRESS lines. A last line that already showed the final numbers is the
+// final line and is not written twice (a short read ended with two identical
+// lines). It does nothing without --progress.
 func (s *stats) finishProgress() {
 	if s == nil || s.progressOut == nil {
 		return
@@ -205,7 +217,9 @@ func (s *stats) finishProgress() {
 		return
 	}
 	s.progressDone = true
-	_, _ = fmt.Fprintln(s.progressOut, report.line())
+	if s.progressWritten == nil || *s.progressWritten != report.progressTotals {
+		s.writeProgressLocked(report)
+	}
 }
 
 // logStats logs the stats queued by Start until ctx is done.
@@ -281,9 +295,4 @@ func percentOf(total float64, value float64) float64 {
 		return 100
 	}
 	return value / (total / 100.0)
-}
-
-// statsLine encodes the connection statistics without the progress fields.
-func (s *stats) statsLine(connected, newConnections int, throttle int) string {
-	return protocol.EncodeStatsLine(s.statsData(connected, newConnections, throttle))
 }

@@ -67,9 +67,11 @@ func (m *progressMeter) measure() (progressReport, bool) {
 	totals := m.source()
 	changed := !m.measured || totals != m.last
 	m.measured = true
-	if totals.Bytes < m.last.Bytes || totals.Total < m.last.Total {
-		// Fewer bytes or a smaller total: a new workload (an interactive
-		// reload) started over, so the rate starts over too.
+	if totals.Bytes < m.last.Bytes {
+		// Fewer bytes: a new workload (an interactive reload) started over,
+		// so the rate starts over too. A smaller total alone is no new
+		// workload: a read that ended early (--max, an error) takes the
+		// rest of its file off the total.
 		m.samples = nil
 	}
 	m.last = totals

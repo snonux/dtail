@@ -20,6 +20,7 @@ import (
 	"github.com/mimecast/dtail/internal/mapr"
 	maprclient "github.com/mimecast/dtail/internal/mapr/client"
 	"github.com/mimecast/dtail/internal/omode"
+	"github.com/mimecast/dtail/internal/protocol"
 )
 
 // clientTestUsername returns the OS username of the test process. linuxacl
@@ -366,10 +367,10 @@ func TestTailStatsDataAndPercentages(t *testing.T) {
 		}
 	}
 
-	line := stats.statsLine(3, 2, 1)
+	line := protocol.EncodeStatsLine(stats.statsData(3, 2, 1))
 	for _, field := range []string{"connected=3", "servers=4", "connected%=75", "new=2", "throttle=1"} {
 		if !strings.Contains(line, field) {
-			t.Fatalf("statsLine() = %q, want field %q", line, field)
+			t.Fatalf("EncodeStatsLine() = %q, want field %q", line, field)
 		}
 	}
 
