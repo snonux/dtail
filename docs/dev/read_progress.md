@@ -109,12 +109,14 @@ the frames, but its control frames do not.
   `(total-bytes)/rate`.
 - The stats loop measures the progress every second (`progressTick`,
   `stats.tickProgress`) and shows a changed one in one of two ways:
-  - **Default:** as fields of the STATS line (`bytes`, `total`, `progress`,
-    `progress%`, `rate`, `eta`, `files`, `reporting`), checked every 3 s
+  - **Default:** as fields of the STATS line (`bar`, `progress%`,
+    `progress`, `rate`, `eta`, `files`, `reporting`, `bytes`, `total`), checked every 3 s
     (`statsTicks`, `stats.tick`) against what the last STATS line showed,
     dropped by `--quiet`/`--plain`. The Ctrl-C statistics carry them too.
   - **`--progress`** (`Args.Progress`, all clients, meant for dcat, dgrep
-    and dmap): as a `PROGRESS|...` line every second in a fixed field order
+    and dmap): as a `PROGRESS|bar=[######--------------]|progress%=30.0|...`
+    line (the bar first, one `#` per 5%, so successive lines show it filling
+    up in place; `progressReport.bar`) every second in a fixed field order
     on stderr (`stats.writeProgress`), whatever the quiet mode. After the sessions
     ended, `baseClient.Start` writes one final line
     (`stats.finishProgress`). Interactive sessions and the dmap query builder

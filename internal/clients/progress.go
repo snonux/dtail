@@ -167,28 +167,45 @@ type progressField struct {
 	value string
 }
 
+// progressBarCells is the width of the progress bar, one cell per 5%.
+const progressBarCells = 20
+
+// bar returns the progress as a bar of progressBarCells cells, '#' for the
+// part read and '-' for the rest, e.g. [#############-------] at 67%; while no
+// server reported, every cell is '?'. It is ASCII, so it reads the same in a
+// terminal, a log file and a pipe.
+func (r progressReport) bar() string {
+	if r.Reporting == 0 {
+		return "[" + strings.Repeat("?", progressBarCells) + "]"
+	}
+	done := int(r.percent() * progressBarCells / 100)
+	return "[" + strings.Repeat("#", done) + strings.Repeat("-", progressBarCells-done) + "]"
+}
+
 // fields returns the report's fields in the order of a PROGRESS line: the
-// raw byte counts for programs, then the same for people, the rate, the ETA,
-// the files and how many servers reported.
+// bar and the percentage first, so that successive lines show the bar filling
+// up in one place, then the amounts for people, the rate, the ETA, the files,
+// how many servers reported, and the raw byte counts for programs.
 func (r progressReport) fields() []progressField {
 	rate := "unknown"
 	if r.RateKnown {
 		rate = formatBytes(int64(r.Rate)) + "/s"
 	}
 	return []progressField{
-		{"bytes", fmt.Sprint(r.Bytes)},
-		{"total", fmt.Sprint(r.Total)},
-		{"progress", formatBytes(r.Bytes) + "/" + formatBytes(r.Total)},
+		{"bar", r.bar()},
 		{"progress%", r.percentText()},
+		{"progress", formatBytes(r.Bytes) + "/" + formatBytes(r.Total)},
 		{"rate", rate},
 		{"eta", r.eta()},
 		{"files", fmt.Sprintf("%d/%d", r.Files, r.FilesTotal)},
 		{"reporting", fmt.Sprintf("%d/%d", r.Reporting, r.Servers)},
+		{"bytes", fmt.Sprint(r.Bytes)},
+		{"total", fmt.Sprint(r.Total)},
 	}
 }
 
 // line returns the report as a PROGRESS line (without a line break):
-// PROGRESS|bytes=...|total=...|... in the order of fields.
+// PROGRESS|bar=[...]|progress%=...|... in the order of fields.
 func (r progressReport) line() string {
 	var sb strings.Builder
 	sb.WriteString("PROGRESS")

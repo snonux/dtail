@@ -38,24 +38,42 @@ the session ends. The client shows it while it changes:
   Stdout keeps only the data. Not written in interactive sessions.
 
 ```
-PROGRESS|bytes=1288490188|total=4294967296|progress=1.20GiB/4.00GiB|progress%=30.0|rate=85.30MiB/s|eta=35s|files=3/10|reporting=2/2
+PROGRESS|bar=[######--------------]|progress%=30.0|progress=1.20GiB/4.00GiB|rate=85.30MiB/s|eta=35s|files=3/10|reporting=2/2|bytes=1288490188|total=4294967296
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `bytes`, `total` | Bytes read so far and the summed size of the files, raw numbers. |
-| `progress` | The same in IEC units. |
+| `bar` | 20 cells, one `#` per 5% read, e.g. `[######--------------]`; all `?` while no server reported. First, so the bars of successive lines line up. |
 | `progress%` | `bytes/total`, one decimal, capped at 100; `unknown` while no server reported. |
+| `progress` | Bytes read / total in IEC units. |
 | `rate` | Bytes per second over the last 15 s; `unknown` for the first seconds. |
 | `eta` | `(total-bytes)/rate`, e.g. `1m35s`; `0s` when done; `unknown` without a rate. |
 | `files` | Files whose read ended / files to read. |
 | `reporting` | Servers that reported progress / servers. |
+| `bytes`, `total` | The same byte counts as raw numbers, last. |
 
-How to report it to a user: take the last `PROGRESS` line (`tail -n 1
-progress.txt`), give `progress`, `progress%` and `eta`, and name
-`reporting` when it is below the server count. If `eta` is `unknown`,
-estimate it from two lines taken `t` seconds apart: `(total - bytes2) /
-((bytes2 - bytes1) / t)`.
+How to report it to a user (agents): start the command in the background
+with `--progress` and stderr in a file, then about every 10 seconds, until
+the command exits, take the last `PROGRESS` line and show it as one line:
+
+```sh
+dmap --servers servers.txt --files '/var/log/app/*.log.gz' --no-interactive \
+     --progress --query '...' > result.txt 2> progress.txt &
+pid=$!
+while kill -0 "$pid" 2>/dev/null; do
+    sleep 10
+    tail -n 1 progress.txt     # -> tell the user: bar, progress%, progress, eta
+done
+wait "$pid"; echo "exit=$?"; tail -n 1 progress.txt
+```
+
+If the agent's tools can not loop like this in one call, check the
+progress file in a separate call about every 10 seconds instead. Show the
+`bar` field as it is, `progress%`, `progress` and `eta`, and name
+`reporting` when it is below the server count. A read shorter than
+10 seconds only needs the final line. If `eta` is `unknown`, estimate it
+from two lines taken `t` seconds apart: `(total - bytes2) / ((bytes2 -
+bytes1) / t)`.
 
 Caveats:
 - `reporting` below the server count: servers still connecting, down, or

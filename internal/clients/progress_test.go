@@ -49,8 +49,8 @@ func TestProgressMeterRateAndETA(t *testing.T) {
 	if got := report.eta(); got != "7s" {
 		t.Fatalf("eta = %s, want 7s", got)
 	}
-	want := "PROGRESS|bytes=314572800|total=1048576000|progress=300.00MiB/1000.00MiB|progress%=30.0|" +
-		"rate=100.00MiB/s|eta=7s|files=1/4|reporting=2/2"
+	want := "PROGRESS|bar=[######--------------]|progress%=30.0|progress=300.00MiB/1000.00MiB|" +
+		"rate=100.00MiB/s|eta=7s|files=1/4|reporting=2/2|bytes=314572800|total=1048576000"
 	if got := report.line(); got != want {
 		t.Fatalf("line = %q, want %q", got, want)
 	}
@@ -103,6 +103,14 @@ func TestProgressReportEdges(t *testing.T) {
 	if stalled.eta() != "unknown" {
 		t.Fatalf("stalled read: eta %s", stalled.eta())
 	}
+	for percent, want := range map[int64]string{0: "[--------------------]", 4: "[--------------------]",
+		5: "[#-------------------]", 99: "[###################-]", 100: "[####################]",
+		150: "[####################]"} {
+		report := progressReport{progressTotals: totalsOf(percent, 100, 1, 1)}
+		if got := report.bar(); got != want {
+			t.Errorf("bar at %d%% = %s, want %s", percent, got, want)
+		}
+	}
 	for n, want := range map[int64]string{0: "0B", 1023: "1023B", 1536: "1.50KiB", 5 << 30: "5.00GiB"} {
 		if got := formatBytes(n); got != want {
 			t.Errorf("formatBytes(%d) = %s, want %s", n, got, want)
@@ -154,7 +162,7 @@ func TestStatsProgressLines(t *testing.T) {
 	source.totals = totalsOf(70, 100, 2, 2)
 	s.tickProgress()
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.Contains(lines[2], "bytes=60|") {
+	if len(lines) != 3 || !strings.Contains(lines[2], "|bytes=60|") {
 		t.Fatalf("lines after the final one: %q", lines)
 	}
 }
@@ -166,7 +174,8 @@ func TestFinishProgressWithoutReports(t *testing.T) {
 	s := newTailStats(3, nil, time.Millisecond, nil)
 	s.setProgress((&fakeProgressSource{totals: progressTotals{Servers: 3}}).get, &out)
 	s.finishProgress()
-	if !strings.Contains(out.String(), "|progress%=unknown|rate=unknown|eta=unknown|files=0/0|reporting=0/3\n") {
+	if !strings.Contains(out.String(), "PROGRESS|bar=[????????????????????]|progress%=unknown|") ||
+		!strings.Contains(out.String(), "|rate=unknown|eta=unknown|files=0/0|reporting=0/3|") {
 		t.Fatalf("final line = %q, want reporting=0/3", out.String())
 	}
 	var none *stats

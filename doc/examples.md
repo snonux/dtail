@@ -175,7 +175,7 @@ Remember: For that to work, you have to make sure that DTail supports your log f
 Reading a lot of logs takes a while, so every `dserver` reports how many bytes of the files it reads it has processed so far, and the client sums that up over all servers. By default the progress is part of the `STATS` lines, which are printed every 3 seconds while it changes (at the client's `info` log level):
 
 ```console
-CLIENT|workstation01|INFO|STATS:STATS|connected=2|servers=2|progress=1.20GiB/4.00GiB|progress%=30.0|rate=85.30MiB/s|eta=35s|files=3/10|reporting=2/2|bytes=1288490188|total=4294967296|...
+CLIENT|workstation01|INFO|STATS:STATS|connected=2|servers=2|bar=[######--------------]|progress=1.20GiB/4.00GiB|progress%=30.0|rate=85.30MiB/s|eta=35s|files=3/10|reporting=2/2|bytes=1288490188|total=4294967296|...
 ```
 
 `--quiet` and `--plain` drop the `STATS` lines, and with them the progress. To get the progress anyway, e.g. while `--plain` output goes to a file or another program, add `--progress`: the client then writes `PROGRESS` lines with the fields in a fixed order to stderr every second, whatever `--quiet` or `--plain` say, and one final line when it is done. Stdout keeps the data only:
@@ -183,12 +183,12 @@ CLIENT|workstation01|INFO|STATS:STATS|connected=2|servers=2|progress=1.20GiB/4.0
 ```shell
 % dgrep --servers serverlist.txt --files '/var/log/app/*.log.gz' --regex ERROR \
     --plain --progress > errors.txt
-PROGRESS|bytes=1288490188|total=4294967296|progress=1.20GiB/4.00GiB|progress%=30.0|rate=85.30MiB/s|eta=35s|files=3/10|reporting=2/2
+PROGRESS|bar=[######--------------]|progress%=30.0|progress=1.20GiB/4.00GiB|rate=85.30MiB/s|eta=35s|files=3/10|reporting=2/2|bytes=1288490188|total=4294967296
 ...
-PROGRESS|bytes=4294967296|total=4294967296|progress=4.00GiB/4.00GiB|progress%=100.0|rate=86.10MiB/s|eta=0s|files=10/10|reporting=2/2
+PROGRESS|bar=[####################]|progress%=100.0|progress=4.00GiB/4.00GiB|rate=86.10MiB/s|eta=0s|files=10/10|reporting=2/2|bytes=4294967296|total=4294967296
 ```
 
-- `bytes`/`total` are the raw byte counts, `progress` the same in IEC units, `rate` is measured over the last 15 seconds and `eta` is the time left at that rate (`unknown` until a rate is known).
+- `bar` shows the percentage as 20 cells, one `#` per 5% read (`?` while no server reported), and comes first, so successive lines show it filling up in place. `bytes`/`total` are the raw byte counts, `progress` the same in IEC units, `rate` is measured over the last 15 seconds and `eta` is the time left at that rate (`unknown` until a rate is known).
 - `files` counts the files whose read ended, `reporting` the servers that reported progress. While `reporting` is below the number of servers, the total lacks the files of the others. A `dserver` older than this feature reports nothing (the final line then reads `reporting=0/N`).
 - Compressed files count their compressed size on disk. A file that grows while it is read (a log still written to) raises the total, as the read goes on to its end.
 - A file counts as fully read once its read ended, also when `--max` or an error ended it early; failures are reported as before (exit status, `WARN` lines).

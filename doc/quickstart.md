@@ -97,7 +97,7 @@ CLIENT|workstation01|INFO|STATS:STATS|connected=2|servers=2|connected%=100|new=2
 .
 ```
 
-The `STATS` lines report the connected servers. `dcat`, `dgrep` and `dmap` also report in them how far the servers have read the files (`progress=1.20GiB/4.00GiB|progress%=30.0|rate=...|eta=35s|...`); add `--progress` to get that as `PROGRESS` lines on stderr, also with `--plain` (see [examples.md](examples.md), "Watching the read progress").
+The `STATS` lines report the connected servers. `dcat`, `dgrep` and `dmap` also report in them how far the servers have read the files (`bar=[######--------------]|progress%=30.0|progress=1.20GiB/4.00GiB|rate=...|eta=35s|...`); add `--progress` to get that as `PROGRESS` lines on stderr, also with `--plain` (see [examples.md](examples.md), "Watching the read progress").
 
 The client collects unknown hosts whose handshakes arrive close together and asks about them in one question, about 2 seconds after the last of them (or once 50 are pending). With ``--trustAllHosts`` (or after answering ``a=all``) nothing is asked and there is no 2 second wait: unknown hosts are collected for only about 20 milliseconds and then trusted and written to ``known_hosts``, so a fresh ``known_hosts`` file does not slow down scripts and CI runs. Writing ``known_hosts`` can still wait up to 5 seconds while another dtail client holds its lock to update it.
 

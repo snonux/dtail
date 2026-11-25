@@ -40,7 +40,7 @@ func TestReadProgress(t *testing.T) {
 		{"dgrep", "../dgrep", []string{"--regex", "STATS", "--files", strings.Join(files, ",")}},
 		{"dmap", "../dmap", []string{"--query", query, "--files", strings.Join(files, ",")}},
 	}
-	want := fmt.Sprintf("PROGRESS|bytes=%d|total=%d|", size, size)
+	want := fmt.Sprintf("|bytes=%d|total=%d", size, size)
 
 	for _, serverMode := range []bool{false, true} {
 		var serverArgs []string
@@ -77,8 +77,8 @@ func sameLines(a, b string) bool {
 	return slices.Equal(linesA, linesB)
 }
 
-// checkProgressOutput checks that the last PROGRESS line of stderr starts
-// with want and says the read is complete.
+// checkProgressOutput checks that the last PROGRESS line of stderr ends with
+// want (the byte counts) and says the read is complete, with a full bar.
 func checkProgressOutput(t *testing.T, stderr, want string) {
 	t.Helper()
 	var last string
@@ -87,9 +87,10 @@ func checkProgressOutput(t *testing.T, stderr, want string) {
 			last = line
 		}
 	}
-	for _, field := range []string{"|progress%=100.0|", "|files=2/2|", "|reporting=1/1", "|eta=0s|"} {
-		if !strings.HasPrefix(last, want) || !strings.Contains(last, field) {
-			t.Fatalf("last PROGRESS line %q, want prefix %q and %q; stderr:\n%s", last, want, field, stderr)
+	for _, field := range []string{"PROGRESS|bar=[####################]|progress%=100.0|",
+		"|files=2/2|", "|reporting=1/1|", "|eta=0s|"} {
+		if !strings.HasSuffix(last, want) || !strings.Contains(last, field) {
+			t.Fatalf("last PROGRESS line %q, want suffix %q and %q; stderr:\n%s", last, want, field, stderr)
 		}
 	}
 }

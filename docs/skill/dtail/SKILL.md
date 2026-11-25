@@ -51,13 +51,16 @@ scheduled jobs, and building/testing DTail itself.
 8. **Host keys:** an unknown host asks a question on the terminal. Use
    `--trustAllHosts` only if the user accepts that trust decision; a
    *changed* key is refused unless `--trustChangedHostKeys` is also given.
-9. **Keep the user posted on long reads.** For a `dcat`/`dgrep`/`dmap` over
-   much data, run it in the background with `--progress`, stdout to a file
-   and stderr to another: `dgrep --plain --progress ... > out.txt 2>
-   progress.txt`. Every 30-60 s read the last `PROGRESS` line and tell the
-   user how much is done, e.g. "1.2 of 4.0 GiB (30%), about 34 s left,
-   2/2 servers reporting". When the command ends, report from the final
-   line. Fields and caveats: [output-and-status.md](references/output-and-status.md#read-progress).
+9. **Show the progress of every `dcat`, `dgrep` and `dmap` periodically.**
+   Always pass `--progress` and run the command in the background, stdout
+   to a file and stderr to another: `dgrep --plain --progress ... >
+   out.txt 2> progress.txt &`. About **every 10 seconds** until it ends,
+   read the last `PROGRESS` line (`tail -n 1 progress.txt`) and show the
+   user one line: the `bar` field (a ready-made progress bar), percent,
+   amount and ETA, e.g. "`[######--------------]` 30%, 1.2 of 4.0 GiB,
+   about 34 s left, 2/2 servers reporting". Do not wait silently for the
+   result. When the command ends, report from the final line, then the
+   result. Fields and caveats: [output-and-status.md](references/output-and-status.md#read-progress).
 
 ## Quick reference
 

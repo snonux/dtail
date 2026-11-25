@@ -1532,8 +1532,10 @@ hidden messages, and a client of an older dserver simply gets none. Design:
   servers; `progressMeter` (`internal/clients/progress.go`) measures the
   rate over 15 s and the ETA. The stats loop measures it every second
   (`progressTick`, `stats.tickProgress`); its STATS tick (every 3 s,
-  `statsTicks`, `stats.tick`) adds `bytes`, `total`, `progress`,
-  `progress%`, `rate`, `eta`, `files`, `reporting` to the STATS line when
+  `statsTicks`, `stats.tick`) adds `bar` (20 ASCII cells, `#` per 5%, `?`
+  without a report), `progress%`, `progress`, `rate`, `eta`, `files`,
+  `reporting`, `bytes`, `total` (the order of a PROGRESS line, bar first so
+  successive lines show it filling up) to the STATS line when
   the progress changed since the last STATS line (so STATS lines now also
   appear while reads progress; dropped by `--quiet`/`--plain`).
   `--progress` (`Args.Progress`) writes fixed-order `PROGRESS|...` lines to
