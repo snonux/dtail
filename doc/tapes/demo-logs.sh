@@ -11,6 +11,11 @@
 #   demo-logs.sh follow DIR [SEED [SLOW_MS]]
 #       append a line to DIR/logs/app.log about every 0.3 s until killed
 #       (for the dtail tapes)
+#   demo-logs.sh archive FILE LINES [SEED [MONTH]]
+#       write a gzip archive of LINES older REQUESTS lines (of 2026-MONTH)
+#       to FILE, large enough that reading it shows the read progress
+#       (--progress); awk writes it, as the bash loop of init would take
+#       minutes
 #
 # SEED varies the content per demo server; SLOW_MS adds latency to its
 # requests, so the per-host tables differ. The content is pseudo-random but
@@ -73,6 +78,32 @@ _init() {
     fi >"$dir/version.txt"
 }
 
+_archive() {
+    local -r file="$1"
+    local -ri lines="$2" seed="$3"
+    local -r month="$4"
+    awk -v n="$lines" -v seed="$seed" -v month="$month" 'BEGIN {
+        srand(seed)
+        split("web api auth search billing", services, " ")
+        split("GET GET GET POST PUT", methods, " ")
+        split("200 200 200 200 201 304 404 500 503", statuses, " ")
+        for (i = 0; i < n; i++) {
+            s = int(i * 86400 * 28 / n)
+            stamp = sprintf("2026%s%02d-%02d%02d%02d", month, int(s / 86400) + 1,
+                int(s / 3600) % 24, int(s / 60) % 60, s % 60)
+            if (int(rand() * 20) == 0) {
+                printf "WARN|%s|timeout talking to db after %dms\n", stamp, 900 + int(rand() * 300)
+                continue
+            }
+            service = services[1 + int(rand() * 5)]
+            latency = 5 + int(rand() * 80) + (service == "search" ? 120 : 0)
+            printf "INFO|%s|4242|server.go:88|8|%d|7|0.35|12h3m|MAPREDUCE:REQUESTS|service=%s|method=%s|status=%s|latency=%d\n",
+                stamp, 30 + int(rand() * 20), service, methods[1 + int(rand() * 5)],
+                statuses[1 + int(rand() * 9)], latency
+        }
+    }' | gzip -1 >"$file"
+}
+
 _follow() {
     local -r dir="$1"
     local -ri seed="$2" slow="$3"
@@ -88,15 +119,17 @@ main() {
     local -r dir="${2:-}"
     local -r seed="${3:-42}"
     local -r slow="${4:-0}"
+    local -r usage="usage: $0 init|follow DIR [SEED [SLOW_MS]] | archive FILE LINES [SEED [MONTH]]"
     if [[ -z "$dir" ]]; then
-        echo "usage: $0 init|follow DIR [SEED [SLOW_MS]]" >&2
+        echo "$usage" >&2
         exit 2
     fi
     case "$mode" in
         init) _init "$dir" "$seed" "$slow" ;;
         follow) _follow "$dir" "$seed" "$slow" ;;
+        archive) _archive "$2" "${3:-100000}" "${4:-42}" "${5:-10}" ;;
         *)
-            echo "usage: $0 init|follow DIR [SEED [SLOW_MS]]" >&2
+            echo "$usage" >&2
             exit 2
             ;;
     esac

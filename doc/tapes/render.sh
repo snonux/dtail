@@ -9,7 +9,10 @@
 # processes on 127.0.0.1 (ports 23231-23236) named web01, web02, web03,
 # api01, api02 and db01, each in a directory of its own with its own seeded
 # logs (demo-logs.sh), and a generator per server appending a line to its
-# logs/app.log about every 0.3 s. The client side runs with a demo HOME: its
+# logs/app.log about every 0.3 s. Every server also has three monthly gzip
+# archives in logs/archive/ (about 540 MB of lines in all), written once and
+# hard-linked into each server, so that reading them takes a few seconds and
+# the read progress (--progress) shows. The client side runs with a demo HOME: its
 # own SSH key, a known_hosts file trusting the six servers, a DTail config
 # (hostname "demo", log level warn), a neutral `$ ` prompt and servers.txt.
 # So the GIFs show neither the real host name, user, paths nor SSH agent.
@@ -113,6 +116,8 @@ _start_server() {
         slow=60
     fi
     "$TAPE_DIR/demo-logs.sh" init "$dir" $((index + 1)) "$slow"
+    mkdir -p "$dir/logs/archive"
+    ln "$ROOT"/archive/*.log.gz "$dir/logs/archive/"
     cat >"$dir/dserver.json" <<EOF
 {
   "Common": {
@@ -149,6 +154,19 @@ _wait_for_port() {
     done
     echo "render.sh: dserver on port $port did not start" >&2
     exit 1
+}
+
+# Writes the archives every server reads (see the header), in parallel.
+_setup_archive() {
+    local month
+    local -a writers=()
+    mkdir -p "$ROOT/archive"
+    for month in 08 09 10; do
+        "$TAPE_DIR/demo-logs.sh" archive "$ROOT/archive/app-2026$month.log.gz" \
+            1500000 "1$month" "$month" &
+        writers+=($!)
+    done
+    wait "${writers[@]}"
 }
 
 _setup_fleet() {
@@ -198,6 +216,7 @@ main() {
     trap _cleanup EXIT
     ROOT="$(mktemp -d)"
     _setup_home
+    _setup_archive
     _setup_fleet
     for tape in "${tapes[@]}"; do
         _render "$(realpath "$tape")"
