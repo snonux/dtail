@@ -21,8 +21,8 @@
     },
     "logger": {
       "type": "string",
-      "description": "Logger implementation, matched case-insensitively: none, stdout, file or fout.",
-      "pattern": "^(?:[Nn][Oo][Nn][Ee]|[Ss][Tt][Dd][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee]|[Ff][Oo][Uu][Tt])$"
+      "description": "Logger implementation, matched case-insensitively: none, stdout, file, fout or fdata (payload to stdout, diagnostics to the log file only).",
+      "pattern": "^(?:[Nn][Oo][Nn][Ee]|[Ss][Tt][Dd][Oo][Uu][Tt]|[Ff][Ii][Ll][Ee]|[Ff][Oo][Uu][Tt]|[Ff][Dd][Aa][Tt][Aa])$"
     },
     "logrotation": {
       "type": "string",

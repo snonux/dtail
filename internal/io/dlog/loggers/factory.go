@@ -28,6 +28,9 @@ var loggerRegistry = map[string]loggerConstructor{
 	"fout": func(strategy Strategy, options Options) Logger {
 		return newFout(strategy, options)
 	},
+	"fdata": func(strategy Strategy, options Options) Logger {
+		return newFdata(strategy, options)
+	},
 }
 
 // Factory is there to retrieve a logger based on various settings.

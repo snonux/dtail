@@ -17,10 +17,17 @@ import (
 //     the file only when logPayload is set (opt-in via --log-payload /
 //     Client.LogPayload). By default the file receives no payload, so a bulk
 //     dcat no longer silently grows the daily log file by the full payload size.
+//
+// As the "fdata" logger (fileOnlyDiagnostics) it keeps the diagnostics out of
+// stdout: they go to the file only, and stdout carries nothing but the
+// payload. It is the default of a client with a control channel (--control),
+// whose reader is a program: log lines in its data would only be in its way.
 type fout struct {
 	file       Logger
 	stdout     Logger
 	logPayload bool
+	// fileOnlyDiagnostics keeps Log and LogWithColors from stdout.
+	fileOnlyDiagnostics bool
 }
 
 var _ Logger = (*fout)(nil)
@@ -33,6 +40,14 @@ var _ RawBytesWriter = (*fout)(nil)
 // newFout builds the default client logger from injected process options.
 func newFout(strategy Strategy, options Options) *fout {
 	return newFoutWithSinks(newFile(strategy, options.LogDir), newStdout(), options.LogPayload)
+}
+
+// newFdata builds the "fdata" logger: fout with the diagnostics in the file
+// only.
+func newFdata(strategy Strategy, options Options) *fout {
+	logger := newFout(strategy, options)
+	logger.fileOnlyDiagnostics = true
+	return logger
 }
 
 // newFoutWithSinks builds a fout over injectable sinks and an explicit payload
@@ -64,12 +79,16 @@ func startLogger(ctx context.Context, wg *sync.WaitGroup, logger Logger) {
 }
 
 func (f *fout) Log(message string) {
-	f.stdout.Log(message)
+	if !f.fileOnlyDiagnostics {
+		f.stdout.Log(message)
+	}
 	f.file.Log(message)
 }
 
 func (f *fout) LogWithColors(message, coloredMessage string) {
-	f.stdout.LogWithColors("", coloredMessage)
+	if !f.fileOnlyDiagnostics {
+		f.stdout.LogWithColors("", coloredMessage)
+	}
 	f.file.LogWithColors(message, coloredMessage)
 }
 

@@ -28,6 +28,7 @@ binary with `-h` and `--version` if it may be older.
 | `--noColor` | No terminal colors (payload, tables, interactive output). |
 | `--logger`, `--logDir`, `--logLevel` (info; serverless warn), `--log-payload` | Client log sink; see [output-and-status.md](output-and-status.md). |
 | `--interactive-query`, `--control-tty` (/dev/tty), `--edit-mode emacs\|vi` | Interactive control; see [interactive-control.md](interactive-control.md). |
+| `--control json`, `--control-in PATH` (stdin), `--control-out PATH` (stderr) | Interactive control for programs and agents, JSON requests and responses; logs to the file only (logger `fdata`) unless `--logger` is given; see [agent-control.md](agent-control.md). |
 | `--hostname-override` | Hostname shown in logs/output (env `DTAIL_HOSTNAME_OVERRIDE`). |
 | `--version`, `--pprof ADDR`, `--cpuprofile`, `--memprofile`, `--profile`, `--profiledir` (profiles) | Version and profiling. |
 

@@ -18,6 +18,12 @@ The full retrieved PAYLOAD (the bulk `dcat`/`dgrep`/`dtail` output) is NOT writt
 to the file by default, so a large read no longer silently grows the daily log by
 the full payload size. Payload always still goes to STDOUT/terminal, unchanged.
 
+The `fdata` logger (`loggers.newFdata`) is `fout` with the diagnostics in
+the file only: stdout carries nothing but payload. It is the default of a
+client with `--control json` (`config.ControlLogger`, set by
+`cli.normalizeControl` unless `--logger` is given; see "JSON control
+channel").
+
 **Restoring the legacy full-payload tee (opt-in):**
 - Client flag: `--log-payload` (all client commands: dcat, dgrep, dtail, dmap)
 - Client config: `Client.LogPayload` (default `false`)

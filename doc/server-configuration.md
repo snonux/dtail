@@ -41,7 +41,7 @@ Flags override the configuration file.
 | `-host-key-path PATH` | `Server.HostKeyPath` | Private SSH host key. |
 | `-authorized-keys-path PATH` | `Server.AuthorizedKeysPath` | One `authorized_keys` file for all users. |
 | `-logDir DIR` | `Common.LogDir` | Log directory. |
-| `-logger NAME` | `Common.Logger` | Logger (`file`, `stdout`, `fout`, `none`). |
+| `-logger NAME` | `Common.Logger` | Logger (`file`, `stdout`, `fout`, `fdata`, `none`). |
 | `-logLevel LEVEL` | `Common.LogLevel` | Log level (default `info`). |
 | `-hostname-override NAME` | `Common.HostnameOverride` | Hostname in logs and output (also `DTAIL_HOSTNAME_OVERRIDE`). |
 | `-color` | | Colored log output. |
@@ -201,7 +201,7 @@ Notes:
 | --- | --- | --- |
 | `Common.SSHPort` | `2222` | Port `dserver` listens on and clients (and jobs) connect to. |
 | `Common.LogDir` | `log` | Log directory, relative to the working directory unless absolute; `~/` is expanded. (Clients: `~/log`.) |
-| `Common.Logger` | `file` | `file`, `stdout`, `fout` (both) or `none`, case-insensitive. (Clients: `fout`.) |
+| `Common.Logger` | `file` | `file`, `stdout`, `fout` (both), `fdata` (payload to stdout, diagnostics to the file) or `none`, case-insensitive. (Clients: `fout`.) |
 | `Common.LogLevel` | `info` | `none`, `fatal`, `error`, `warn`, `info`, `default`, `verbose`, `debug`, `devel`, `trace` or `all`, case-insensitive. |
 | `Common.LogRotation` | `daily` | `daily`: `<LogDir>/YYYYMMDD.log`. Any other value (e.g. `signal`): `<LogDir>/dserver.log`. |
 | `Common.CacheDir` | `cache` | Directory of the per-user `<user>.authorized_keys` key cache. |

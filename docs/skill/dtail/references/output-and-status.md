@@ -106,6 +106,8 @@ Caveats:
   daily file `~/log/YYYYMMDD.log` (`--logDir` or `Common.LogDir`).
   Payload is not copied into the file unless `--log-payload` /
   `Client.LogPayload: true`.
+- `--logger fdata`: payload to stdout, diagnostics to the daily file only.
+  It is the default with `--control json`.
 - `--logger stdout`: stdout only. `--logger none`: no logger.
   `--logger file`: file only (payload included, regardless of
   `--log-payload`).

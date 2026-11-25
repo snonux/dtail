@@ -42,6 +42,10 @@ type stats struct {
 	// mode. progressMu orders those writes, and progressDone ends them.
 	// progressWritten is what the last PROGRESS line showed (nil before the
 	// first), so that the final line does not repeat it.
+	// progressSink, if set, gets every changed progress a server reported,
+	// measured every progressTick (the progress events of the JSON control
+	// channel's query runs); set before Start.
+	progressSink    func(progressReport)
 	progressOut     io.Writer
 	progressMu      sync.Mutex
 	progressDone    bool
@@ -136,6 +140,9 @@ func (s *stats) Start(ctx context.Context, throttleCh <-chan struct{},
 func (s *stats) tickProgress() progressReport {
 	report, changed := s.measureProgress()
 	s.writeProgress(report, changed)
+	if s.progressSink != nil && changed && report.Reporting > 0 {
+		s.progressSink(report)
+	}
 	return report
 }
 

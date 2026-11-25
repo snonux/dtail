@@ -1,6 +1,7 @@
 package clients
 
 import (
+	"context"
 	"github.com/mimecast/dtail/internal/clients/clientlog"
 	"github.com/mimecast/dtail/internal/clients/handlers"
 	sessionspec "github.com/mimecast/dtail/internal/session"
@@ -45,6 +46,13 @@ type clientProfile struct {
 	// NewQueryBuilderClient): the control loop hands it the files and the
 	// query the user entered, right before it ends the builder's sessions.
 	queryBuilt func(files, query string)
+	// runQuery, set by dmap's client that holds its sessions without a
+	// workload when it has a JSON control channel
+	// (QueryBuilderClient.runQuery), runs query over files to its end on
+	// connections of its own and returns the final result; progress gets
+	// the read progress meanwhile. The control loop calls it for a query
+	// request (controlSession.runHeldQuery).
+	runQuery func(ctx context.Context, files, query string, progress func(progressReport)) (controlQueryRun, error)
 }
 
 func clientHandlerProfile(logger clientlog.Logger, retry bool) clientProfile {

@@ -107,4 +107,6 @@ the old error. Details:
 
 * [Reference](./interactive-query-reference.md): all rules, limits and how it
   works (sessions, acknowledgements, compatibility).
+* [Control channel for programs and agents](./agent-control.md): the same
+  features as JSON requests, without a terminal.
 * [DTail Query Language](./querylanguage.md) for the query syntax.

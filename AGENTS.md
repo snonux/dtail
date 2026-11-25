@@ -199,6 +199,7 @@ update it in the same change. Sections named in quotes inside those files
 | "Tab waits hold the output" | [interactive-output-hold.md](docs/agents/interactive-output-hold.md) | `interactivePause.holdOutput`, `outputHold`, the drain after a pause |
 | "Compatibility and session semantics" | [interactive-sessions.md](docs/agents/interactive-sessions.md) | `SESSION START`/`UPDATE`, ack waits and the ack gate, `:reload` across connections, generations, `dtail` switching between lines and a query |
 | MapReduce client reports | [mapreduce-client-reports.md](docs/agents/mapreduce-client-reports.md) | `outfile append`, interim report timing, logging under the MapReduce state's locks |
+| JSON control channel | [control-json.md](docs/agents/control-json.md) | `--control json`, the request loop, its commands, query runs and result events, the `fdata` logger |
 | dmap Query Builder | [dmap-query-builder.md](docs/agents/dmap-query-builder.md) | `dmap` without a query, held sessions, paste handling, builder history |
 | Auth-Key Fast Reconnect | [auth-key.md](docs/agents/auth-key.md) | `AUTHKEY`, the in-memory key store, its flags, env variables and config |
 | Host Key Verification | [host-keys.md](docs/agents/host-keys.md) | `known_hosts`, `--trustAllHosts`, connect and handshake timeouts |

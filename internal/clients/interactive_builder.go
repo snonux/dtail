@@ -312,15 +312,27 @@ func (c *baseClient) runBuildCommand(tty io.Writer, query string) (bool, error) 
 // by the run.
 func (c *baseClient) setBuilderFiles(tty io.Writer, next config.Args) error {
 	style := styleOf(tty)
+	if err := c.setSessionFiles(next); err != nil {
+		return writeControlLine(tty, style.failure(builderErrorPrefix+"files not set: "+errorLines(err)))
+	}
+	return writeControlLine(tty, style.success("files set")+"\n"+
+		style.hint("files: ")+strconv.Quote(next.What))
+}
+
+// setSessionFiles makes next's files the files of a session that holds no
+// workload (the builder's, see setBuilderFiles, which answers on the TTY;
+// the JSON control channel's reload answers with its own result), and asks
+// the prober for a round about them. It fails, files unchanged, for a
+// journal: file while a server whose session is up lacks journal-v1.
+func (c *baseClient) setSessionFiles(next config.Args) error {
 	_, spec, connections := c.snapshotMutableState()
 	active, _ := partitionReloadConnections(connections)
 	if err := checkReloadJournalCapability(active, NewSessionSpec(next)); err != nil {
-		return writeControlLine(tty, style.failure(builderErrorPrefix+"files not set: "+errorLines(err)))
+		return err
 	}
 	c.storeReloadState(next, spec)
 	c.prober.request()
-	return writeControlLine(tty, style.success("files set")+"\n"+
-		style.hint("files: ")+strconv.Quote(next.What))
+	return nil
 }
 
 // writeBuilderState answers :show in the builder: the files the query will

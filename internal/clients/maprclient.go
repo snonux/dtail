@@ -62,6 +62,11 @@ type MaprClient struct {
 	// dtail switched its session to the active query, which are not the
 	// query's (see incompleteResultReasons).
 	queryMarks queryFailureMarks
+	// resultSink, if set, gets the results of a query without an outfile
+	// as data instead of the table being printed (sinkResults): the result
+	// events of a JSON control channel, or the result of its query
+	// request. Set before Start.
+	resultSink func(controlResult)
 }
 
 type outfileReportState struct {
@@ -131,6 +136,7 @@ func newMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 	// control loop would fail to open the control TTY.
 	if maprClientMode != DefaultMode {
 		args.InteractiveQuery = false
+		args.Control = ""
 	}
 
 	base, initErr := newBaseClient(args, cfg, loggers, colorizer,
@@ -140,6 +146,11 @@ func newMaprClient(args config.Args, cfg config.RuntimeConfig, maprClientMode Ma
 	}
 	c.baseClient = base
 	c.tailFilter = saved
+	if isJSONControl(args) {
+		// The results of the session's queries are result events of its
+		// control channel, not tables in its output.
+		c.resultSink = c.emitControlResult
+	}
 	loggers.Client.Debug("Cumulative mapreduce mode?", c.isCumulative(query))
 
 	return &c, nil
@@ -587,7 +598,16 @@ func (c *MaprClient) reportResultsTo(out clientlog.Logger, finalResult bool) err
 	}
 
 	if snapshot.Query.HasOutfile() {
-		return c.writeResultsToOutfile(out, snapshot, finalResult)
+		err := c.writeResultsToOutfile(out, snapshot, finalResult)
+		if err == nil && finalResult && c.resultSink != nil {
+			// The rows are in the outfile: its reader is told where.
+			c.resultSink(controlResult{Query: snapshot.Query.RawQuery, Columns: []string{}, Rows: [][]string{},
+				Final: true, Outfile: snapshot.Query.Outfile.FilePath})
+		}
+		return err
+	}
+	if c.resultSink != nil {
+		return c.sinkResults(snapshot, finalResult)
 	}
 	return c.printResults(out, snapshot)
 }

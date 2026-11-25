@@ -53,8 +53,13 @@ type interactiveReloadState struct {
 // startInteractiveControl runs the connections, the control loop on the
 // control TTY and the background prober (interactiveProber) of an
 // --interactive-query session until the connections end or the control loop
-// ends (:quit, end of the TTY), and returns the session's exit status.
+// ends (:quit, end of the TTY), and returns the session's exit status. With
+// the JSON control channel (--control json) the requests of a program take
+// the place of the control TTY (startJSONControl).
 func (c *baseClient) startInteractiveControl(ctx context.Context, statsCh <-chan string) int {
+	if isJSONControl(c.Args) {
+		return c.startJSONControl(ctx, statsCh)
+	}
 	controlTTY, err := os.OpenFile(c.ControlTTYPath, os.O_RDWR, 0)
 	if err != nil {
 		c.clientLogger().Error("Unable to open interactive query control TTY", c.ControlTTYPath, err)

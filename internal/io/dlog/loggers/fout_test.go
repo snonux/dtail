@@ -274,3 +274,29 @@ func TestFoutRawBytesHonorsPayloadGate(t *testing.T) {
 		})
 	}
 }
+
+// TestFdataKeepsDiagnosticsOffStdout checks the "fdata" logger: diagnostics
+// reach the file only, payload stdout only (and the file with the payload
+// opt-in), so that a program reading stdout gets nothing but the data.
+func TestFdataKeepsDiagnosticsOffStdout(t *testing.T) {
+	file, stdout := &recordingSink{}, &recordingSink{}
+	f := newFoutWithSinks(file, stdout, false)
+	f.fileOnlyDiagnostics = true
+
+	f.Log("diagnostic")
+	f.LogWithColors("plain", "colored")
+	f.Raw("payload\n")
+	if stdout.logCount() != 0 || stdout.rawCount() != 1 {
+		t.Fatalf("stdout got %d diagnostics and %d payload writes, want 0 and 1", stdout.logCount(), stdout.rawCount())
+	}
+	if file.logCount() != 2 || file.rawCount() != 0 {
+		t.Fatalf("file got %d diagnostics and %d payload writes, want 2 and 0", file.logCount(), file.rawCount())
+	}
+	logger, err := Factory("client", "FDATA", Strategy{FileBase: "fdata"}, Options{LogDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built, ok := logger.(*fout); !ok || !built.fileOnlyDiagnostics {
+		t.Fatalf("Factory(fdata) = %T, want a fout with diagnostics in the file only", logger)
+	}
+}

@@ -53,6 +53,9 @@ type SSHArgs struct {
 	UserName             string
 }
 
+// ControlJSON is the Args.Control value of the JSON control channel.
+const ControlJSON = "json"
+
 // Args combines command-line concerns shared by the DTail processes.
 // Embedded groups preserve direct field selection for existing consumers.
 type Args struct {
@@ -63,11 +66,25 @@ type Args struct {
 	ConfigFile        string
 	ConnectionsPerCPU int
 	ControlTTYPath    string
-	Discovery         string
-	HostnameOverride  string
-	InteractiveQuery  bool
-	Mode              omode.Mode
-	Plain             bool
+	// Control selects a machine-readable control channel for an interactive
+	// session instead of the control TTY and its line editor (--control):
+	// "" for none or ControlJSON, where the client reads one JSON request
+	// per line from ControlIn and writes one JSON response or event per
+	// line to ControlOut (see clients' control_json.go). It implies
+	// InteractiveQuery.
+	Control string
+	// ControlIn is where the control requests are read from: a path (a FIFO
+	// is kept open across its writers), or "" for stdin (--control-in).
+	ControlIn string
+	// ControlOut is where the control responses and events are written to: a
+	// path, appended to, or "" for stderr, so that stdout holds the data
+	// only (--control-out).
+	ControlOut       string
+	Discovery        string
+	HostnameOverride string
+	InteractiveQuery bool
+	Mode             omode.Mode
+	Plain            bool
 	// Progress makes dcat, dgrep and dmap write their read progress
 	// (PROGRESS lines) to stderr, also with Quiet or Plain, which only drop
 	// the progress fields of the STATS lines (--progress). The client never
@@ -100,6 +117,9 @@ func (a *Args) String() string {
 	fmt.Fprintf(&sb, "ConfigFile:%v,", a.ConfigFile)
 	fmt.Fprintf(&sb, "ConnectionsPerCPU:%v,", a.ConnectionsPerCPU)
 	fmt.Fprintf(&sb, "ControlTTYPath:%v,", a.ControlTTYPath)
+	fmt.Fprintf(&sb, "Control:%v,", a.Control)
+	fmt.Fprintf(&sb, "ControlIn:%v,", a.ControlIn)
+	fmt.Fprintf(&sb, "ControlOut:%v,", a.ControlOut)
 	fmt.Fprintf(&sb, "Discovery:%v,", a.Discovery)
 	fmt.Fprintf(&sb, "HostnameOverride:%v,", a.HostnameOverride)
 	fmt.Fprintf(&sb, "HostKeyPath:%v,", a.HostKeyPath)

@@ -98,6 +98,9 @@ type baseClient struct {
 	// before the control loop starts; nil otherwise, which its methods
 	// accept.
 	prober *interactiveProber
+	// control writes the responses and events of the JSON control channel
+	// (--control json); it writes nowhere until startJSONControl opened it.
+	control *controlWriter
 }
 
 func newBaseClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDependencies,
@@ -111,6 +114,7 @@ func newBaseClient(args config.Args, cfg config.RuntimeConfig, loggers LoggerDep
 		throttleCh:  make(chan struct{}, args.ConnectionsPerCPU*runtime.GOMAXPROCS(0)),
 		sessionSpec: startSessionSpec(args),
 		profile:     profile,
+		control:     &controlWriter{},
 	}
 	if err := c.initialize(); err != nil {
 		return baseClient{}, err

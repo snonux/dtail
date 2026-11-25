@@ -21,6 +21,7 @@ scheduled jobs, and building/testing DTail itself.
 | Follow new lines, optionally filtered | `dtail` |
 | Aggregate existing logs or CSV with a SQL-like query | `dmap --query '...'` |
 | Aggregate new lines continuously | `dtail --query '...'` |
+| Explore logs over several steps as an agent: discover fields, run and refine queries, results as JSON | `dmap --control json` ([agent-control.md](references/agent-control.md)) |
 | Build a query interactively (a person at a terminal) | `dmap` without `--query` (query builder) |
 | Change filter/query/files of a running session | interactive control (`:reload`, `:query`, `:tail`) |
 | Check a dserver endpoint (Nagios style) | `dtailhealth --server HOST:PORT` |
@@ -61,6 +62,16 @@ scheduled jobs, and building/testing DTail itself.
    about 34 s left, 2/2 servers reporting". Do not wait silently for the
    result. When the command ends, report from the final line, then the
    result. Fields and caveats: [output-and-status.md](references/output-and-status.md#read-progress).
+10. **Do not guess table and field names, and do not scrape the terminal
+    UI.** When the fields of a log are unknown, or more than one query is
+    needed, open a control session (`dmap --control json`), ask it for
+    `fields`, then send `query` requests and read the JSON results. It
+    keeps the connections open between requests:
+    [agent-control.md](references/agent-control.md).
+11. **Keep diagnostics out of your context.** Send stdout and stderr of
+    long runs to files and read only what you need (the last progress
+    line, the response of your request). With `--control json` the client
+    logs to its log file, not to stdout; leave that default.
 
 ## Quick reference
 
@@ -73,6 +84,7 @@ dmap  --servers servers.txt --files '/var/run/dserver/log/*.log' --no-interactiv
 dmap  --files data.csv --query 'select name,avg(age) group by name logformat csv'   # serverless
 dgrep --servers servers.txt --files '/var/log/app/*.log.gz' --regex ERROR \
       --plain --progress > out.txt 2> progress.txt &                             # watch progress.txt
+echo '{"id":1,"cmd":"fields"}' | dmap --files app.log --control json 2>&1 >/dev/null  # fields as JSON
 printf 'a\nb\n' | dgrep --regex a --plain --logger stdout                           # stdin
 dtailhealth --server web01:2222
 ```
@@ -108,6 +120,11 @@ Load only the file the task needs.
 - [log-formats.md](references/log-formats.md): `default`, `generic`,
   `generickv`, `csv` and stub formats, their variables, the default line
   layout, writing a custom format and probe.
+
+**Agent control channel**
+- [agent-control.md](references/agent-control.md): `--control json`, a
+  session an agent drives with JSON requests: field discovery, path
+  listing, query completion, queries with results as data, progress events.
 
 **Interactive mode (a human at a terminal)**
 - [interactive-control.md](references/interactive-control.md): when it is

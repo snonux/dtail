@@ -90,6 +90,7 @@ Both apply to every client, `dtailhealth` and the jobs of `dserver`.
 | Logger (`--logger`) | Diagnostics go to | Payload goes to |
 |---------------------|-------------------|-----------------|
 | `fout` (default) | stdout and `~/log/YYYYMMDD.log` | stdout; the file too with `--log-payload` |
+| `fdata` (default with `--control json`) | `~/log/YYYYMMDD.log` only | stdout; the file too with `--log-payload` |
 | `stdout` | stdout | stdout |
 | `file` | the daily file | the daily file |
 | `none` | nowhere | nowhere |

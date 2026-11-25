@@ -23,6 +23,7 @@ DTail Documentation
 | [DTail Query Language](./querylanguage.md) | The SQL-like MapReduce language |
 | [Log Formats](./logformats.md) | Log formats for MapReduce queries, writing your own |
 | [Interactive Mode](./interactive-query.md) | Changing a running session, Tab completion, the `dmap` query builder |
+| [Control Channel for Programs and Agents](./agent-control.md) | `--control json`: the interactive features as JSON requests and responses |
 | [Interactive Mode Reference](./interactive-query-reference.md) | Every command, flag, key and session rule of the interactive mode |
 | [Auth-Key Fast-Reconnect](./auth-key-fast-reconnect.md) | Faster authentication on repeated connections |
 | [Testing Guide](./testing.md) | Unit and integration tests |

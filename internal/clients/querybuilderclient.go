@@ -38,6 +38,12 @@ import (
 //     query); its line editor starts with the builder's history
 //     (runHistory), so Up recalls the query built.
 //
+// With a JSON control channel (--control json) there is no line editor and
+// no hand-over: the held sessions stay for the whole run of dmap, the
+// requests of a program take the place of the lines typed, and every query
+// request runs its query like phase 2 does, next to the held sessions, and
+// is answered with the final result (runQuery, control_json_results.go).
+//
 // The query does not run on the builder's sessions because a session
 // started with SESSION START never ends by itself (dserver keeps it for
 // the next update), so the client could not tell when the result is
@@ -55,6 +61,9 @@ type QueryBuilderClient struct {
 	// (NewMaprClient) with the control lines its line editor starts its
 	// history with, if it is interactive; tests replace it.
 	newRunner func(args config.Args, history []string) (Client, error)
+	// newQueryRunner creates the client that runs one query of a JSON
+	// control channel's query request (runQuery): NewMaprClient too.
+	newQueryRunner func(args config.Args) (*MaprClient, error)
 	// built is what the control loop handed over (setBuilt), guarded by
 	// builtMu.
 	builtMu sync.Mutex
@@ -94,6 +103,10 @@ func NewQueryBuilderClient(args config.Args, cfg config.RuntimeConfig, loggers L
 		return runner, nil
 	}
 
+	c.newQueryRunner = func(runArgs config.Args) (*MaprClient, error) {
+		return NewMaprClient(runArgs, cfg, DefaultMode, loggers, colorizer)
+	}
+
 	// The builder itself is always interactive (control loop, prober) and
 	// prints no periodic connection statistics over the line being built.
 	builderArgs := args
@@ -102,6 +115,11 @@ func NewQueryBuilderClient(args config.Args, cfg config.RuntimeConfig, loggers L
 	builderArgs.Quiet = true
 	profile := clientHandlerProfile(loggers.Client, true)
 	profile.queryBuilt = c.setBuilt
+	if isJSONControl(args) {
+		// With a JSON control channel the session is not left for a run:
+		// it stays, and every query request runs its query (runQuery).
+		profile.runQuery = c.runQuery
+	}
 	base, err := newBaseClient(builderArgs, cfg, loggers, colorizer, profile)
 	if err != nil {
 		return nil, fmt.Errorf("initialize query builder: %w", err)

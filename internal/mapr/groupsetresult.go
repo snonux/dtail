@@ -280,3 +280,33 @@ func removeTemporaryFile(path string, remove func(string) error) error {
 	}
 	return nil
 }
+
+// ResultTable is the result of a query as data, for callers that pass it on
+// to a program instead of printing it (Result) or writing a file
+// (WriteResult): the select fields as Columns and one value per column in
+// every row, as strings formatted like the printed table's.
+type ResultTable struct {
+	Columns []string
+	Rows    [][]string
+}
+
+// ResultTable returns the result of the query from the group set as data,
+// the rows ordered as Result prints them. The query's limit clause is not
+// applied, as for Result: the caller decides how many rows it passes on.
+func (g *GroupSet) ResultTable(query *Query) (ResultTable, error) {
+	rows, _, err := g.result(query, false)
+	if err != nil {
+		return ResultTable{}, err
+	}
+	table := ResultTable{
+		Columns: make([]string, len(query.Select)),
+		Rows:    make([][]string, len(rows)),
+	}
+	for i, sc := range query.Select {
+		table.Columns[i] = sc.FieldStorage
+	}
+	for i, row := range rows {
+		table.Rows[i] = row.values
+	}
+	return table, nil
+}

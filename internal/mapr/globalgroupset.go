@@ -95,3 +95,11 @@ func (g *GlobalGroupSet) Result(query *Query, rowsLimit int, renderer ResultRend
 	defer func() { <-g.semaphore }()
 	return g.GroupSet.Result(query, rowsLimit, renderer)
 }
+
+// ResultTable returns the result of the mapreduce aggregation as data (see
+// GroupSet.ResultTable).
+func (g *GlobalGroupSet) ResultTable(query *Query) (ResultTable, error) {
+	g.semaphore <- struct{}{}
+	defer func() { <-g.semaphore }()
+	return g.GroupSet.ResultTable(query)
+}

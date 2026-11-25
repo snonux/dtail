@@ -51,6 +51,10 @@ const (
 	// DefaultClientLogger specifies the default logger for the client commands.
 	// It applies only when neither --logger nor Common.Logger is set.
 	DefaultClientLogger string = "fout"
+	// ControlLogger is the logger of a client with a control channel
+	// (--control) unless --logger is given: payload on stdout, diagnostics
+	// in the log file only, as the reader of its output is a program.
+	ControlLogger string = "fdata"
 	// DefaultServerLogger specifies the default logger for dtail server.
 	// It applies only when neither --logger nor Common.Logger is set.
 	DefaultServerLogger string = "file"

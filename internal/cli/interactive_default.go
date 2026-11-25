@@ -52,6 +52,12 @@ func BindInteractiveDefault(fs *flag.FlagSet) *InteractiveDefault {
 //     ssh without a TTY keep the non-interactive behaviour: the control loop
 //     would otherwise fail to open the TTY and end the client with status 1.
 func (d *InteractiveDefault) Resolve(fs *flag.FlagSet, args *config.Args) {
+	if args.Control != "" {
+		// A control channel is an interactive session by itself, with or
+		// without a terminal (normalizeControl), and nothing turns it off.
+		args.InteractiveQuery = true
+		return
+	}
 	if d.disabled {
 		args.InteractiveQuery = false
 		return
@@ -92,6 +98,13 @@ func BindQueryBuilderDefault(fs *flag.FlagSet) *InteractiveDefault {
 //     Resolve), so that a pipe, a script, cron and CI keep the error for the
 //     missing query.
 func (d *InteractiveDefault) ResolveQueryBuilder(fs *flag.FlagSet, args *config.Args) bool {
+	if args.Control != "" {
+		// With a control channel and no query, dmap holds its sessions like
+		// the builder and runs the queries it is sent; with a query it is
+		// interactive dmap, controlled over the channel.
+		args.InteractiveQuery = true
+		return strings.TrimSpace(args.QueryStr) == ""
+	}
 	if d.disabled {
 		args.InteractiveQuery = false
 		return false

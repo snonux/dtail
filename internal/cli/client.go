@@ -98,6 +98,14 @@ func BindCommonClientFlags(fs *flag.FlagSet, args *config.Args) *ClientRunner {
 	fs.IntVar(&args.SSHPort, "port", config.DefaultSSHPort, "SSH server port")
 	fs.StringVar(&args.ConfigFile, "cfg", "", "Config file path")
 	fs.StringVar(&args.ControlTTYPath, "control-tty", "/dev/tty", "TTY device for interactive query control")
+	fs.StringVar(&args.Control, "control", "",
+		"Machine-readable interactive control for programs and agents: 'json' reads one JSON request per line "+
+			"(fields, list, query, tail, reload, show, probe, quit) and answers each with one JSON line; "+
+			"the session stays open (implies --interactive-query, no terminal needed; "+
+			"diagnostics go to the log file only unless --logger is given)")
+	fs.StringVar(&args.ControlIn, "control-in", "", "With --control: file or FIFO to read the requests from (default: stdin)")
+	fs.StringVar(&args.ControlOut, "control-out", "",
+		"With --control: file to append the responses and events to (default: stderr, so stdout holds the data only)")
 	fs.StringVar(&args.EditMode, "edit-mode", "",
 		"Interactive line editing keys: emacs or vi (default: Client.EditMode from the config file, else emacs)")
 	fs.StringVar(&args.Discovery, "discovery", "", "Server discovery method")
@@ -243,6 +251,10 @@ func (r *ClientRunner) prepareClient(name string, deps clientRunDependencies) (c
 	}
 	r.args.SSHPortSet = FlagWasSet(r.fs, "port")
 	r.args.LogLevelSet = FlagWasSet(r.fs, "logLevel")
+	if err := normalizeControl(r.args); err != nil {
+		_, _ = fmt.Fprintf(deps.stderr, "unable to configure %s: %v\n", name, err)
+		return config.RuntimeConfig{}, 2, false
+	}
 	if r.beforeSetup != nil {
 		r.beforeSetup(r.args)
 	}
@@ -345,4 +357,28 @@ func (r *ClientRunner) runConfiguredClient(name string, build BrushClientBuilder
 		deps.interruptPause))
 	runtime.LogShutdownMetrics()
 	return status
+}
+
+// normalizeControl checks the --control flags: the only control channel is
+// config.ControlJSON, which makes the session interactive (the session
+// stays open and takes requests), and --control-in/--control-out mean
+// nothing without it. It also makes config.ControlLogger the logger, before
+// the config file's Common.Logger, unless --logger names one.
+func normalizeControl(args *config.Args) error {
+	switch args.Control {
+	case "":
+		if args.ControlIn != "" || args.ControlOut != "" {
+			return errors.New("--control-in and --control-out need --control json")
+		}
+		return nil
+	case config.ControlJSON:
+		args.InteractiveQuery = true
+		if args.Logger == "" {
+			// The reader is a program: diagnostics go to the log file, not
+			// into its data on stdout. --logger still chooses another.
+			args.Logger = config.ControlLogger
+		}
+		return nil
+	}
+	return fmt.Errorf("unknown --control %q, the only one is %q", args.Control, config.ControlJSON)
 }
